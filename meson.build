@@ -324,7 +324,7 @@ if get_option('build_backends')
     deps += [cu_blas, cu_dnn, cu_dart]
   cuda_arguments = ['-c', '@INPUT@', '-o', '@OUTPUT@',
                     '-I', meson.current_source_dir() + '/src',
-                    '-I', '/home/crem/dev/lc0/build/debugoptimized/lc0@exe']
+                    '-I', '@BUILD_DIR@']
   if host_machine.system() == 'windows'
     cuda_arguments += ['-Xcompiler', '-MD']
   else
