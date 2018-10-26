@@ -893,8 +893,8 @@ struct InputsOutputs {
     ReportCUDAErrors(
         cudaHostGetDevicePointer(&op_policy_mem_gpu_, op_policy_mem_, 0));
 
-    ReportCUDAErrors(cudaHostAlloc(
-        &op_value_mem_, maxBatchSize * sizeof(float), cudaHostAllocMapped));
+    ReportCUDAErrors(cudaHostAlloc(&op_value_mem_, maxBatchSize * sizeof(float),
+                                   cudaHostAllocMapped));
     ReportCUDAErrors(
         cudaHostGetDevicePointer(&op_value_mem_gpu_, op_value_mem_, 0));
   }
@@ -967,7 +967,8 @@ class CudnnNetworkComputation : public NetworkComputation {
 template <typename DataType>
 class CudnnNetwork : public Network {
  public:
-  CudnnNetwork(Weights weights, const OptionsDict &options) {
+  CudnnNetwork(const WeightsFile &file, const OptionsDict &options) {
+    const auto &weights = file.weights();
     gpu_id_ = options.GetOrDefault<int>("gpu", 0);
 
     max_batch_size_ = options.GetOrDefault<int>("max_batch", 1024);
@@ -997,18 +998,18 @@ class CudnnNetwork : public Network {
     }
 
     const int kNumInputPlanes = kInputPlanes;
-    const int kNumFilters = weights.input.biases.size();
+    const int kNumFilters = LayerAdapter(weights.input().biases()).size();
 
-    numBlocks_ = weights.residual.size();
+    numBlocks_ = LayerAdapter(weights.residual()).size();
 
     // 0. Process weights.
-    processConvBlock(weights.input, true);
+    processConvBlock(weights.input(), true);
     for (auto i = size_t{0}; i < numBlocks_; i++) {
-      processConvBlock(weights.residual[i].conv1, true);
-      processConvBlock(weights.residual[i].conv2, true);
+      processConvBlock(weights.residual(i).conv1(), true);
+      processConvBlock(weights.residual(i).conv2(), true);
     }
-    processConvBlock(weights.policy);
-    processConvBlock(weights.value);
+    processConvBlock(weights.policy());
+    processConvBlock(weights.value());
 
     // 1. Allocate scratch space (used internally by cudnn to run convolutions,
     //     and also for format/layout conversion for weights).
@@ -1324,7 +1325,8 @@ class CudnnNetwork : public Network {
   mutable std::mutex inputs_outputs_lock_;
   std::list<std::unique_ptr<InputsOutputs>> free_inputs_outputs_;
 
-  void processConvBlock(Weights::ConvBlock &block, bool foldBNLayer = false) {
+  void processConvBlock(const pblczero::Weights::ConvBlock &block,
+                        bool foldBNLayer = false) {
     const float epsilon = 1e-5f;
 
     // Compute reciprocal of std-dev from the variances (so that it can be just

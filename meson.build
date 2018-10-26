@@ -97,6 +97,7 @@ files += [
   'src/utils/random.cc',
   'src/utils/string.cc',
   'src/utils/transpose.cc',
+  'src/utils/weights_adapter.cc',
 ]
 includes += include_directories('src')
 
@@ -322,7 +323,8 @@ if get_option('build_backends')
   if get_option('cudnn') and cu_blas.found() and cu_dnn.found() and cu_dart.found() and nvcc.found()
     deps += [cu_blas, cu_dnn, cu_dart]
   cuda_arguments = ['-c', '@INPUT@', '-o', '@OUTPUT@',
-                    '-I', meson.current_source_dir() + '/src']
+                    '-I', meson.current_source_dir() + '/src',
+                    '-I', '/home/crem/dev/lc0/build/debugoptimized/lc0@exe']
   if host_machine.system() == 'windows'
     cuda_arguments += ['-Xcompiler', '-MD']
   else

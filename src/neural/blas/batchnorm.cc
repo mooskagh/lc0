@@ -18,13 +18,32 @@
 
 #include "neural/blas/batchnorm.h"
 
+#include "utils/weights_adapter.h"
+
+#include <algorithm>
 #include <cmath>
 
 namespace lczero {
 
-void Batchnorm::Apply(const size_t batch_size, const size_t channels,
-                      float* data, const float* means, const float* stddivs,
-                      const float* eltwise) {
+namespace {
+static constexpr float kEpsilon = 1e-5f;
+constexpr int kWidth = 8;
+constexpr int kHeight = 8;
+constexpr int kSquares = kWidth * kHeight;
+}  // namespace
+
+void InvertVector(std::vector<float>* vec) {
+  for (auto& x : *vec) x = 1.0f / std::sqrt(x + kEpsilon);
+}
+
+void OffsetVector(std::vector<float>* means, const std::vector<float>& biases) {
+  std::transform(means->begin(), means->end(), biases.begin(), means->begin(),
+                 std::minus<float>());
+}
+
+void ApplyBatchNormalization(const size_t batch_size, const size_t channels,
+                             float* data, const float* means,
+                             const float* stddivs, const float* eltwise) {
   for (size_t i = 0; i < batch_size; i++) {
     for (size_t c = 0; c < channels; ++c) {
       auto mean = means[c];
@@ -52,38 +71,26 @@ void Batchnorm::Apply(const size_t batch_size, const size_t channels,
   }
 }
 
-void Batchnorm::InvertStddev(Weights::ConvBlock* conv) {
-  std::vector<float>& stddivs = conv->bn_stddivs;
-  InvertStddev(stddivs.size(), stddivs.data());
-}
+ConvBlock::ConvBlock(const pblczero::Weights::ConvBlock& block)
+    : weights(LayerAdapter(block.weights()).as_vector()),
+      biases(LayerAdapter(block.biases()).as_vector()),
+      bn_means(LayerAdapter(block.bn_means()).as_vector()),
+      bn_stddivs(LayerAdapter(block.bn_stddivs()).as_vector()) {}
 
-void Batchnorm::OffsetMeans(Weights::ConvBlock* conv) {
-  std::vector<float>& means = conv->bn_means;
-  const std::vector<float>& biases = conv->biases;
-  OffsetMeans(means.size(), means.data(), biases.data());
-}
+void ConvBlock::InvertStddev() { InvertVector(&bn_stddivs); }
 
-std::vector<float> Batchnorm::InvertStddev(const Weights::ConvBlock& conv) {
-  std::vector<float> stddivs = conv.bn_stddivs;  // copy
-  InvertStddev(stddivs.size(), stddivs.data());
+void ConvBlock::OffsetMeans() { OffsetVector(&bn_means, biases); }
+
+std::vector<float> ConvBlock::GetInvertedStddev() const {
+  std::vector<float> stddivs = bn_stddivs;  // copy
+  InvertVector(&stddivs);
   return stddivs;
 }
 
-std::vector<float> Batchnorm::OffsetMeans(const Weights::ConvBlock& conv) {
-  std::vector<float> means = conv.bn_means;  // copy
-  const std::vector<float>& biases = conv.biases;
-  OffsetMeans(means.size(), means.data(), biases.data());
+std::vector<float> ConvBlock::GetOffsetMeans() const {
+  std::vector<float> means = bn_means;  // copy
+  OffsetVector(&means, biases);
   return means;
-}
-
-void Batchnorm::InvertStddev(const size_t size, float* array) {
-  for (size_t i = 0; i < size; i++)
-    array[i] = 1.0f / std::sqrt(array[i] + kEpsilon);
-}
-
-void Batchnorm::OffsetMeans(const size_t size, float* means,
-                            const float* biases) {
-  for (size_t i = 0; i < size; i++) means[i] -= biases[i];
 }
 
 }  // namespace lczero

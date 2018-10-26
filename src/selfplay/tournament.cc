@@ -152,7 +152,7 @@ SelfPlayTournament::SelfPlayTournament(const OptionsDict& options,
     if (path == kAutoDiscover) {
       path = DiscoverWeightsFile();
     }
-    Weights weights = LoadWeightsFromFile(path);
+    WeightsFile weights_file = LoadWeightsFromFile(path);
     std::string backend = options.GetSubdict(kPlayerNames[idx])
                               .Get<std::string>(kNnBackendId.GetId());
     std::string backend_options =
@@ -163,7 +163,7 @@ SelfPlayTournament::SelfPlayTournament(const OptionsDict& options,
         backend_options, &options.GetSubdict(kPlayerNames[idx]));
 
     networks_[idx] =
-        NetworkFactory::Get()->Create(backend, weights, network_options);
+        NetworkFactory::Get()->Create(backend, weights_file, network_options);
   }
 
   // Initializing cache.

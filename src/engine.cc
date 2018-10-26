@@ -249,12 +249,13 @@ void EngineController::UpdateFromUciOptions() {
   } else {
     std::cerr << "Loading weights file from: " << net_path << std::endl;
   }
-  Weights weights = LoadWeightsFromFile(net_path);
+  WeightsFile weights_file = LoadWeightsFromFile(net_path);
 
   OptionsDict network_options =
       OptionsDict::FromString(backend_options, &options_);
 
-  network_ = NetworkFactory::Get()->Create(backend, weights, network_options);
+  network_ =
+      NetworkFactory::Get()->Create(backend, weights_file, network_options);
 
   // Cache size.
   cache_.SetCapacity(options_.Get<int>(kNNCacheSizeId.GetId()));

@@ -37,7 +37,7 @@ namespace lczero {
 class NetworkFactory {
  public:
   using FactoryFunc = std::function<std::unique_ptr<Network>(
-      const Weights&, const OptionsDict&)>;
+      const WeightsFile&, const OptionsDict&)>;
 
   static NetworkFactory* Get();
 
@@ -55,7 +55,8 @@ class NetworkFactory {
   std::vector<std::string> GetBackendsList() const;
 
   // Creates a backend given name and config.
-  std::unique_ptr<Network> Create(const std::string& network, const Weights&,
+  std::unique_ptr<Network> Create(const std::string& network,
+                                  const WeightsFile&,
                                   const OptionsDict& options);
 
  private:
@@ -86,7 +87,7 @@ class NetworkFactory {
   namespace {                                                        \
   static NetworkFactory::Register regH38fhs##counter(                \
       name,                                                          \
-      [](const Weights& w, const OptionsDict& o) {                   \
+      [](const WeightsFile& w, const OptionsDict& o) {               \
         return std::make_unique<cls>(w, o);                          \
       },                                                             \
       priority);                                                     \

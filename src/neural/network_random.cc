@@ -71,7 +71,7 @@ class RandomNetworkComputation : public NetworkComputation {
 
 class RandomNetwork : public Network {
  public:
-  RandomNetwork(const Weights& /*weights*/, const OptionsDict& options)
+  RandomNetwork(const WeightsFile& /*weights*/, const OptionsDict& options)
       : delay_ms_(options.GetOrDefault<int>("delay", 0)),
         seed_(options.GetOrDefault<int>("seed", 0)) {}
   std::unique_ptr<NetworkComputation> NewComputation() override {

@@ -232,7 +232,7 @@ class CheckNetwork : public Network {
   static constexpr double kDefaultAbsoluteTolerance = 1e-5;
   static constexpr double kDefaultRelativeTolerance = 1e-4;
 
-  CheckNetwork(const Weights& weights, const OptionsDict& options) {
+  CheckNetwork(const WeightsFile& file, const OptionsDict& options) {
     params_.mode = kDefaultMode;
     params_.absolute_tolerance = kDefaultAbsoluteTolerance;
     params_.relative_tolerance = kDefaultRelativeTolerance;
@@ -282,9 +282,9 @@ class CheckNetwork : public Network {
               << std::endl;
 
     work_net_ =
-        NetworkFactory::Get()->Create(backendName1, weights, backend1_dict);
+        NetworkFactory::Get()->Create(backendName1, file, backend1_dict);
     check_net_ =
-        NetworkFactory::Get()->Create(backendName2, weights, backend2_dict);
+        NetworkFactory::Get()->Create(backendName2, file, backend2_dict);
 
     check_frequency_ =
         options.GetOrDefault<float>("freq", kDefaultCheckFrequency);
