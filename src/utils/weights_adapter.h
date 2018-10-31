@@ -41,6 +41,12 @@ class LayerAdapter {
 
     float operator*() const;
     float operator[](size_t idx) const;
+    bool operator==(LayerAdapter::Iterator& other) const {
+      return *this == other;
+    }
+    bool operator!=(LayerAdapter::Iterator& other) const {
+      return *this != other;
+    }
     Iterator& operator++() {
       ++data_;
       return *this;
