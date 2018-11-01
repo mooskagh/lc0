@@ -51,10 +51,10 @@ struct OpenCLWeights {
   const size_t num_value_channels;
 
   OpenCLWeights(const WeightsFile& file)
-      : ip2_val_w(LayerAdapter(file.weights().ip2_val_w()).as_vector()),
-        ip2_val_b(LayerAdapter(file.weights().ip2_val_b()).as_vector()),
-        num_output_policies(LayerAdapter(file.weights().ip_pol_b()).size()),
-        num_value_channels(LayerAdapter(file.weights().ip1_val_b()).size()) {}
+      : ip2_val_w(LayerAdapter<float>(file.weights().ip2_val_w()).as_vector()),
+        ip2_val_b(LayerAdapter<float>(file.weights().ip2_val_b()).as_vector()),
+        num_output_policies(LayerAdapter<float>(file.weights().ip_pol_b()).size()),
+        num_value_channels(LayerAdapter<float>(file.weights().ip1_val_b()).size()) {}
 };
 
 class OpenCLComputation : public NetworkComputation {
