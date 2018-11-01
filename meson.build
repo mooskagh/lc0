@@ -66,10 +66,15 @@ if not protobuf_dep.found() or not protoc.found() or get_option('tensorflow')
   endforeach
 else
   deps += protobuf_dep
+  protobuf_inc = []
   if protobuf_lib.found()
     includes += include_directories(get_option('protobuf_include'))
+  elif protobuf_dep.type_name() == 'pkgconfig'
+    protobuf_inc = protobuf_dep.get_pkgconfig_variable('includedir')
   endif
-  protobuf_inc = get_option('protobuf_include')[0]
+  if protobuf_inc == []
+    protobuf_inc = get_option('protobuf_include')[0]
+  endif
 endif
 
 gen = generator(protoc, output: ['@BASENAME@.pb.cc', '@BASENAME@.pb.h'],
