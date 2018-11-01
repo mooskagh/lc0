@@ -31,21 +31,21 @@
 
 namespace lczero {
 
+using float16 = uint16_t;
+
+template <typename T>
 class LayerAdapter {
  public:
-  class Iterator
-      : public std::iterator<std::random_access_iterator_tag, float> {
+  class Iterator : public std::iterator<std::random_access_iterator_tag, T> {
    public:
     Iterator() = default;
     Iterator(const Iterator& other) = default;
 
-    float operator*() const;
-    float operator[](size_t idx) const;
-    bool operator==(LayerAdapter::Iterator& other) const {
-      return data_ == other.data_;;
-    }
-    bool operator!=(LayerAdapter::Iterator& other) const {
-      return data_ != other.data_;;
+    T operator*() const;
+    T operator[](size_t idx) const;
+    bool operator==(Iterator& other) const { return data_ == other.data_; }
+    bool operator!=(Iterator& other) const {
+      return data_ != other.data_;
     }
     Iterator& operator++() {
       ++data_;
@@ -63,16 +63,26 @@ class LayerAdapter {
     friend class LayerAdapter;
     Iterator(const LayerAdapter* adapter, const uint16_t* ptr)
         : adapter_(adapter), data_(ptr) {}
-    static float ExtractValue(const uint16_t* ptr, const LayerAdapter* adapter);
+    static float ExtractValue(const uint16_t* ptr,
+                              const LayerAdapter<T>* adapter) {
+      return *ptr / static_cast<float>(0xffff) * adapter->range_ +
+             adapter->min_;
+    }
 
     const LayerAdapter* adapter_ = nullptr;
     const uint16_t* data_ = nullptr;
   };
 
-  LayerAdapter(const pblczero::Weights_Layer& layer);
-  std::vector<float> as_vector() const;
+  LayerAdapter(const pblczero::Weights_Layer& layer)
+      : data_(reinterpret_cast<const uint16_t*>(layer.params().data())),
+        size_(layer.params().size() / sizeof(uint16_t)),
+        min_(layer.min_val()),
+        range_(layer.max_val() - min_) {}
+
+  std::vector<T> as_vector() const { return std::vector<T>(begin(), end()); }
+
   size_t size() const { return size_; }
-  float operator[](size_t idx) const { return begin()[idx]; }
+  T operator[](size_t idx) const { return begin()[idx]; }
   Iterator begin() const { return {this, data_}; }
   Iterator end() const { return {this, data_ + size_}; }
 
@@ -82,5 +92,17 @@ class LayerAdapter {
   const float min_;
   const float range_;
 };
+
+template <>
+float LayerAdapter<float>::Iterator::operator*() const;
+
+template <>
+float16 LayerAdapter<float16>::Iterator::operator*() const;
+
+template <>
+float LayerAdapter<float>::Iterator::operator[](size_t idx) const;
+
+template <>
+float16 LayerAdapter<float16>::Iterator::operator[](size_t idx) const;
 
 }  // namespace lczero
