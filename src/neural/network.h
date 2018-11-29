@@ -30,6 +30,8 @@
 #include <memory>
 #include <vector>
 
+#include "proto/net.pb.h"
+
 namespace lczero {
 
 const int kInputPlanes = 112;
@@ -67,8 +69,20 @@ class NetworkComputation {
 
 class Network {
  public:
+  virtual pblczero::NetworkFormat GetFormat() const = 0;
   virtual std::unique_ptr<NetworkComputation> NewComputation() = 0;
-  virtual ~Network(){};
+  virtual ~Network() = default;
+};
+
+// Network with GetFormat() implemented. Factored out into the separate class
+// so that every individual backend doesn't have to implement it.
+class NetworkWithFormat : public Network {
+ public:
+  NetworkWithFormat(const pblczero::NetworkFormat format) : format_(format) {}
+  pblczero::NetworkFormat GetFormat() const override { return format_; }
+
+ private:
+  pblczero::NetworkFormat format_;
 };
 
 }  // namespace lczero

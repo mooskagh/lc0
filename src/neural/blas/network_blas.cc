@@ -71,7 +71,7 @@ class BlasComputation : public NetworkComputation {
   std::vector<float> q_values_;
 };
 
-class BlasNetwork : public Network {
+class BlasNetwork : public NetworkWithFormat {
  public:
   BlasNetwork(const WeightsFile& weights, const OptionsDict& options);
   virtual ~BlasNetwork(){};
@@ -261,7 +261,8 @@ void BlasComputation::EncodePlanes(const InputPlanes& sample, float* buffer) {
 }
 
 BlasNetwork::BlasNetwork(const WeightsFile& file, const OptionsDict& options)
-    : weights_(file.weights()) {
+    : NetworkWithFormat(file.format().network_format()),
+      weights_(file.weights()) {
   int blas_cores = options.GetOrDefault<int>("blas_cores", 1);
   max_batch_size_ =
       static_cast<size_t>(options.GetOrDefault<int>("batch_size", 256));

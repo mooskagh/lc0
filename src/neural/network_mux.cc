@@ -78,12 +78,10 @@ class MuxingComputation : public NetworkComputation {
   bool dataready_ = false;
 };
 
-class MuxingNetwork : public Network {
+class MuxingNetwork : public NetworkWithFormat {
  public:
-  MuxingNetwork(const WeightsFile& weights, const OptionsDict& options) {
-    // int threads, int max_batch)
-    //: network_(std::move(network)), max_batch_(max_batch) {
-
+  MuxingNetwork(const WeightsFile& weights, const OptionsDict& options)
+      : NetworkWithFormat(weights.format().network_format()) {
     const auto parents = options.ListSubdicts();
     if (parents.empty()) {
       // If options are empty, or multiplexer configured in root object,

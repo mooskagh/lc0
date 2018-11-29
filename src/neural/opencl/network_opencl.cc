@@ -16,12 +16,12 @@
  along with Leela Chess.  If not, see <http://www.gnu.org/licenses/>.
  */
 
-#include "neural/network.h"
 #include "neural/blas/batchnorm.h"
 #include "neural/blas/blas.h"
 #include "neural/blas/fully_connected_layer.h"
 #include "neural/blas/winograd_convolution3.h"
 #include "neural/factory.h"
+#include "neural/network.h"
 #include "neural/opencl/OpenCL.h"
 #include "neural/opencl/OpenCLParams.h"
 
@@ -59,7 +59,8 @@ struct OpenCLWeights {
 
 class OpenCLComputation : public NetworkComputation {
  public:
-  OpenCLComputation(const OpenCL_Network& opencl_net, const OpenCLWeights& weights)
+  OpenCLComputation(const OpenCL_Network& opencl_net,
+                    const OpenCLWeights& weights)
       : opencl_net_(opencl_net), weights_(weights), policies_(), q_values_() {
     buffers_ = opencl_net.acquire_buffers();
   }
@@ -157,12 +158,16 @@ void OpenCLComputation::EncodePlanes(const InputPlanes& sample, float* buffer) {
   }
 }
 
-class OpenCLNetwork : public Network {
+class OpenCLNetwork : public NetworkWithFormat {
  public:
   virtual ~OpenCLNetwork(){};
 
   OpenCLNetwork(const WeightsFile& file, const OptionsDict& options)
-      : weights_(file), params_(), opencl_(), opencl_net_(opencl_) {
+      : NetworkWithFormat(file.format().network_format()),
+        weights_(file),
+        params_(),
+        opencl_(),
+        opencl_net_(opencl_) {
     const LegacyWeights weights(file.weights());
     params_.gpuId = options.GetOrDefault<int>("gpu", -1);
     params_.force_tune = options.GetOrDefault<bool>("force_tune", false);
@@ -256,11 +261,12 @@ class OpenCLNetwork : public Network {
                                 batchnorm_means_1, batchnorm_stddivs_1, Upad2,
                                 batchnorm_means_2, batchnorm_stddivs_2);
       if (residual.has_se) {
-          auto se_fc_outputs = se.w1.size() / channels;
-          if (se.b2.size() != 2 * channels) {
-              throw Exception("SE-unit output bias is not right size.");
-          }
-          opencl_net_.push_se(channels, se_fc_outputs, se.w1, se.b1, se.w2, se.b2);
+        auto se_fc_outputs = se.w1.size() / channels;
+        if (se.b2.size() != 2 * channels) {
+          throw Exception("SE-unit output bias is not right size.");
+        }
+        opencl_net_.push_se(channels, se_fc_outputs, se.w1, se.b1, se.w2,
+                            se.b2);
       }
     }
 

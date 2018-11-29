@@ -36,6 +36,7 @@
 #include "mcts/params.h"
 #include "neural/cache.h"
 #include "neural/network.h"
+#include "proto/net.pb.h"
 #include "syzygy/syzygy.h"
 #include "utils/logging.h"
 #include "utils/mutex.h"

@@ -26,9 +26,9 @@
 */
 
 #include <chrono>
+#include <cstring>
 #include <functional>
 #include <thread>
-#include <cstring>
 #include "neural/factory.h"
 #include "utils/hashcat.h"
 
@@ -79,6 +79,13 @@ class RandomNetwork : public Network {
         seed_(options.GetOrDefault<int>("seed", 0)) {}
   std::unique_ptr<NetworkComputation> NewComputation() override {
     return std::make_unique<RandomNetworkComputation>(delay_ms_, seed_);
+  }
+
+  pblczero::NetworkFormat GetFormat() const override {
+    pblczero::NetworkFormat format;
+    format.set_input(pblczero::NetworkFormat::INPUT_CLASSICAL_112_PLANE);
+    format.set_output(pblczero::NetworkFormat::OUTPUT_CLASSICAL);
+    return format;
   }
 
  private:

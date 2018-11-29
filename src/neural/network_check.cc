@@ -224,14 +224,15 @@ class CheckComputation : public NetworkComputation {
   std::unique_ptr<NetworkComputation> check_comp_;
 };
 
-class CheckNetwork : public Network {
+class CheckNetwork : public NetworkWithFormat {
  public:
   static constexpr CheckMode kDefaultMode = kCheckOnly;
   static constexpr double kDefaultCheckFrequency = 0.2;
   static constexpr double kDefaultAbsoluteTolerance = 1e-5;
   static constexpr double kDefaultRelativeTolerance = 1e-4;
 
-  CheckNetwork(const WeightsFile& weights, const OptionsDict& options) {
+  CheckNetwork(const WeightsFile& weights, const OptionsDict& options)
+      : NetworkWithFormat(weights.format().network_format()) {
     params_.mode = kDefaultMode;
     params_.absolute_tolerance = kDefaultAbsoluteTolerance;
     params_.relative_tolerance = kDefaultRelativeTolerance;
