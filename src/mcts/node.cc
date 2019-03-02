@@ -230,11 +230,7 @@ void Node::MakeTerminal(GameResult result) {
   }
 }
 
-bool Node::TryStartScoreUpdate() {
-  if (n_ == 0 && n_in_flight_ > 0) return false;
-  ++n_in_flight_;
-  return true;
-}
+bool Node::TryStartScoreUpdate() { return n_in_flight_++ == 0 || n_ != 0; }
 
 void Node::CancelScoreUpdate(int multivisit) {
   n_in_flight_ -= multivisit;
