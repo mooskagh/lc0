@@ -37,9 +37,6 @@ class LeanEdge {
   float p_;
   float q_;  // Q = W - L + (aggressiveness * D).
   uint32_t n_;
-  // TODO(crem) Move is not really needed as it can be regenerated, try removing
-  // it later.
-  Move move_;
 };
 
 static_assert(sizeof(LeanEdge) == 16, "Unexpected size of LeanEdge");
@@ -55,8 +52,6 @@ class LeanNode {
 
 static_assert(sizeof(LeanNode) == 24, "Unexpected size of LeanNode");
 
-class NodeView {};
-
 class NodeHashShard {
  public:
   NodeView GetNode(uint64_t hash);
@@ -66,5 +61,49 @@ class NodeHashShard {
   std::unordered_map<uint64_t, LeanNode> nodes_;
   ArrayArena<LeanEdge, 65536> edges_;
 };
+
+class FatEdge;
+class FatNode {
+  FatNode* parent_;
+  FatEdge* parent_edge_;
+  float visited_policy_;
+  LeanEdge* edges_;
+  LeanNode* node_;
+  uint64_t material_key_;
+  uint64_t zobrist_hash_;
+  uint64_t history_hash_;
+
+  uint16_t best_edge_;  // Atomic_together
+  uint16_t best_edge_remaining_n_;
+};
+
+class FatEdge {
+  Move move_;
+  atomic n_in_flight_;
+  FatNode* node;
+};
+
+class FatTree {};
+
+void AddNodesToCompute(Node* node, int count) {
+  // Atomically:
+  if (node->best_edge_remaining_n_ = 0) {
+    ComputeNewBestEdge();
+  }
+  // node->best_child_remaining_n_ > 0
+  if (best_edge_->node == nullptr) {
+    // Atomically.
+    FatNode* new_node = AllocateNewNode();
+    new_node.prepare();
+    best_edge_->node = new_node;
+  }
+  ++best_edge_->refcount;  // Check after that node still exists.
+
+  int count_to_visit = min(count, node->best_child_remaining_n_);
+  best_child_remaining_n_ -= count_to_visit;
+
+  best_child_->n_in_flight_ += count_to_visit;
+  AddNodesToCompute()
+}
 
 }  // namespace lczero
