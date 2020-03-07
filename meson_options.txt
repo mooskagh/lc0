@@ -78,15 +78,15 @@ option('dx',
        value: true,
        description: 'Enable DirectX12 backend')
 
-option('tensorflow',
+option('tensorflow_cc',
        type: 'boolean',
        value: false,
-       description: 'Enable TensorFlow backend')
+       description: 'Enable TensorFlow C++ backend')
 
-option('tensorflowv2',
+option('tensorflow',
        type: 'boolean',
        value: true,
-       description: 'Enable TensorFlow v2 backend')
+       description: 'Enable TensorFlow C backend')
 
 option('openblas',
        type: 'boolean',

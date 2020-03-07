@@ -1,0 +1,146 @@
+/*
+  This file is part of Leela Chess Zero.
+  Copyright (C) 2020 The LCZero Authors
+
+  Leela Chess is free software: you can redistribute it and/or modify
+  it under the terms of the GNU General Public License as published by
+  the Free Software Foundation, either version 3 of the License, or
+  (at your option) any later version.
+
+  Leela Chess is distributed in the hope that it will be useful,
+  but WITHOUT ANY WARRANTY; without even the implied warranty of
+  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+  GNU General Public License for more details.
+
+  You should have received a copy of the GNU General Public License
+  along with Leela Chess.  If not, see <http://www.gnu.org/licenses/>.
+
+  Additional permission under GNU GPL version 3 section 7
+
+  If you modify this Program, or any covered work, by linking or
+  combining it with NVIDIA Corporation's libraries from the NVIDIA CUDA
+  Toolkit and the NVIDIA CUDA Deep Neural Network library (or a
+  modified version of those libraries), containing parts covered by the
+  terms of the respective license agreement, the licensors of this
+  Program grant you additional permission to convey the resulting work.
+  */
+
+syntax = "proto2";
+
+package pblczero;
+
+//////////////////////////////////////////////////////////////////////
+// Tensorflow GraphDef proto.
+//////////////////////////////////////////////////////////////////////
+
+enum DataType {
+  DT_INVALID = 0;
+  // Data types that all computation devices are expected to be
+  // capable to support.
+  DT_FLOAT = 1;
+  DT_DOUBLE = 2;
+  DT_INT32 = 3;
+  DT_UINT8 = 4;
+  DT_INT16 = 5;
+  DT_INT8 = 6;
+  DT_STRING = 7;
+  DT_COMPLEX64 = 8;  // Single-precision complex
+  DT_INT64 = 9;
+  DT_BOOL = 10;
+  DT_QINT8 = 11;     // Quantized int8
+  DT_QUINT8 = 12;    // Quantized uint8
+  DT_QINT32 = 13;    // Quantized int32
+  DT_BFLOAT16 = 14;  // Float32 truncated to 16 bits.  Only for cast ops.
+  DT_QINT16 = 15;    // Quantized int16
+  DT_QUINT16 = 16;   // Quantized uint16
+  DT_UINT16 = 17;
+  DT_COMPLEX128 = 18;  // Double-precision complex
+  DT_HALF = 19;
+  DT_RESOURCE = 20;
+  DT_VARIANT = 21;  // Arbitrary C++ data types
+  DT_UINT32 = 22;
+  DT_UINT64 = 23;
+}
+
+message TensorShapeProto {
+  message Dim {
+    optional int64 size = 1;
+    // optional string name = 2;
+  }
+  repeated Dim dim = 2;
+}
+
+message TensorProto {
+  optional DataType dtype = 1;
+  optional TensorShapeProto tensor_shape = 2;
+  optional bytes tensor_content = 4;
+  // DT_FLOAT.
+  repeated float float_val = 5 [packed = true];
+  // DT_DOUBLE.
+  repeated double double_val = 6 [packed = true];
+  // DT_INT32, DT_INT16, DT_INT8, DT_UINT8.
+  repeated int32 int_val = 7 [packed = true];
+  // DT_STRING
+  repeated bytes string_val = 8;
+  // DT_INT64
+  repeated int64 int64_val = 10 [packed = true];
+  // DT_BOOL
+  repeated bool bool_val = 11 [packed = true];
+  // DT_HALF, DT_BFLOAT16. Note that since protobuf has no int16 type, we'll
+  // have some pointless zero padding for each value here.
+  repeated int32 half_val = 13 [packed = true];
+  // DT_UINT32
+  repeated uint32 uint32_val = 16 [packed = true];
+  // DT_UINT64
+  repeated uint64 uint64_val = 17 [packed = true];
+}
+
+message AttrValue {
+  message ListValue {
+    repeated bytes s = 2;                        // "list(string)"
+    repeated int64 i = 3 [packed = true];        // "list(int)"
+    repeated float f = 4 [packed = true];        // "list(float)"
+    repeated bool b = 5 [packed = true];         // "list(bool)"
+    repeated DataType type = 6 [packed = true];  // "list(type)"
+    repeated TensorShapeProto shape = 7;         // "list(shape)"
+    repeated TensorProto tensor = 8;             // "list(tensor)"
+  }
+
+  optional ListValue list = 1;          // any "list(...)"
+  optional bytes s = 2;                 // "string"
+  optional int64 i = 3;                 // "int"
+  optional float f = 4;                 // "float"
+  optional bool b = 5;                  // "bool"
+  optional DataType type = 6;           // "type"
+  optional TensorShapeProto shape = 7;  // "shape"
+  optional TensorProto tensor = 8;      // "tensor"
+}
+
+message AttrDef {
+  optional string key = 1;
+  optional AttrValue value = 2;
+}
+
+message NodeDef {
+  optional string name = 1;
+  optional string op = 2;
+  repeated string input = 3;
+  optional string device = 4;
+  repeated AttrDef attr = 5;
+}
+
+message VersionDef {
+  // The version of the code that produced this data.
+  optional int32 producer = 1;
+
+  // Any consumer below this version is not allowed to consume this data.
+  optional int32 min_consumer = 2;
+
+  // Specific consumer versions which are disallowed (e.g. due to bugs).
+  repeated int32 bad_consumers = 3;
+}
+
+message GraphDef {
+  repeated NodeDef node = 1;
+  optional VersionDef versions = 4;
+}
