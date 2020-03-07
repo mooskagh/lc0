@@ -182,9 +182,15 @@ if get_option('build_backends')
                                  required: false, include_type:'system')
   if get_option('tensorflow')
     deps += [tf_tensorflow_lib]
+    protogen_src = generator(compile_proto, output: ['@BASENAME@.pb.h'],
+      arguments : [
+        '--proto_path=@CURRENT_SOURCE_DIR@/src',
+        '--cpp_out=@BUILD_DIR@',
+        '@INPUT@'])
     files += [
+
       'src/neural/tensorflow/network_tf.cc',
-      gen.process('src/neural/tensorflow/proto/graph.proto',
+      protogen_src.process('src/neural/tensorflow/proto/graph.proto',
         preserve_path_from : meson.current_source_dir() + '/src/'),
     ]
     has_backends = true
