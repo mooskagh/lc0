@@ -137,8 +137,12 @@ void Search::SendUciInfo() REQUIRES(nodes_mutex_) {
     const auto wl = edge.GetWL();
     const auto d = edge.GetD();
     const int w = static_cast<int>(std::round(500.0 * (1.0 + wl - d)));
-    const auto q = edge.GetQ(default_q, draw_score);
-    if (score_type == "centipawn_with_drawscore") {
+    const auto q = edge.GetQ(default_q, draw_score, /* logit_q= */ false);
+    if (edge.IsTerminal() && wl != 0.0f) {
+      uci_info.mate = std::copysign(
+          std::round(edge.GetM(0.0f)) / 2 + (edge.IsTbTerminal() ? 101 : 1),
+          wl);
+    } else if (score_type == "centipawn_with_drawscore") {
       uci_info.score = 295 * q / (1 - 0.976953126 * std::pow(q, 14));
     } else if (score_type == "centipawn") {
       uci_info.score = 295 * wl / (1 - 0.976953126 * std::pow(q, 14));
@@ -248,13 +252,16 @@ std::vector<std::string> Search::GetVerboseStats(Node* node) const {
   std::vector<EdgeAndNode> edges;
   for (const auto& edge : node->Edges()) edges.push_back(edge);
 
-  std::sort(edges.begin(), edges.end(),
-            [&fpu, &U_coeff, &logit_q](EdgeAndNode a, EdgeAndNode b) {
-              return std::forward_as_tuple(
-                         a.GetN(), a.GetQ(fpu, logit_q) + a.GetU(U_coeff)) <
-                     std::forward_as_tuple(
-                         b.GetN(), b.GetQ(fpu, logit_q) + b.GetU(U_coeff));
-            });
+  std::sort(
+      edges.begin(), edges.end(),
+      [&fpu, &U_coeff, &logit_q, &draw_score](EdgeAndNode a, EdgeAndNode b) {
+        return std::forward_as_tuple(
+                   a.GetN(),
+                   a.GetQ(fpu, draw_score, logit_q) + a.GetU(U_coeff)) <
+               std::forward_as_tuple(
+                   b.GetN(),
+                   b.GetQ(fpu, draw_score, logit_q) + b.GetU(U_coeff));
+      });
 
   std::vector<std::string> infos;
   for (const auto& edge : edges) {
@@ -282,7 +289,7 @@ std::vector<std::string> Search::GetVerboseStats(Node* node) const {
         << ") ";
 
     oss << "(Q: " << std::setw(8) << std::setprecision(5)
-        << edge.GetQ(fpu, draw_score) << ") ";
+        << edge.GetQ(fpu, draw_score, /* logit_q= */ false) << ") ";
 
     oss << "(U: " << std::setw(6) << std::setprecision(5) << edge.GetU(U_coeff)
         << ") ";
@@ -361,7 +368,7 @@ void Search::MaybeTriggerStop(const IterationStats& stats,
   // Already responded bestmove, nothing to do here.
   if (bestmove_is_sent_) return;
   // Don't stop when the root node is not yet expanded.
-  if (total_playouts_ == 0) return;
+  if (total_playouts_ + initial_visits_ == 0) return;
 
   if (!stop_.load(std::memory_order_acquire) || !ok_to_respond_bestmove_) {
     if (stopper_->ShouldStop(stats, hints)) FireStopInternal();
@@ -478,32 +485,81 @@ std::vector<EdgeAndNode> Search::GetBestChildrenNoTemperature(Node* parent,
     PopulateRootMoveLimit(&root_limit);
   }
   // Best child is selected using the following criteria:
-  // * Is terminal win, e.g., checkmate.
+  // * Prefer shorter terminal wins / avoid shorter terminal losses.
   // * Largest number of playouts.
   // * If two nodes have equal number:
   //   * If that number is 0, the one with larger prior wins.
   //   * If that number is larger than 0, the one with larger eval wins.
-  using El = std::tuple<bool, uint64_t, float, float, EdgeAndNode>;
-  std::vector<El> edges;
+  std::vector<EdgeAndNode> edges;
   for (auto edge : parent->Edges()) {
     if (parent == root_node_ && !root_limit.empty() &&
         std::find(root_limit.begin(), root_limit.end(), edge.GetMove()) ==
             root_limit.end()) {
       continue;
     }
-    const auto WL = edge.GetWL();
-    edges.emplace_back(edge.IsTerminal() && WL > 0.0f, edge.GetN(), WL,
-                       edge.GetP(), edge);
+    edges.push_back(edge);
   }
   const auto middle = (static_cast<int>(edges.size()) > count)
                           ? edges.begin() + count
                           : edges.end();
-  std::partial_sort(edges.begin(), middle, edges.end(), std::greater<El>());
+  std::partial_sort(
+      edges.begin(), middle, edges.end(), [](const auto& a, const auto& b) {
+        // The function returns "true" when a is preferred to b.
 
-  std::vector<EdgeAndNode> res;
-  std::transform(edges.begin(), middle, std::back_inserter(res),
-                 [](const El& x) { return std::get<4>(x); });
-  return res;
+        // Lists edge types from less desirable to more desirable.
+        enum EdgeRank {
+          kTerminalLoss,
+          kTablebaseLoss,
+          kNonTerminal,  // Non terminal or terminal draw.
+          kTablebaseWin,
+          kTerminalWin,
+        };
+
+        auto GetEdgeRank = [](const EdgeAndNode& edge) {
+          const auto wl = edge.GetWL();
+          if (!edge.IsTerminal() || !wl) return kNonTerminal;
+          if (edge.IsTbTerminal()) {
+            return wl < 0.0 ? kTablebaseLoss : kTablebaseWin;
+          }
+          return wl < 0.0 ? kTerminalLoss : kTerminalWin;
+        };
+
+        // If moves have different outcomes, prefer better outcome.
+        const auto a_rank = GetEdgeRank(a);
+        const auto b_rank = GetEdgeRank(b);
+        if (a_rank != b_rank) return a_rank > b_rank;
+
+        // If both are terminal draws, try to make it shorter.
+        if (a_rank == kNonTerminal && a.IsTerminal() && b.IsTerminal()) {
+          if (a.IsTbTerminal() != b.IsTbTerminal()) {
+            // Prefer non-tablebase draws.
+            return a.IsTbTerminal() < b.IsTbTerminal();
+          }
+          // Prefer shorter draws.
+          return a.GetM(0.0f) < b.GetM(0.0f);
+        }
+
+        // Neither is terminal, use standard rule.
+        if (a_rank == kNonTerminal) {
+          // Prefer largest playouts then eval then prior.
+          if (a.GetN() != b.GetN()) return a.GetN() > b.GetN();
+          if (a.GetWL() != b.GetWL()) return a.GetWL() > b.GetWL();
+          return a.GetP() > b.GetP();
+        }
+
+        // Both variants are winning, prefer shortest win.
+        if (a_rank > kNonTerminal) {
+          return a.GetM(0.0f) < b.GetM(0.0f);
+        }
+
+        // Both variants are losing, prefer longest losses.
+        return a.GetM(0.0f) > b.GetM(0.0f);
+      });
+
+  if (count < static_cast<int>(edges.size())) {
+    edges.resize(count);
+  }
+  return edges;
 }
 
 // Returns a child with most visits.
@@ -516,7 +572,7 @@ EdgeAndNode Search::GetBestChildNoTemperature(Node* parent) const {
 // count.
 EdgeAndNode Search::GetBestRootChildWithTemperature(float temperature) const {
   // Root is at even depth.
-  const bool draw_score = GetDrawScore(/* is_odd_depth= */ false);
+  const float draw_score = GetDrawScore(/* is_odd_depth= */ false);
   MoveList root_limit;
   PopulateRootMoveLimit(&root_limit);
 
@@ -535,7 +591,7 @@ EdgeAndNode Search::GetBestRootChildWithTemperature(float temperature) const {
     }
     if (edge.GetN() + offset > max_n) {
       max_n = edge.GetN() + offset;
-      max_eval = edge.GetQ(fpu, draw_score);
+      max_eval = edge.GetQ(fpu, draw_score, /* logit_q= */ false);
     }
   }
 
@@ -550,7 +606,7 @@ EdgeAndNode Search::GetBestRootChildWithTemperature(float temperature) const {
                                          edge.GetMove()) == root_limit.end()) {
       continue;
     }
-    if (edge.GetQ(fpu, draw_score) < min_eval) continue;
+    if (edge.GetQ(fpu, draw_score, /* logit_q= */ false) < min_eval) continue;
     sum += std::pow(
         std::max(0.0f, (static_cast<float>(edge.GetN()) + offset) / max_n),
         1 / temperature);
@@ -568,7 +624,7 @@ EdgeAndNode Search::GetBestRootChildWithTemperature(float temperature) const {
                                          edge.GetMove()) == root_limit.end()) {
       continue;
     }
-    if (edge.GetQ(fpu, draw_score) < min_eval) continue;
+    if (edge.GetQ(fpu, draw_score, /* logit_q= */ false) < min_eval) continue;
     if (idx-- == 0) return edge;
   }
   assert(false);
@@ -703,8 +759,12 @@ void SearchWorker::ExecuteOneIteration() {
   if (params_.GetMaxConcurrentSearchers() != 0) {
     while (true) {
       // If search is stop, we've not gathered or done anything and we don't
-      // want to, so we can safely skip all below.
-      if (search_->stop_.load(std::memory_order_acquire)) return;
+      // want to, so we can safely skip all below. But make sure we have done
+      // at least one iteration.
+      if (search_->stop_.load(std::memory_order_acquire) &&
+          search_->GetTotalPlayouts() + search_->initial_visits_ > 0) {
+        return;
+      }
       int available =
           search_->pending_searchers_.load(std::memory_order_acquire);
       if (available > 0 &&
@@ -769,10 +829,10 @@ void SearchWorker::GatherMinibatch() {
   number_out_of_order_ = 0;
 
   // Gather nodes to process in the current batch.
-  // If we had too many (kMiniBatchSize) nodes out of order, also interrupt the
-  // iteration so that search can exit.
+  // If we had too many nodes out of order, also interrupt the iteration so
+  // that search can exit.
   while (minibatch_size < params_.GetMiniBatchSize() &&
-         number_out_of_order_ < params_.GetMiniBatchSize()) {
+         number_out_of_order_ < params_.GetMaxOutOfOrderEvals()) {
     // If there's something to process without touching slow neural net, do it.
     if (minibatch_size > 0 && computation_->GetCacheMisses() == 0) return;
     // Pick next node to extend.
@@ -948,11 +1008,12 @@ SearchWorker::NodeToProcess SearchWorker::PickNodeToExtend(
 
       float M = 0.0f;
       if (do_moves_left_adjustment) {
-        const float m_scale = params_.GetMovesLeftScale();
+        const float m_slope = params_.GetMovesLeftSlope();
+        const float m_cap = params_.GetMovesLeftMaxEffect();
         const float parent_m = node->GetM();
         const float child_m = child.GetM(parent_m);
-        M = std::clamp(child_m - parent_m, -m_scale, m_scale) / m_scale *
-            std::copysign(params_.GetMovesLeftFactor(), node_q);
+        M = std::clamp(m_slope * (child_m - parent_m), -m_cap, m_cap) *
+            std::copysign(1.0f, node_q);
       }
 
       const float Q = child.GetQ(fpu, draw_score, params_.GetLogitQ());
@@ -970,7 +1031,7 @@ SearchWorker::NodeToProcess SearchWorker::PickNodeToExtend(
 
     if (second_best_edge) {
       int estimated_visits_to_change_best = best_edge.GetVisitsToReachU(
-          second_best, puct_mult, fpu, params_.GetLogitQ());
+          second_best, puct_mult, fpu, draw_score, params_.GetLogitQ());
       // Only cache for n-2 steps as the estimate created by GetVisitsToReachU
       // has potential rounding errors and some conservative logic that can push
       // it up to 2 away from the real value.
@@ -1057,11 +1118,13 @@ void SearchWorker::ExtendNode(Node* node) {
         }
         // If the colors seem backwards, check the checkmate check above.
         if (wdl == WDL_WIN) {
-          node->MakeTerminal(GameResult::BLACK_WON, m);
+          node->MakeTerminal(GameResult::BLACK_WON, m,
+                             Node::Terminal::Tablebase);
         } else if (wdl == WDL_LOSS) {
-          node->MakeTerminal(GameResult::WHITE_WON, m);
+          node->MakeTerminal(GameResult::WHITE_WON, m,
+                             Node::Terminal::Tablebase);
         } else {  // Cursed wins and blessed losses count as draws.
-          node->MakeTerminal(GameResult::DRAW, m);
+          node->MakeTerminal(GameResult::DRAW, m, Node::Terminal::Tablebase);
         }
         search_->tb_hits_.fetch_add(1, std::memory_order_acq_rel);
         return;
@@ -1162,7 +1225,9 @@ int SearchWorker::PrefetchIntoCache(Node* node, int budget, bool is_odd_depth) {
   for (auto edge : node->Edges()) {
     if (edge.GetP() == 0.0f) continue;
     // Flip the sign of a score to be able to easily sort.
-    scores.emplace_back(-edge.GetU(puct_mult) - edge.GetQ(fpu, draw_score),
+    // TODO: should this use logit_q if set??
+    scores.emplace_back(-edge.GetU(puct_mult) -
+                            edge.GetQ(fpu, draw_score, /* logit_q= */ false),
                         edge);
   }
 
@@ -1193,7 +1258,8 @@ int SearchWorker::PrefetchIntoCache(Node* node, int budget, bool is_odd_depth) {
     if (i != scores.size() - 1) {
       // Sign of the score was flipped for sorting, so flip it back.
       const float next_score = -scores[i + 1].first;
-      const float q = edge.GetQ(-fpu, draw_score);
+      // TODO: As above - should this use logit_q if set?
+      const float q = edge.GetQ(-fpu, draw_score, /* logit_q= */ false);
       if (next_score > q) {
         budget_to_spend =
             std::min(budget, int(edge.GetP() * puct_mult / (next_score - q) -
@@ -1332,6 +1398,7 @@ void SearchWorker::DoBackupUpdateSingleNode(
 
     // A non-winning terminal move needs all other moves to be similar.
     auto all_losing = true;
+    auto found_tb = n->IsTbTerminal();
     float losing_m = 0.0f;
     if (can_convert && v <= 0.0f) {
       for (const auto& edge : p->Edges()) {
@@ -1339,6 +1406,7 @@ void SearchWorker::DoBackupUpdateSingleNode(
         can_convert = can_convert && edge.IsTerminal() && WL <= 0.0f;
         if (!can_convert) break;
         all_losing = all_losing && WL < 0.0f;
+        found_tb = found_tb || edge.IsTbTerminal();
         losing_m = std::max(losing_m, edge.GetM(0.0f));
       }
     }
@@ -1355,7 +1423,8 @@ void SearchWorker::DoBackupUpdateSingleNode(
       p->MakeTerminal(
           v > 0.0f ? GameResult::BLACK_WON
                    : all_losing ? GameResult::WHITE_WON : GameResult::DRAW,
-          terminal_m);
+          terminal_m,
+          found_tb ? Node::Terminal::Tablebase : Node::Terminal::Terminal);
     }
 
     // Q will be flipped for opponent.
