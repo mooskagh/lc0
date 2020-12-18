@@ -44,24 +44,26 @@ void RootWorker::RunBlocking() {
   int tokens_blacklisting = 0;
   int tokens_forward_prop = 0;
 
-  auto messages = channel_.DequeueEverything();
-  for (auto& msg : messages) {
-    switch (msg->type) {
-      case Message::kRootInitial:
-        assert(tokens_gathering == 0);
-        assert(tokens_blacklisting == 0);
-        assert(tokens_forward_prop == 0);
+  while (true) {
+    auto messages = channel_.DequeueEverything();
+    for (auto& msg : messages) {
+      switch (msg->type) {
+        case Message::kRootInitial:
+          assert(tokens_gathering == 0);
+          assert(tokens_blacklisting == 0);
+          assert(tokens_forward_prop == 0);
 
-        msg->type = Message::kNodeGather;
-        // msg->epoch = epoch;
-        msg->position_history = search_->history_at_root();
-        // msg->attempt = 0;
-        msg->is_root_node = true;
-        search_->DispatchToNodes(std::move(msg));
-        break;
-      default:
-        throw Exception("Unexpected message type " + std::to_string(msg->type) +
-                        " in root worker.");
+          msg->type = Message::kNodeGather;
+          // msg->epoch = epoch;
+          msg->position_history = search_->history_at_root();
+          // msg->attempt = 0;
+          msg->is_root_node = true;
+          search_->DispatchToNodes(std::move(msg));
+          break;
+        default:
+          throw Exception("Unexpected message type " +
+                          std::to_string(msg->type) + " in root worker.");
+      }
     }
   }
 }
