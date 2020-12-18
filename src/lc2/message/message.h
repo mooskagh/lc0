@@ -60,9 +60,10 @@ struct Message {
     kRootInitial = 0x0201,  // Initial nodes injection when search starts.
     kRootCollision = 0x0202,
     kRootEvalReady = 0x0203,
-    kRootOutOfOrderEvalReady = 0x0204,
-    kRootBlacklistDone = 0x0205,
-    kRootForwardPropDone = 0x0206,
+    kRootEvalSkipReady = 0x0204,
+    kRootOutOfOrderEvalReady = 0x0205,
+    kRootBlacklistDone = 0x0206,
+    kRootForwardPropDone = 0x0207,
 
     // Eval-specific types.
     kEvalEval = 0x0301,

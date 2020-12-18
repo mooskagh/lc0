@@ -58,6 +58,8 @@ std::string MessageTypeToString(Message::Type t) {
       return "kRootCollision";
     case Message::kRootEvalReady:
       return "kRootEvalReady";
+    case Message::kRootEvalSkipReady:
+      return "kRootEvalSkipReady";
     case Message::kRootOutOfOrderEvalReady:
       return "kRootOutOfOrderEvalReady";
     case Message::kRootBlacklistDone:

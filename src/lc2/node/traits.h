@@ -31,6 +31,8 @@
 #include <cmath>
 #include <cstdint>
 
+#include "neural/network.h"
+
 namespace lczero {
 namespace lc2 {
 
@@ -70,6 +72,8 @@ struct WdlNodeTraits {
   static QUFactor ComputeQ(N n_edge, QUFactor fpu, Q q);
   static QUFactor ComputeUFactor(QUFactor cpuct, N total_n);
   static U ComputeU(QUFactor cpuct, P p, N n_edge);
+  static WDL WDLFromComputation(NetworkComputation*, int idx);
+  static P PFromComputation(NetworkComputation*, int idx, int move);
 };
 
 // TODO Compute FPU properly
@@ -88,6 +92,19 @@ inline WdlNodeTraits::QUFactor WdlNodeTraits::ComputeUFactor(QUFactor cpuct,
 inline WdlNodeTraits::U WdlNodeTraits::ComputeU(QUFactor u_factor, P p,
                                                 N n_edge) {
   return u_factor * p / (1 + n_edge);
+}
+
+inline WdlNodeTraits::WDL WdlNodeTraits::WDLFromComputation(
+    NetworkComputation* computation, int idx) {
+  WDL wdl;
+  wdl.q = computation->GetQVal(idx);
+  wdl.d = computation->GetDVal(idx);
+  return wdl;
+}
+
+inline WdlNodeTraits::P WdlNodeTraits::PFromComputation(
+    NetworkComputation* computation, int idx, int move) {
+  return computation->GetPVal(idx, move);
 }
 
 }  // namespace lc2

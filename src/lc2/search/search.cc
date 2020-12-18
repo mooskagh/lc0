@@ -40,7 +40,7 @@ Search::Search(Network* network, std::unique_ptr<UciResponder> uci,
                const PositionHistory& root, NodeKeeper* nodes)
     : rootpos_(root),
       root_worker_(this, std::move(uci)),
-      eval_worker_(network) {
+      eval_worker_(this, network) {
   for (auto& shard : *nodes->shards()) {
     nodes_workers_.push_back(std::make_unique<NodesWorker>(this, &shard));
   }

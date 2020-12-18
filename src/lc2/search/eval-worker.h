@@ -33,11 +33,15 @@
 namespace lczero {
 namespace lc2 {
 
+class Search;
+
 // EvalWorker sends nodes to NN for evaluation. Also it happens to run movegen
 // as EvalWorker is less time-critical as RootWorker and NodesWorker.
 class EvalWorker {
  public:
-  EvalWorker(Network* network);
+  using NT = WdlNodeTraits;
+
+  EvalWorker(Search* search, Network* network);
   void RunBlocking();
   Channel* channel() { return &channel_; }
 
@@ -45,6 +49,7 @@ class EvalWorker {
   void ProcessOneBatch();
 
   Channel channel_;
+  Search* const search_;
   Network* const network_;
 };
 

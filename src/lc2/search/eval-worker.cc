@@ -27,6 +27,7 @@
 
 #include "lc2/search/eval-worker.h"
 
+#include "lc2/search/search.h"
 #include "neural/encoder.h"
 #include "utils/exception.h"
 #include "utils/logging.h"
@@ -64,7 +65,8 @@ EvalPosition PrepareForEval(std::unique_ptr<Message> msg,
 }
 }  // namespace
 
-EvalWorker::EvalWorker(Network* network) : network_(network) {}
+EvalWorker::EvalWorker(Search* search, Network* network)
+    : search_(search), network_(network) {}
 
 void EvalWorker::RunBlocking() {
   // TODO add an exit condition.
@@ -80,7 +82,7 @@ void EvalWorker::ProcessOneBatch() {
 
   // Number of nodes for which node workers gave up finding something for eval.
   int num_skip_nodes = 0;
-  std::vector<EvalPosition> nodes_to_eval;
+  std::vector<EvalPosition> evals;
 
   // The batch is ready for the eval when there is at least kMinBatch nodes
   // including skip-nodes, and at least 1 real node for eval.
@@ -89,7 +91,7 @@ void EvalWorker::ProcessOneBatch() {
     for (auto& msg : new_msgs) {
       switch (msg->type) {
         case Message::kEvalEval:
-          nodes_to_eval.push_back(
+          evals.push_back(
               PrepareForEval(std::move(msg), computation.get(), caps));
           break;
         case Message::kEvalSkip:
@@ -100,8 +102,34 @@ void EvalWorker::ProcessOneBatch() {
                           std::to_string(msg->type) + " in eval worker.");
       }
     }
-  } while (num_skip_nodes + nodes_to_eval.size() < kMinBatch ||
-           nodes_to_eval.empty());
+  } while (num_skip_nodes + evals.size() < kMinBatch || evals.empty());
+
+  // Now we have a batch ready for eval, so do a NN computation.
+  computation->ComputeBlocking();
+
+  // Sending the computation results.
+  for (int i = 0; i < static_cast<int>(evals.size()); ++i) {
+    auto msg = std::move(evals[i].msg);
+    auto& eval = *msg->eval_result;
+    eval.q = NT::WDLFromComputation(computation.get(), i);
+    eval.p_edge.reserve(eval.edges.size());
+    for (const auto& move : eval.edges) {
+      eval.p_edge.push_back(NT::PFromComputation(
+          computation.get(), i, move.as_nn_index(evals[i].transform)));
+    }
+
+    msg->type = Message::kRootEvalReady;
+    assert(msg->arity == 1);
+    search_->DispatchToRoot(std::move(msg));
+  }
+
+  // If there were any skip evals, free them up too.
+  if (num_skip_nodes > 0) {
+    auto msg = std::make_unique<Message>();
+    msg->arity = num_skip_nodes;
+    msg->type = Message::kRootEvalSkipReady;
+    search_->DispatchToRoot(std::move(msg));
+  }
 }
 
 }  // namespace lc2
