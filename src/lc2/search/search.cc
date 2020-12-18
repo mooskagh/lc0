@@ -27,6 +27,8 @@
 
 #include "lc2/search/search.h"
 
+#include "utils/logging.h"
+
 namespace lczero {
 namespace lc2 {
 namespace {
@@ -62,11 +64,13 @@ void Search::Start() {
 }
 
 void Search::DispatchToRoot(std::unique_ptr<Message> msg) {
+  LOGFILE << *msg;
   assert(matches_class(msg.get(), Message::Class::kRoot));
   root_worker_.channel()->Enqueue(std::move(msg));
 }
 
 void Search::DispatchToNodes(std::unique_ptr<Message> msg) {
+  LOGFILE << *msg;
   assert(matches_class(msg.get(), Message::Class::kNode));
   auto hash = msg->position_history.Last().Hash();
   auto shard = hash % nodes_workers_.size();
@@ -74,6 +78,7 @@ void Search::DispatchToNodes(std::unique_ptr<Message> msg) {
 }
 
 void Search::DispatchToEval(std::unique_ptr<Message> msg) {
+  LOGFILE << *msg;
   assert(matches_class(msg.get(), Message::Class::kEval));
   eval_worker_.channel()->Enqueue(std::move(msg));
 }
