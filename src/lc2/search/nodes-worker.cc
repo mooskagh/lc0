@@ -38,24 +38,21 @@ NodesWorker::NodesWorker(Search* search, NodeShard* shard)
 
 void NodesWorker::RunBlocking() {
   while (true) {
-    auto token = channel_.Dequeue();
+    auto msg = channel_.Dequeue();
 
-    switch (token.message()->type) {
+    switch (msg->type) {
       case Message::kNodeGather:
-        GatherNode(std::move(token));
+        GatherNode(std::move(msg));
 
         break;
       default:
-        throw Exception("Unexpected message type " +
-                        std::to_string(token.message()->type) +
+        throw Exception("Unexpected message type " + std::to_string(msg->type) +
                         " in node worker.");
     }
   }
 }
 
-void NodesWorker::GatherNode(Token token) {
-  auto* msg = token.message();
-
+void NodesWorker::GatherNode(std::unique_ptr<Message> msg) {
   // A node can be in following states:
   // 1. Not created yet (will be sent for eval).
   // 2. Already sent for eval but not returned (collision).
@@ -67,9 +64,9 @@ void NodesWorker::GatherNode(Token token) {
   if (!found) {
     // This is the first time this node is visited, so send it for eval.
     const bool will_collide = msg->arity > 1;
-    auto eval_token = will_collide ? token.SplitOff(1) : std::move(token);
-    eval_token.message()->type = Message::kEvalEval;
-    search_->DispatchToEval(std::move(token));
+    auto eval_msg = will_collide ? msg->SplitOff(1) : std::move(msg);
+    eval_msg->type = Message::kEvalEval;
+    search_->DispatchToEval(std::move(eval_msg));
 
     // It was a single visit which was sent to evals, no need to handle
     // collisions.
@@ -79,7 +76,7 @@ void NodesWorker::GatherNode(Token token) {
   if (!node->eval_completed) {
     // Collision.
     msg->type = Message::kRootCollision;
-    search_->DispatchToRoot(std::move(token));
+    search_->DispatchToRoot(std::move(msg));
     return;
   }
 
@@ -88,11 +85,10 @@ void NodesWorker::GatherNode(Token token) {
 
   // This is a node which was evaluated earlier, forward the visit further
   // down the tree.
-  ForwardVisit(node, std::move(token));
+  ForwardVisit(node, std::move(msg));
 }
 
-void NodesWorker::ForwardVisit(Node* node, Token token) {
-  auto* msg = token.message();
+void NodesWorker::ForwardVisit(Node* node, std::unique_ptr<Message> msg) {
   // The message down the tree will not be a root node anymore.
   msg->is_root_node = false;
 
@@ -135,9 +131,9 @@ void NodesWorker::ForwardVisit(Node* node, Token token) {
     const auto count = edge_to_visits[i];
     if (count == 0) continue;
     const bool last_iteration = num_visits == msg->arity;
-    auto send_token = last_iteration ? std::move(token) : token.SplitOff(count);
-    send_token.message()->position_history.Append(node->edges[i]);
-    search_->DispatchToNodes(std::move(send_token));
+    auto send_msg = last_iteration ? std::move(msg) : msg->SplitOff(count);
+    send_msg->position_history.Append(node->edges[i]);
+    search_->DispatchToNodes(std::move(send_msg));
     if (last_iteration) break;
   }
 }

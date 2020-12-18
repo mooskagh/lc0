@@ -172,7 +172,6 @@ files += [
 lc2_files = [
   'src/lc2/engine.cc',
   'src/lc2/message/channel.cc',
-  'src/lc2/message/manager.cc',
   'src/lc2/message/message.cc',
   'src/lc2/node/shard.cc',
   'src/lc2/search/nodes-worker.cc',

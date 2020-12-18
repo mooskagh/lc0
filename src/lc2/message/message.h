@@ -29,6 +29,7 @@
 
 #include <cstdint>
 #include <iostream>
+#include <memory>
 #include <string>
 
 #include "chess/position.h"
@@ -88,6 +89,8 @@ struct Message {
   // Warning: this surely won't be visible in profiler for first moves, but may
   // be a problem later in the game.
   PositionHistory position_history;
+
+  std::unique_ptr<Message> SplitOff(int how_much);
 };
 
 std::string MessageTypeToString(Message::Type);

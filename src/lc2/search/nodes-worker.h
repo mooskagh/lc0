@@ -43,8 +43,8 @@ class NodesWorker {
   Channel* channel() { return &channel_; }
 
  private:
-  void GatherNode(Token token);
-  void ForwardVisit(Node*, Token token);
+  void GatherNode(std::unique_ptr<Message> message);
+  void ForwardVisit(Node*, std::unique_ptr<Message> message);
 
   Search* const search_;
   NodeShard* const shard_;

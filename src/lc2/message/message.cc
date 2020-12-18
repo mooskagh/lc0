@@ -30,6 +30,16 @@
 namespace lczero {
 namespace lc2 {
 
+std::unique_ptr<Message> Message::SplitOff(int how_much) {
+  assert(how_much > 0);
+  assert(how_much < arity);
+
+  auto res = std::make_unique<Message>(*this);
+  res->arity = how_much;
+  arity -= how_much;
+  return res;
+}
+
 std::string MessageTypeToString(Message::Type t) {
   switch (t) {
     case Message::kUnknown:

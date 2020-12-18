@@ -30,33 +30,34 @@
 namespace lczero {
 namespace lc2 {
 
-void Channel::Enqueue(Token&& token) {
+void Channel::Enqueue(std::unique_ptr<Message> msg) {
   {
     Mutex::Lock lock(mutex_);
-    tokens_.emplace_back(std::move(token));
+    messages_.emplace_back(std::move(msg));
   }
   cond_var_.notify_one();
 }
 
-Token Channel::Dequeue() {
+std::unique_ptr<Message> Channel::Dequeue() {
   Mutex::Lock lock(mutex_);
-  while (tokens_.empty()) {
+  while (messages_.empty()) {
     cond_var_.wait(lock.get_raw());
   }
-  auto val = std::move(tokens_.front());
-  tokens_.pop_front();
+  auto val = std::move(messages_.front());
+  messages_.pop_front();
   return val;
 }
 
-std::vector<Token> Channel::DequeueEverything() {
+std::vector<std::unique_ptr<Message>> Channel::DequeueEverything() {
   Mutex::Lock lock(mutex_);
-  while (tokens_.empty()) {
+  while (messages_.empty()) {
     cond_var_.wait(lock.get_raw());
   }
-  std::vector<Token> res;
-  res.reserve(tokens_.size());
-  std::move(std::begin(tokens_), std::end(tokens_), std::back_inserter(res));
-  tokens_.clear();
+  std::vector<std::unique_ptr<Message>> res;
+  res.reserve(messages_.size());
+  std::move(std::begin(messages_), std::end(messages_),
+            std::back_inserter(res));
+  messages_.clear();
   return res;
 }
 

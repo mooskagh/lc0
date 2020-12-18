@@ -44,10 +44,8 @@ void RootWorker::RunBlocking() {
   int tokens_blacklisting = 0;
   int tokens_forward_prop = 0;
 
-  auto tokens = channel_.DequeueEverything();
-  for (auto& token : tokens) {
-    auto* msg = token.message();
-
+  auto messages = channel_.DequeueEverything();
+  for (auto& msg : messages) {
     switch (msg->type) {
       case Message::kRootInitial:
         assert(tokens_gathering == 0);
@@ -59,7 +57,7 @@ void RootWorker::RunBlocking() {
         msg->position_history = search_->history_at_root();
         msg->attempt = 0;
         msg->is_root_node = true;
-        search_->DispatchToNodes(std::move(token));
+        search_->DispatchToNodes(std::move(msg));
         break;
       default:
         throw Exception("Unexpected message type " + std::to_string(msg->type) +

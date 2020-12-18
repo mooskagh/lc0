@@ -50,26 +50,24 @@ Search::Search(Network*, std::unique_ptr<UciResponder> uci,
 }
 
 void Search::Start() {
-  auto token = message_manager_.CreateFreshToken();
+  auto msg = std::make_unique<Message>();
 
-  auto* msg = token.message();
   msg->type = Message::kRootInitial;
   msg->arity = 3;  // TODO(crem) DO NOT SUBMIT, take that from params.
 
-  DispatchToRoot(std::move(token));
+  DispatchToRoot(std::move(msg));
 }
 
-void Search::DispatchToRoot(Token token) {
-  assert(matches_class(token.message(), Message::Class::kRoot));
-  root_worker_.channel()->Enqueue(std::move(token));
+void Search::DispatchToRoot(std::unique_ptr<Message> msg) {
+  assert(matches_class(msg.get(), Message::Class::kRoot));
+  root_worker_.channel()->Enqueue(std::move(msg));
 }
 
-void Search::DispatchToNodes(Token token) {
-  auto* msg = token.message();
-  assert(matches_class(token.message(), Message::Class::kNode));
+void Search::DispatchToNodes(std::unique_ptr<Message> msg) {
+  assert(matches_class(msg.get(), Message::Class::kNode));
   auto hash = msg->position_history.Last().Hash();
   auto shard = hash % nodes_workers_.size();
-  nodes_workers_[shard]->channel()->Enqueue(std::move(token));
+  nodes_workers_[shard]->channel()->Enqueue(std::move(msg));
 }
 
 }  // namespace lc2

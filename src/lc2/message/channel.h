@@ -31,7 +31,7 @@
 #include <cstdint>
 #include <deque>
 
-#include "lc2/message/manager.h"
+#include "lc2/message/message.h"
 #include "utils/mutex.h"
 
 namespace lczero {
@@ -43,15 +43,15 @@ namespace lc2 {
 class Channel {
  public:
   // Adds a token to a queue.
-  void Enqueue(Token&& token);
+  void Enqueue(std::unique_ptr<Message> message);
   // Gets a token from a queue. Blocks until token is available if empty.
-  Token Dequeue();
-  // Gets all tokens from a queue. Blocks until token is available if empty.
-  std::vector<Token> DequeueEverything();
+  std::unique_ptr<Message> Dequeue();
+  // Gets all messages from a queue. Blocks until token is available if empty.
+  std::vector<std::unique_ptr<Message>> DequeueEverything();
 
  private:
   Mutex mutex_;
-  std::deque<Token> tokens_ GUARDED_BY(mutex_);
+  std::deque<std::unique_ptr<Message>> messages_ GUARDED_BY(mutex_);
   std::condition_variable cond_var_;
 };
 

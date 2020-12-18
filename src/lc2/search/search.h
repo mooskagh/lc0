@@ -29,7 +29,7 @@
 
 #include <thread>
 
-#include "lc2/message/manager.h"
+#include "lc2/message/message.h"
 #include "lc2/node/keeper.h"
 #include "lc2/search/nodes-worker.h"
 #include "lc2/search/root-worker.h"
@@ -45,9 +45,9 @@ class Search {
 
   // Search starts (by spawning initial visits).
   void Start();
-  void DispatchToRoot(Token token);
-  void DispatchToNodes(Token token);
-  void DispatchToEval(Token token);
+  void DispatchToRoot(std::unique_ptr<Message> message);
+  void DispatchToNodes(std::unique_ptr<Message> message);
+  void DispatchToEval(std::unique_ptr<Message> message);
 
   const PositionHistory& history_at_root() { return rootpos_; }
 
@@ -56,7 +56,6 @@ class Search {
 
   RootWorker root_worker_;
   std::vector<std::unique_ptr<NodesWorker>> nodes_workers_;
-  MessageManager message_manager_;
 
   std::vector<std::thread> threads_;
 };
