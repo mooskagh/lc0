@@ -76,7 +76,8 @@ std::string MessageTypeToString(Message::Type t) {
 
 std::ostream& operator<<(std::ostream& os, const Message& m) {
   os << "Message(" << MessageTypeToString(m.type);
-  os << ")[" << m.arity << ":depth(" << m.position_history.GetLength() << ")";
+  os << ")[" << m.arity << ":" << m.epoch << ":depth("
+     << m.position_history.GetLength() << ")";
   if (m.eval_result) os << ":E";
   os << "]";
   return os;

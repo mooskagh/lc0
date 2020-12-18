@@ -107,6 +107,14 @@ void EvalWorker::ProcessOneBatch() {
   // Now we have a batch ready for eval, so do a NN computation.
   computation->ComputeBlocking();
 
+  // If there were any skip evals, free them up.
+  if (num_skip_nodes > 0) {
+    auto msg = std::make_unique<Message>();
+    msg->arity = num_skip_nodes;
+    msg->type = Message::kRootEvalSkipReady;
+    search_->DispatchToRoot(std::move(msg));
+  }
+
   // Sending the computation results.
   for (int i = 0; i < static_cast<int>(evals.size()); ++i) {
     auto msg = std::move(evals[i].msg);
@@ -120,14 +128,6 @@ void EvalWorker::ProcessOneBatch() {
 
     msg->type = Message::kRootEvalReady;
     assert(msg->arity == 1);
-    search_->DispatchToRoot(std::move(msg));
-  }
-
-  // If there were any skip evals, free them up too.
-  if (num_skip_nodes > 0) {
-    auto msg = std::make_unique<Message>();
-    msg->arity = num_skip_nodes;
-    msg->type = Message::kRootEvalSkipReady;
     search_->DispatchToRoot(std::move(msg));
   }
 }

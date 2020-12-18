@@ -78,7 +78,7 @@ struct Message {
   uint16_t arity = 0;
 
   // From which epoch the message was sent. Is used to track stale messages.
-  // uint32_t epoch = 0;
+  uint32_t epoch = 0;
 
   // The message is sent to a root node.
   bool is_root_node = false;
@@ -91,6 +91,11 @@ struct Message {
   // Warning: this surely won't be visible in profiler for first moves, but may
   // be a problem later in the game.
   PositionHistory position_history;
+
+  // Index of a current node in position_history. Only used for backprop.
+  // TODO(crem): Kind of ugly, see if nodes can get that information from other
+  // sources.
+  int position_depth;
 
   // Eval result.
   struct Eval {

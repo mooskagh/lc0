@@ -42,7 +42,17 @@ void RootWorker::RunBlocking() {
 
   while (true) {
     auto messages = channel_.DequeueEverything();
-    for (auto& msg : messages) HandleMessage(std::move(msg));
+    bool had_updates = false;
+    for (auto& msg : messages) {
+      // TODO(crem) Decide whether it's better to send new batch as early as
+      // backprop start, or it's better to wait for kRootForwardPropDone.
+      if (msg->type == Message::kRootEvalReady) had_updates = true;
+      HandleMessage(std::move(msg));
+    }
+    if (had_updates) {
+      ++epoch_;
+      if (messages_idling_ > 0) SpawnGatherers(messages_idling_);
+    }
   }
 }
 
@@ -54,26 +64,65 @@ void RootWorker::HandleMessage(std::unique_ptr<Message> msg) {
     case Message::kRootCollision:
       HandleCollisionMessage(std::move(msg));
       return;
+    case Message::kRootEvalSkipReady:
+      HandleEvalSkipReadyMessage(std::move(msg));
+      return;
+    case Message::kRootEvalReady:
+      HandleEvalReadyMessage(std::move(msg));
+      return;
     default:
       throw Exception("Unexpected message type " + std::to_string(msg->type) +
                       " in root worker.");
   }
 }
 
-void RootWorker::HandleInitialMessage(std::unique_ptr<Message> msg) {
+void RootWorker::SpawnGatherers(int arity) {
+  assert(messages_idling_ >= arity);
+  messages_idling_ -= arity;
+  messages_sent_to_gather_ += arity;
+
+  auto msg = std::make_unique<Message>();
   msg->type = Message::kNodeGather;
-  // msg->epoch = epoch;
+  msg->arity = arity;
+  msg->epoch = epoch_;
   msg->position_history = search_->history_at_root();
   // msg->attempt = 0;
   msg->is_root_node = true;
   search_->DispatchToNodes(std::move(msg));
 }
 
+void RootWorker::HandleInitialMessage(std::unique_ptr<Message> msg) {
+  assert(messages_sent_to_gather_ == 0);
+  assert(messages_skipping_eval_ == 0);
+  assert(messages_idling_ == 0);
+  messages_idling_ += msg->arity;
+  SpawnGatherers(msg->arity);
+}
+
 void RootWorker::HandleCollisionMessage(std::unique_ptr<Message> msg) {
+  assert(messages_sent_to_gather_ >= msg->arity);
+  messages_sent_to_gather_ -= msg->arity;
+  messages_skipping_eval_ += msg->arity;
   // TODO Later we'll handle collisions, but for now, just skip them in
   // eval.
   msg->type = Message::kEvalSkip;
   search_->DispatchToEval(std::move(msg));
+}
+
+void RootWorker::HandleEvalSkipReadyMessage(std::unique_ptr<Message> msg) {
+  assert(messages_skipping_eval_ >= msg->arity);
+  messages_skipping_eval_ -= msg->arity;
+  messages_idling_ += msg->arity;
+}
+
+void RootWorker::HandleEvalReadyMessage(std::unique_ptr<Message> msg) {
+  assert(msg->arity == 1);
+  assert(messages_sent_to_gather_ > 0);
+  --messages_sent_to_gather_;
+  ++messages_sent_to_forwardprop_;
+  msg->type = Message::kNodeForwardProp;
+  msg->position_depth = search_->history_at_root().GetLength();
+  search_->DispatchToNodes(std::move(msg));
 }
 
 }  // namespace lc2

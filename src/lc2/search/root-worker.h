@@ -51,16 +51,26 @@ class RootWorker {
   void HandleMessage(std::unique_ptr<Message>);
   void HandleInitialMessage(std::unique_ptr<Message>);
   void HandleCollisionMessage(std::unique_ptr<Message>);
-  // void HandleEvalReadyMessage(std::unique_ptr<Message>);
-  // void HandleEvalSkipReadyMessage(std::unique_ptr<Message>);
+  void HandleEvalSkipReadyMessage(std::unique_ptr<Message>);
+  void HandleEvalReadyMessage(std::unique_ptr<Message>);
+
+  void SpawnGatherers(int arity);
 
   Search* const search_;
   const std::unique_ptr<UciResponder> uci_responder_;
   Channel channel_;
 
-  // int nodes_gathering = 0;
-  // int nodes_blacklisting = 0;
-  // int nodes_forward_prop = 0;
+  // Current epoch.
+  // TODO(crem) Epoch must be persistent between searches.
+  uint32_t epoch_ = 0;
+  // Spare messages, waiting to be sent when a new epoch starts.
+  int messages_idling_ = 0;
+  // Number of nodes currently being gathered (or evaled).
+  int messages_sent_to_gather_ = 0;
+  // Number of nodes currently forward-propagating.
+  int messages_sent_to_forwardprop_ = 0;
+  // Nodes sent to skip eval.
+  int messages_skipping_eval_ = 0;
 };
 
 }  // namespace lc2
