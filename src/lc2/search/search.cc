@@ -54,6 +54,8 @@ Search::Search(Network* network, std::unique_ptr<UciResponder> uci,
   }
 }
 
+Search::~Search() { JoinAllThreads(); }
+
 void Search::Start() {
   auto msg = std::make_unique<Message>();
 
@@ -81,6 +83,13 @@ void Search::DispatchToEval(std::unique_ptr<Message> msg) {
   LOGFILE << *msg;
   assert(matches_class(msg.get(), Message::Class::kEval));
   eval_worker_.channel()->Enqueue(std::move(msg));
+}
+
+void Search::JoinAllThreads() {
+  while (!threads_.empty()) {
+    threads_.back().join();
+    threads_.pop_back();
+  }
 }
 
 }  // namespace lc2

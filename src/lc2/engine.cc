@@ -79,8 +79,9 @@ void Engine::RunLoop() {
 
 void Engine::CmdGo(const GoParams&) {
   network_ = NetworkFactory::LoadNetwork(options_.GetOptionsDict());
-  Search search(network_.get(), nullptr, position_history_, node_keeper_.get());
-  search.Start();
+  search_ = std::make_unique<Search>(network_.get(), nullptr, position_history_,
+                                     node_keeper_.get());
+  search_->Start();
 }
 
 }  // namespace lc2

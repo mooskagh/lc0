@@ -29,6 +29,7 @@
 
 #include "chess/uciloop.h"
 #include "lc2/node/keeper.h"
+#include "lc2/search/search.h"
 #include "neural/network.h"
 #include "utils/optionsparser.h"
 
@@ -51,6 +52,7 @@ class Engine : public UciLoop {
   OptionsParser options_;
   std::unique_ptr<Network> network_;
   std::unique_ptr<NodeKeeper> node_keeper_;
+  std::unique_ptr<Search> search_;
 };
 
 }  // namespace lc2

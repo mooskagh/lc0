@@ -75,7 +75,7 @@ void EvalWorker::RunBlocking() {
 
 void EvalWorker::ProcessOneBatch() {
   // TODO Move this to command line params.
-  constexpr int kMinBatch = 1;
+  constexpr int kMinBatch = 2;
 
   auto computation = network_->NewComputation();
   const auto& caps = network_->GetCapabilities();

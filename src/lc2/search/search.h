@@ -43,6 +43,7 @@ class Search {
  public:
   Search(Network* network, std::unique_ptr<UciResponder> uci,
          const PositionHistory& root, NodeKeeper* nodes);
+  ~Search();
 
   // Search starts (by spawning initial visits).
   void Start();
@@ -53,6 +54,7 @@ class Search {
   const PositionHistory& history_at_root() { return rootpos_; }
 
  private:
+  void JoinAllThreads();
   const PositionHistory rootpos_;
 
   RootWorker root_worker_;
