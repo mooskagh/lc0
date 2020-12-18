@@ -25,21 +25,14 @@
   Program grant you additional permission to convey the resulting work.
 */
 
-#pragma once
-
-#include "lc2/message/channel.h"
+#include "lc2/search/eval-worker.h"
 
 namespace lczero {
 namespace lc2 {
 
-class EvalWorker {
- public:
-  void RunBlocking();
-  Channel* channel() { return &channel_; }
-
- private:
-  Channel channel_;
-};
+void EvalWorker::RunBlocking() {
+  // TODO add stuff
+}
 
 }  // namespace lc2
 }  // namespace lczero

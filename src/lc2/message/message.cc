@@ -74,7 +74,7 @@ std::string MessageTypeToString(Message::Type t) {
 
 std::ostream& operator<<(std::ostream& os, const Message& m) {
   os << "Message(" << MessageTypeToString(m.type);
-  os << "]";
+  os << ")[]";
   return os;
 }
 

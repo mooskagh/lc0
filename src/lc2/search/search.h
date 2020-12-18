@@ -31,6 +31,7 @@
 
 #include "lc2/message/message.h"
 #include "lc2/node/keeper.h"
+#include "lc2/search/eval-worker.h"
 #include "lc2/search/nodes-worker.h"
 #include "lc2/search/root-worker.h"
 #include "neural/network.h"
@@ -55,6 +56,7 @@ class Search {
   const PositionHistory rootpos_;
 
   RootWorker root_worker_;
+  EvalWorker eval_worker_;
   std::vector<std::unique_ptr<NodesWorker>> nodes_workers_;
 
   std::vector<std::thread> threads_;

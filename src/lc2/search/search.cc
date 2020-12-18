@@ -44,6 +44,7 @@ Search::Search(Network*, std::unique_ptr<UciResponder> uci,
   }
 
   threads_.emplace_back([this]() { root_worker_.RunBlocking(); });
+  threads_.emplace_back([this]() { eval_worker_.RunBlocking(); });
   for (auto& worker : nodes_workers_) {
     threads_.emplace_back([&worker]() { worker->RunBlocking(); });
   }
@@ -68,6 +69,11 @@ void Search::DispatchToNodes(std::unique_ptr<Message> msg) {
   auto hash = msg->position_history.Last().Hash();
   auto shard = hash % nodes_workers_.size();
   nodes_workers_[shard]->channel()->Enqueue(std::move(msg));
+}
+
+void Search::DispatchToEval(std::unique_ptr<Message> msg) {
+  assert(matches_class(msg.get(), Message::Class::kEval));
+  eval_worker_.channel()->Enqueue(std::move(msg));
 }
 
 }  // namespace lc2
