@@ -27,11 +27,81 @@
 
 #include "lc2/search/eval-worker.h"
 
+#include "neural/encoder.h"
+#include "utils/exception.h"
+#include "utils/logging.h"
+
 namespace lczero {
 namespace lc2 {
+namespace {
+
+struct EvalPosition {
+  std::unique_ptr<Message> msg;
+  int transform;
+};
+
+void RunMoveGen(Message* msg) {
+  msg->eval_result = Message::Eval{};
+  msg->eval_result->edges =
+      msg->position_history.Last().GetBoard().GenerateLegalMoves();
+}
+
+EvalPosition PrepareForEval(std::unique_ptr<Message> msg,
+                            NetworkComputation* computation,
+                            const NetworkCapabilities& caps) {
+  assert(msg->arity == 1);
+  EvalPosition res{std::move(msg), 0};
+
+  auto planes =
+      EncodePositionForNN(caps.input_format, res.msg->position_history, 8,
+                          FillEmptyHistory::FEN_ONLY, &res.transform);
+  computation->AddInput(std::move(planes));
+  // It's better to run movegen immediately than later when NN eval is done, as
+  // at this point there's a chance that batch is not ready yet so we can use
+  // this time.
+  RunMoveGen(res.msg.get());
+  return res;
+}
+}  // namespace
+
+EvalWorker::EvalWorker(Network* network) : network_(network) {}
 
 void EvalWorker::RunBlocking() {
-  // TODO add stuff
+  // TODO add an exit condition.
+  while (true) ProcessOneBatch();
+}
+
+void EvalWorker::ProcessOneBatch() {
+  // TODO Move this to command line params.
+  constexpr int kMinBatch = 1;
+
+  auto computation = network_->NewComputation();
+  const auto& caps = network_->GetCapabilities();
+
+  // Number of nodes for which node workers gave up finding something for eval.
+  int num_skip_nodes = 0;
+  std::vector<EvalPosition> nodes_to_eval;
+
+  // The batch is ready for the eval when there is at least kMinBatch nodes
+  // including skip-nodes, and at least 1 real node for eval.
+  do {
+    auto new_msgs = channel_.DequeueEverything();
+    for (auto& msg : new_msgs) {
+      switch (msg->type) {
+        case Message::kEvalEval:
+          nodes_to_eval.push_back(
+              PrepareForEval(std::move(msg), computation.get(), caps));
+          break;
+        case Message::kEvalSkip:
+          num_skip_nodes += msg->arity;
+          break;
+        default:
+          throw Exception("Unexpected message type " +
+                          std::to_string(msg->type) + " in eval worker.");
+      }
+    }
+  } while (num_skip_nodes + nodes_to_eval.size() < kMinBatch ||
+           nodes_to_eval.empty());
 }
 
 }  // namespace lc2

@@ -37,6 +37,9 @@ namespace lc2 {
 
 class Search;
 
+// Root worker coordinates node gathering (by node worker) and evaluation (by
+// eval worker), keeps the current best PV, outputs UCI stats and watches the
+// clock.
 class RootWorker {
  public:
   RootWorker(Search* search, std::unique_ptr<UciResponder> uci);

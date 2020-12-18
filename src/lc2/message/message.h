@@ -33,6 +33,7 @@
 #include <string>
 
 #include "chess/position.h"
+#include "lc2/node/traits.h"
 
 namespace lczero {
 namespace lc2 {
@@ -76,19 +77,32 @@ struct Message {
   uint16_t arity = 0;
 
   // From which epoch the message was sent. Is used to track stale messages.
-  uint32_t epoch = 0;
+  // uint32_t epoch = 0;
 
   // The message is sent to a root node.
   bool is_root_node = false;
 
   // Number of gathering attempt, zero-based.
-  uint16_t attempt = 0;
+  // uint16_t attempt = 0;
 
   // List of positions from start of the game.
   // TODO(crem) Make it from the position root instead.
   // Warning: this surely won't be visible in profiler for first moves, but may
   // be a problem later in the game.
   PositionHistory position_history;
+
+  // Eval result.
+  struct Eval {
+    using NT = WdlNodeTraits;
+
+    // Eval of the node.
+    NT::WDL q;
+    // Moves from this position.
+    MoveList edges;
+    // Priors for outgoing edges.
+    std::vector<NT::P> p_edge;
+  };
+  std::optional<Eval> eval_result;
 
   std::unique_ptr<Message> SplitOff(int how_much);
 };

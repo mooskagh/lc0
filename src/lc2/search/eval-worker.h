@@ -28,17 +28,24 @@
 #pragma once
 
 #include "lc2/message/channel.h"
+#include "neural/network.h"
 
 namespace lczero {
 namespace lc2 {
 
+// EvalWorker sends nodes to NN for evaluation. Also it happens to run movegen
+// as EvalWorker is less time-critical as RootWorker and NodesWorker.
 class EvalWorker {
  public:
+  EvalWorker(Network* network);
   void RunBlocking();
   Channel* channel() { return &channel_; }
 
  private:
+  void ProcessOneBatch();
+
   Channel channel_;
+  Network* const network_;
 };
 
 }  // namespace lc2

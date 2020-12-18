@@ -48,7 +48,7 @@ struct Node {
   NT::WDL q;
 
   // Moves from this position.
-  std::vector<Move> edges;
+  MoveList edges;
   // Per-edge N value.
   std::vector<NT::N> n_edge;
   // Current value for outgoing edges.

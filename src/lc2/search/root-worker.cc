@@ -38,7 +38,7 @@ RootWorker::RootWorker(Search* search, std::unique_ptr<UciResponder> uci)
 
 void RootWorker::RunBlocking() {
   // TODO(crem) Epoch must be persistent between searches.
-  uint32_t epoch = 0;
+  // uint32_t epoch = 0;
 
   int tokens_gathering = 0;
   int tokens_blacklisting = 0;
@@ -53,9 +53,9 @@ void RootWorker::RunBlocking() {
         assert(tokens_forward_prop == 0);
 
         msg->type = Message::kNodeGather;
-        msg->epoch = epoch;
+        // msg->epoch = epoch;
         msg->position_history = search_->history_at_root();
-        msg->attempt = 0;
+        // msg->attempt = 0;
         msg->is_root_node = true;
         search_->DispatchToNodes(std::move(msg));
         break;
