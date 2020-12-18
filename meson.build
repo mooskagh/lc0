@@ -173,6 +173,8 @@ lc2_files = [
   'src/lc2/engine.cc',
   'src/lc2/message/channel.cc',
   'src/lc2/message/manager.cc',
+  'src/lc2/message/message.cc',
+  'src/lc2/node/shard.cc',
   'src/lc2/search/nodes-worker.cc',
   'src/lc2/search/root-worker.cc',
   'src/lc2/search/search.cc',
@@ -539,7 +541,8 @@ endif
   ## Abseil
   ## ~~~~~~~~
   lc2_deps = []
-  lc2_deps += subproject('abseil').get_variable('absl_flags_dep')
+  lc2_deps += subproject('abseil').get_variable('absl_base_dep')
+  lc2_deps += subproject('abseil').get_variable('absl_container_dep')
 
 #############################################################################
 ## Main Executable
@@ -561,7 +564,8 @@ executable('lc0', 'src/main.cc',
   files, include_directories: includes, dependencies: deps, install: true)
 
 executable('lc2', 'src/main_lc2.cc',
-  files + lc2_files, include_directories: includes, dependencies: deps+lc2_deps, install: true)
+  files + lc2_files, include_directories: includes, dependencies: deps+lc2_deps,
+  cpp_args:'-DLC2',  install: true)
 
 #############################################################################
 ## Tests

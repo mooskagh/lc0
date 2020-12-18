@@ -27,6 +27,8 @@
 
 #pragma once
 
+#include <algorithm>
+#include <cmath>
 #include <cstdint>
 
 namespace lczero {
@@ -47,7 +49,7 @@ struct WdlNodeTraits {
   // P, a prior stored in edge and returned from NN.
   using P = double;
 
-  // Q as used in Q+U formula. Note that it also is stored in edge.
+  // Q as used in Q+U formula. Note that it is also stored in edge.
   using Q = double;
 
   ///////////////////////////////
@@ -59,16 +61,34 @@ struct WdlNodeTraits {
   using QPlusU = double;
 
   // Type used for CPuct constant and for policy visits factor.
-  using QFactor = double;
+  using QUFactor = double;
 
-  // First play urgency.
-  using FPU = double;
-
-  static QFactor ComputeQFactor(QFactor cpuct, N total_n);
-  static FPU ComputeFPU();
-  static Q ComputeQ(QFactor, Q);
-  static U ComputeU(P, FPU, N n_edge, N total_n);
+  ///////////////////////////////
+  // Functions.
+  ///////////////////////////////
+  static QUFactor ComputeFPU();
+  static QUFactor ComputeQ(N n_edge, QUFactor fpu, Q q);
+  static QUFactor ComputeUFactor(QUFactor cpuct, N total_n);
+  static U ComputeU(QUFactor cpuct, P p, N n_edge);
 };
+
+// TODO Compute FPU properly
+inline WdlNodeTraits::Q WdlNodeTraits::ComputeFPU() { return -1.0; }
+
+inline WdlNodeTraits::QUFactor WdlNodeTraits::ComputeQ(N n_edge, QUFactor fpu,
+                                                       Q q) {
+  return n_edge ? q : fpu;
+}
+
+inline WdlNodeTraits::QUFactor WdlNodeTraits::ComputeUFactor(QUFactor cpuct,
+                                                             N total_n) {
+  return cpuct * std::sqrt(std::max(total_n, N{1}));
+}
+
+inline WdlNodeTraits::U WdlNodeTraits::ComputeU(QUFactor u_factor, P p,
+                                                N n_edge) {
+  return u_factor * p / (1 + n_edge);
+}
 
 }  // namespace lc2
 }  // namespace lczero

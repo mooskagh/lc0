@@ -28,6 +28,8 @@
 #pragma once
 
 #include <cstdint>
+#include <iostream>
+#include <string>
 
 #include "chess/position.h"
 
@@ -87,6 +89,9 @@ struct Message {
   // be a problem later in the game.
   PositionHistory position_history;
 };
+
+std::string MessageTypeToString(Message::Type);
+std::ostream& operator<<(std::ostream& os, const Message& t);
 
 }  // namespace lc2
 }  // namespace lczero

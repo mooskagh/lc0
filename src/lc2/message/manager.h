@@ -27,6 +27,7 @@
 
 #pragma once
 
+#include <iostream>
 #include <memory>
 #include <utility>
 #include <vector>
@@ -37,6 +38,11 @@
 namespace lczero {
 namespace lc2 {
 
+// "Message access tokens" are intended to be a lightweight object that can be
+// passed between threads through channels and denote message access ownership.
+// In practice tokens contains a pointer to a message being accesses, and it's
+// guaranteed that there's at most one token instance associated with every
+// message.
 class Token {
  public:
   Token(Token&&);
@@ -49,6 +55,12 @@ class Token {
 
   Message* msg_;
   friend class MessageManager;
+  friend std::ostream& operator<<(std::ostream& os, const Token& t) {
+    os << "Token[";
+    if (t.msg_) os << *t.msg_;
+    os << "]";
+    return os;
+  }
 };
 
 class MessageManager {

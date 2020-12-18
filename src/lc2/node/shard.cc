@@ -25,39 +25,17 @@
   Program grant you additional permission to convey the resulting work.
 */
 
-#pragma once
-
-#include <vector>
-
-#include "chess/bitboard.h"
-#include "lc2/node/traits.h"
+#include "lc2/node/shard.h"
 
 namespace lczero {
 namespace lc2 {
 
-struct Node {
-  using NT = WdlNodeTraits;
-
-  // Did eval for this node complete (true) or is still in progress (false).
-  bool eval_completed = false;
-
-  // Number of finished visits.
-  NT::N n;
-
-  // Eval of the node.
-  NT::WDL q;
-
-  // Moves from this position.
-  std::vector<Move> edges;
-  // Per-edge N value.
-  std::vector<NT::N> n_edge;
-  // Current value for outgoing edges.
-  std::vector<NT::Q> q_edge;
-  // Priors for outgoing edges.
-  std::vector<NT::P> p_edge;
-
-  size_t num_edges() const { return edges.size(); }
-};
+std::pair<bool, Node*> NodeShard::GetNode(uint64_t hash) {
+  auto& node = nodes_[hash];
+  if (node) return {true, node.get()};
+  node = std::make_unique<Node>();
+  return {false, node.get()};
+}
 
 }  // namespace lc2
 }  // namespace lczero

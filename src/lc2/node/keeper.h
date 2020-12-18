@@ -38,6 +38,7 @@ class NodeKeeper {
  public:
   NodeKeeper(int num_shards) : shards_(num_shards) {}
 
+  // DO NOT SUBMIT, change interface, incapsulate.
   std::vector<NodeShard>* shards() { return &shards_; }
 
  private:

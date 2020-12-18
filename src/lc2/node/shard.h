@@ -27,6 +27,8 @@
 
 #pragma once
 
+#include <absl/container/flat_hash_map.h>
+
 #include <cstdint>
 #include <utility>
 
@@ -35,9 +37,16 @@
 namespace lczero {
 namespace lc2 {
 
+// Node shard keeps nodes of one shard. It can only be access by one thread
+// simultaneously, so no thread safety is needed.
 class NodeShard {
  public:
+  // Returns whether node already existed (true) or was freshly created (false).
+  // The pointer is always not null.
   std::pair<bool, Node*> GetNode(uint64_t hash);
+
+ private:
+  absl::flat_hash_map<uint64_t, std::unique_ptr<Node>> nodes_;
 };
 
 }  // namespace lc2

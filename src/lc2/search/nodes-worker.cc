@@ -102,11 +102,11 @@ void NodesWorker::ForwardVisit(Node* node, Token token) {
   const auto move_count = node->num_edges();
   q_plus_u.reserve(move_count);
 
-  const auto cpuct = Node::NT::ComputeQFactor(1.23, node->n);
-  const Node::NT::FPU fpu = -1;  // DO NOT SUBMIT  compute FPU properly.
+  const auto cpuct_mult = Node::NT::ComputeUFactor(1.23, node->n);
+  const Node::NT::Q fpu = Node::NT::ComputeFPU();
   for (size_t i = 0; i < move_count; ++i) {
-    auto q = Node::NT::ComputeQ(cpuct, node->q_edge[i]);
-    auto u = Node::NT::ComputeU(node->p_edge[i], fpu, node->n_edge[i], node->n);
+    auto q = Node::NT::ComputeQ(node->n_edge[i], fpu, node->q_edge[i]);
+    auto u = Node::NT::ComputeU(cpuct_mult, node->p_edge[i], node->n_edge[i]);
     q_plus_u.push_back({q + u, q, i});
   }
   std::make_heap(q_plus_u.begin(), q_plus_u.end());
@@ -124,8 +124,8 @@ void NodesWorker::ForwardVisit(Node* node, Token token) {
     const auto& q = std::get<1>(q_plus_u.back());
     const auto& idx = std::get<2>(q_plus_u.back());
     auto new_n = ++edge_to_visits[idx];
-    qu = q + Node::NT::ComputeU(node->p_edge[idx], fpu,
-                                node->n_edge[idx] + new_n, node->n);
+    qu = q + Node::NT::ComputeU(cpuct_mult, node->p_edge[idx],
+                                node->n_edge[idx] + new_n);
     --num_visits;
     if (num_visits == 0) break;
     std::push_heap(q_plus_u.begin(), q_plus_u.end());

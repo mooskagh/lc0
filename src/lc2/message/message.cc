@@ -25,39 +25,48 @@
   Program grant you additional permission to convey the resulting work.
 */
 
-#pragma once
-
-#include <vector>
-
-#include "chess/bitboard.h"
-#include "lc2/node/traits.h"
+#include "lc2/message/message.h"
 
 namespace lczero {
 namespace lc2 {
 
-struct Node {
-  using NT = WdlNodeTraits;
+std::string MessageTypeToString(Message::Type t) {
+  switch (t) {
+    case Message::kUnknown:
+      return "kUnknown";
+    case Message::kAuxAbort:
+      return "kAuxAbort";
+    case Message::kNodeGather:
+      return "kNodeGather";
+    case Message::kNodeBlacklist:
+      return "kNodeBlacklist";
+    case Message::kNodeForwardProp:
+      return "kNodeForwardProp";
+    case Message::kRootInitial:
+      return "kRootInitial";
+    case Message::kRootCollision:
+      return "kRootCollision";
+    case Message::kRootEvalReady:
+      return "kRootEvalReady";
+    case Message::kRootOutOfOrderEvalReady:
+      return "kRootOutOfOrderEvalReady";
+    case Message::kRootBlacklistDone:
+      return "kRootBlacklistDone";
+    case Message::kRootForwardPropDone:
+      return "kRootForwardPropDone";
+    case Message::kEvalEval:
+      return "kEvalEval";
+    case Message::kEvalSkip:
+      return "kEvalSkip";
+  };
+  return "Unexpected value";
+}
 
-  // Did eval for this node complete (true) or is still in progress (false).
-  bool eval_completed = false;
-
-  // Number of finished visits.
-  NT::N n;
-
-  // Eval of the node.
-  NT::WDL q;
-
-  // Moves from this position.
-  std::vector<Move> edges;
-  // Per-edge N value.
-  std::vector<NT::N> n_edge;
-  // Current value for outgoing edges.
-  std::vector<NT::Q> q_edge;
-  // Priors for outgoing edges.
-  std::vector<NT::P> p_edge;
-
-  size_t num_edges() const { return edges.size(); }
-};
+std::ostream& operator<<(std::ostream& os, const Message& m) {
+  os << "Message(" << MessageTypeToString(m.type);
+  os << "]";
+  return os;
+}
 
 }  // namespace lc2
 }  // namespace lczero

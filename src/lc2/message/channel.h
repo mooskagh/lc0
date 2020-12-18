@@ -38,12 +38,15 @@ namespace lczero {
 namespace lc2 {
 
 // TODO(crem)
-// Channels are easy to make lockless. However let's confirm them that it's a
-// bottleneck.
+// Channels are easy to make lockless. However let's first confirm them that
+// it's a bottleneck.
 class Channel {
  public:
+  // Adds a token to a queue.
   void Enqueue(Token&& token);
-  Token&& Dequeue();
+  // Gets a token from a queue. Blocks until token is available if empty.
+  Token Dequeue();
+  // Gets all tokens from a queue. Blocks until token is available if empty.
   std::vector<Token> DequeueEverything();
 
  private:

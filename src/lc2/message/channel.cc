@@ -38,14 +38,14 @@ void Channel::Enqueue(Token&& token) {
   cond_var_.notify_one();
 }
 
-Token&& Channel::Dequeue() {
+Token Channel::Dequeue() {
   Mutex::Lock lock(mutex_);
   while (tokens_.empty()) {
     cond_var_.wait(lock.get_raw());
   }
   auto val = std::move(tokens_.front());
   tokens_.pop_front();
-  return std::move(val);
+  return val;
 }
 
 std::vector<Token> Channel::DequeueEverything() {
