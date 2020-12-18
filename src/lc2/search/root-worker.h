@@ -48,9 +48,19 @@ class RootWorker {
   Channel* channel() { return &channel_; }
 
  private:
+  void HandleMessage(std::unique_ptr<Message>);
+  void HandleInitialMessage(std::unique_ptr<Message>);
+  void HandleCollisionMessage(std::unique_ptr<Message>);
+  // void HandleEvalReadyMessage(std::unique_ptr<Message>);
+  // void HandleEvalSkipReadyMessage(std::unique_ptr<Message>);
+
   Search* const search_;
   const std::unique_ptr<UciResponder> uci_responder_;
   Channel channel_;
+
+  // int nodes_gathering = 0;
+  // int nodes_blacklisting = 0;
+  // int nodes_forward_prop = 0;
 };
 
 }  // namespace lc2

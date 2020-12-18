@@ -40,32 +40,40 @@ void RootWorker::RunBlocking() {
   // TODO(crem) Epoch must be persistent between searches.
   // uint32_t epoch = 0;
 
-  int tokens_gathering = 0;
-  int tokens_blacklisting = 0;
-  int tokens_forward_prop = 0;
-
   while (true) {
     auto messages = channel_.DequeueEverything();
-    for (auto& msg : messages) {
-      switch (msg->type) {
-        case Message::kRootInitial:
-          assert(tokens_gathering == 0);
-          assert(tokens_blacklisting == 0);
-          assert(tokens_forward_prop == 0);
-
-          msg->type = Message::kNodeGather;
-          // msg->epoch = epoch;
-          msg->position_history = search_->history_at_root();
-          // msg->attempt = 0;
-          msg->is_root_node = true;
-          search_->DispatchToNodes(std::move(msg));
-          break;
-        default:
-          throw Exception("Unexpected message type " +
-                          std::to_string(msg->type) + " in root worker.");
-      }
-    }
+    for (auto& msg : messages) HandleMessage(std::move(msg));
   }
+}
+
+void RootWorker::HandleMessage(std::unique_ptr<Message> msg) {
+  switch (msg->type) {
+    case Message::kRootInitial:
+      HandleInitialMessage(std::move(msg));
+      return;
+    case Message::kRootCollision:
+      HandleCollisionMessage(std::move(msg));
+      return;
+    default:
+      throw Exception("Unexpected message type " + std::to_string(msg->type) +
+                      " in root worker.");
+  }
+}
+
+void RootWorker::HandleInitialMessage(std::unique_ptr<Message> msg) {
+  msg->type = Message::kNodeGather;
+  // msg->epoch = epoch;
+  msg->position_history = search_->history_at_root();
+  // msg->attempt = 0;
+  msg->is_root_node = true;
+  search_->DispatchToNodes(std::move(msg));
+}
+
+void RootWorker::HandleCollisionMessage(std::unique_ptr<Message> msg) {
+  // TODO Later we'll handle collisions, but for now, just skip them in
+  // eval.
+  msg->type = Message::kEvalSkip;
+  search_->DispatchToEval(std::move(msg));
 }
 
 }  // namespace lc2
