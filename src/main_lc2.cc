@@ -40,12 +40,13 @@
 int main(int argc, const char** argv) {
   using namespace lczero;
   EscCodes::Init();
+  CommandLine::Init(argc, argv);
 
+  // TODO that is not entirely correct, also looks at directory names but should
+  // not.
   const std::string kLc2String("lc2");
   const std::string kBinary = CommandLine::BinaryName();
-  const bool kIsLc2Binary = std::mismatch(kLc2String.begin(), kLc2String.end(),
-                                          kBinary.begin(), kBinary.end())
-                                .first == kLc2String.end();
+  const bool kIsLc2Binary = (kBinary.find(kLc2String) != std::string::npos);
 
   if (kIsLc2Binary) {
     LOGFILE << "Lc2 started.";
@@ -66,7 +67,6 @@ int main(int argc, const char** argv) {
     InitializeMagicBitboards();
     Numa::Init();
 
-    CommandLine::Init(argc, argv);
     CommandLine::RegisterMode("uci", "(default) Act as UCI engine");
     CommandLine::RegisterMode("lc0", "UCI engine in Lc0 mode");
     CommandLine::RegisterMode("lc2", "UCI engine in Lc2 mode");
