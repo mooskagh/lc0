@@ -101,7 +101,8 @@ void NodesWorker::ForwardVisit(Node* node, std::unique_ptr<Message> msg) {
   q_plus_u.reserve(move_count);
 
   const auto cpuct_mult = Node::NT::ComputeUFactor(1.23, node->n);
-  const Node::NT::Q fpu = Node::NT::ComputeFPU();
+  const Node::NT::Q fpu =
+      Node::NT::WDLtoQ(node->wdl);  // Node::NT::ComputeFPU(); DO NOT SUBMIT
   for (size_t i = 0; i < move_count; ++i) {
     auto q = Node::NT::ComputeQ(node->n_edge[i], fpu, node->q_edge[i]);
     auto u = Node::NT::ComputeU(cpuct_mult, node->p_edge[i], node->n_edge[i]);

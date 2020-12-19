@@ -32,6 +32,7 @@
 #include <cstdint>
 
 #include "neural/network.h"
+#include "utils/fastmath.h"
 
 namespace lczero {
 namespace lc2 {
@@ -121,7 +122,7 @@ inline std::vector<WdlNodeTraits::P> WdlNodeTraits::PFromComputation(
   std::vector<P> intermediate;
   P total = 0;
   for (const auto& p : probs) {
-    intermediate.push_back((p - max_p) / kPolicySoftMaxTemp);
+    intermediate.push_back(FastExp((p - max_p) / kPolicySoftMaxTemp));
     total += intermediate.back();
   }
   const float scale = total > 0.0f ? 1.0f / total : 1.0f;

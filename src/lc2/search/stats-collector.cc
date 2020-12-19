@@ -65,7 +65,7 @@ void StatsCollector::OutputThinkingInfo() {
 
 void StatsCollector::MaybeOutputThinkingInfo() {
   const auto current_time = std::chrono::steady_clock::now();
-  if (current_time - last_info_ > std::chrono::seconds(5)) {
+  if (current_time - last_info_ > std::chrono::seconds(1)) {
     OutputThinkingInfo();
   }
 }

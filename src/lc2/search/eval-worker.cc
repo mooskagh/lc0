@@ -118,14 +118,6 @@ void EvalWorker::ProcessOneBatch() {
                      return move.as_nn_index(transform);
                    });
     eval.p_edge = NT::PFromComputation(computation.get(), i, move_indices);
-    // move_indices.reserve(eval.edges.size());
-    // for (const auto& move : eval.edges) {
-    //   move_indices
-    // eval.p_edge.reserve(eval.edges.size());
-    //   eval.p_edge.push_back(NT::PFromComputation(
-    //       computation.get(), i, move.as_nn_index(evals[i].transform)));
-    // }
-
     msg->type = Message::kNodeBackProp;
     assert(msg->arity == 1);
     search_->DispatchToNodes(std::move(msg));
