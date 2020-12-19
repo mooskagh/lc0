@@ -112,11 +112,19 @@ void EvalWorker::ProcessOneBatch() {
     auto msg = std::move(evals[i].msg);
     auto& eval = *msg->eval_result;
     eval.wdl = NT::WDLFromComputation(computation.get(), i);
-    eval.p_edge.reserve(eval.edges.size());
-    for (const auto& move : eval.edges) {
-      eval.p_edge.push_back(NT::PFromComputation(
-          computation.get(), i, move.as_nn_index(evals[i].transform)));
-    }
+    std::vector<int> move_indices(eval.edges.size());
+    std::transform(eval.edges.begin(), eval.edges.end(), move_indices.begin(),
+                   [transform = evals[i].transform](const Move& move) {
+                     return move.as_nn_index(transform);
+                   });
+    eval.p_edge = NT::PFromComputation(computation.get(), i, move_indices);
+    // move_indices.reserve(eval.edges.size());
+    // for (const auto& move : eval.edges) {
+    //   move_indices
+    // eval.p_edge.reserve(eval.edges.size());
+    //   eval.p_edge.push_back(NT::PFromComputation(
+    //       computation.get(), i, move.as_nn_index(evals[i].transform)));
+    // }
 
     msg->type = Message::kNodeBackProp;
     assert(msg->arity == 1);

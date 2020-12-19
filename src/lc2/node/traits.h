@@ -73,7 +73,8 @@ struct WdlNodeTraits {
   static QUFactor ComputeUFactor(QUFactor cpuct, N total_n);
   static U ComputeU(QUFactor cpuct, P p, N n_edge);
   static WDL WDLFromComputation(NetworkComputation*, int idx);
-  static P PFromComputation(NetworkComputation*, int idx, int move);
+  static std::vector<P> PFromComputation(NetworkComputation*, int idx,
+                                         const std::vector<int>& moves);
   static void UpdateWDL(WDL* node_wdl, WDL wdl_update, int multivisit, N new_n,
                         bool invert);
   static Q WDLtoQ(WDL wdl);
@@ -105,9 +106,28 @@ inline WdlNodeTraits::WDL WdlNodeTraits::WDLFromComputation(
   return wdl;
 }
 
-inline WdlNodeTraits::P WdlNodeTraits::PFromComputation(
-    NetworkComputation* computation, int idx, int move) {
-  return computation->GetPVal(idx, move);
+inline std::vector<WdlNodeTraits::P> WdlNodeTraits::PFromComputation(
+    NetworkComputation* computation, int idx, const std::vector<int>& moves) {
+  // TODO(crem): One day they will not be parameters.
+  const float kPolicySoftMaxTemp = 1.607f;
+  std::vector<P> probs;
+  probs.reserve(moves.size());
+
+  P max_p = -std::numeric_limits<P>::infinity();
+  for (const auto& move : moves) {
+    probs.push_back(computation->GetPVal(idx, move));
+    max_p = std::max(max_p, probs.back());
+  }
+  std::vector<P> intermediate;
+  P total = 0;
+  for (const auto& p : probs) {
+    intermediate.push_back((p - max_p) / kPolicySoftMaxTemp);
+    total += intermediate.back();
+  }
+  const float scale = total > 0.0f ? 1.0f / total : 1.0f;
+  int counter = 0;
+  for (auto& p : probs) p = intermediate[counter++] * scale;
+  return probs;
 }
 
 inline void WdlNodeTraits::UpdateWDL(WDL* node_wdl, WDL wdl_update,
