@@ -34,7 +34,7 @@ namespace lczero {
 namespace lc2 {
 
 RootWorker::RootWorker(Search* search, UciResponder* uci)
-    : search_(search), uci_responder_(uci) {}
+    : search_(search), stats_collector_(uci) {}
 
 void RootWorker::RunBlocking() {
   // TODO(crem) Epoch must be persistent between searches.
@@ -128,20 +128,19 @@ void RootWorker::HandleEvalSkipReadyMessage(std::unique_ptr<Message> msg) {
 
 void RootWorker::HandleBackPropDoneMessage(std::unique_ptr<Message> msg) {
   assert(messages_sent_to_gather_ >= msg->arity);
+  stats_collector_.AddNumEvals(msg->arity);
   messages_sent_to_gather_ -= msg->arity;
   messages_idling_ += msg->arity;
 }
 
 void RootWorker::HandlePVGathered(std::unique_ptr<Message> msg) {
-  if (msg->pv->pv.empty()) return;
-  std::vector<ThinkingInfo> infos;
-  infos.emplace_back();
-  infos.back().pv = msg->pv->pv;
+  auto& pv = msg->pv->pv;
+  if (pv.empty()) return;
   for (int i = search_->history_at_root().IsBlackToMove() ? 0 : 1;
-       i < static_cast<int>(infos[0].pv.size()); i += 2) {
-    infos[0].pv[i].Mirror();
+       i < static_cast<int>(pv.size()); i += 2) {
+    pv[i].Mirror();
   }
-  uci_responder_->OutputThinkingInfo(&infos);
+  stats_collector_.UpdatePv(pv);
 }
 
 }  // namespace lc2

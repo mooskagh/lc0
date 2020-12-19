@@ -178,6 +178,7 @@ lc2_files = [
   'src/lc2/search/nodes-worker.cc',
   'src/lc2/search/root-worker.cc',
   'src/lc2/search/search.cc',
+  'src/lc2/search/stats-collector.cc',
 ]
 
 includes += include_directories('src')

@@ -27,51 +27,34 @@
 
 #pragma once
 
-#include <memory>
+#include <chrono>
+#include <cstdint>
 
+#include "chess/board.h"
 #include "chess/callbacks.h"
-#include "lc2/message/channel.h"
-#include "lc2/search/stats-collector.h"
 
 namespace lczero {
 namespace lc2 {
 
-class Search;
-
-// Root worker coordinates node gathering (by node worker) and evaluation (by
-// eval worker), keeps the current best PV, outputs UCI stats and watches the
-// clock.
-class RootWorker {
+class StatsCollector {
  public:
-  RootWorker(Search* search, UciResponder* uci);
-  void RunBlocking();
+  StatsCollector(UciResponder* responder);
 
-  Channel* channel() { return &channel_; }
+  void AddNumEvals(uint32_t num);
+  void UpdatePv(const MoveList& pv);
+
+  void OutputThinkingInfo();
+  // Only outputs if there were more than 5 seconds since last output.
+  void MaybeOutputThinkingInfo();
 
  private:
-  void HandleMessage(std::unique_ptr<Message>);
-  void HandleInitialMessage(std::unique_ptr<Message>);
-  void HandleCollisionMessage(std::unique_ptr<Message>);
-  void HandleEvalSkipReadyMessage(std::unique_ptr<Message>);
-  void HandleBackPropDoneMessage(std::unique_ptr<Message>);
-  void HandlePVGathered(std::unique_ptr<Message>);
+  UciResponder* const uci_responder_;
+  MoveList pv_;
 
-  void SpawnGatherers(int arity);
-  void SpawnPVGatherer();
-
-  Search* const search_;
-  StatsCollector stats_collector_;
-  Channel channel_;
-
-  // Current epoch.
-  // TODO(crem) Epoch must be persistent between searches.
-  uint32_t epoch_ = 0;
-  // Spare messages, waiting to be sent when a new epoch starts.
-  int messages_idling_ = 0;
-  // Number of nodes currently being gathered (or evaled).
-  int messages_sent_to_gather_ = 0;
-  // Nodes sent to skip eval.
-  int messages_skipping_eval_ = 0;
+  std::chrono::steady_clock::time_point start_time_;
+  std::chrono::steady_clock::time_point last_info_;
+  // Number of positions evaluated by NN.
+  uint64_t evals_ = 0;
 };
 
 }  // namespace lc2

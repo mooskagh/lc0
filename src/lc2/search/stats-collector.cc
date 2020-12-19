@@ -25,54 +25,50 @@
   Program grant you additional permission to convey the resulting work.
 */
 
-#pragma once
-
-#include <memory>
-
-#include "chess/callbacks.h"
-#include "lc2/message/channel.h"
 #include "lc2/search/stats-collector.h"
 
 namespace lczero {
 namespace lc2 {
 
-class Search;
+StatsCollector::StatsCollector(UciResponder* responder)
+    : uci_responder_(responder),
+      start_time_(std::chrono::steady_clock::now()) {}
 
-// Root worker coordinates node gathering (by node worker) and evaluation (by
-// eval worker), keeps the current best PV, outputs UCI stats and watches the
-// clock.
-class RootWorker {
- public:
-  RootWorker(Search* search, UciResponder* uci);
-  void RunBlocking();
+void StatsCollector::UpdatePv(const MoveList& pv) {
+  if (pv != pv_) {
+    pv_ = pv;
+    OutputThinkingInfo();
+  } else {
+    MaybeOutputThinkingInfo();
+  }
+}
 
-  Channel* channel() { return &channel_; }
+void StatsCollector::AddNumEvals(uint32_t num) {
+  evals_ += num;
+  MaybeOutputThinkingInfo();
+}
 
- private:
-  void HandleMessage(std::unique_ptr<Message>);
-  void HandleInitialMessage(std::unique_ptr<Message>);
-  void HandleCollisionMessage(std::unique_ptr<Message>);
-  void HandleEvalSkipReadyMessage(std::unique_ptr<Message>);
-  void HandleBackPropDoneMessage(std::unique_ptr<Message>);
-  void HandlePVGathered(std::unique_ptr<Message>);
+void StatsCollector::OutputThinkingInfo() {
+  std::vector<ThinkingInfo> infos;
+  auto& info = infos.emplace_back();
+  const auto current_time = std::chrono::steady_clock::now();
 
-  void SpawnGatherers(int arity);
-  void SpawnPVGatherer();
+  if (!pv_.empty()) info.pv = pv_;
+  info.time = std::chrono::duration_cast<std::chrono::milliseconds>(
+                  current_time - start_time_)
+                  .count();
+  info.nodes = evals_;
+  if (info.time > 0) info.nps = info.nodes * 1000 / info.time;
+  uci_responder_->OutputThinkingInfo(&infos);
+  last_info_ = current_time;
+}
 
-  Search* const search_;
-  StatsCollector stats_collector_;
-  Channel channel_;
-
-  // Current epoch.
-  // TODO(crem) Epoch must be persistent between searches.
-  uint32_t epoch_ = 0;
-  // Spare messages, waiting to be sent when a new epoch starts.
-  int messages_idling_ = 0;
-  // Number of nodes currently being gathered (or evaled).
-  int messages_sent_to_gather_ = 0;
-  // Nodes sent to skip eval.
-  int messages_skipping_eval_ = 0;
-};
+void StatsCollector::MaybeOutputThinkingInfo() {
+  const auto current_time = std::chrono::steady_clock::now();
+  if (current_time - last_info_ > std::chrono::seconds(5)) {
+    OutputThinkingInfo();
+  }
+}
 
 }  // namespace lc2
 }  // namespace lczero
