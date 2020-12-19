@@ -45,6 +45,7 @@ class NodesWorker {
  private:
   void GatherNode(std::unique_ptr<Message> message);
   void ForwardVisit(Node*, std::unique_ptr<Message> message);
+  void BackProp(std::unique_ptr<Message> message);
 
   Search* const search_;
   NodeShard* const shard_;

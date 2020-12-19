@@ -43,7 +43,9 @@ void NodesWorker::RunBlocking() {
     switch (msg->type) {
       case Message::kNodeGather:
         GatherNode(std::move(msg));
-
+        break;
+      case Message::kNodeBackProp:
+        BackProp(std::move(msg));
         break;
       default:
         throw Exception("Unexpected message type " + std::to_string(msg->type) +
@@ -89,9 +91,6 @@ void NodesWorker::GatherNode(std::unique_ptr<Message> msg) {
 }
 
 void NodesWorker::ForwardVisit(Node* node, std::unique_ptr<Message> msg) {
-  // The message down the tree will not be a root node anymore.
-  msg->is_root_node = false;
-
   // A heap, Q+U to a move index.
   using Item = std::tuple<Node::NT::QPlusU, Node::NT::Q, size_t>;
   std::vector<Item> q_plus_u;
@@ -133,8 +132,53 @@ void NodesWorker::ForwardVisit(Node* node, std::unique_ptr<Message> msg) {
     const bool last_iteration = num_visits == msg->arity;
     auto send_msg = last_iteration ? std::move(msg) : msg->SplitOff(count);
     send_msg->position_history.Append(node->edges[i]);
+    send_msg->move_idx.push_back(i);
     search_->DispatchToNodes(std::move(send_msg));
     if (last_iteration) break;
+  }
+}
+
+void NodesWorker::BackProp(std::unique_ptr<Message> msg) {
+  auto hash = msg->position_history.Last().Hash();
+
+  auto [found, node] = shard_->GetNode(hash);
+  assert(found);
+  // TODO(crem) Support higher arity updates.
+  assert(msg->arity == 1);
+  const auto arity = msg->arity;
+  assert(msg->eval_result);
+  auto& eval_result = *msg->eval_result;
+
+  const bool is_leaf = !node->eval_completed;
+  if (is_leaf) {
+    msg->node_height_is_odd = false;
+    node->eval_completed = true;
+    node->wdl = msg->eval_result->wdl;
+    node->n = arity;
+
+    node->edges = std::move(eval_result.edges);
+    node->p_edge = std::move(eval_result.p_edge);
+    node->q_edge.resize(node->edges.size());
+    node->n_edge.resize(node->edges.size());
+  } else {
+    node->n += arity;
+    const auto idx = msg->move_idx.back();
+    node->n_edge[idx] += arity;
+    node->q_edge[idx] = msg->child_q;
+    msg->move_idx.pop_back();
+    Node::NT::UpdateWDL(&node->wdl, msg->eval_result->wdl, arity, node->n,
+                        msg->node_height_is_odd);
+  }
+
+  const bool is_root = msg->move_idx.empty();
+  if (is_root) {
+    msg->type = Message::kRootBackPropDone;
+    search_->DispatchToRoot(std::move(msg));
+  } else {
+    msg->node_height_is_odd = !msg->node_height_is_odd;
+    msg->position_history.Pop();
+    msg->child_q = Node::NT::WDLtoQ(node->wdl);
+    search_->DispatchToNodes(std::move(msg));
   }
 }
 

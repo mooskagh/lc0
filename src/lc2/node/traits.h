@@ -74,6 +74,9 @@ struct WdlNodeTraits {
   static U ComputeU(QUFactor cpuct, P p, N n_edge);
   static WDL WDLFromComputation(NetworkComputation*, int idx);
   static P PFromComputation(NetworkComputation*, int idx, int move);
+  static void UpdateWDL(WDL* node_wdl, WDL wdl_update, int multivisit, N new_n,
+                        bool invert);
+  static Q WDLtoQ(WDL wdl);
 };
 
 // TODO Compute FPU properly
@@ -106,6 +109,15 @@ inline WdlNodeTraits::P WdlNodeTraits::PFromComputation(
     NetworkComputation* computation, int idx, int move) {
   return computation->GetPVal(idx, move);
 }
+
+inline void WdlNodeTraits::UpdateWDL(WDL* node_wdl, WDL wdl_update,
+                                     int multivisit, N new_n, bool invert) {
+  if (invert) multivisit = -multivisit;
+  node_wdl->q += multivisit * (wdl_update.q - node_wdl->q) / new_n;
+  node_wdl->d += multivisit * (wdl_update.d - node_wdl->d) / new_n;
+}
+
+inline WdlNodeTraits::Q WdlNodeTraits::WDLtoQ(WDL wdl) { return wdl.q; }
 
 }  // namespace lc2
 }  // namespace lczero

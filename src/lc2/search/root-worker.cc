@@ -44,9 +44,7 @@ void RootWorker::RunBlocking() {
     auto messages = channel_.DequeueEverything();
     bool had_updates = false;
     for (auto& msg : messages) {
-      // TODO(crem) Decide whether it's better to send new batch as early as
-      // backprop start, or it's better to wait for kRootForwardPropDone.
-      if (msg->type == Message::kRootEvalReady) had_updates = true;
+      if (msg->type == Message::kRootBackPropDone) had_updates = true;
       HandleMessage(std::move(msg));
     }
     if (had_updates) {
@@ -64,11 +62,11 @@ void RootWorker::HandleMessage(std::unique_ptr<Message> msg) {
     case Message::kRootCollision:
       HandleCollisionMessage(std::move(msg));
       return;
-    case Message::kRootEvalSkipReady:
+    case Message::kRootEvalSkipped:
       HandleEvalSkipReadyMessage(std::move(msg));
       return;
-    case Message::kRootEvalReady:
-      HandleEvalReadyMessage(std::move(msg));
+    case Message::kRootBackPropDone:
+      HandleBackPropDoneMessage(std::move(msg));
       return;
     default:
       throw Exception("Unexpected message type " + std::to_string(msg->type) +
@@ -87,7 +85,6 @@ void RootWorker::SpawnGatherers(int arity) {
   msg->epoch = epoch_;
   msg->position_history = search_->history_at_root();
   // msg->attempt = 0;
-  msg->is_root_node = true;
   search_->DispatchToNodes(std::move(msg));
 }
 
@@ -115,14 +112,10 @@ void RootWorker::HandleEvalSkipReadyMessage(std::unique_ptr<Message> msg) {
   messages_idling_ += msg->arity;
 }
 
-void RootWorker::HandleEvalReadyMessage(std::unique_ptr<Message> msg) {
-  assert(msg->arity == 1);
-  assert(messages_sent_to_gather_ > 0);
-  --messages_sent_to_gather_;
-  ++messages_sent_to_forwardprop_;
-  msg->type = Message::kNodeForwardProp;
-  msg->position_depth = search_->history_at_root().GetLength();
-  search_->DispatchToNodes(std::move(msg));
+void RootWorker::HandleBackPropDoneMessage(std::unique_ptr<Message> msg) {
+  assert(messages_sent_to_gather_ >= msg->arity);
+  messages_sent_to_gather_ -= msg->arity;
+  messages_idling_ += msg->arity;
 }
 
 }  // namespace lc2

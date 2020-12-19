@@ -107,27 +107,27 @@ void EvalWorker::ProcessOneBatch() {
   // Now we have a batch ready for eval, so do a NN computation.
   computation->ComputeBlocking();
 
-  // If there were any skip evals, free them up.
-  if (num_skip_nodes > 0) {
-    auto msg = std::make_unique<Message>();
-    msg->arity = num_skip_nodes;
-    msg->type = Message::kRootEvalSkipReady;
-    search_->DispatchToRoot(std::move(msg));
-  }
-
   // Sending the computation results.
   for (int i = 0; i < static_cast<int>(evals.size()); ++i) {
     auto msg = std::move(evals[i].msg);
     auto& eval = *msg->eval_result;
-    eval.q = NT::WDLFromComputation(computation.get(), i);
+    eval.wdl = NT::WDLFromComputation(computation.get(), i);
     eval.p_edge.reserve(eval.edges.size());
     for (const auto& move : eval.edges) {
       eval.p_edge.push_back(NT::PFromComputation(
           computation.get(), i, move.as_nn_index(evals[i].transform)));
     }
 
-    msg->type = Message::kRootEvalReady;
+    msg->type = Message::kNodeBackProp;
     assert(msg->arity == 1);
+    search_->DispatchToNodes(std::move(msg));
+  }
+
+  // If there were any skip evals, free them up.
+  if (num_skip_nodes > 0) {
+    auto msg = std::make_unique<Message>();
+    msg->arity = num_skip_nodes;
+    msg->type = Message::kRootEvalSkipped;
     search_->DispatchToRoot(std::move(msg));
   }
 }

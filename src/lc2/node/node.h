@@ -45,7 +45,7 @@ struct Node {
   NT::N n;
 
   // Eval of the node.
-  NT::WDL q;
+  NT::WDL wdl;
 
   // Moves from this position.
   MoveList edges;

@@ -50,22 +50,20 @@ std::string MessageTypeToString(Message::Type t) {
       return "kNodeGather";
     case Message::kNodeBlacklist:
       return "kNodeBlacklist";
-    case Message::kNodeForwardProp:
-      return "kNodeForwardProp";
+    case Message::kNodeBackProp:
+      return "kNodeBackProp";
     case Message::kRootInitial:
       return "kRootInitial";
     case Message::kRootCollision:
       return "kRootCollision";
-    case Message::kRootEvalReady:
-      return "kRootEvalReady";
-    case Message::kRootEvalSkipReady:
-      return "kRootEvalSkipReady";
+    case Message::kRootEvalSkipped:
+      return "kRootEvalSkipped";
     case Message::kRootOutOfOrderEvalReady:
       return "kRootOutOfOrderEvalReady";
     case Message::kRootBlacklistDone:
       return "kRootBlacklistDone";
-    case Message::kRootForwardPropDone:
-      return "kRootForwardPropDone";
+    case Message::kRootBackPropDone:
+      return "kRootBackPropDone";
     case Message::kEvalEval:
       return "kEvalEval";
     case Message::kEvalSkip:

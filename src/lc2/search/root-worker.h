@@ -52,7 +52,7 @@ class RootWorker {
   void HandleInitialMessage(std::unique_ptr<Message>);
   void HandleCollisionMessage(std::unique_ptr<Message>);
   void HandleEvalSkipReadyMessage(std::unique_ptr<Message>);
-  void HandleEvalReadyMessage(std::unique_ptr<Message>);
+  void HandleBackPropDoneMessage(std::unique_ptr<Message>);
 
   void SpawnGatherers(int arity);
 

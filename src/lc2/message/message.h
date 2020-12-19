@@ -39,6 +39,8 @@ namespace lczero {
 namespace lc2 {
 
 struct Message {
+  using NT = WdlNodeTraits;
+
   enum class Class {
     kNode = 0x01,
     kRoot = 0x02,
@@ -54,16 +56,15 @@ struct Message {
     // Node-specific message types.
     kNodeGather = 0x0101,
     kNodeBlacklist = 0x0102,
-    kNodeForwardProp = 0x0103,
+    kNodeBackProp = 0x0103,
 
     // Root-specific message types.
     kRootInitial = 0x0201,  // Initial nodes injection when search starts.
     kRootCollision = 0x0202,
-    kRootEvalReady = 0x0203,
-    kRootEvalSkipReady = 0x0204,
-    kRootOutOfOrderEvalReady = 0x0205,
-    kRootBlacklistDone = 0x0206,
-    kRootForwardPropDone = 0x0207,
+    kRootEvalSkipped = 0x0203,
+    kRootOutOfOrderEvalReady = 0x0204,
+    kRootBlacklistDone = 0x0205,
+    kRootBackPropDone = 0x0206,
 
     // Eval-specific types.
     kEvalEval = 0x0301,
@@ -75,13 +76,11 @@ struct Message {
 
   // Instead of sending multiple identical messages, it's better to send just
   // one and set number of replicas.
+  // TODO(crem) Come up with better name for this variable.
   uint16_t arity = 0;
 
   // From which epoch the message was sent. Is used to track stale messages.
   uint32_t epoch = 0;
-
-  // The message is sent to a root node.
-  bool is_root_node = false;
 
   // Number of gathering attempt, zero-based.
   // uint16_t attempt = 0;
@@ -92,17 +91,19 @@ struct Message {
   // be a problem later in the game.
   PositionHistory position_history;
 
-  // Index of a current node in position_history. Only used for backprop.
-  // TODO(crem): Kind of ugly, see if nodes can get that information from other
-  // sources.
-  int position_depth;
+  // Indices of moves from the current game head to the leaf.
+  std::vector<uint8_t> move_idx;
+
+  // TODO(crem) Add comment here. DO NOT SUBMIT
+  bool node_height_is_odd;
+
+  // TODO(crem) Add comment here. DO NOT SUBMIT
+  NT::Q child_q;
 
   // Eval result.
   struct Eval {
-    using NT = WdlNodeTraits;
-
     // Eval of the node.
-    NT::WDL q;
+    NT::WDL wdl;
     // Moves from this position.
     MoveList edges;
     // Priors for outgoing edges.
