@@ -43,31 +43,31 @@ std::unique_ptr<Message> Message::SplitOff(int how_much) {
 std::string MessageTypeToString(Message::Type t) {
   switch (t) {
     case Message::kUnknown:
-      return "kUnknown";
+      return "Unknown";
     case Message::kAuxAbort:
-      return "kAuxAbort";
+      return "Aux::Abort";
     case Message::kNodeGather:
-      return "kNodeGather";
+      return ". Gather";
     case Message::kNodeBlacklist:
-      return "kNodeBlacklist";
+      return ". Blacklist";
     case Message::kNodeBackProp:
-      return "kNodeBackProp";
+      return "# BackProp";
     case Message::kRootInitial:
-      return "kRootInitial";
+      return "# Initial";
     case Message::kRootCollision:
-      return "kRootCollision";
+      return "# Collision";
     case Message::kRootEvalSkipped:
-      return "kRootEvalSkipped";
+      return "# EvalSkipped";
     case Message::kRootOutOfOrderEvalReady:
-      return "kRootOutOfOrderEvalReady";
+      return "# OutOfOrderEvalReady";
     case Message::kRootBlacklistDone:
-      return "kRootBlacklistDone";
+      return "# BlacklistDone";
     case Message::kRootBackPropDone:
-      return "kRootBackPropDone";
+      return "# BackPropDone";
     case Message::kEvalEval:
-      return "kEvalEval";
+      return "+ Eval";
     case Message::kEvalSkip:
-      return "kEvalSkip";
+      return "+ Skip";
   };
   return "Unexpected value";
 }

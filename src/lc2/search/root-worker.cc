@@ -47,6 +47,9 @@ void RootWorker::RunBlocking() {
       if (msg->type == Message::kRootBackPropDone) had_updates = true;
       HandleMessage(std::move(msg));
     }
+    LOGFILE << "had_updates:" << had_updates << " idling:" << messages_idling_
+            << " sent:" << messages_sent_to_gather_
+            << " skipping:" << messages_skipping_eval_;
     if (had_updates) {
       ++epoch_;
       if (messages_idling_ > 0) SpawnGatherers(messages_idling_);

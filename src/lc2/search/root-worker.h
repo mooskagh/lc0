@@ -67,8 +67,6 @@ class RootWorker {
   int messages_idling_ = 0;
   // Number of nodes currently being gathered (or evaled).
   int messages_sent_to_gather_ = 0;
-  // Number of nodes currently forward-propagating.
-  int messages_sent_to_forwardprop_ = 0;
   // Nodes sent to skip eval.
   int messages_skipping_eval_ = 0;
 };

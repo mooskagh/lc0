@@ -129,7 +129,7 @@ void NodesWorker::ForwardVisit(Node* node, std::unique_ptr<Message> msg) {
   for (size_t i = 0; i < move_count; ++i) {
     const auto count = edge_to_visits[i];
     if (count == 0) continue;
-    const bool last_iteration = num_visits == msg->arity;
+    const bool last_iteration = count == msg->arity;
     auto send_msg = last_iteration ? std::move(msg) : msg->SplitOff(count);
     send_msg->position_history.Append(node->edges[i]);
     send_msg->move_idx.push_back(i);
