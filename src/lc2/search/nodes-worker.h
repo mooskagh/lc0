@@ -43,9 +43,10 @@ class NodesWorker {
   Channel* channel() { return &channel_; }
 
  private:
-  void GatherNode(std::unique_ptr<Message> message);
-  void ForwardVisit(Node*, std::unique_ptr<Message> message);
   void BackProp(std::unique_ptr<Message> message);
+  void ForwardVisit(Node*, std::unique_ptr<Message> message);
+  void GatherNode(std::unique_ptr<Message> message);
+  void GatherPV(std::unique_ptr<Message> message);
 
   Search* const search_;
   NodeShard* const shard_;

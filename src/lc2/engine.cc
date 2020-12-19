@@ -54,7 +54,10 @@ void PopulateUciOptions(OptionsParser* options) {
 
 }  // namespace
 
-Engine::Engine() {
+Engine::Engine()
+    : uci_responder_(std::make_unique<CallbackUciResponder>(
+          std::bind(&UciLoop::SendBestMove, this, std::placeholders::_1),
+          std::bind(&UciLoop::SendInfo, this, std::placeholders::_1))) {
   ChessBoard board;
   int no_capture_ply;
   int full_moves;
@@ -79,8 +82,8 @@ void Engine::RunLoop() {
 
 void Engine::CmdGo(const GoParams&) {
   network_ = NetworkFactory::LoadNetwork(options_.GetOptionsDict());
-  search_ = std::make_unique<Search>(network_.get(), nullptr, position_history_,
-                                     node_keeper_.get());
+  search_ = std::make_unique<Search>(network_.get(), uci_responder_.get(),
+                                     position_history_, node_keeper_.get());
   search_->Start();
 }
 

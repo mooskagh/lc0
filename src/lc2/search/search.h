@@ -41,8 +41,8 @@ namespace lc2 {
 
 class Search {
  public:
-  Search(Network* network, std::unique_ptr<UciResponder> uci,
-         const PositionHistory& root, NodeKeeper* nodes);
+  Search(Network* network, UciResponder* uci, const PositionHistory& root,
+         NodeKeeper* nodes);
   ~Search();
 
   // Search starts (by spawning initial visits).

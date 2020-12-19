@@ -33,8 +33,8 @@
 namespace lczero {
 namespace lc2 {
 
-RootWorker::RootWorker(Search* search, std::unique_ptr<UciResponder> uci)
-    : search_(search), uci_responder_(std::move(uci)) {}
+RootWorker::RootWorker(Search* search, UciResponder* uci)
+    : search_(search), uci_responder_(uci) {}
 
 void RootWorker::RunBlocking() {
   // TODO(crem) Epoch must be persistent between searches.
@@ -47,9 +47,7 @@ void RootWorker::RunBlocking() {
       if (msg->type == Message::kRootBackPropDone) had_updates = true;
       HandleMessage(std::move(msg));
     }
-    LOGFILE << "had_updates:" << had_updates << " idling:" << messages_idling_
-            << " sent:" << messages_sent_to_gather_
-            << " skipping:" << messages_skipping_eval_;
+    SpawnPVGatherer();
     if (had_updates) {
       ++epoch_;
       if (messages_idling_ > 0) SpawnGatherers(messages_idling_);
@@ -71,6 +69,9 @@ void RootWorker::HandleMessage(std::unique_ptr<Message> msg) {
     case Message::kRootBackPropDone:
       HandleBackPropDoneMessage(std::move(msg));
       return;
+    case Message::kRootPVGathered:
+      HandlePVGathered(std::move(msg));
+      return;
     default:
       throw Exception("Unexpected message type " + std::to_string(msg->type) +
                       " in root worker.");
@@ -88,6 +89,16 @@ void RootWorker::SpawnGatherers(int arity) {
   msg->epoch = epoch_;
   msg->position_history = search_->history_at_root();
   // msg->attempt = 0;
+  search_->DispatchToNodes(std::move(msg));
+}
+
+void RootWorker::SpawnPVGatherer() {
+  auto msg = std::make_unique<Message>();
+  msg->type = Message::kNodeGatherPV;
+  msg->arity = 1;
+  msg->epoch = epoch_;
+  msg->position_history = search_->history_at_root();
+  msg->pv = Message::PV{};
   search_->DispatchToNodes(std::move(msg));
 }
 
@@ -119,6 +130,18 @@ void RootWorker::HandleBackPropDoneMessage(std::unique_ptr<Message> msg) {
   assert(messages_sent_to_gather_ >= msg->arity);
   messages_sent_to_gather_ -= msg->arity;
   messages_idling_ += msg->arity;
+}
+
+void RootWorker::HandlePVGathered(std::unique_ptr<Message> msg) {
+  if (msg->pv->pv.empty()) return;
+  std::vector<ThinkingInfo> infos;
+  infos.emplace_back();
+  infos.back().pv = msg->pv->pv;
+  for (int i = search_->history_at_root().IsBlackToMove() ? 0 : 1;
+       i < static_cast<int>(infos[0].pv.size()); i += 2) {
+    infos[0].pv[i].Mirror();
+  }
+  uci_responder_->OutputThinkingInfo(&infos);
 }
 
 }  // namespace lc2

@@ -57,6 +57,7 @@ struct Message {
     kNodeGather = 0x0101,
     kNodeBlacklist = 0x0102,
     kNodeBackProp = 0x0103,
+    kNodeGatherPV = 0x0104,
 
     // Root-specific message types.
     kRootInitial = 0x0201,  // Initial nodes injection when search starts.
@@ -65,6 +66,7 @@ struct Message {
     kRootOutOfOrderEvalReady = 0x0204,
     kRootBlacklistDone = 0x0205,
     kRootBackPropDone = 0x0206,
+    kRootPVGathered = 0x0207,
 
     // Eval-specific types.
     kEvalEval = 0x0301,
@@ -110,6 +112,12 @@ struct Message {
     std::vector<NT::P> p_edge;
   };
   std::optional<Eval> eval_result;
+
+  // This part is populated during PV/bestmove collection
+  struct PV {
+    MoveList pv;
+  };
+  std::optional<PV> pv;
 
   std::unique_ptr<Message> SplitOff(int how_much);
 };

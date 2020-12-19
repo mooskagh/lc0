@@ -50,6 +50,8 @@ std::string MessageTypeToString(Message::Type t) {
       return ". Gather";
     case Message::kNodeBlacklist:
       return ". Blacklist";
+    case Message::kNodeGatherPV:
+      return ". GatherPV";
     case Message::kNodeBackProp:
       return "# BackProp";
     case Message::kRootInitial:
@@ -64,6 +66,8 @@ std::string MessageTypeToString(Message::Type t) {
       return "# BlacklistDone";
     case Message::kRootBackPropDone:
       return "# BackPropDone";
+    case Message::kRootPVGathered:
+      return "# PVGathered";
     case Message::kEvalEval:
       return "+ Eval";
     case Message::kEvalSkip:

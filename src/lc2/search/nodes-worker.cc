@@ -47,6 +47,9 @@ void NodesWorker::RunBlocking() {
       case Message::kNodeBackProp:
         BackProp(std::move(msg));
         break;
+      case Message::kNodeGatherPV:
+        GatherPV(std::move(msg));
+        break;
       default:
         throw Exception("Unexpected message type " + std::to_string(msg->type) +
                         " in node worker.");
@@ -180,6 +183,27 @@ void NodesWorker::BackProp(std::unique_ptr<Message> msg) {
     msg->child_q = Node::NT::WDLtoQ(node->wdl);
     search_->DispatchToNodes(std::move(msg));
   }
+}
+
+void NodesWorker::GatherPV(std::unique_ptr<Message> msg) {
+  auto hash = msg->position_history.Last().Hash();
+  auto [found, node] = shard_->GetNode(hash);
+  assert(found);
+  // If we somehow ended up in a node being evaluated, just ignore that message.
+  if (!node->eval_completed) return;
+
+  auto idx = std::max_element(node->n_edge.begin(), node->n_edge.end()) -
+             node->n_edge.begin();
+
+  if (node->n_edge[idx] == 0) {
+    msg->type = Message::kRootPVGathered;
+    search_->DispatchToRoot(std::move(msg));
+    return;
+  }
+
+  msg->pv->pv.push_back(node->edges[idx]);
+  msg->position_history.Append(node->edges[idx]);
+  search_->DispatchToNodes(std::move(msg));
 }
 
 }  // namespace lc2

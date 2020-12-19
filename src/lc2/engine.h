@@ -53,6 +53,7 @@ class Engine : public UciLoop {
   std::unique_ptr<Network> network_;
   std::unique_ptr<NodeKeeper> node_keeper_;
   std::unique_ptr<Search> search_;
+  std::unique_ptr<UciResponder> uci_responder_;
 };
 
 }  // namespace lc2

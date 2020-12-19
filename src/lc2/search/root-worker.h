@@ -42,7 +42,7 @@ class Search;
 // clock.
 class RootWorker {
  public:
-  RootWorker(Search* search, std::unique_ptr<UciResponder> uci);
+  RootWorker(Search* search, UciResponder* uci);
   void RunBlocking();
 
   Channel* channel() { return &channel_; }
@@ -53,11 +53,13 @@ class RootWorker {
   void HandleCollisionMessage(std::unique_ptr<Message>);
   void HandleEvalSkipReadyMessage(std::unique_ptr<Message>);
   void HandleBackPropDoneMessage(std::unique_ptr<Message>);
+  void HandlePVGathered(std::unique_ptr<Message>);
 
   void SpawnGatherers(int arity);
+  void SpawnPVGatherer();
 
   Search* const search_;
-  const std::unique_ptr<UciResponder> uci_responder_;
+  UciResponder* uci_responder_;
   Channel channel_;
 
   // Current epoch.
