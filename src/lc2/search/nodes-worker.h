@@ -48,6 +48,8 @@ class NodesWorker {
   void GatherNode(std::unique_ptr<Message> message);
   void GatherPV(std::unique_ptr<Message> message);
 
+  void SendVerboseInfo(const Node& node);
+
   Search* const search_;
   NodeShard* const shard_;
   Channel channel_;

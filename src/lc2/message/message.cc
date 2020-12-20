@@ -68,6 +68,8 @@ std::string MessageTypeToString(Message::Type t) {
       return "# BackPropDone";
     case Message::kRootPVGathered:
       return "# PVGathered";
+    case Message::kRootOutputInfo:
+      return "# PVOutputInfo";
     case Message::kEvalEval:
       return "+ Eval";
     case Message::kEvalSkip:

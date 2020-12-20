@@ -67,6 +67,7 @@ struct Message {
     kRootBlacklistDone = 0x0205,
     kRootBackPropDone = 0x0206,
     kRootPVGathered = 0x0207,
+    kRootOutputInfo = 0x0208,
 
     // Eval-specific types.
     kEvalEval = 0x0301,
@@ -118,6 +119,7 @@ struct Message {
     MoveList pv;
   };
   std::optional<PV> pv;
+  std::vector<std::string> infos;
 
   std::unique_ptr<Message> SplitOff(int how_much);
 };

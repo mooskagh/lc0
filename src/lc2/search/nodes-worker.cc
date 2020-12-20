@@ -155,7 +155,7 @@ void NodesWorker::BackProp(std::unique_ptr<Message> msg) {
 
   const bool is_leaf = !node->eval_completed;
   if (is_leaf) {
-    msg->node_height_is_odd = false;
+    msg->node_height_is_odd = true;
     node->eval_completed = true;
     node->wdl = msg->eval_result->wdl;
     node->n = arity;
@@ -190,6 +190,10 @@ void NodesWorker::GatherPV(std::unique_ptr<Message> msg) {
   auto hash = msg->position_history.Last().Hash();
   auto [found, node] = shard_->GetNode(hash);
   assert(found);
+
+  // DO NOT SUBMIT
+  if (msg->pv->pv.empty()) SendVerboseInfo(*node);
+
   // If we somehow ended up in a node being evaluated, just ignore that message.
   if (!node->eval_completed) return;
 
@@ -205,6 +209,25 @@ void NodesWorker::GatherPV(std::unique_ptr<Message> msg) {
   msg->pv->pv.push_back(node->edges[idx]);
   msg->position_history.Append(node->edges[idx]);
   search_->DispatchToNodes(std::move(msg));
+}
+
+void NodesWorker::SendVerboseInfo(const Node& node) {
+  auto print = [](auto* oss, auto pre, auto v, auto post, auto w, int p = 0) {
+    *oss << pre << std::setw(w) << std::setprecision(p) << v << post;
+  };
+
+  for (int i = 0; i < static_cast<int>(node.edges.size()); ++i) {
+    std::ostringstream oss;
+    oss << std::fixed;
+    print(&oss, "", node.edges[i].as_string(), " ", 5);
+    print(&oss, "(", node.edges[i].as_nn_index(0), ") ", 4);
+    oss << std::right;
+    print(&oss, "N: ", node.n_edge[i], " ", 7);
+    auto p = node.p_edge[i];
+    print(&oss, "(P: ", p * 100, "%) ", 5, p >= 0.99995f ? 1 : 2);
+    print(&oss, "(Q: ", node.q_edge[i], ") ", 8, 5);
+    LOGFILE << oss.str();
+  }
 }
 
 }  // namespace lc2
