@@ -47,10 +47,14 @@ void RootWorker::RunBlocking() {
       if (msg->type == Message::kRootBackPropDone) had_updates = true;
       HandleMessage(std::move(msg));
     }
-    SpawnPVGatherer();
+    LOGFILE << "epoch:" << epoch_ << " had_upd:" << had_updates
+            << " idling:" << messages_idling_
+            << " gathering:" << messages_sent_to_gather_
+            << " skipping:" << messages_skipping_eval_;
     if (had_updates) {
       ++epoch_;
       if (messages_idling_ > 0) SpawnGatherers(messages_idling_);
+      SpawnPVGatherer();
     }
   }
 }

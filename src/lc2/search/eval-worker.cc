@@ -75,7 +75,7 @@ void EvalWorker::RunBlocking() {
 
 void EvalWorker::ProcessOneBatch() {
   // TODO Move this to command line params.
-  constexpr int kMinBatch = 2;
+  constexpr int kMinBatch = 256;
 
   auto computation = network_->NewComputation();
   const auto& caps = network_->GetCapabilities();
@@ -105,6 +105,7 @@ void EvalWorker::ProcessOneBatch() {
   } while (num_skip_nodes + evals.size() < kMinBatch || evals.empty());
 
   // Now we have a batch ready for eval, so do a NN computation.
+  LOGFILE << "Eval:" << evals.size() << " skip:" << num_skip_nodes;
   computation->ComputeBlocking();
 
   // Sending the computation results.
