@@ -101,8 +101,8 @@ void NodesWorker::ForwardVisit(Node* node, std::unique_ptr<Message> msg) {
   q_plus_u.reserve(move_count);
 
   const auto cpuct_mult = Node::NT::ComputeUFactor(1.23, node->n);
-  const Node::NT::Q fpu =
-      Node::NT::WDLtoQ(node->wdl);  // Node::NT::ComputeFPU(); DO NOT SUBMIT
+  const Node::NT::Q fpu = -Node::NT::WDLtoNegativeQ(
+      node->wdl);  // Node::NT::ComputeFPU(); DO NOT SUBMIT
   for (size_t i = 0; i < move_count; ++i) {
     auto q = Node::NT::ComputeQ(node->n_edge[i], fpu, node->q_edge[i]);
     auto u = Node::NT::ComputeU(cpuct_mult, node->p_edge[i], node->n_edge[i]);
@@ -155,7 +155,7 @@ void NodesWorker::BackProp(std::unique_ptr<Message> msg) {
 
   const bool is_leaf = !node->eval_completed;
   if (is_leaf) {
-    msg->node_height_is_odd = true;
+    msg->node_height_is_odd = false;
     node->eval_completed = true;
     node->wdl = msg->eval_result->wdl;
     node->n = arity;
@@ -181,7 +181,7 @@ void NodesWorker::BackProp(std::unique_ptr<Message> msg) {
   } else {
     msg->node_height_is_odd = !msg->node_height_is_odd;
     msg->position_history.Pop();
-    msg->child_q = Node::NT::WDLtoQ(node->wdl);
+    msg->child_q = Node::NT::WDLtoNegativeQ(node->wdl);
     search_->DispatchToNodes(std::move(msg));
   }
 }
@@ -192,7 +192,7 @@ void NodesWorker::GatherPV(std::unique_ptr<Message> msg) {
   assert(found);
 
   // DO NOT SUBMIT
-  if (msg->pv->pv.empty()) SendVerboseInfo(*node);
+  // if (msg->pv->pv.empty()) SendVerboseInfo(*node);
 
   // If we somehow ended up in a node being evaluated, just ignore that message.
   if (!node->eval_completed) return;

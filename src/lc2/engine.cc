@@ -47,7 +47,7 @@ const OptionId kLogFileId{"logfile", "LogFile",
 
 void PopulateUciOptions(OptionsParser* options) {
   NetworkFactory::PopulateOptions(options);
-  options->Add<IntOption>(kNumShardsId, 0, 1024) = 2;
+  options->Add<IntOption>(kNumShardsId, 1, 1024) = 1;  // 2
   options->Add<StringOption>(kLogFileId);
   ConfigFile::PopulateOptions(options);
 }

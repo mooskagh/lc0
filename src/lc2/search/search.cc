@@ -58,7 +58,7 @@ void Search::Start() {
   auto msg = std::make_unique<Message>();
 
   msg->type = Message::kRootInitial;
-  msg->arity = 3;  // TODO(crem) DO NOT SUBMIT, take that from params.
+  msg->arity = 512;  // TODO(crem) DO NOT SUBMIT, take that from params.
 
   DispatchToRoot(std::move(msg));
 }

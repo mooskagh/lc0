@@ -45,6 +45,7 @@ std::unique_ptr<Message> Channel::Dequeue() {
   }
   auto val = std::move(messages_.front());
   messages_.pop_front();
+  LOGFILE << "Fetch: " << *val;
   return val;
 }
 

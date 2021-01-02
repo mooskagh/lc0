@@ -53,7 +53,7 @@ std::string MessageTypeToString(Message::Type t) {
     case Message::kNodeGatherPV:
       return ". GatherPV";
     case Message::kNodeBackProp:
-      return "# BackProp";
+      return ". BackProp";
     case Message::kRootInitial:
       return "# Initial";
     case Message::kRootCollision:
