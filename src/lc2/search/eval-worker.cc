@@ -108,6 +108,7 @@ void EvalWorker::ProcessOneBatch() {
   LOGFILE << "Eval:" << evals.size() << " skip:" << num_skip_nodes;
   computation->ComputeBlocking();
 
+  auto new_last_epoch = search_->epoch_counter()->NewEpoch(evals.size());
   // Sending the computation results.
   for (int i = 0; i < static_cast<int>(evals.size()); ++i) {
     auto msg = std::move(evals[i].msg);
@@ -120,6 +121,7 @@ void EvalWorker::ProcessOneBatch() {
                    });
     eval.p_edge = NT::PFromComputation(computation.get(), i, move_indices);
     msg->type = Message::kNodeBackProp;
+    msg->epoch = new_last_epoch - i;
     assert(msg->arity == 1);
     search_->DispatchToNodes(std::move(msg));
   }

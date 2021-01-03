@@ -1,6 +1,6 @@
 /*
   This file is part of Leela Chess Zero.
-  Copyright (C) 2020 The LCZero Authors
+  Copyright (C) 2020-2021 The LCZero Authors
 
   Leela Chess is free software: you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -29,6 +29,7 @@
 
 #include <vector>
 
+#include "lc2/node/epoch.h"
 #include "lc2/node/shard.h"
 
 namespace lczero {
@@ -36,13 +37,16 @@ namespace lc2 {
 
 class NodeKeeper {
  public:
-  NodeKeeper(int num_shards) : shards_(num_shards) {}
+  NodeKeeper(int num_shards)
+      : shards_(num_shards), epoch_counter_(std::make_unique<EpochCounter>()) {}
 
-  // DO NOT SUBMIT, change interface, incapsulate.
+  // DO NOT SUBMIT, change interface, encapsulate.
   std::vector<NodeShard>* shards() { return &shards_; }
+  EpochCounter* epoch_counter() const { return epoch_counter_.get(); }
 
  private:
   std::vector<NodeShard> shards_;
+  std::unique_ptr<EpochCounter> epoch_counter_;
 };
 
 }  // namespace lc2

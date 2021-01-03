@@ -31,6 +31,7 @@
 
 #include "chess/callbacks.h"
 #include "lc2/message/channel.h"
+#include "lc2/node/epoch.h"
 #include "lc2/search/stats-collector.h"
 
 namespace lczero {
@@ -63,9 +64,8 @@ class RootWorker {
   StatsCollector stats_collector_;
   Channel channel_;
 
-  // Current epoch.
-  // TODO(crem) Epoch must be persistent between searches.
-  uint32_t epoch_ = 0;
+  EpochCounter::CountType largest_known_epoch_;
+  uint32_t num_epoch_holes_ = 0;
   // Spare messages, waiting to be sent when a new epoch starts.
   int messages_idling_ = 0;
   // Number of nodes currently being gathered (or evaled).

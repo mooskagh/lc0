@@ -30,6 +30,7 @@
 #include <vector>
 
 #include "chess/bitboard.h"
+#include "lc2/node/epoch.h"
 #include "lc2/node/traits.h"
 
 namespace lczero {
@@ -38,7 +39,12 @@ namespace lc2 {
 struct Node {
   using NT = WdlNodeTraits;
 
+  // Epoch of the last update.
+  EpochCounter::CountType epoch = 0;
+
   // Did eval for this node complete (true) or is still in progress (false).
+  // TODO(crem) actually epoch==0 always when eval is not completed, so
+  // it may make sense to use it instead.
   bool eval_completed = false;
 
   // Number of finished visits.

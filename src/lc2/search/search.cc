@@ -40,7 +40,10 @@ bool matches_class(Message* msg, Message::Class c) {
 
 Search::Search(Network* network, UciResponder* uci, const PositionHistory& root,
                NodeKeeper* nodes)
-    : rootpos_(root), root_worker_(this, uci), eval_worker_(this, network) {
+    : rootpos_(root),
+      epoch_counter_(nodes->epoch_counter()),
+      root_worker_(this, uci),
+      eval_worker_(this, network) {
   for (auto& shard : *nodes->shards()) {
     nodes_workers_.push_back(std::make_unique<NodesWorker>(this, &shard));
   }

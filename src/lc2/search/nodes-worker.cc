@@ -78,7 +78,7 @@ void NodesWorker::GatherNode(std::unique_ptr<Message> msg) {
     if (!will_collide) return;
   }
 
-  if (!node->eval_completed) {
+  if (!node->eval_completed || node->epoch > msg->epoch) {
     // Collision.
     msg->type = Message::kRootCollision;
     search_->DispatchToRoot(std::move(msg));
@@ -152,6 +152,7 @@ void NodesWorker::BackProp(std::unique_ptr<Message> msg) {
   const auto arity = msg->arity;
   assert(msg->eval_result);
   auto& eval_result = *msg->eval_result;
+  node->epoch = std::max(node->epoch, msg->epoch);
 
   const bool is_leaf = !node->eval_completed;
   if (is_leaf) {

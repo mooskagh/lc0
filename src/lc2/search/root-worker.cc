@@ -34,7 +34,9 @@ namespace lczero {
 namespace lc2 {
 
 RootWorker::RootWorker(Search* search, UciResponder* uci)
-    : search_(search), stats_collector_(uci) {}
+    : search_(search),
+      stats_collector_(uci),
+      largest_known_epoch_(search->epoch_counter()->GetCurrentEpoch()) {}
 
 void RootWorker::RunBlocking() {
   // TODO(crem) Epoch must be persistent between searches.
@@ -47,12 +49,11 @@ void RootWorker::RunBlocking() {
       if (msg->type == Message::kRootBackPropDone) had_updates = true;
       HandleMessage(std::move(msg));
     }
-    LOGFILE << "epoch:" << epoch_ << " had_upd:" << had_updates
-            << " idling:" << messages_idling_
+    LOGFILE << "epoch:" << largest_known_epoch_ << " holes:" << num_epoch_holes_
+            << " had_upd:" << had_updates << " idling:" << messages_idling_
             << " gathering:" << messages_sent_to_gather_
             << " skipping:" << messages_skipping_eval_;
-    if (had_updates) {
-      ++epoch_;
+    if (had_updates && num_epoch_holes_ == 0) {
       if (messages_idling_ > 0) SpawnGatherers(messages_idling_);
       SpawnPVGatherer();
     }
@@ -84,13 +85,14 @@ void RootWorker::HandleMessage(std::unique_ptr<Message> msg) {
 
 void RootWorker::SpawnGatherers(int arity) {
   assert(messages_idling_ >= arity);
+  assert(num_epoch_holes_ == 0);
   messages_idling_ -= arity;
   messages_sent_to_gather_ += arity;
 
   auto msg = std::make_unique<Message>();
   msg->type = Message::kNodeGather;
   msg->arity = arity;
-  msg->epoch = epoch_;
+  msg->epoch = largest_known_epoch_;
   msg->position_history = search_->history_at_root();
   // msg->attempt = 0;
   search_->DispatchToNodes(std::move(msg));
@@ -100,7 +102,7 @@ void RootWorker::SpawnPVGatherer() {
   auto msg = std::make_unique<Message>();
   msg->type = Message::kNodeGatherPV;
   msg->arity = 1;
-  msg->epoch = epoch_;
+  msg->epoch = largest_known_epoch_;
   msg->position_history = search_->history_at_root();
   msg->pv = Message::PV{};
   search_->DispatchToNodes(std::move(msg));
@@ -131,7 +133,15 @@ void RootWorker::HandleEvalSkipReadyMessage(std::unique_ptr<Message> msg) {
 }
 
 void RootWorker::HandleBackPropDoneMessage(std::unique_ptr<Message> msg) {
+  assert(msg->epoch != largest_known_epoch_);
   assert(messages_sent_to_gather_ >= msg->arity);
+  if (msg->epoch > largest_known_epoch_) {
+    num_epoch_holes_ += msg->epoch - largest_known_epoch_ - 1;
+    largest_known_epoch_ = msg->epoch;
+  } else {
+    assert(num_epoch_holes_ > 0);
+    --num_epoch_holes_;
+  }
   stats_collector_.AddNumEvals(msg->arity);
   messages_sent_to_gather_ -= msg->arity;
   messages_idling_ += msg->arity;

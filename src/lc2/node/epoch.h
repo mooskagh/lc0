@@ -1,6 +1,6 @@
 /*
   This file is part of Leela Chess Zero.
-  Copyright (C) 2020 The LCZero Authors
+  Copyright (C) 2020-2021 The LCZero Authors
 
   Leela Chess is free software: you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -27,43 +27,23 @@
 
 #pragma once
 
-#include <thread>
-
-#include "lc2/message/message.h"
-#include "lc2/node/keeper.h"
-#include "lc2/search/eval-worker.h"
-#include "lc2/search/nodes-worker.h"
-#include "lc2/search/root-worker.h"
-#include "neural/network.h"
-
+#include <atomic>
 namespace lczero {
 namespace lc2 {
 
-class Search {
+class EpochCounter {
  public:
-  Search(Network* network, UciResponder* uci, const PositionHistory& root,
-         NodeKeeper* nodes);
-  ~Search();
-
-  // Search starts (by spawning initial visits).
-  void Start();
-  void DispatchToRoot(std::unique_ptr<Message> message);
-  void DispatchToNodes(std::unique_ptr<Message> message);
-  void DispatchToEval(std::unique_ptr<Message> message);
-
-  const PositionHistory& history_at_root() { return rootpos_; }
-  EpochCounter* epoch_counter() const { return epoch_counter_; }
+  using CountType = uint32_t;
+  CountType GetCurrentEpoch() const {
+    return counter_.load(std::memory_order_relaxed);
+  }
+  // Returns last of the new epochs.
+  CountType NewEpoch(CountType amount = 1) {
+    return amount + counter_.fetch_add(amount, std::memory_order_relaxed);
+  }
 
  private:
-  void JoinAllThreads();
-  const PositionHistory rootpos_;
-  EpochCounter* const epoch_counter_;
-
-  RootWorker root_worker_;
-  EvalWorker eval_worker_;
-  std::vector<std::unique_ptr<NodesWorker>> nodes_workers_;
-
-  std::vector<std::thread> threads_;
+  std::atomic<CountType> counter_{1};
 };
 
 }  // namespace lc2
