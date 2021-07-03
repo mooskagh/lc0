@@ -223,14 +223,12 @@ class SmoothTimeManager : public TimeManager {
                   int64_t nodes_since_movestart) {
     Mutex::Lock lock(mutex_);
     if (time_since_movestart_ms <= 0) return nps_;
-    if (nps_is_reliable_ && time_since_movestart_ms > last_time_) {
+    if (time_since_movestart_ms > last_time_) {
       const float nps =
           1000.0f * nodes_since_movestart / time_since_movestart_ms;
       nps_ = LinearDecay(nps_, nps, time_since_movestart_ms,
                          time_since_movestart_ms - last_time_,
                          params_.nps_update_seconds() * 1000.0f);
-    } else {
-      nps_ = 1000.0f * nodes_since_movestart / time_since_movestart_ms;
     }
     last_time_ = time_since_movestart_ms;
     return nps_;
@@ -239,8 +237,6 @@ class SmoothTimeManager : public TimeManager {
   void UpdateEndOfMoveStats(int64_t total_move_time, bool used_piggybank,
                             int64_t time_budget, int64_t total_nodes) {
     Mutex::Lock lock(mutex_);
-    // Whatever is in nps_ after the first move, is truth now.
-    nps_is_reliable_ = true;
     // How different was this move from an average move
     const float this_move_time_fraction =
         avg_ms_per_move_ <= 0.0f ? 0.0f : total_move_time / avg_ms_per_move_;
@@ -437,8 +433,6 @@ class SmoothTimeManager : public TimeManager {
   float tree_reuse_ GUARDED_BY(mutex_) = params_.initial_tree_reuse();
   // Current NPS estimation.
   float nps_ GUARDED_BY(mutex_) = 20000.0f;
-  // NPS is unreliable until the end of the first move.
-  bool nps_is_reliable_ GUARDED_BY(mutex_) = false;
   // Fraction of a allocated time usually used.
   float timeuse_ GUARDED_BY(mutex_) = params_.initial_smartpruning_timeuse();
 
