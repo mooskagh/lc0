@@ -51,8 +51,8 @@ class Params {
   float tree_reuse_halfupdate_moves() const {
     return tree_reuse_halfupdate_moves_;
   }
-  // Number of seconds to update nps estimation.
-  float nps_update_seconds() const { return nps_update_seconds_; }
+  // Number of average move times to update the nps.
+  float nps_update_moves() const { return nps_update_moves_; }
   // Fraction of the allocated time the engine uses, initial estimation.
   float initial_smartpruning_timeuse() const {
     return initial_smartpruning_timeuse_;
@@ -95,7 +95,7 @@ class Params {
   const float initial_tree_reuse_;
   const float max_tree_reuse_;
   const float tree_reuse_halfupdate_moves_;
-  const float nps_update_seconds_;
+  const float nps_update_moves_;
   const float initial_smartpruning_timeuse_;
   const float min_smartpruning_timeuse_;
   const float smartpruning_timeuse_halfupdate_moves_;
@@ -126,8 +126,7 @@ Params::Params(const OptionsDict& params, int64_t move_overhead)
       max_tree_reuse_(params.GetOrDefault<float>("max-tree-reuse", 0.8f)),
       tree_reuse_halfupdate_moves_(
           params.GetOrDefault<float>("tree-reuse-update-rate", 3.0f)),
-      nps_update_seconds_(
-          params.GetOrDefault<float>("nps-update-period", 20.0f)),
+      nps_update_moves_(params.GetOrDefault<float>("nps-update-moves", 0.2f)),
       initial_smartpruning_timeuse_(
           params.GetOrDefault<float>("init-timeuse", 0.5f)),
       min_smartpruning_timeuse_(
@@ -226,9 +225,11 @@ class SmoothTimeManager : public TimeManager {
     if (time_since_movestart_ms > last_time_) {
       const float nps =
           1000.0f * nodes_since_movestart / time_since_movestart_ms;
-      nps_ = LinearDecay(nps_, nps, time_since_movestart_ms,
-                         time_since_movestart_ms - last_time_,
-                         params_.nps_update_seconds() * 1000.0f);
+      nps_ = LinearDecay(
+          nps_, nps, time_since_movestart_ms,
+          time_since_movestart_ms - last_time_,
+          // Never update faster than in one second.
+          std::max(1000.0f, params_.nps_update_moves() * avg_ms_per_move_));
     }
     last_time_ = time_since_movestart_ms;
     return nps_;
