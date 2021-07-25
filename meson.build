@@ -663,3 +663,14 @@ if get_option('python_bindings')
     include_directories: [includes],
     dependencies: [cpython] + deps)
 endif
+
+#############################################################################
+## Lc2
+#############################################################################
+
+lc2_files = [
+]
+
+executable('lc2', 'src/lc2/lc2_main.cc',
+  files + lc2_files,
+  include_directories: includes, dependencies: deps, install: true)
