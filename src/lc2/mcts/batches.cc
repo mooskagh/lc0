@@ -29,6 +29,18 @@
 
 namespace lc2 {
 
+void BatchInfo::Reset() {
+  contexts_.clear();
+  boards_.clear();
+  node_heads_.clear();
+}
+
+void BatchInfo::EnqueuePosition(const PositionContext& context,
+                                lczero::ChessBoard& board) {
+  contexts_.emplace_back(context);
+  boards_.emplace_back(board);
+}
+
 void GatherBatch(const PositionContext& context, lczero::ChessBoard& board,
                  NodeStorage* const storage, size_t size, BatchInfo* batch) {
   batch->Reset();

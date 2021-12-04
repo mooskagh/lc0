@@ -49,12 +49,11 @@ struct NodeHead {
     bool unused : 1;
   };
 
-  Flags flags;
-  uint8_t num_edges;
-  std::uint32_t n;
   double q;
   float d;
   float moves_left;
+  Flags flags;
+  uint8_t num_edges;
 
   uint32_t num_parents;
 
@@ -64,6 +63,9 @@ struct NodeHead {
   float edge_s[kEdgesInHead];
   uint32_t edge_n[kEdgesInHead];
 };
+template<int X> struct Debug;
+
+static_assert(sizeof(NodeHead) == 64, "Unexpected size of NodeHead");
 
 using NodeTail = std::string;
 

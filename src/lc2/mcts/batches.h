@@ -33,7 +33,7 @@
 
 namespace lc2 {
 
-using NodeStorage = Storage<uint64_t, uint8_t[64], std::string>;
+using NodeStorage = Storage<uint64_t, NodeHead, NodeTail>;
 
 class BatchInfo {
  public:
