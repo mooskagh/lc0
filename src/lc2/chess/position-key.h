@@ -27,30 +27,16 @@
 
 #pragma once
 
-#include "lc2/chess/position-key.h"
-#include "lc2/mcts/node.h"
-#include "lc2/storage/storage.h"
+#include <cstdint>
 
 namespace lc2 {
 
-using NodeStorage = Storage<uint64_t, uint8_t[64], std::string>;
+class PositionContext {};
 
-class BatchInfo {
+class PositionKey {
  public:
-  void Reset();
-  void EnqueuePosition(const PositionContext& context,
-                       lczero::ChessBoard& board);
-
  private:
-  std::vector<PositionContext> contexts_;
-  std::vector<lczero::ChessBoard> boards_;
-  std::vector<NodeHead> node_heads_;
+  uint64_t hash;
 };
-
-// Does batch gathering and backpropagation (shortly speaking, MCTS).
-// Tries to gather a batch of @size elements from @node_storage, starting from
-// @position.
-void GatherBatch(const PositionContext& context, lczero::ChessBoard& board,
-                 NodeStorage* const storage, size_t size, BatchInfo* batch);
 
 }  // namespace lc2

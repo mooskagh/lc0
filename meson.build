@@ -669,6 +669,13 @@ endif
 #############################################################################
 
 lc2_files = [
+  'src/lc2/mcts/batches.cc',
+]
+
+deps += [
+    subproject('abseil-cpp').get_variable('absl_base_dep'),
+    subproject('abseil-cpp').get_variable('absl_container_dep'),
+    subproject('abseil-cpp').get_variable('absl_types_dep'),
 ]
 
 executable('lc2', 'src/lc2/lc2_main.cc',

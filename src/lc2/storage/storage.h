@@ -25,24 +25,30 @@
   Program grant you additional permission to convey the resulting work.
 */
 
+#include "absl/container/flat_hash_map.h"
+#include "absl/types/span.h"
+#include "utils/mutex.h"
+
 #pragma once
 
 namespace lc2 {
 
+template <typename BlockHash, typename PrimaryBlock, typename SecondaryBlock>
 class Storage {
   enum class Status {
-    kFetched,    // The node existed and was fetched.
-    kCreated,    // The node didn't exist and was created empty.
-    kCollision,  // The node existed, but empty, being created in other place.
+    kFetched,  // The node existed and was fetched.
+    kCreated,  // The node didn't exist and was created empty.
+    // kCollision,  // The node existed, but empty, being created in other
+    // place.
   };
 
-  using BlockHash = uint64_t;
-  using PrimaryBlock = uint8_t[64];
-  using SecondaryBlock = std::string;
+  // using BlockHash = uint64_t;
+  // using PrimaryBlock = uint8_t[64];
+  // using SecondaryBlock = std::string;
 
   // Returns whether secondary block has to be fetched.
-  using PrimaryBlockFunc = bool (*)(const FixedBlock*, StorageStatus);
-  using SecondaryBlockFunc = void (**)(const FixedBlock&, const DynamicBlock&);
+  // FetchPrimaryFunc = bool (*)(size_t, PrimaryBlock*, Status)
+  // FetchSecondaryFunc = void (*)(size_t, PrimaryBlock*, SecondaryBlock*)
 
   // For every hash in @hashes, the function fetches or creates primary block
   // and calls primary_func(). If it returns `true`, also secondary block is
@@ -50,9 +56,36 @@ class Storage {
   // It is guaranteed that blocks don't change between the calls.
   // primary_func() and secondary_func() must be fast as they are called when
   // mutex is held.
-  void FetchOrCreate(absl::span<BlockHash> hashes,
-                     PrimaryBlockFunc primary_func,
-                     SecondaryBlockFunc secondary_func);
+  // FetchPrimaryFunc = bool (*)(size_t, PrimaryBlock*, Status)
+  // FetchSecondaryFunc = void (*)(size_t, PrimaryBlock*, SecondaryBlock*)
+  template <typename FetchPrimaryFunc, typename FetchSecondaryFunc>
+  void FetchOrCreate(absl::Span<BlockHash> hashes,
+                     FetchPrimaryFunc primary_func,
+                     FetchSecondaryFunc secondary_func);
+
+ private:
+  absl::flat_hash_map<BlockHash, PrimaryBlock> primary_blocks_
+      GUARDED_BY(mutex_);
+  absl::flat_hash_map<BlockHash, SecondaryBlock> secondary_blocks_
+      GUARDED_BY(mutex_);
+  lczero::Mutex mutex_;
 };
+
+template <typename BlockHash, typename PrimaryBlock, typename SecondaryBlock>
+template <typename FetchPrimaryFunc, typename FetchSecondaryFunc>
+inline void Storage<BlockHash, PrimaryBlock, SecondaryBlock>::FetchOrCreate(
+    absl::Span<BlockHash> hashes, FetchPrimaryFunc primary_func,
+    FetchSecondaryFunc secondary_func) {
+  lczero::Mutex::Lock lock(mutex_);
+  for (size_t i = 0; i < hashes.size(); ++i) {
+    BlockHash hash = hashes[i];
+    auto [iter, inserted] = primary_blocks_.emplace(hash, PrimaryBlock{});
+    const bool fetch_secondary = primary_func(
+        i, &iter.second, inserted ? Status::kCreated : Status::kFetched);
+    if (fetch_secondary) {
+      secondary_func(i, &iter.second, &secondary_blocks_[hash]);
+    }
+  }
+}
 
 }  // namespace lc2

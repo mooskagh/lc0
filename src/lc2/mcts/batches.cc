@@ -29,16 +29,10 @@
 
 namespace lc2 {
 
-void BatchGatherer::GatherBatch(const Position& position, size_t size,
-                                BatchInfo* batch) {
+void GatherBatch(const PositionContext& context, lczero::ChessBoard& board,
+                 NodeStorage* const storage, size_t size, BatchInfo* batch) {
   batch->Reset();
-  batch->Enqueue(position);
-}
-
-void BatchInfo::Reset() {
-  nodes_queued = 0;
-  nodes_fetched = 0;
-  nodes_processed = 0;
+  batch->EnqueuePosition(context, board);
 }
 
 }  // namespace lc2

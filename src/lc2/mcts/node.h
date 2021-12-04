@@ -25,32 +25,46 @@
   Program grant you additional permission to convey the resulting work.
 */
 
-#pragma once
+#include <cstdint>
+#include <string>
 
-#include "lc2/chess/position-key.h"
-#include "lc2/mcts/node.h"
-#include "lc2/storage/storage.h"
+#include "chess/position.h"
+
+#pragma once
 
 namespace lc2 {
 
-using NodeStorage = Storage<uint64_t, uint8_t[64], std::string>;
+struct NodeHead {
+  enum class Terminal : uint8_t { NonTerminal, EndOfGame, Tablebase, TwoFold };
+  struct Flags {
+    // Bit fields using parts of uint8_t fields initialized in the constructor.
+    // Whether or not this node end game (with a winning of either sides or
+    // draw).
+    Terminal terminal_type_ : 2;
+    // Best and worst result for this node.
+    lczero::GameResult lower_bound_ : 2;
+    lczero::GameResult upper_bound_ : 2;
 
-class BatchInfo {
- public:
-  void Reset();
-  void EnqueuePosition(const PositionContext& context,
-                       lczero::ChessBoard& board);
+    bool tail_is_valid : 1;
+    bool unused : 1;
+  };
 
- private:
-  std::vector<PositionContext> contexts_;
-  std::vector<lczero::ChessBoard> boards_;
-  std::vector<NodeHead> node_heads_;
+  Flags flags;
+  uint8_t num_edges;
+  std::uint32_t n;
+  double q;
+  float d;
+  float moves_left;
+
+  uint32_t num_parents;
+
+  static constexpr size_t kEdgesInHead = 3;
+  uint16_t edge_p[kEdgesInHead + 1];
+  uint16_t moves[kEdgesInHead];
+  float edge_s[kEdgesInHead];
+  uint32_t edge_n[kEdgesInHead];
 };
 
-// Does batch gathering and backpropagation (shortly speaking, MCTS).
-// Tries to gather a batch of @size elements from @node_storage, starting from
-// @position.
-void GatherBatch(const PositionContext& context, lczero::ChessBoard& board,
-                 NodeStorage* const storage, size_t size, BatchInfo* batch);
+using NodeTail = std::string;
 
 }  // namespace lc2
