@@ -28,6 +28,7 @@
 #pragma once
 
 #include <cstdint>
+#include "chess/position.h"
 
 namespace lc2 {
 
@@ -35,8 +36,27 @@ class PositionContext {};
 
 class PositionKey {
  public:
+  PositionKey() = default;
+  PositionKey(const PositionKey&) = default;
+  PositionKey(PositionKey&&) = default;
+
+  bool operator==(const PositionKey& other) const {
+    return hash_ == other.hash_;
+  }
+
+  template <typename H>
+  friend H AbslHashValue(H h, const PositionKey& c) {
+    return H::combine(std::move(h), c.hash_);
+  }
+
+  static PositionKey FromBoard(const lczero::ChessBoard& board) {
+    return PositionKey(board.Hash());
+  }
+
  private:
-  uint64_t hash;
+  PositionKey(uint64_t hash) : hash_(hash){}
+
+  uint64_t hash_;
 };
 
 }  // namespace lc2

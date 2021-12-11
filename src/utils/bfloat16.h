@@ -25,49 +25,15 @@
   Program grant you additional permission to convey the resulting work.
 */
 
-#include <cstdint>
-#include <string>
+namespace lczero {
 
-#include "chess/position.h"
-#include "utils/bfloat16.h"
+class BFloat16 {
+ public:
+  BFloat16() = default;
+  BFloat16(const BFloat16&) = default;
 
-#pragma once
-
-namespace lc2 {
-
-struct NodeHead {
-  enum class Terminal : uint8_t { NonTerminal, EndOfGame, Tablebase, TwoFold };
-  struct Flags {
-    // Bit fields using parts of uint8_t fields initialized in the constructor.
-    // Whether or not this node end game (with a winning of either sides or
-    // draw).
-    Terminal terminal_type_ : 2;
-    // Best and worst result for this node.
-    lczero::GameResult lower_bound_ : 2;
-    lczero::GameResult upper_bound_ : 2;
-
-    bool tail_is_valid : 1;
-    bool is_being_processed : 1;
-  };
-
-  uint32_t n;
-  Flags flags;
-  uint8_t num_edges;
-  lczero::BFloat16 v_wl;
-  lczero::BFloat16 v_d;
-  lczero::BFloat16 v_ml;
-
-  static constexpr size_t kEdgesInHead = 3;
-  uint32_t edge_n[kEdgesInHead];
-  lczero::BFloat16 edge_q_wl[kEdgesInHead];
-  lczero::BFloat16 edge_p[kEdgesInHead + 1];
-  lczero::BFloat16 edge_q_d[kEdgesInHead];
-  lczero::BFloat16 edge_q_ml[kEdgesInHead];
-  uint16_t moves[kEdgesInHead];
+ private:
+  uint16_t value_;
 };
 
-using NodeTail = std::string;
-
-struct UnpackedNode {};
-
-}  // namespace lc2
+}  // namespace lczero

@@ -69,6 +69,12 @@ class Storage {
   absl::flat_hash_map<BlockHash, SecondaryBlock> secondary_blocks_
       GUARDED_BY(mutex_);
   lczero::Mutex mutex_;
+
+  static_assert(sizeof(typename absl::flat_hash_map<BlockHash,
+                                                    PrimaryBlock>::value_type) %
+                        32 ==
+                    0,
+                "Expected the size of hash entry to be multiple of 32 bytes");
 };
 
 template <typename BlockHash, typename PrimaryBlock, typename SecondaryBlock>

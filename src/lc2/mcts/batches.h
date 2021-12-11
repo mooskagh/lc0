@@ -33,7 +33,7 @@
 
 namespace lc2 {
 
-using NodeStorage = Storage<uint64_t, NodeHead, NodeTail>;
+using NodeStorage = Storage<PositionKey, NodeHead, NodeTail>;
 
 class BatchInfo {
  public:
@@ -44,7 +44,9 @@ class BatchInfo {
  private:
   std::vector<PositionContext> contexts_;
   std::vector<lczero::ChessBoard> boards_;
+  std::vector<PositionKey> positions_keys_;
   std::vector<NodeHead> node_heads_;
+  std::vector<UnpackedNode> node_tails_;
 };
 
 // Does batch gathering and backpropagation (shortly speaking, MCTS).

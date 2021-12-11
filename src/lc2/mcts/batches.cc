@@ -30,21 +30,26 @@
 namespace lc2 {
 
 void BatchInfo::Reset() {
-  contexts_.clear();
-  boards_.clear();
-  node_heads_.clear();
+  assert(boards_.empty());  
+  assert(contexts_.empty());  
+  assert(positions_keys_.empty());  
+  assert(node_heads_.empty());  
+  assert(node_tails_.empty());  
 }
 
 void BatchInfo::EnqueuePosition(const PositionContext& context,
                                 lczero::ChessBoard& board) {
   contexts_.emplace_back(context);
   boards_.emplace_back(board);
+  positions_keys_.emplace_back(PositionKey::FromBoard(board));
 }
 
 void GatherBatch(const PositionContext& context, lczero::ChessBoard& board,
                  NodeStorage* const storage, size_t size, BatchInfo* batch) {
   batch->Reset();
   batch->EnqueuePosition(context, board);
+
+  size_t cur = 0;
 }
 
 }  // namespace lc2
