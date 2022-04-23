@@ -27,11 +27,11 @@
 
 #include <fstream>
 
+#include "lc0ctl/describenet.h"
 #include "neural/loader.h"
 #include "neural/onnx/converter.h"
 #include "utils/files.h"
 #include "utils/optionsparser.h"
-#include "lc0ctl/describenet.h"
 
 namespace lczero {
 namespace {
@@ -58,11 +58,11 @@ bool ProcessParameters(OptionsParser* options) {
   options->Add<StringOption>(kInputFilenameId);
   options->Add<StringOption>(kOutputFilenameId);
 
-  options->Add<StringOption>(kInputPlanesName) = "/input/planes";
-  options->Add<StringOption>(kOutputPolicyHead) = "/output/policy";
-  options->Add<StringOption>(kOutputWdl) = "/output/wdl";
-  options->Add<StringOption>(kOutputValue) = "/output/value";
-  options->Add<StringOption>(kOutputMlh) = "/output/mlh";
+  options->Add<StringOption>(kInputPlanesName) = "input/planes";
+  options->Add<StringOption>(kOutputPolicyHead) = "output/policy";
+  options->Add<StringOption>(kOutputWdl) = "output/wdl";
+  options->Add<StringOption>(kOutputValue) = "output/value";
+  options->Add<StringOption>(kOutputMlh) = "output/mlh";
   if (!options->ProcessAllFlags()) return false;
 
   const OptionsDict& dict = options->GetOptionsDict();

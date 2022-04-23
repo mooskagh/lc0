@@ -209,20 +209,20 @@ bool ValidateNetwork(const pblczero::Net& weights) {
   if (!onnx_model.has_input_planes()) {
     CERR << "The --" << kOnnxInputId.long_flag()
          << " must be defined. Typical value for the ONNX networks exported "
-            "from Leela is /input/planes.";
+            "from Leela is \"input/planes\".";
     return false;
   }
   if (!onnx_model.has_output_policy()) {
     CERR << "The --" << kOnnxOutputPolicyId.long_flag()
          << " must be defined. Typical value for the ONNX networks exported "
-            "from Leela is /output/policy.";
+            "from Leela is \"output/policy\".";
     return false;
   }
   if (!onnx_model.has_output_value() && !onnx_model.has_output_wdl()) {
     CERR << "Either --" << kOnnxOutputValueId.long_flag() << " or --"
          << kOnnxOutputWdlId.long_flag()
          << " must be defined. Typical values for the ONNX networks exported "
-            "from Leela are /output/value and /output/wdl.";
+            "from Leela are \"output/value\" and \"output/wdl\".";
     return false;
   }
   if (onnx_model.has_output_value() && onnx_model.has_output_wdl()) {
