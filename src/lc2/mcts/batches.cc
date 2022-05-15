@@ -29,6 +29,8 @@
 
 #include <absl/algorithm/container.h>
 
+#include <locale>
+
 #include "chess/board.h"
 #include "lc2/chess/position-key.h"
 #include "lc2/mcts/node.h"
@@ -52,7 +54,7 @@ void Batch::Gather(NodeStorage* node_storage) {
     // Fetch nodes from the storage into the working arrays.
     FetchNodes(node_storage, begin_idx, end_idx);
     ProcessNodes(begin_idx, end_idx);
-    // CommitNodes
+    CommitNodes(node_storage, begin_idx, end_idx);
   }
 }
 
@@ -91,6 +93,34 @@ void Batch::ProcessNodes(size_t begin_idx, size_t end_idx) {
     if (node_heads_[idx].flags.is_being_processed) continue;
     ProcessSingleNode(idx);
   }
+}
+
+void Batch::CommitNodes(NodeStorage* node_storage, size_t begin_idx,
+                        size_t end_idx) {
+  auto fetch_head_func = [&](size_t offset, NodeHead* head,
+                             NodeStorage::Status status) -> bool {
+    assert(status == NodeStorage::Status::kFetched);
+    const size_t idx = begin_idx + offset;
+    // The node was busy, don't update.
+    auto& local_head = node_heads_[idx];
+    if (local_head.flags.is_being_processed) return false;
+    // If tail is valid, will handle that in the tail func.
+    if (head->flags.tail_is_valid) return true;
+    // This may happen ourside of mutex, if causes problems.
+    unpacked_nodes_[begin_idx + offset].UpdateNIntoHead(&local_head);
+    *head = local_head;
+    return false;
+  };
+  auto fetch_tail_func = [&](size_t offset, NodeHead* head, NodeTail* tail) {
+    auto& unpacked_node = unpacked_nodes_[begin_idx + offset];
+    const size_t idx = begin_idx + offset;
+    auto& local_head = node_heads_[idx];
+    unpacked_node.UpdateNIntoHeadAndTail(&local_head, tail);
+    *head = local_head;
+  };
+  node_storage->FetchOrCreate(
+      {&positions_keys_[begin_idx], end_idx - begin_idx}, fetch_head_func,
+      fetch_tail_func);
 }
 
 namespace {
@@ -159,15 +189,19 @@ void Batch::ProcessSingleNode(size_t idx) {
     return;
   }
 
+  auto fpu_q = GetNodeQ(head);
   auto edge_visits =
-      DistributeVisits(node.p, node.n, node.q, GetNodeQ(head), head.n, visits);
+      DistributeVisits(node.p, node.n, node.q, fpu_q, head.n, visits);
   const auto& board = boards_[idx];
   const auto& key = positions_keys_[idx];
   for (size_t i = 0; i < edge_visits.size(); ++i) {
     size_t visits = edge_visits[i];
     if (visits == 0) continue;
     head.n += visits;
-    if (node.n.size() <= i) node.n.resize(i + 1);
+    while (node.n.size() <= i) {
+      node.n.emplace_back();
+      node.q.emplace_back(fpu_q);
+    }
     node.n[i] += visits;
 
     auto move = lczero::Move::from_packed_int(node.moves[i]);
@@ -176,6 +210,7 @@ void Batch::ProcessSingleNode(size_t idx) {
     auto new_key = UpdatePositionKey(key, board, move, new_board);
     EnqueuePosition(new_board, new_key, visits, idx);
   }
+  if (node.n.size() > head.edge_n.size()) head.flags.tail_is_valid = true;
 }
 
 }  // namespace lc2

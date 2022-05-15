@@ -56,6 +56,7 @@ class Batch {
  private:
   void FetchNodes(NodeStorage* node_storage, size_t begin_idx, size_t end_idx);
   void ProcessNodes(size_t begin_idx, size_t end_idx);
+  void CommitNodes(NodeStorage* node_storage, size_t begin_idx, size_t end_idx);
   void ProcessSingleNode(size_t idx);
   void ForwardVisit(size_t parent_idx, const lczero::ChessBoard& parent_board,
                     const PositionKey& parent_key, lczero::Move move,

@@ -27,12 +27,12 @@
 
 #include "lc2/mcts/node.h"
 
+#include <absl/types/span.h>
 #include <assert.h>
 
 #include <algorithm>
 #include <cstring>
 #include <string_view>
-
 namespace lc2 {
 
 namespace {
@@ -42,8 +42,8 @@ void UnpackVectorFromHeadAndTail(const std::array<In, InSize>& head_in,
                                  std::string_view* tail_buffer,
                                  size_t total_count, std::vector<Out>* out) {
   out->resize(total_count);
-  const auto convert_fn = [](const In& packed_float) -> Out {
-    return static_cast<Out>(packed_float);
+  const auto convert_fn = [](const In& v) -> Out {
+    return static_cast<Out>(v);
   };
   // Copy head.
   std::transform(head_in.begin(),
@@ -72,7 +72,46 @@ void UnpackVectorFromHead(const std::array<In, InSize>& head_in,
                               out);
 }
 
+template <typename T, size_t Size>
+size_t BytesNotFitArray(const std::array<T, Size>&, size_t count) {
+  if (count <= Size) return 0;
+  return (count - Size) * sizeof(T);
+}
+
+template <typename In, typename Out, size_t OutSize>
+void PackVectorIntoHeadAndTail(const std::vector<In>& in,
+                               std::array<Out, OutSize>* out,
+                               std::string* tail) {
+  const auto convert_fn = [](const In& v) -> Out {
+    return static_cast<Out>(v);
+  };
+  // Copy head.
+  std::transform(in.begin(), in.begin() + std::min(in.size(), OutSize),
+                 out->begin(), convert_fn);
+  if (in.size() <= OutSize) return;
+  // Copy tail.
+  assert(tail != nullptr);
+  const size_t size_to_write = (in.size() - OutSize) * sizeof(Out);
+  if constexpr (std::is_same_v<In, Out>) {
+    tail->append(reinterpret_cast<const char*>(&in[OutSize]), size_to_write);
+  } else {
+    std::for_each(in.begin() + OutSize, in.end(), [&](const auto val) {
+      const auto value_to_write = static_cast<Out>(val);
+      tail->append(reinterpret_cast<const char*>(&value_to_write),
+                   sizeof(value_to_write));
+    });
+  }
+}
+
 }  // namespace
+
+void UnpackedNode::UnpackFromHead(const NodeHead& head) {
+  UnpackVectorFromHead(head.edge_p, head.num_edges, &p);
+  UnpackVectorFromHead(head.moves, head.num_edges, &moves);
+  UnpackVectorFromHead(head.edge_n, head.num_edges, &n);
+  UnpackVectorFromHead(head.edge_q, head.num_edges, &q);
+}
+
 void UnpackedNode::UnpackFromHeadAndTail(const NodeHead& head,
                                          const NodeTail& tail) {
   std::string_view tail_buffer(tail.data(), tail.size());
@@ -84,11 +123,18 @@ void UnpackedNode::UnpackFromHeadAndTail(const NodeHead& head,
   UnpackVectorFromHeadAndTail(head.edge_q, &tail_buffer, num_filled, &q);
 }
 
-void UnpackedNode::UnpackFromHead(const NodeHead& head) {
-  UnpackVectorFromHead(head.edge_p, head.num_edges, &p);
-  UnpackVectorFromHead(head.moves, head.num_edges, &moves);
-  UnpackVectorFromHead(head.edge_n, head.num_edges, &n);
-  UnpackVectorFromHead(head.edge_q, head.num_edges, &q);
+void UnpackedNode::UpdateNIntoHead(NodeHead* head) {
+  PackVectorIntoHeadAndTail(n, &head->edge_n, nullptr);
+  PackVectorIntoHeadAndTail(q, &head->edge_q, nullptr);
+}
+
+void UnpackedNode::UpdateNIntoHeadAndTail(NodeHead* head, NodeTail* tail) {
+  tail[0] = static_cast<char>(n.size());
+  // Truncate it before N and Q.
+  tail->resize(2 + BytesNotFitArray(head->edge_p, head->num_edges) +
+               BytesNotFitArray(head->moves, head->num_edges));
+  PackVectorIntoHeadAndTail(n, &head->edge_n, tail);
+  PackVectorIntoHeadAndTail(q, &head->edge_q, tail);
 }
 
 }  // namespace lc2

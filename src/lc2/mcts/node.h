@@ -75,6 +75,8 @@ struct UnpackedNode {
 
   void UnpackFromHead(const NodeHead& head);
   void UnpackFromHeadAndTail(const NodeHead& head, const NodeTail& tail);
+  void UpdateNIntoHead(NodeHead* head);
+  void UpdateNIntoHeadAndTail(NodeHead* head, NodeTail* tail);
 };
 
 inline float GetNodeQ(const NodeHead& head) {

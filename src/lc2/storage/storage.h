@@ -43,14 +43,6 @@ class Storage {
     // place.
   };
 
-  // using BlockHash = uint64_t;
-  // using PrimaryBlock = uint8_t[64];
-  // using SecondaryBlock = std::string;
-
-  // Returns whether secondary block has to be fetched.
-  // FetchPrimaryFunc = bool (*)(size_t, PrimaryBlock*, Status)
-  // FetchSecondaryFunc = void (*)(size_t, PrimaryBlock*, SecondaryBlock*)
-
   // For every hash in @hashes, the function fetches or creates primary block
   // and calls primary_func(). If it returns `true`, also secondary block is
   // fetched and secondary_func() is called.
@@ -76,7 +68,6 @@ class Storage {
                         32 ==
                     0,
                 "Expected the size of hash entry to be multiple of 32 bytes");
-  
 };
 
 template <typename BlockHash, typename PrimaryBlock, typename SecondaryBlock>
