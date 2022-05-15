@@ -35,24 +35,37 @@ namespace lc2 {
 
 using NodeStorage = Storage<PositionKey, NodeHead, NodeTail>;
 
-class BatchInfo {
+struct BatchStats {
+  size_t nn_evals{};
+  size_t collisions{};
+
+  void Reset() { *this = BatchStats{}; }
+};
+
+class Batch {
  public:
-  void Reset();
-  void EnqueuePosition(const PositionContext& context,
-                       lczero::ChessBoard& board);
+  void EnqueuePosition(const lczero::ChessBoard& board, const PositionKey& key,
+                       size_t visit_count);
+  void Gather(NodeStorage* node_storage);
+  size_t size() const { return positions_keys_.size(); }
+  size_t fetched_size() const { return node_heads_.size(); }
 
  private:
-  std::vector<PositionContext> contexts_;
+  void FetchNodes(NodeStorage* node_storage, size_t begin_idx, size_t end_idx);
+  void ProcessNodes(size_t begin_idx, size_t end_idx);
+  void ProcessSingleNode(size_t idx);
+
+  // Not sure whether having that as parallel (for performance reasons) arrays
+  // worth it.
   std::vector<lczero::ChessBoard> boards_;
   std::vector<PositionKey> positions_keys_;
   std::vector<NodeHead> node_heads_;
-  std::vector<UnpackedNode> node_tails_;
+  std::vector<UnpackedNode> unpacked_nodes_;
+  std::vector<size_t> visit_counts_;
+  std::vector<NodeStorage::Status> fetch_status_;
+  // Batch for NN evaluation.
+  std::vector<size_t> idx_to_eval_;
+  BatchStats stats_;
 };
-
-// Does batch gathering and backpropagation (shortly speaking, MCTS).
-// Tries to gather a batch of @size elements from @node_storage, starting from
-// @position.
-void GatherBatch(const PositionContext& context, lczero::ChessBoard& board,
-                 NodeStorage* const storage, size_t size, BatchInfo* batch);
 
 }  // namespace lc2

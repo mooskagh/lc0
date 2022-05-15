@@ -706,6 +706,7 @@ endif
 
 lc2_files = [
   'src/lc2/mcts/batches.cc',
+  'src/lc2/mcts/node.cc',
 ]
 
 deps += [

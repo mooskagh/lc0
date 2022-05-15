@@ -35,6 +35,7 @@ namespace lc2 {
 
 template <typename BlockHash, typename PrimaryBlock, typename SecondaryBlock>
 class Storage {
+ public:
   enum class Status {
     kFetched,  // The node existed and was fetched.
     kCreated,  // The node didn't exist and was created empty.
@@ -75,6 +76,7 @@ class Storage {
                         32 ==
                     0,
                 "Expected the size of hash entry to be multiple of 32 bytes");
+  
 };
 
 template <typename BlockHash, typename PrimaryBlock, typename SecondaryBlock>
@@ -87,9 +89,9 @@ inline void Storage<BlockHash, PrimaryBlock, SecondaryBlock>::FetchOrCreate(
     BlockHash hash = hashes[i];
     auto [iter, inserted] = primary_blocks_.emplace(hash, PrimaryBlock{});
     const bool fetch_secondary = primary_func(
-        i, &iter.second, inserted ? Status::kCreated : Status::kFetched);
+        i, &iter->second, inserted ? Status::kCreated : Status::kFetched);
     if (fetch_secondary) {
-      secondary_func(i, &iter.second, &secondary_blocks_[hash]);
+      secondary_func(i, &iter->second, &secondary_blocks_[hash]);
     }
   }
 }

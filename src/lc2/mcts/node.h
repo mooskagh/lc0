@@ -25,11 +25,12 @@
   Program grant you additional permission to convey the resulting work.
 */
 
+#include <array>
 #include <cstdint>
 #include <string>
 
 #include "chess/position.h"
-#include "utils/bfloat16.h"
+#include "utils/floats.h"
 
 #pragma once
 
@@ -53,21 +54,31 @@ struct NodeHead {
   uint32_t n;
   Flags flags;
   uint8_t num_edges;
-  lczero::BFloat16 v_wl;
-  lczero::BFloat16 v_d;
-  lczero::BFloat16 v_ml;
+  lczero::SigmoidFloat16 q_wl;
+  lczero::ProbFloat16 q_d;
+  lczero::MLFloat16 q_ml;
 
-  static constexpr size_t kEdgesInHead = 3;
-  uint32_t edge_n[kEdgesInHead];
-  lczero::BFloat16 edge_q_wl[kEdgesInHead];
-  lczero::BFloat16 edge_p[kEdgesInHead + 1];
-  lczero::BFloat16 edge_q_d[kEdgesInHead];
-  lczero::BFloat16 edge_q_ml[kEdgesInHead];
-  uint16_t moves[kEdgesInHead];
+  static constexpr size_t kEdgesInHead = 4;
+  std::array<lczero::ProbFloat16, kEdgesInHead + 1> edge_p;
+  std::array<uint16_t, kEdgesInHead + 1> moves;
+  std::array<uint32_t, kEdgesInHead> edge_n;
+  std::array<lczero::SigmoidFloat16, kEdgesInHead> edge_q;
 };
 
 using NodeTail = std::string;
 
-struct UnpackedNode {};
+struct UnpackedNode {
+  std::vector<float> p;
+  std::vector<uint16_t> moves;
+  std::vector<uint32_t> n;
+  std::vector<float> q;
+
+  void UnpackFromHead(const NodeHead& head);
+  void UnpackFromHeadAndTail(const NodeHead& head, const NodeTail& tail);
+};
+
+inline float GetNodeQ(const NodeHead& head) {
+  return static_cast<float>(head.q_wl);
+}
 
 }  // namespace lc2

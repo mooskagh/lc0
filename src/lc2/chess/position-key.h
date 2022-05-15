@@ -32,13 +32,12 @@
 
 namespace lc2 {
 
-class PositionContext {};
-
 class PositionKey {
  public:
   PositionKey() = default;
   PositionKey(const PositionKey&) = default;
   PositionKey(PositionKey&&) = default;
+  explicit PositionKey(uint64_t hash) : hash_(hash){}
 
   bool operator==(const PositionKey& other) const {
     return hash_ == other.hash_;
@@ -49,13 +48,7 @@ class PositionKey {
     return H::combine(std::move(h), c.hash_);
   }
 
-  static PositionKey FromBoard(const lczero::ChessBoard& board) {
-    return PositionKey(board.Hash());
-  }
-
  private:
-  PositionKey(uint64_t hash) : hash_(hash){}
-
   uint64_t hash_;
 };
 
