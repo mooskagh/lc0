@@ -282,6 +282,12 @@ class Move {
     return "Error!";
   }
 
+  static Move from_packed_int(uint16_t val) {
+    Move move;
+    move.data_ = val;
+    return move;
+  }
+
  private:
   uint16_t data_ = 0;
   // Move, using the following encoding:

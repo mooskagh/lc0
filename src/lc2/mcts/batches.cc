@@ -29,15 +29,19 @@
 
 #include <absl/algorithm/container.h>
 
+#include "chess/board.h"
+#include "lc2/chess/position-key.h"
 #include "lc2/mcts/node.h"
 
 namespace lc2 {
 
 void Batch::EnqueuePosition(const lczero::ChessBoard& board,
-                            const PositionKey& key, size_t visit_count) {
+                            const PositionKey& key, size_t visit_count,
+                            size_t parent_idx) {
   boards_.emplace_back(board);
   positions_keys_.emplace_back(key);
   visit_counts_.emplace_back(visit_count);
+  parent_idx_.emplace_back(parent_idx);
 }
 
 void Batch::Gather(NodeStorage* node_storage) {
@@ -128,6 +132,13 @@ std::vector<uint16_t> DistributeVisits(const absl::Span<const float> p,
   return per_edge_visit;
 }
 
+PositionKey UpdatePositionKey(const PositionKey& /* previous_key */,
+                              const lczero::ChessBoard& /* previous_board */,
+                              lczero::Move /* move */,
+                              const lczero::ChessBoard& new_board) {
+  return PositionKey(new_board.Hash());
+}
+
 }  // namespace
 
 void Batch::ProcessSingleNode(size_t idx) {
@@ -150,6 +161,21 @@ void Batch::ProcessSingleNode(size_t idx) {
 
   auto edge_visits =
       DistributeVisits(node.p, node.n, node.q, GetNodeQ(head), head.n, visits);
+  const auto& board = boards_[idx];
+  const auto& key = positions_keys_[idx];
+  for (size_t i = 0; i < edge_visits.size(); ++i) {
+    size_t visits = edge_visits[i];
+    if (visits == 0) continue;
+    head.n += visits;
+    if (node.n.size() <= i) node.n.resize(i + 1);
+    node.n[i] += visits;
+
+    auto move = lczero::Move::from_packed_int(node.moves[i]);
+    auto new_board = board;
+    new_board.ApplyMove(move);
+    auto new_key = UpdatePositionKey(key, board, move, new_board);
+    EnqueuePosition(new_board, new_key, visits, idx);
+  }
 }
 
 }  // namespace lc2

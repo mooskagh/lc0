@@ -27,6 +27,8 @@
 
 #pragma once
 
+#include <limits>
+
 #include "lc2/chess/position-key.h"
 #include "lc2/mcts/node.h"
 #include "lc2/storage/storage.h"
@@ -45,7 +47,8 @@ struct BatchStats {
 class Batch {
  public:
   void EnqueuePosition(const lczero::ChessBoard& board, const PositionKey& key,
-                       size_t visit_count);
+                       size_t visit_count,
+                       size_t parent_idx = std::numeric_limits<size_t>::max());
   void Gather(NodeStorage* node_storage);
   size_t size() const { return positions_keys_.size(); }
   size_t fetched_size() const { return node_heads_.size(); }
@@ -54,6 +57,9 @@ class Batch {
   void FetchNodes(NodeStorage* node_storage, size_t begin_idx, size_t end_idx);
   void ProcessNodes(size_t begin_idx, size_t end_idx);
   void ProcessSingleNode(size_t idx);
+  void ForwardVisit(size_t parent_idx, const lczero::ChessBoard& parent_board,
+                    const PositionKey& parent_key, lczero::Move move,
+                    size_t visits);
 
   // Not sure whether having that as parallel (for performance reasons) arrays
   // worth it.
@@ -63,6 +69,7 @@ class Batch {
   std::vector<UnpackedNode> unpacked_nodes_;
   std::vector<size_t> visit_counts_;
   std::vector<NodeStorage::Status> fetch_status_;
+  std::vector<size_t> parent_idx_;
   // Batch for NN evaluation.
   std::vector<size_t> idx_to_eval_;
   BatchStats stats_;
