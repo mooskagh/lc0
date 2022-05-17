@@ -54,33 +54,21 @@ struct NodeHead {
   uint32_t n;
   Flags flags;
   uint8_t num_edges;
-  lczero::SigmoidFloat16 q_wl;
-  lczero::ProbFloat16 q_d;
-  lczero::MLFloat16 q_ml;
+  uint8_t padding1[2];
+  float q_wl;
+  float q_d;
+  float q_ml;
 
   static constexpr size_t kEdgesInHead = 4;
-  std::array<lczero::ProbFloat16, kEdgesInHead + 1> edge_p;
-  std::array<uint16_t, kEdgesInHead + 1> moves;
+  std::array<float, kEdgesInHead + 1> edge_p;
   std::array<uint32_t, kEdgesInHead> edge_n;
-  std::array<lczero::SigmoidFloat16, kEdgesInHead> edge_q;
+  std::array<float, kEdgesInHead> edge_q_wl;
+  std::array<float, kEdgesInHead> edge_q_d;
+  std::array<float, kEdgesInHead> edge_q_ml;
+  std::array<uint16_t, kEdgesInHead + 1> moves;
+  uint8_t padding2[6];
 };
 
 using NodeTail = std::string;
-
-struct UnpackedNode {
-  std::vector<float> p;
-  std::vector<uint16_t> moves;
-  std::vector<uint32_t> n;
-  std::vector<float> q;
-
-  void UnpackFromHead(const NodeHead& head);
-  void UnpackFromHeadAndTail(const NodeHead& head, const NodeTail& tail);
-  void UpdateNIntoHead(NodeHead* head);
-  void UpdateNIntoHeadAndTail(NodeHead* head, NodeTail* tail);
-};
-
-inline float GetNodeQ(const NodeHead& head) {
-  return static_cast<float>(head.q_wl);
-}
 
 }  // namespace lc2

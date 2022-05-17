@@ -34,6 +34,7 @@
 #include <cstring>
 #include <string_view>
 namespace lc2 {
+#if 0
 
 namespace {
 
@@ -136,5 +137,6 @@ void UnpackedNode::UpdateNIntoHeadAndTail(NodeHead* head, NodeTail* tail) {
   PackVectorIntoHeadAndTail(n, &head->edge_n, tail);
   PackVectorIntoHeadAndTail(q, &head->edge_q, tail);
 }
+#endif
 
 }  // namespace lc2

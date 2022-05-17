@@ -38,57 +38,64 @@
 namespace lc2 {
 
 void Batch::EnqueuePosition(const lczero::ChessBoard& board,
-                            const PositionKey& key, size_t visit_count,
+                            const PositionKey& key, size_t visit_limit,
                             size_t parent_idx) {
-  boards_.emplace_back(board);
-  positions_keys_.emplace_back(key);
-  visit_counts_.emplace_back(visit_count);
-  parent_idx_.emplace_back(parent_idx);
+  queue_.boards.emplace_back(board);
+  queue_.position_keys.emplace_back(key);
+  queue_.visit_limit.emplace_back(visit_limit);
+  queue_.parent_idx.emplace_back(parent_idx);
+  queue_.node_status.emplace_back(FetchQueue::Status::kQueued);
 }
 
 void Batch::Gather(NodeStorage* node_storage) {
-  while (fetched_size() < size()) {
+  while (fetched_size() < queue_size()) {
     const size_t begin_idx = fetched_size();
-    const size_t end_idx = size();
+    const size_t end_idx = queue_size();
 
     // Fetch nodes from the storage into the working arrays.
     FetchNodes(node_storage, begin_idx, end_idx);
-    ProcessNodes(begin_idx, end_idx);
-    CommitNodes(node_storage, begin_idx, end_idx);
+    // ComputeQU(begin_idx, end_idx);
+    // ProcessNodes(begin_idx, end_idx);
+    // CommitNodes(node_storage, begin_idx, end_idx);
   }
 }
 
 void Batch::FetchNodes(NodeStorage* node_storage, size_t begin_idx,
                        size_t end_idx) {
-  node_heads_.resize(end_idx);
-  unpacked_nodes_.resize(end_idx);
-  fetch_status_.resize(end_idx);
+  nodes_.heads.resize(end_idx);
   auto fetch_head_func = [&](size_t offset, NodeHead* head,
-                             NodeStorage::Status status) -> bool {
+                             NodeStorage::Status fetch_status) -> bool {
     const size_t idx = begin_idx + offset;
-    node_heads_[idx] = *head;
-    fetch_status_[idx] = status;
-    const bool is_busy = head->flags.is_being_processed;
+    auto& status = queue_.node_status[idx];
+    switch (fetch_status) {
+      case NodeStorage::Status::kCreated:
+        status = FetchQueue::Status::kNew;
+        return false;
+      case NodeStorage::Status::kFetched:
+        if (head->flags.is_being_processed) {
+          status = FetchQueue::Status::kBusy;
+          return false;
+        }
+        status = FetchQueue::Status::kFetched;
+    };
     head->flags.is_being_processed = true;
-    if (!is_busy && !head->flags.tail_is_valid) {
-      // TODO(crem) this particular unpack doesn't have to happen under mutex,
-      // it's possible to store index and then unpack later. Not sure whether it
-      // helps, so not doing that for now.
-      auto& unpacked_node = unpacked_nodes_[begin_idx + offset];
-      unpacked_node.UnpackFromHead(*head);
+    if (head->flags.tail_is_valid) {
+      return true;
+    } else {
+      UnpackNodeFromHead(*head);
+      return false;
     }
-    return !is_busy && head->flags.tail_is_valid;
   };
-  auto fetch_tail_func = [&](size_t offset, NodeHead* head, NodeTail* tail) {
-    auto& unpacked_node = unpacked_nodes_[begin_idx + offset];
-    unpacked_node.UnpackFromHeadAndTail(*head, *tail);
+  auto fetch_tail_func = [&](size_t /* offset */, NodeHead* head,
+                             NodeTail* tail) {
+    UnpackNodeFromHeadAndTail(*head, *tail);
   };
   node_storage->FetchOrCreate(
-      {&positions_keys_[begin_idx], end_idx - begin_idx}, fetch_head_func,
+      {&queue_.position_keys[begin_idx], end_idx - begin_idx}, fetch_head_func,
       fetch_tail_func);
 }
 
-void Batch::ProcessNodes(size_t begin_idx, size_t end_idx) {
+/* void Batch::ProcessNodes(size_t begin_idx, size_t end_idx) {
   for (auto idx = begin_idx; idx != end_idx; ++idx) {
     if (node_heads_[idx].flags.is_being_processed) continue;
     ProcessSingleNode(idx);
@@ -121,7 +128,7 @@ void Batch::CommitNodes(NodeStorage* node_storage, size_t begin_idx,
   node_storage->FetchOrCreate(
       {&positions_keys_[begin_idx], end_idx - begin_idx}, fetch_head_func,
       fetch_tail_func);
-}
+} */
 
 namespace {
 
@@ -171,6 +178,7 @@ PositionKey UpdatePositionKey(const PositionKey& /* previous_key */,
 
 }  // namespace
 
+/*
 void Batch::ProcessSingleNode(size_t idx) {
   auto& head = node_heads_[idx];
   auto& node = unpacked_nodes_[idx];
@@ -180,7 +188,7 @@ void Batch::ProcessSingleNode(size_t idx) {
     // Fresh node, send to NN for eval.
     ++stats_.nn_evals;
     stats_.collisions += visits - 1;
-    idx_to_eval_.push_back(idx);
+    leaf_indices_.push_back(idx);
     return;
   }
   if (head.n == 0) {
@@ -212,5 +220,6 @@ void Batch::ProcessSingleNode(size_t idx) {
   }
   if (node.n.size() > head.edge_n.size()) head.flags.tail_is_valid = true;
 }
+*/
 
 }  // namespace lc2
