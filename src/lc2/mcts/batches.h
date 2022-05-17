@@ -29,6 +29,7 @@
 
 #include <functional>
 #include <limits>
+#include <vector>
 
 #include "chess/board.h"
 #include "lc2/chess/position-key.h"
@@ -83,8 +84,11 @@ class Batch {
                     const PositionKey& parent_key, lczero::Move move,
                     size_t visits);
 
-  void UnpackNodeFromHead(const NodeHead& head);
-  void UnpackNodeFromHeadAndTail(const NodeHead& head, const NodeTail& tail);
+  void UnpackEdgesFromHead(const NodeHead& head);
+  void UnpackEdgesFromHeadAndTail(const NodeHead& head, const NodeTail& tail);
+  void UnpackEdgesFromHeadAndBuffer(const NodeHead& head,
+                                    std::string_view* tail_buffer,
+                                    size_t to_fetch, size_t to_pad);
 
   // All vectors in FetchQueue must be of the same length. An element is added
   // when a node is enqueued, either root node initially, or a child node during
@@ -108,10 +112,11 @@ class Batch {
   // All edge data of ForwardPassNodeData node, linearized for parallel
   // processing.
   struct EdgeData {
+    std::vector<float> p;
+    std::vector<uint16_t> moves;
     std::vector<float> q_wl;
     std::vector<float> q_d;
     std::vector<float> q_ml;
-    std::vector<float> p;
     std::vector<uint32_t> n;
   };
   // Indices of leaf nodes (in FetchQueue/NodeData).

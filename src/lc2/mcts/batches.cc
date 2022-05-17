@@ -29,6 +29,8 @@
 
 #include <absl/algorithm/container.h>
 
+#include <cstring>
+#include <iterator>
 #include <locale>
 
 #include "chess/board.h"
@@ -67,6 +69,7 @@ void Batch::FetchNodes(NodeStorage* node_storage, size_t begin_idx,
                              NodeStorage::Status fetch_status) -> bool {
     const size_t idx = begin_idx + offset;
     auto& status = queue_.node_status[idx];
+    nodes_.heads.push_back(*head);
     switch (fetch_status) {
       case NodeStorage::Status::kCreated:
         status = FetchQueue::Status::kNew;
@@ -82,17 +85,68 @@ void Batch::FetchNodes(NodeStorage* node_storage, size_t begin_idx,
     if (head->flags.tail_is_valid) {
       return true;
     } else {
-      UnpackNodeFromHead(*head);
+      UnpackEdgesFromHead(*head);
       return false;
     }
   };
   auto fetch_tail_func = [&](size_t /* offset */, NodeHead* head,
                              NodeTail* tail) {
-    UnpackNodeFromHeadAndTail(*head, *tail);
+    UnpackEdgesFromHeadAndTail(*head, *tail);
   };
   node_storage->FetchOrCreate(
       {&queue_.position_keys[begin_idx], end_idx - begin_idx}, fetch_head_func,
       fetch_tail_func);
+}
+
+namespace {
+
+template <typename T, size_t InSize>
+void AppendFromHeadAndTail(const std::array<T, InSize>& head_in,
+                           std::string_view* tail_buffer, size_t copy_count,
+                           size_t extra_count, std::vector<T>* out,
+                           T default_val = T{}) {
+  // Copy head.
+  const size_t head_copy_count = std::min(copy_count, InSize);
+  std::copy(head_in.begin(), head_in.begin() + head_copy_count,
+            std::back_inserter(*out));
+  copy_count -= head_copy_count;
+  // Copy tail.
+  if (copy_count > 0 && tail_buffer != nullptr) {
+    std::copy(reinterpret_cast<const T*>(tail_buffer->data()),
+              reinterpret_cast<const T*>(tail_buffer->data()) + copy_count,
+              std::back_inserter(*out));
+    tail_buffer->remove_prefix(copy_count * sizeof(T));
+    copy_count = 0;
+  }
+  // Fill with the default val;
+  out->insert(out->end(), copy_count + extra_count, default_val);
+}
+}  // namespace
+
+void Batch::UnpackEdgesFromHeadAndBuffer(const NodeHead& head,
+                                         std::string_view* tail,
+                                         size_t to_fetch, size_t to_pad) {
+  AppendFromHeadAndTail(head.edge_p, tail, to_fetch + to_pad, 0, &edges_.p);
+  AppendFromHeadAndTail(head.moves, tail, to_fetch + to_pad, 0, &edges_.moves);
+  AppendFromHeadAndTail(head.edge_n, tail, to_fetch, to_pad, &edges_.n);
+  AppendFromHeadAndTail(head.edge_q_wl, tail, to_fetch, to_pad, &edges_.q_wl);
+  AppendFromHeadAndTail(head.edge_q_d, tail, to_fetch, to_pad, &edges_.q_d);
+  AppendFromHeadAndTail(head.edge_q_ml, tail, to_fetch, to_pad, &edges_.q_ml);
+}
+
+void Batch::UnpackEdgesFromHeadAndTail(const NodeHead& head,
+                                       const NodeTail& tail) {
+  std::string_view tail_buffer(tail.data(), tail.size());
+  const size_t num_filled = static_cast<uint8_t>(tail.front());
+  tail_buffer.remove_prefix(2);
+  const size_t to_pad = head.num_edges == num_filled ? 0 : 1;
+  UnpackEdgesFromHeadAndBuffer(head, &tail_buffer, num_filled, to_pad);
+}
+
+void Batch::UnpackEdgesFromHead(const NodeHead& head) {
+  const size_t to_fetch =
+      std::min(head.edge_p.size(), static_cast<size_t>(head.num_edges));
+  UnpackEdgesFromHeadAndBuffer(head, nullptr, to_fetch, 0);
 }
 
 /* void Batch::ProcessNodes(size_t begin_idx, size_t end_idx) {
