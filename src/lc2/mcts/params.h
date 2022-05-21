@@ -32,6 +32,9 @@ class Params {
  public:
   float GetFpuValue() const { return 0.33f; }
   float GetDrawScore() const { return 0.0f; }
+  float GetCPuct() const { return 1.745f; }
+  float GetCPuctFactor() const { return 3.894f; }
+  float GetCPuctBase() const { return 38739.0f; }
 };
 
 }  // namespace lc2

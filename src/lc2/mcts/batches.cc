@@ -59,7 +59,7 @@ void Batch::Gather(NodeStorage* node_storage) {
 
     // Fetch nodes from the storage into the working arrays.
     FetchNodes(node_storage, begin_idx);
-    ComputeFPU(begin_edge_idx);
+    ComputeNodeVals(begin_edge_idx);
     // edges_.ComputeQUs(params_);
     // ProcessNodes(begin_idx, end_idx);
     // CommitNodes(node_storage, begin_idx, end_idx);
@@ -100,33 +100,44 @@ void Batch::FetchNodes(NodeStorage* node_storage, size_t from) {
       fetch_tail_func);
 }
 
-void Batch::ComputeFPU(size_t from_edge) {
+void Batch::ComputeNodeVals(size_t from_edge) {
+  nodes_.visited_policy.resize(fetched_size());
+  nodes_.fpu.resize(fetched_size());
+  nodes_.u_factor.resize(fetched_size());
+  // Visited policy.
   for (size_t i = from_edge; i < edges_size(); ++i) {
     const size_t node_idx = edges_.node_idx[i];
     if (edges_.n[i] != 0) nodes_.visited_policy[node_idx] += edges_.p[i];
   }
+  // The rest.
   const size_t from_node = edges_.node_idx[from_edge];
   const float draw_score = params_.GetDrawScore();
   const float fpu_value = params_.GetFpuValue();
-  nodes_.fpu.resize(fetched_size());
+  const float cpuct_init = params_.GetCPuct();
+  const float cpuct_f = params_.GetCPuctFactor();
+  const float cpuct_base = params_.GetCPuctBase();
   for (size_t i = from_node; i < fetched_size(); ++i) {
     const auto& head = nodes_.heads[i];
     auto q = ComputeQ(head.q_wl, head.q_d, head.q_ml, draw_score);
     nodes_.fpu[i] = ComputeFPUReduction(q, nodes_.visited_policy[i], fpu_value);
+    nodes_.u_factor[i] =
+        ComputeUFactor(head.n, cpuct_init, cpuct_f, cpuct_base);
   }
 }
 
-/*
-// DO NOT SUBMIT move to edges.h
-void Batch::EdgeData::ComputeQUs(size_t begin_idx, size_t end_idx,
-                                 const Params& params) {
-  const float draw_score = params.GetDrawScore();
-  q.resize(end_idx);
-  for (size_t i = begin_idx; i < end_idx; ++i) {
-    q[i] = ComputeQ(q_wl[i], q_d[i], q_ml[i], draw_score);
+void Batch::ComputeQU(size_t from_edge) {
+  edges_.qu.resize(edges_size());
+  edges_.q.resize(edges_size());
+  const float draw_score = params_.GetDrawScore();
+  for (size_t i = from_edge; i < edges_size(); ++i) {
+    const float q =
+        ComputeQ(edges_.q_wl[i], edges_.q_d[i], edges_.q_ml[i], draw_score);
+    edges_.q[i] = q;
+    const size_t node_idx = edges_.node_idx[i];
+    const float u = ComputeU(nodes_.u_factor[node_idx], edges_.n[i]);
+    edges_.qu[i] = q + u;
   }
 }
-*/
 
 namespace {
 

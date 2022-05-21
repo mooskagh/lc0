@@ -27,6 +27,8 @@
 
 #include <cmath>
 
+#include "utils/fastmath.h"
+
 namespace lc2 {
 
 struct NodeValue {
@@ -43,6 +45,13 @@ inline float ComputeFPUReduction(float q, float visited_policy,
 inline float ComputeQ(float wl, float d, float /* ml */, float draw_score) {
   return wl + draw_score * d;
 }
+
+inline float ComputeUFactor(size_t n, float init, float k, float base) {
+  float cpuct = init + (k ? k * lczero::FastLog((n + base) / base) : 0.0f);
+  return cpuct * std::sqrt(std::max(n - 1, 1ul));
+}
+
+inline float ComputeU(float u_factor, size_t n) { return u_factor / (1 + n); }
 
 // inline PositionKey UpdatePositionKey(const PositionKey& /* previous_key */,
 //                               const lczero::ChessBoard& /* previous_board */,

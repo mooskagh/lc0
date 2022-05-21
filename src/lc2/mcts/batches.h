@@ -84,7 +84,8 @@ class Batch {
 
  private:
   void FetchNodes(NodeStorage* node_storage, size_t from);
-  void ComputeFPU(size_t from_edge);
+  void ComputeNodeVals(size_t from_edge);
+  void ComputeQU(size_t from_edge);
   /*
   void ProcessNodes(size_t begin_idx, size_t end_idx);
   void CommitNodes(NodeStorage* node_storage, size_t begin_idx, size_t end_idx);
@@ -120,8 +121,10 @@ class Batch {
   struct NodeData {
     // Forward pass.
     std::vector<NodeHead> heads;
+    // Computed byt ComputeNodeVals().
     std::vector<float> visited_policy;
     std::vector<float> fpu;
+    std::vector<float> u_factor;
   };
   // All edge data of ForwardPassNodeData node, linearized for parallel
   // processing.
@@ -134,10 +137,9 @@ class Batch {
     std::vector<float> q_d;
     std::vector<float> q_ml;
     std::vector<uint32_t> n;
-    // Node values, broadcasted for parallel computation.
     // Computed later.
     std::vector<float> q;
-    void ComputeQUs(const Params& params);
+    std::vector<float> qu;
   };
   // Indices of leaf nodes (in FetchQueue/NodeData).
   struct LeafData {
