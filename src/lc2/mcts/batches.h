@@ -27,13 +27,16 @@
 
 #pragma once
 
+#include <cstddef>
 #include <functional>
 #include <limits>
+#include <string_view>
 #include <vector>
 
 #include "chess/board.h"
 #include "lc2/chess/position-key.h"
 #include "lc2/mcts/node.h"
+#include "lc2/mcts/params.h"
 #include "lc2/storage/storage.h"
 
 namespace lc2 {
@@ -49,12 +52,16 @@ struct BatchStats {
 
 class Batch {
  public:
-  void EnqueuePosition(const lczero::ChessBoard& board, const PositionKey& key,
-                       size_t visit_limit,
-                       size_t parent_idx = std::numeric_limits<size_t>::max());
+  Batch(const Params& params) : params_(params) {}
+  void EnqueuePosition(
+      const lczero::ChessBoard& board, const PositionKey& key,
+      size_t visit_limit,
+      size_t parent_node_idx = std::numeric_limits<size_t>::max(),
+      size_t parent_edge_idx = std::numeric_limits<size_t>::max());
   void Gather(NodeStorage* node_storage);
   size_t queue_size() const { return queue_.position_keys.size(); }
   size_t fetched_size() const { return nodes_.heads.size(); }
+  size_t edges_size() const { return edges_.node_idx.size(); }
   size_t leaf_count() const { return leafs_.leaf_indices.size(); }
 
   struct BackPropData {
@@ -76,16 +83,20 @@ class Batch {
   // 3. To populate NN results back.
 
  private:
-  void FetchNodes(NodeStorage* node_storage, size_t begin_idx, size_t end_idx);
+  void FetchNodes(NodeStorage* node_storage, size_t from);
+  void ComputeFPU(size_t from_edge);
+  /*
   void ProcessNodes(size_t begin_idx, size_t end_idx);
   void CommitNodes(NodeStorage* node_storage, size_t begin_idx, size_t end_idx);
   void ProcessSingleNode(size_t idx);
   void ForwardVisit(size_t parent_idx, const lczero::ChessBoard& parent_board,
                     const PositionKey& parent_key, lczero::Move move,
                     size_t visits);
+                    */
 
-  void UnpackEdgesFromHead(const NodeHead& head);
-  void UnpackEdgesFromHeadAndTail(const NodeHead& head, const NodeTail& tail);
+  void UnpackEdgesFromHead(size_t node_idx, const NodeHead& head);
+  void UnpackEdgesFromHeadAndTail(size_t node_idx, const NodeHead& head,
+                                  const NodeTail& tail);
   void UnpackEdgesFromHeadAndBuffer(const NodeHead& head,
                                     std::string_view* tail_buffer,
                                     size_t to_fetch, size_t to_pad);
@@ -97,33 +108,43 @@ class Batch {
     std::vector<PositionKey> position_keys;
     std::vector<lczero::ChessBoard> boards;
     std::vector<size_t> visit_limit;
-    std::vector<size_t> parent_idx;
+    std::vector<size_t> parent_node_idx;
+    std::vector<size_t> parent_edge_idx;
     enum class Status { kQueued, kNew, kFetched, kBusy };
     std::vector<Status> node_status;
   };
+
   // All vectors in ForwardPassNodeData are the same size, but the size may be
   // behind FetchQueue. An element is added when a node is fetched from the
   // storage.
   struct NodeData {
     // Forward pass.
     std::vector<NodeHead> heads;
-    std::vector<size_t> last_edge_idx;
+    std::vector<float> visited_policy;
+    std::vector<float> fpu;
   };
   // All edge data of ForwardPassNodeData node, linearized for parallel
   // processing.
   struct EdgeData {
+    // Populated by fetch.
+    std::vector<size_t> node_idx;
     std::vector<float> p;
     std::vector<uint16_t> moves;
     std::vector<float> q_wl;
     std::vector<float> q_d;
     std::vector<float> q_ml;
     std::vector<uint32_t> n;
+    // Node values, broadcasted for parallel computation.
+    // Computed later.
+    std::vector<float> q;
+    void ComputeQUs(const Params& params);
   };
   // Indices of leaf nodes (in FetchQueue/NodeData).
   struct LeafData {
     std::vector<size_t> leaf_indices;
   };
 
+  const Params& params_;
   FetchQueue queue_;
   NodeData nodes_;
   EdgeData edges_;

@@ -1,6 +1,6 @@
 /*
   This file is part of Leela Chess Zero.
-  Copyright (C) 2021 The LCZero Authors
+  Copyright (C) 2018-2019 The LCZero Authors
 
   Leela Chess is free software: you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -24,52 +24,14 @@
   terms of the respective license agreement, the licensors of this
   Program grant you additional permission to convey the resulting work.
 */
-
-#include <array>
-#include <cstdint>
-#include <string>
-
-#include "chess/position.h"
-#include "utils/floats.h"
-
 #pragma once
 
 namespace lc2 {
 
-struct NodeHead {
-  enum class Terminal : uint8_t { NonTerminal, EndOfGame, Tablebase, TwoFold };
-  struct Flags {
-    // Bit fields using parts of uint8_t fields initialized in the constructor.
-    // Whether or not this node end game (with a winning of either sides or
-    // draw).
-    Terminal terminal_type_ : 2;
-    // Best and worst result for this node.
-    lczero::GameResult lower_bound_ : 2;
-    lczero::GameResult upper_bound_ : 2;
-
-    bool tail_is_valid : 1;
-    bool is_being_processed : 1;
-  };
-
-  uint32_t n;
-  Flags flags;
-  uint8_t num_edges;
-  uint8_t num_filled_edges;
-  uint8_t padding1[1];
-  float q_wl;
-  float q_d;
-  float q_ml;
-
-  static constexpr size_t kEdgesInHead = 4;
-  std::array<float, kEdgesInHead + 1> edge_p;
-  std::array<uint32_t, kEdgesInHead> edge_n;
-  std::array<float, kEdgesInHead> edge_q_wl;
-  std::array<float, kEdgesInHead> edge_q_d;
-  std::array<float, kEdgesInHead> edge_q_ml;
-  std::array<uint16_t, kEdgesInHead + 1> moves;
-  uint8_t padding2[6];
+class Params {
+ public:
+  float GetFpuValue() const { return 0.33f; }
+  float GetDrawScore() const { return 0.0f; }
 };
-
-using NodeTail = std::string;
 
 }  // namespace lc2

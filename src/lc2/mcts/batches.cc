@@ -32,42 +32,45 @@
 #include <cstring>
 #include <iterator>
 #include <locale>
+#include <string_view>
 
 #include "chess/board.h"
 #include "lc2/chess/position-key.h"
+#include "lc2/mcts/formulas.h"
 #include "lc2/mcts/node.h"
 
 namespace lc2 {
 
 void Batch::EnqueuePosition(const lczero::ChessBoard& board,
                             const PositionKey& key, size_t visit_limit,
-                            size_t parent_idx) {
+                            size_t parent_node_idx, size_t parent_edge_idx) {
   queue_.boards.emplace_back(board);
   queue_.position_keys.emplace_back(key);
   queue_.visit_limit.emplace_back(visit_limit);
-  queue_.parent_idx.emplace_back(parent_idx);
+  queue_.parent_node_idx.emplace_back(parent_node_idx);
+  queue_.parent_edge_idx.emplace_back(parent_edge_idx);
   queue_.node_status.emplace_back(FetchQueue::Status::kQueued);
 }
 
 void Batch::Gather(NodeStorage* node_storage) {
   while (fetched_size() < queue_size()) {
     const size_t begin_idx = fetched_size();
-    const size_t end_idx = queue_size();
+    const size_t begin_edge_idx = edges_size();
 
     // Fetch nodes from the storage into the working arrays.
-    FetchNodes(node_storage, begin_idx, end_idx);
-    // ComputeQU(begin_idx, end_idx);
+    FetchNodes(node_storage, begin_idx);
+    ComputeFPU(begin_edge_idx);
+    // edges_.ComputeQUs(params_);
     // ProcessNodes(begin_idx, end_idx);
     // CommitNodes(node_storage, begin_idx, end_idx);
   }
 }
 
-void Batch::FetchNodes(NodeStorage* node_storage, size_t begin_idx,
-                       size_t end_idx) {
-  nodes_.heads.resize(end_idx);
+void Batch::FetchNodes(NodeStorage* node_storage, size_t from) {
+  nodes_.heads.resize(queue_size());
   auto fetch_head_func = [&](size_t offset, NodeHead* head,
                              NodeStorage::Status fetch_status) -> bool {
-    const size_t idx = begin_idx + offset;
+    const size_t idx = from + offset;
     auto& status = queue_.node_status[idx];
     nodes_.heads.push_back(*head);
     switch (fetch_status) {
@@ -85,21 +88,49 @@ void Batch::FetchNodes(NodeStorage* node_storage, size_t begin_idx,
     if (head->flags.tail_is_valid) {
       return true;
     } else {
-      UnpackEdgesFromHead(*head);
+      UnpackEdgesFromHead(idx, *head);
       return false;
     }
   };
-  auto fetch_tail_func = [&](size_t /* offset */, NodeHead* head,
-                             NodeTail* tail) {
-    UnpackEdgesFromHeadAndTail(*head, *tail);
+  auto fetch_tail_func = [&](size_t offset, NodeHead* head, NodeTail* tail) {
+    UnpackEdgesFromHeadAndTail(from + offset, *head, *tail);
   };
   node_storage->FetchOrCreate(
-      {&queue_.position_keys[begin_idx], end_idx - begin_idx}, fetch_head_func,
+      {&queue_.position_keys[from], queue_size() - from}, fetch_head_func,
       fetch_tail_func);
 }
 
+void Batch::ComputeFPU(size_t from_edge) {
+  for (size_t i = from_edge; i < edges_size(); ++i) {
+    const size_t node_idx = edges_.node_idx[i];
+    if (edges_.n[i] != 0) nodes_.visited_policy[node_idx] += edges_.p[i];
+  }
+  const size_t from_node = edges_.node_idx[from_edge];
+  const float draw_score = params_.GetDrawScore();
+  const float fpu_value = params_.GetFpuValue();
+  nodes_.fpu.resize(fetched_size());
+  for (size_t i = from_node; i < fetched_size(); ++i) {
+    const auto& head = nodes_.heads[i];
+    auto q = ComputeQ(head.q_wl, head.q_d, head.q_ml, draw_score);
+    nodes_.fpu[i] = ComputeFPUReduction(q, nodes_.visited_policy[i], fpu_value);
+  }
+}
+
+/*
+// DO NOT SUBMIT move to edges.h
+void Batch::EdgeData::ComputeQUs(size_t begin_idx, size_t end_idx,
+                                 const Params& params) {
+  const float draw_score = params.GetDrawScore();
+  q.resize(end_idx);
+  for (size_t i = begin_idx; i < end_idx; ++i) {
+    q[i] = ComputeQ(q_wl[i], q_d[i], q_ml[i], draw_score);
+  }
+}
+*/
+
 namespace {
 
+// DO NOT SUBMIT move to edges.h
 template <typename T, size_t InSize>
 void AppendFromHeadAndTail(const std::array<T, InSize>& head_in,
                            std::string_view* tail_buffer, size_t copy_count,
@@ -123,6 +154,7 @@ void AppendFromHeadAndTail(const std::array<T, InSize>& head_in,
 }
 }  // namespace
 
+// DO NOT SUBMIT move to edges.h
 void Batch::UnpackEdgesFromHeadAndBuffer(const NodeHead& head,
                                          std::string_view* tail,
                                          size_t to_fetch, size_t to_pad) {
@@ -134,19 +166,21 @@ void Batch::UnpackEdgesFromHeadAndBuffer(const NodeHead& head,
   AppendFromHeadAndTail(head.edge_q_ml, tail, to_fetch, to_pad, &edges_.q_ml);
 }
 
-void Batch::UnpackEdgesFromHeadAndTail(const NodeHead& head,
+void Batch::UnpackEdgesFromHeadAndTail(size_t node_idx, const NodeHead& head,
                                        const NodeTail& tail) {
   std::string_view tail_buffer(tail.data(), tail.size());
-  const size_t num_filled = static_cast<uint8_t>(tail.front());
-  tail_buffer.remove_prefix(2);
-  const size_t to_pad = head.num_edges == num_filled ? 0 : 1;
-  UnpackEdgesFromHeadAndBuffer(head, &tail_buffer, num_filled, to_pad);
+  const size_t num_filled_edges = head.num_filled_edges;
+  const size_t to_pad = head.num_edges == num_filled_edges ? 0 : 1;
+  UnpackEdgesFromHeadAndBuffer(head, &tail_buffer, num_filled_edges, to_pad);
+  edges_.node_idx.insert(edges_.node_idx.end(), num_filled_edges + to_pad,
+                         node_idx);
 }
 
-void Batch::UnpackEdgesFromHead(const NodeHead& head) {
+void Batch::UnpackEdgesFromHead(size_t node_idx, const NodeHead& head) {
   const size_t to_fetch =
       std::min(head.edge_p.size(), static_cast<size_t>(head.num_edges));
   UnpackEdgesFromHeadAndBuffer(head, nullptr, to_fetch, 0);
+  edges_.node_idx.insert(edges_.node_idx.end(), to_fetch, node_idx);
 }
 
 /* void Batch::ProcessNodes(size_t begin_idx, size_t end_idx) {
@@ -184,6 +218,7 @@ void Batch::CommitNodes(NodeStorage* node_storage, size_t begin_idx,
       fetch_tail_func);
 } */
 
+/*
 namespace {
 
 constexpr float kCpuct = 6.0f;
@@ -223,16 +258,9 @@ std::vector<uint16_t> DistributeVisits(const absl::Span<const float> p,
   return per_edge_visit;
 }
 
-PositionKey UpdatePositionKey(const PositionKey& /* previous_key */,
-                              const lczero::ChessBoard& /* previous_board */,
-                              lczero::Move /* move */,
-                              const lczero::ChessBoard& new_board) {
-  return PositionKey(new_board.Hash());
-}
 
 }  // namespace
 
-/*
 void Batch::ProcessSingleNode(size_t idx) {
   auto& head = node_heads_[idx];
   auto& node = unpacked_nodes_[idx];

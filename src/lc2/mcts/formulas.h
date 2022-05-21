@@ -25,51 +25,30 @@
   Program grant you additional permission to convey the resulting work.
 */
 
-#include <array>
-#include <cstdint>
-#include <string>
-
-#include "chess/position.h"
-#include "utils/floats.h"
-
-#pragma once
+#include <cmath>
 
 namespace lc2 {
 
-struct NodeHead {
-  enum class Terminal : uint8_t { NonTerminal, EndOfGame, Tablebase, TwoFold };
-  struct Flags {
-    // Bit fields using parts of uint8_t fields initialized in the constructor.
-    // Whether or not this node end game (with a winning of either sides or
-    // draw).
-    Terminal terminal_type_ : 2;
-    // Best and worst result for this node.
-    lczero::GameResult lower_bound_ : 2;
-    lczero::GameResult upper_bound_ : 2;
-
-    bool tail_is_valid : 1;
-    bool is_being_processed : 1;
-  };
-
-  uint32_t n;
-  Flags flags;
-  uint8_t num_edges;
-  uint8_t num_filled_edges;
-  uint8_t padding1[1];
-  float q_wl;
-  float q_d;
-  float q_ml;
-
-  static constexpr size_t kEdgesInHead = 4;
-  std::array<float, kEdgesInHead + 1> edge_p;
-  std::array<uint32_t, kEdgesInHead> edge_n;
-  std::array<float, kEdgesInHead> edge_q_wl;
-  std::array<float, kEdgesInHead> edge_q_d;
-  std::array<float, kEdgesInHead> edge_q_ml;
-  std::array<uint16_t, kEdgesInHead + 1> moves;
-  uint8_t padding2[6];
+struct NodeValue {
+  float wl;
+  float d;
+  float ml;
 };
 
-using NodeTail = std::string;
+inline float ComputeFPUReduction(float q, float visited_policy,
+                                 float fpu_value) {
+  return q * std::sqrt(visited_policy) * fpu_value;
+}
+
+inline float ComputeQ(float wl, float d, float /* ml */, float draw_score) {
+  return wl + draw_score * d;
+}
+
+// inline PositionKey UpdatePositionKey(const PositionKey& /* previous_key */,
+//                               const lczero::ChessBoard& /* previous_board */,
+//                               lczero::Move /* move */,
+//                               const lczero::ChessBoard& new_board) {
+//   return PositionKey(new_board.Hash());
+// }
 
 }  // namespace lc2
