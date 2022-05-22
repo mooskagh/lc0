@@ -28,7 +28,7 @@
 #include <cmath>
 
 #include "utils/fastmath.h"
-
+#include "utils/hashcat.h"
 namespace lc2 {
 
 struct NodeValue {
@@ -51,13 +51,27 @@ inline float ComputeUFactor(size_t n, float init, float k, float base) {
   return cpuct * std::sqrt(std::max(n - 1, 1ul));
 }
 
-inline float ComputeU(float u_factor, size_t n) { return u_factor / (1 + n); }
+inline float ComputeU(float u_factor, float p, size_t n) {
+  return p * u_factor / (1 + n);
+}
 
-// inline PositionKey UpdatePositionKey(const PositionKey& /* previous_key */,
-//                               const lczero::ChessBoard& /* previous_board */,
-//                               lczero::Move /* move */,
-//                               const lczero::ChessBoard& new_board) {
-//   return PositionKey(new_board.Hash());
-// }
+// Number of visits for N2 to reach N1.
+inline size_t ComputeVisitsToReach(float p1, size_t n1, float q1, float p2,
+                                   size_t n2, float q2, float u_factor) {
+  const float delta_q = q1 - q2;
+  const float n1i = n1 + 1;
+  const float n2i = n2 + 1;
+  const float nominator =
+      u_factor * (p2 - p1 + n2i - n1i) - n1i * n2i * delta_q;
+  const float denominator = u_factor * p1 + n1i * delta_q;
+  return 1 + nominator / denominator;
+}
+
+inline PositionKey ComputePositionKey(
+    const PositionKey& previous_key,
+    const lczero::ChessBoard& /* previous_board */, uint16_t move,
+    const lczero::ChessBoard& /*new_board*/) {
+  return PositionKey(lczero::HashCat(previous_key.raw(), move));
+}
 
 }  // namespace lc2

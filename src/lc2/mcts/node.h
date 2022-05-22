@@ -47,7 +47,7 @@ struct NodeHead {
     lczero::GameResult lower_bound_ : 2;
     lczero::GameResult upper_bound_ : 2;
 
-    bool tail_is_valid : 1;
+    // bool tail_is_valid : 1;
     bool is_being_processed : 1;
   };
 
@@ -68,6 +68,8 @@ struct NodeHead {
   std::array<float, kEdgesInHead> edge_q_ml;
   std::array<uint16_t, kEdgesInHead + 1> moves;
   uint8_t padding2[6];
+
+  bool TailIsValid() const { return num_filled_edges > edge_n.size(); }
 };
 
 using NodeTail = std::string;

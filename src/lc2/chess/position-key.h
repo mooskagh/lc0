@@ -28,6 +28,7 @@
 #pragma once
 
 #include <cstdint>
+
 #include "chess/position.h"
 
 namespace lc2 {
@@ -37,7 +38,8 @@ class PositionKey {
   PositionKey() = default;
   PositionKey(const PositionKey&) = default;
   PositionKey(PositionKey&&) = default;
-  explicit PositionKey(uint64_t hash) : hash_(hash){}
+  explicit PositionKey(uint64_t hash) : hash_(hash) {}
+  uint64_t raw() const { return hash_; }
 
   bool operator==(const PositionKey& other) const {
     return hash_ == other.hash_;

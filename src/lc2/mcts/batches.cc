@@ -28,6 +28,7 @@
 #include "lc2/mcts/batches.h"
 
 #include <absl/algorithm/container.h>
+#include <absl/types/span.h>
 
 #include <cstring>
 #include <iterator>
@@ -59,10 +60,10 @@ void Batch::Gather(NodeStorage* node_storage) {
 
     // Fetch nodes from the storage into the working arrays.
     FetchNodes(node_storage, begin_idx);
+    ComputeVisitedPolicy(begin_edge_idx);
     ComputeNodeVals(begin_edge_idx);
-    // edges_.ComputeQUs(params_);
-    // ProcessNodes(begin_idx, end_idx);
-    // CommitNodes(node_storage, begin_idx, end_idx);
+    ComputeQU(begin_edge_idx);
+    ProcessNodes(begin_idx);
   }
 }
 
@@ -85,7 +86,7 @@ void Batch::FetchNodes(NodeStorage* node_storage, size_t from) {
         status = FetchQueue::Status::kFetched;
     };
     head->flags.is_being_processed = true;
-    if (head->flags.tail_is_valid) {
+    if (head->TailIsValid()) {
       return true;
     } else {
       UnpackEdgesFromHead(idx, *head);
@@ -100,16 +101,17 @@ void Batch::FetchNodes(NodeStorage* node_storage, size_t from) {
       fetch_tail_func);
 }
 
-void Batch::ComputeNodeVals(size_t from_edge) {
+void Batch::ComputeVisitedPolicy(size_t from_edge) {
   nodes_.visited_policy.resize(fetched_size());
-  nodes_.fpu.resize(fetched_size());
-  nodes_.u_factor.resize(fetched_size());
-  // Visited policy.
   for (size_t i = from_edge; i < edges_size(); ++i) {
     const size_t node_idx = edges_.node_idx[i];
     if (edges_.n[i] != 0) nodes_.visited_policy[node_idx] += edges_.p[i];
   }
-  // The rest.
+}
+
+void Batch::ComputeNodeVals(size_t from_edge) {
+  nodes_.fpu.resize(fetched_size());
+  nodes_.u_factor.resize(fetched_size());
   const size_t from_node = edges_.node_idx[from_edge];
   const float draw_score = params_.GetDrawScore();
   const float fpu_value = params_.GetFpuValue();
@@ -134,14 +136,46 @@ void Batch::ComputeQU(size_t from_edge) {
         ComputeQ(edges_.q_wl[i], edges_.q_d[i], edges_.q_ml[i], draw_score);
     edges_.q[i] = q;
     const size_t node_idx = edges_.node_idx[i];
-    const float u = ComputeU(nodes_.u_factor[node_idx], edges_.n[i]);
+    const float u =
+        ComputeU(nodes_.u_factor[node_idx], edges_.p[i], edges_.n[i]);
     edges_.qu[i] = q + u;
   }
 }
 
 namespace {
+template <typename T, size_t Size>
+void SerializeIntoHeadAndTail(absl::Span<T> data, std::array<T, Size>* head,
+                              std::string* tail) {
+  std::copy(data.begin(), data.begin() + std::min(data.size(), head->size()),
+            head->begin());
+  if (head->size() < data.size()) {
+    assert(tail != nullptr);
+    tail->append(reinterpret_cast<const char*>(&data[head->size()]),
+                 sizeof(T) * (data.size() - head->size()));
+  }
+}
+}  // namespace
 
-// DO NOT SUBMIT move to edges.h
+void Batch::PackEdgesIntoHeadAndTail(size_t node_idx, NodeHead* head,
+                                     NodeTail* tail) {
+  const size_t header_bytes_in_tail =
+      (sizeof(decltype(head->edge_p)::value_type) +
+       sizeof(decltype(head->moves)::value_type)) *
+      (head->num_edges - head->edge_p.size());
+  tail->resize(header_bytes_in_tail);
+  const size_t edge_idx = nodes_.start_edge_idx[node_idx];
+  const size_t edge_count = nodes_.start_edge_idx[node_idx + 1] - edge_idx;
+  SerializeIntoHeadAndTail(absl::MakeSpan(&edges_.n[edge_idx], edge_count),
+                           &head->edge_n, tail);
+  SerializeIntoHeadAndTail(absl::MakeSpan(&edges_.q_wl[edge_idx], edge_count),
+                           &head->edge_q_wl, tail);
+  SerializeIntoHeadAndTail(absl::MakeSpan(&edges_.q_d[edge_idx], edge_count),
+                           &head->edge_q_d, tail);
+  SerializeIntoHeadAndTail(absl::MakeSpan(&edges_.q_ml[edge_idx], edge_count),
+                           &head->edge_q_ml, tail);
+}
+
+namespace {
 template <typename T, size_t InSize>
 void AppendFromHeadAndTail(const std::array<T, InSize>& head_in,
                            std::string_view* tail_buffer, size_t copy_count,
@@ -165,7 +199,6 @@ void AppendFromHeadAndTail(const std::array<T, InSize>& head_in,
 }
 }  // namespace
 
-// DO NOT SUBMIT move to edges.h
 void Batch::UnpackEdgesFromHeadAndBuffer(const NodeHead& head,
                                          std::string_view* tail,
                                          size_t to_fetch, size_t to_pad) {
@@ -185,6 +218,7 @@ void Batch::UnpackEdgesFromHeadAndTail(size_t node_idx, const NodeHead& head,
   UnpackEdgesFromHeadAndBuffer(head, &tail_buffer, num_filled_edges, to_pad);
   edges_.node_idx.insert(edges_.node_idx.end(), num_filled_edges + to_pad,
                          node_idx);
+  nodes_.start_edge_idx.push_back(edges_size());
 }
 
 void Batch::UnpackEdgesFromHead(size_t node_idx, const NodeHead& head) {
@@ -192,96 +226,89 @@ void Batch::UnpackEdgesFromHead(size_t node_idx, const NodeHead& head) {
       std::min(head.edge_p.size(), static_cast<size_t>(head.num_edges));
   UnpackEdgesFromHeadAndBuffer(head, nullptr, to_fetch, 0);
   edges_.node_idx.insert(edges_.node_idx.end(), to_fetch, node_idx);
+  nodes_.start_edge_idx.push_back(edges_size());
 }
 
-/* void Batch::ProcessNodes(size_t begin_idx, size_t end_idx) {
-  for (auto idx = begin_idx; idx != end_idx; ++idx) {
-    if (node_heads_[idx].flags.is_being_processed) continue;
+void Batch::ProcessNodes(size_t begin_idx) {
+  for (auto idx = begin_idx; idx != fetched_size(); ++idx) {
+    if (queue_.node_status[idx] == FetchQueue::Status::kBusy) continue;
     ProcessSingleNode(idx);
   }
 }
 
-void Batch::CommitNodes(NodeStorage* node_storage, size_t begin_idx,
-                        size_t end_idx) {
+void Batch::CommitNodes(NodeStorage* node_storage, size_t begin_idx) {
   auto fetch_head_func = [&](size_t offset, NodeHead* head,
                              NodeStorage::Status status) -> bool {
     assert(status == NodeStorage::Status::kFetched);
     const size_t idx = begin_idx + offset;
     // The node was busy, don't update.
-    auto& local_head = node_heads_[idx];
+    if (queue_.node_status[idx] != FetchQueue::Status::kFetched) return false;
+    auto& local_head = nodes_.heads[idx];
+    // If it was a collision, don't update.
+    if (local_head.n == 0) return false;
     if (local_head.flags.is_being_processed) return false;
     // If tail is valid, will handle that in the tail func.
-    if (head->flags.tail_is_valid) return true;
+    if (head->TailIsValid()) return true;
     // This may happen ourside of mutex, if causes problems.
-    unpacked_nodes_[begin_idx + offset].UpdateNIntoHead(&local_head);
+    PackEdgesIntoHeadAndTail(idx, &local_head, nullptr);
     *head = local_head;
     return false;
   };
   auto fetch_tail_func = [&](size_t offset, NodeHead* head, NodeTail* tail) {
-    auto& unpacked_node = unpacked_nodes_[begin_idx + offset];
     const size_t idx = begin_idx + offset;
-    auto& local_head = node_heads_[idx];
-    unpacked_node.UpdateNIntoHeadAndTail(&local_head, tail);
+    auto& local_head = nodes_.heads[idx];
+    PackEdgesIntoHeadAndTail(idx, &local_head, tail);
     *head = local_head;
   };
-  node_storage->FetchOrCreate(
-      {&positions_keys_[begin_idx], end_idx - begin_idx}, fetch_head_func,
-      fetch_tail_func);
-} */
-
-/*
-namespace {
-
-constexpr float kCpuct = 6.0f;
-
-std::vector<uint16_t> DistributeVisits(const absl::Span<const float> p,
-                                       const absl::Span<const uint32_t> n,
-                                       const absl::Span<const float> edge_q,
-                                       float fpu_q, uint32_t total_n,
-                                       size_t total_visits) {
-  auto get_n = [&](size_t idx) { return (idx >= n.size()) ? 0 : n[idx]; };
-  using QUandIdx = std::pair<float, size_t>;
-  const float sqrt_total_n = std::sqrt(total_n);
-  std::vector<uint16_t> per_edge_visit(p.size());
-  auto get_q_plus_u = [&](size_t i) {
-    const auto n = get_n(i);
-    const float q = (n == 0) ? fpu_q : edge_q[i];
-    const float u = kCpuct * p[i] * sqrt_total_n / (1 + n + per_edge_visit[i]);
-    return q + u;
-  };
-  std::vector<QUandIdx> qu_i;
-  qu_i.reserve(p.size());
-  for (size_t i = 0; i < p.size(); ++i) qu_i.emplace_back(get_q_plus_u(i), i);
-  absl::c_make_heap(qu_i);
-
-  while (true) {
-    assert(total_visits > 0);
-    absl::c_pop_heap(qu_i);
-    do {
-      // TODO(crem) instead of a loop, it's possible to do some math.
-      auto& [qu, idx] = qu_i.back();
-      ++per_edge_visit[idx];
-      qu = get_q_plus_u(idx);
-    } while (total_visits > 0 && qu_i.back().first >= qu_i.front().first);
-    if (total_visits == 0) break;
-    absl::c_push_heap(qu_i);
-  }
-  return per_edge_visit;
+  const size_t count = queue_size() - begin_idx;
+  node_storage->FetchOrCreate({&queue_.position_keys[begin_idx], count},
+                              fetch_head_func, fetch_tail_func);
 }
 
+std::vector<uint16_t> Batch::DistributeVisits(size_t from_edge,
+                                              size_t edge_count,
+                                              size_t visit_count) {
+  assert(edge_count > 0);
+  if (edge_count == 1) return std::vector<uint16_t>(1, visit_count);
+  const float u_factor = nodes_.u_factor[edges_.node_idx[from_edge]];
+  std::vector<uint16_t> per_edge_visits(edge_count);
+  std::vector<size_t> indices(edge_count);
+  std::iota(indices.begin(), indices.end(), from_edge);
+  auto qu_less = [&](size_t a, size_t b) {
+    if (edges_.qu[a] != edges_.qu[b]) return edges_.qu[a] < edges_.qu[b];
+    // Among edges with equal Q+U, prefer ones with smaller index.
+    return a > b;
+  };
 
-}  // namespace
+  absl::c_make_heap(indices, qu_less);
+  while (true) {
+    assert(visit_count > 0);
+    absl::c_pop_heap(indices, qu_less);
+    const size_t i1 = indices.front();
+    const size_t i2 = indices.back();
+    const size_t visits = std::min(
+        visit_count, ComputeVisitsToReach(
+                         edges_.p[i1], edges_.n[i1], edges_.q[i1], edges_.p[i2],
+                         edges_.n[i2], edges_.q[i2], u_factor));
+    edges_.n[i2] += visits;
+    edges_.qu[i2] = ComputeU(u_factor, edges_.p[i2], edges_.n[i2]);
+    visit_count -= visits;
+    per_edge_visits[i2 - from_edge] += visits;
+    if (visit_count == 0) break;
+    absl::c_push_heap(indices, qu_less);
+  }
+  return per_edge_visits;
+}
 
 void Batch::ProcessSingleNode(size_t idx) {
-  auto& head = node_heads_[idx];
-  auto& node = unpacked_nodes_[idx];
-  const size_t visits = visit_counts_[idx];
+  const size_t visits = queue_.visit_limit[idx];
+  auto& head = nodes_.heads[idx];
 
-  if (fetch_status_[idx] == NodeStorage::Status::kCreated) {
+  if (queue_.node_status[idx] == FetchQueue::Status::kNew) {
     // Fresh node, send to NN for eval.
     ++stats_.nn_evals;
     stats_.collisions += visits - 1;
-    leaf_indices_.push_back(idx);
+    leafs_.node_indices.push_back(idx);
     return;
   }
   if (head.n == 0) {
@@ -290,29 +317,27 @@ void Batch::ProcessSingleNode(size_t idx) {
     return;
   }
 
-  auto fpu_q = GetNodeQ(head);
-  auto edge_visits =
-      DistributeVisits(node.p, node.n, node.q, fpu_q, head.n, visits);
-  const auto& board = boards_[idx];
-  const auto& key = positions_keys_[idx];
+  const size_t from_edge = nodes_.start_edge_idx[idx];
+  const size_t to_edge = nodes_.start_edge_idx[idx + 1];
+  auto edge_visits = DistributeVisits(from_edge, to_edge - from_edge, visits);
+  const auto& board = queue_.boards[idx];
+  const auto& key = queue_.position_keys[idx];
   for (size_t i = 0; i < edge_visits.size(); ++i) {
     size_t visits = edge_visits[i];
     if (visits == 0) continue;
     head.n += visits;
-    while (node.n.size() <= i) {
-      node.n.emplace_back();
-      node.q.emplace_back(fpu_q);
-    }
-    node.n[i] += visits;
-
-    auto move = lczero::Move::from_packed_int(node.moves[i]);
+    // edges_.n[i] += visits; already done inside DeistributeVisits().
+    const size_t move_idx = from_edge + i;
+    auto move = edges_.moves[move_idx];
     auto new_board = board;
-    new_board.ApplyMove(move);
-    auto new_key = UpdatePositionKey(key, board, move, new_board);
-    EnqueuePosition(new_board, new_key, visits, idx);
+    new_board.ApplyMove(lczero::Move::from_packed_int(move));
+    auto new_key = ComputePositionKey(key, board, move, new_board);
+    EnqueuePosition(new_board, new_key, visits, idx, move_idx);
   }
-  if (node.n.size() > head.edge_n.size()) head.flags.tail_is_valid = true;
+  if (head.num_filled_edges < edge_visits.size() &&
+      edge_visits[head.num_filled_edges] > 0) {
+    head.num_filled_edges = edge_visits.size();
+  }
 }
-*/
 
 }  // namespace lc2

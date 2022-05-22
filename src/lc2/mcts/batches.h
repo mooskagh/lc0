@@ -62,7 +62,7 @@ class Batch {
   size_t queue_size() const { return queue_.position_keys.size(); }
   size_t fetched_size() const { return nodes_.heads.size(); }
   size_t edges_size() const { return edges_.node_idx.size(); }
-  size_t leaf_count() const { return leafs_.leaf_indices.size(); }
+  size_t leaf_count() const { return leafs_.node_indices.size(); }
 
   struct BackPropData {
     float wl;
@@ -84,12 +84,15 @@ class Batch {
 
  private:
   void FetchNodes(NodeStorage* node_storage, size_t from);
+  void ComputeVisitedPolicy(size_t from_edge);
   void ComputeNodeVals(size_t from_edge);
   void ComputeQU(size_t from_edge);
-  /*
-  void ProcessNodes(size_t begin_idx, size_t end_idx);
-  void CommitNodes(NodeStorage* node_storage, size_t begin_idx, size_t end_idx);
+  void ProcessNodes(size_t begin_idx);
   void ProcessSingleNode(size_t idx);
+  std::vector<uint16_t> DistributeVisits(size_t from_edge, size_t edge_count,
+                                         size_t visit_count);
+  void CommitNodes(NodeStorage* node_storage, size_t begin_idx);
+  /*
   void ForwardVisit(size_t parent_idx, const lczero::ChessBoard& parent_board,
                     const PositionKey& parent_key, lczero::Move move,
                     size_t visits);
@@ -101,6 +104,8 @@ class Batch {
   void UnpackEdgesFromHeadAndBuffer(const NodeHead& head,
                                     std::string_view* tail_buffer,
                                     size_t to_fetch, size_t to_pad);
+  void PackEdgesIntoHeadAndTail(size_t node_idx, NodeHead* head,
+                                NodeTail* tail);
 
   // All vectors in FetchQueue must be of the same length. An element is added
   // when a node is enqueued, either root node initially, or a child node during
@@ -121,7 +126,9 @@ class Batch {
   struct NodeData {
     // Forward pass.
     std::vector<NodeHead> heads;
-    // Computed byt ComputeNodeVals().
+    // This vector is 1 element longer than other vectors.
+    std::vector<size_t> start_edge_idx{1};
+    // Computed by ComputeNodeVals().
     std::vector<float> visited_policy;
     std::vector<float> fpu;
     std::vector<float> u_factor;
@@ -143,7 +150,7 @@ class Batch {
   };
   // Indices of leaf nodes (in FetchQueue/NodeData).
   struct LeafData {
-    std::vector<size_t> leaf_indices;
+    std::vector<size_t> node_indices;
   };
 
   const Params& params_;
