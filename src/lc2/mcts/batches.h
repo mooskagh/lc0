@@ -65,11 +65,10 @@ class Batch {
   size_t leaf_count() const { return leafs_.node_indices.size(); }
 
   struct BackPropData {
-    float wl;
-    float d;
-    float ml;
-    uint32_t backproping_visits;
-    uint32_t visits_to_rollback;
+    float v_wl;
+    float v_d;
+    float v_ml;
+    uint32_t new_n;
     // is_termninal blah-blah
   };
   using LeafVisitFunc =
@@ -151,6 +150,8 @@ class Batch {
   // Indices of leaf nodes (in FetchQueue/NodeData).
   struct LeafData {
     std::vector<size_t> node_indices;
+    std::vector<float> edge_p;
+    std::vector<lczero::Move> moves;
   };
 
   const Params& params_;
