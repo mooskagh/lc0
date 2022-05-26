@@ -1,0 +1,55 @@
+syntax = "proto2";
+
+package pblczero;
+
+// Messages are optimized to look nicer in JSON rather than protobuf.
+
+message WDL {
+    optional float w = 1;
+    optional float d = 2;
+    optional float l = 3;
+}
+
+message Evaluation {
+   optional sint32 cp = 1;
+   optional float winprob = 2;
+   optional WDL wdl = 3;
+   optional sint32 mate = 4;
+}
+
+message Lc0MoveInfo {
+    optional uint64 n = 1;
+    optional uint32 n_in_flight = 2;
+    optional float p = 3;
+    optional float wl = 4;
+    optional float d = 5;
+    optional float ml = 6;
+    optional float q = 7;
+    optional float v = 8;
+    optional float u = 9;
+    optional float s = 10;
+    optional float visited_policy = 11;
+}
+
+message NodeInfo {
+    optional Evaluation eval = 1;
+    optional uint32 depth = 2;
+    optional uint32 seldepth = 3;
+    optional uint64 nodes = 4;    
+    optional uint32 nps = 5;
+    repeated string pv = 6;
+    optional uint64 tbhits = 7;
+    optional string comment = 8;
+    optional Lc0MoveInfo lc0_info = 9;
+}
+
+message AlternativePosition {
+    repeated string position = 1;
+    optional NodeInfo info = 2;
+}
+
+message JsonInfo {
+    optional NodeInfo posinfo = 1;
+    repeated AlternativePosition moves = 2;
+    // Time management, cache usage.
+}

@@ -77,7 +77,7 @@ GRAMMAR = ([(r'%s\b' % x, x)
                 (r'"((?:[^"\\]|\\.)*)"', 'string'),
                 (r'\d+', 'number'),
                 (r'\w+', 'identifier'),
-            ])
+])
 
 
 class Lexer:
@@ -195,6 +195,9 @@ class ProtoTypeParser:
             return 'std::string'
         else:
             return self.GetCppType()
+
+    def IsEnumType(self):
+        return self.typetype == 'enum'
 
     def IsVarintType(self):
         return self.typetype == 'enum' or (self.typetype == 'basic'
@@ -330,6 +333,21 @@ class ProtoFieldParser:
 
         w.Write('%s %s(%d, %s, &out);' %
                 (prefix, fname[wire_id], self.number, name))
+
+    def GenerateJsonOutput(self, w):
+        name = self.name.group(0)
+        if self.category == 'repeated':
+            prefix = 'if (!%s_.empty())' % name
+            funcname = 'AppendJsonRepeatedField'
+        else:
+            prefix = 'if (has_%s_)' % name
+            funcname = 'AppendJsonField'
+        if self.type.IsEnumType():
+            value = '%s_Name(%s_)' % (self.type.GetCppType(), name)
+        else:
+            value = name + "_"
+        w.Write('%s %s("%s", %s, &first, &out);' %
+                (prefix, funcname, name, value))
 
     def GenerateFunctions(self, w):
         name = self.name.group(0)
@@ -523,6 +541,7 @@ class ProtoMessageParser:
         w.Write('return out;')
         w.Unindent()
         w.Write('}')
+        self.GenerateJsonFunc(w)
         w.Write('')
         w.Write('void Clear() override {')
         w.Indent()
@@ -542,9 +561,23 @@ class ProtoMessageParser:
         w.Unindent()
         w.Write('};')
 
+    def GenerateJsonFunc(self, w):
+        w.Write('')
+        w.Write('std::string OutputAsJson() const override {')
+        w.Indent()
+        w.Write('bool first = true;')
+        w.Write('std::string out = "{";')
+        for x in self.fields:
+            x.GenerateJsonOutput(w)
+        w.Write('out += "}";')
+        w.Write('return out;')
+        w.Unindent()
+        w.Write('}')
+
 
 class ProtoFileParser:
     '''Root grammar of .proto file'''
+
     def __init__(self, lexer):
         self.package = None
         self.objects = []
@@ -593,6 +626,7 @@ class ProtoFileParser:
 
 class Writer:
     '''A helper class for writing file line by line with indent.'''
+
     def __init__(self, fo):
         self.fo = fo
         self.indent = 0
