@@ -189,7 +189,7 @@ Position EngineController::ApplyPositionMoves() {
   board.SetFromFen(current_position_.fen, &no_capture_ply, &game_move);
   int game_ply = 2 * game_move - (board.flipped() ? 1 : 2);
   Position pos(board, no_capture_ply, game_ply);
-  for (std::string move_str: current_position_.moves) {
+  for (std::string move_str : current_position_.moves) {
     Move move(move_str);
     if (pos.IsBlackToMove()) move.Mirror();
     pos = Position(pos, move);
@@ -315,11 +315,11 @@ void EngineController::Stop() {
 }
 
 EngineLoop::EngineLoop()
-    : engine_(
-          std::make_unique<CallbackUciResponder>(
-              std::bind(&UciLoop::SendBestMove, this, std::placeholders::_1),
-              std::bind(&UciLoop::SendInfo, this, std::placeholders::_1)),
-          options_.GetOptionsDict()) {
+    : engine_(std::make_unique<CallbackUciResponder>(
+                  [&](const auto& move) { SendBestMove(move); },
+                  [&](const auto& info) { SendInfo(info); },
+                  [&](const auto& info) { SendJsonInfo(info); }),
+              options_.GetOptionsDict()) {
   engine_.PopulateOptions(&options_);
   options_.Add<StringOption>(kLogFileId);
 }

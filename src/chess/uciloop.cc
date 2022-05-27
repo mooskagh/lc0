@@ -279,4 +279,8 @@ void UciLoop::SendInfo(const std::vector<ThinkingInfo>& infos) {
   SendResponses(reses);
 }
 
+void UciLoop::SendJsonInfo(const pblczero::JsonInfo& info) {
+  SendResponse("jsoninfo " + info.OutputAsJson());
+}
+
 }  // namespace lczero

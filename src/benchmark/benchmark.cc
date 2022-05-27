@@ -104,8 +104,8 @@ void Benchmark::Run() {
       auto search = std::make_unique<Search>(
           tree, network.get(),
           std::make_unique<CallbackUciResponder>(
-              std::bind(&Benchmark::OnBestMove, this, std::placeholders::_1),
-              std::bind(&Benchmark::OnInfo, this, std::placeholders::_1)),
+              [&](const auto& move) { OnBestMove(move); },
+              [&](const auto& info) { OnInfo(info); }, [](const auto&) {}),
           MoveList(), start, std::move(stopper), false, option_dict, &cache,
           nullptr);
       search->StartThreads(option_dict.Get<int>(kThreadsOptionId));

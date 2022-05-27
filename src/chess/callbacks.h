@@ -35,6 +35,7 @@
 
 #include "chess/bitboard.h"
 #include "chess/position.h"
+#include "proto/jsondata.pb.h"
 
 namespace lczero {
 
@@ -142,6 +143,7 @@ class UciResponder {
   virtual ~UciResponder() = default;
   virtual void OutputBestMove(BestMoveInfo* info) = 0;
   virtual void OutputThinkingInfo(std::vector<ThinkingInfo>* infos) = 0;
+  virtual void OutputJsonInfo(const pblczero::JsonInfo& info) = 0;
 };
 
 // The responder which calls callbacks. Used for easier transition from old
@@ -151,18 +153,28 @@ class CallbackUciResponder : public UciResponder {
   using ThinkingCallback =
       std::function<void(const std::vector<ThinkingInfo>&)>;
   using BestMoveCallback = std::function<void(const BestMoveInfo&)>;
+  using JsonInfoCallback = std::function<void(const pblczero::JsonInfo&)>;
 
-  CallbackUciResponder(BestMoveCallback bestmove, ThinkingCallback info)
-      : bestmove_callback_(bestmove), info_callback_(info) {}
+  CallbackUciResponder(BestMoveCallback bestmove, ThinkingCallback info,
+                       JsonInfoCallback json)
+      : bestmove_callback_(bestmove),
+        info_callback_(info),
+        json_info_callback_(json) {}
 
-  void OutputBestMove(BestMoveInfo* info) { bestmove_callback_(*info); }
-  void OutputThinkingInfo(std::vector<ThinkingInfo>* infos) {
+  void OutputBestMove(BestMoveInfo* info) override {
+    bestmove_callback_(*info);
+  }
+  void OutputThinkingInfo(std::vector<ThinkingInfo>* infos) override {
     info_callback_(*infos);
+  }
+  void OutputJsonInfo(const pblczero::JsonInfo& info) override {
+    json_info_callback_(info);
   }
 
  private:
   const BestMoveCallback bestmove_callback_;
   const ThinkingCallback info_callback_;
+  const JsonInfoCallback json_info_callback_;
 };
 
 // The responnder which doesn't own the parent. Used to transition from old code
@@ -170,11 +182,14 @@ class CallbackUciResponder : public UciResponder {
 class NonOwningUciRespondForwarder : public UciResponder {
  public:
   NonOwningUciRespondForwarder(UciResponder* parent) : parent_(parent) {}
-  virtual void OutputBestMove(BestMoveInfo* info) {
+  void OutputBestMove(BestMoveInfo* info) override {
     parent_->OutputBestMove(info);
   }
-  virtual void OutputThinkingInfo(std::vector<ThinkingInfo>* infos) {
+  void OutputThinkingInfo(std::vector<ThinkingInfo>* infos) override {
     parent_->OutputThinkingInfo(infos);
+  }
+  void OutputJsonInfo(const pblczero::JsonInfo& info) override {
+    parent_->OutputJsonInfo(info);
   }
 
  private:
@@ -189,15 +204,20 @@ class TransformingUciResponder : public UciResponder {
 
   virtual void TransformBestMove(BestMoveInfo*) {}
   virtual void TransformThinkingInfo(std::vector<ThinkingInfo>*) {}
+  virtual void TransformJsonInfo(const pblczero::JsonInfo&) {}
 
  private:
-  virtual void OutputBestMove(BestMoveInfo* info) {
+  void OutputBestMove(BestMoveInfo* info) override {
     TransformBestMove(info);
     parent_->OutputBestMove(info);
   }
-  virtual void OutputThinkingInfo(std::vector<ThinkingInfo>* infos) {
+  void OutputThinkingInfo(std::vector<ThinkingInfo>* infos) override {
     TransformThinkingInfo(infos);
     parent_->OutputThinkingInfo(infos);
+  }
+  void OutputJsonInfo(const pblczero::JsonInfo& info) override {
+    TransformJsonInfo(info);
+    parent_->OutputJsonInfo(info);
   }
   std::unique_ptr<UciResponder> parent_;
 };

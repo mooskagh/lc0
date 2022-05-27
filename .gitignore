@@ -1,5 +1,6 @@
 !subprojects/*.wrap
 *.swp
+*.pb.h
 .clang_complete
 .DS_Store
 .cache/

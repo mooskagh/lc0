@@ -63,6 +63,7 @@ class UciLoop {
   virtual void SendResponses(const std::vector<std::string>& responses);
   void SendBestMove(const BestMoveInfo& move);
   void SendInfo(const std::vector<ThinkingInfo>& infos);
+  void SendJsonInfo(const pblczero::JsonInfo& info);
   void SendId();
 
   // Command handlers.

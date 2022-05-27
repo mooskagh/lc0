@@ -11,10 +11,10 @@ message WDL {
 }
 
 message Evaluation {
-   optional sint32 cp = 1;
+   optional int32 cp = 1;
    optional float winprob = 2;
    optional WDL wdl = 3;
-   optional sint32 mate = 4;
+   optional int32 mate = 4;
 }
 
 message Lc0MoveInfo {
