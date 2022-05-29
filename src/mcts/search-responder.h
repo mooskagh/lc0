@@ -43,6 +43,9 @@ class Search::Responder {
   void MaybeOutputInfo() const;
 
  private:
+  // Returns verbose information about given node, as vector of strings.
+  // Node can only be root or ponder (depth 1).
+  std::vector<std::string> GetVerboseStats(Node* node) const;
   int Depth() const;
 
   const Search& search_;

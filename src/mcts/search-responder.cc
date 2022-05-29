@@ -167,6 +167,39 @@ void Search::Responder::SendUciInfo() const REQUIRES(search_.nodes_mutex_)
 
   responder_->OutputThinkingInfo(&uci_infos);
 }
+
+void Search::Responder::SendMovesStats() const
+    REQUIRES(search_.counters_mutex_) {
+  auto move_stats = GetVerboseStats(search_.root_node_);
+
+  if (search_.params_.GetVerboseStats()) {
+    std::vector<ThinkingInfo> infos;
+    std::transform(move_stats.begin(), move_stats.end(),
+                   std::back_inserter(infos), [](const std::string& line) {
+                     ThinkingInfo info;
+                     info.comment = line;
+                     return info;
+                   });
+    responder_->OutputThinkingInfo(&infos);
+  } else {
+    LOGFILE << "=== Move stats:";
+    for (const auto& line : move_stats) LOGFILE << line;
+  }
+  for (auto& edge : search_.root_node_->Edges()) {
+    if (!(edge.GetMove(search_.played_history_.IsBlackToMove()) ==
+          search_.final_bestmove_)) {
+      continue;
+    }
+    if (edge.HasNode()) {
+      LOGFILE << "--- Opponent moves after: "
+              << search_.final_bestmove_.as_string();
+      for (const auto& line : GetVerboseStats(edge.node())) {
+        LOGFILE << line;
+      }
+    }
+  }
+}
+
 }  // namespace lczero
 
 /*
@@ -224,41 +257,6 @@ message JsonInfo {
 */
 
 /*
-void Search::SendMovesStats() const REQUIRES(counters_mutex_) {
-  auto move_stats = GetVerboseStats(root_node_);
-
-  if (params_.GetVerboseStats()) {
-    std::vector<ThinkingInfo> infos;
-    std::transform(move_stats.begin(), move_stats.end(),
-                   std::back_inserter(infos), [](const std::string& line) {
-                     ThinkingInfo info;
-                     info.comment = line;
-                     return info;
-                   });
-    uci_responder_->OutputThinkingInfo(&infos);
-  } else {
-    LOGFILE << "=== Move stats:";
-    for (const auto& line : move_stats) LOGFILE << line;
-  }
-  for (auto& edge : root_node_->Edges()) {
-    if (!(edge.GetMove(played_history_.IsBlackToMove()) == final_bestmove_)) {
-      continue;
-    }
-    if (edge.HasNode()) {
-      LOGFILE << "--- Opponent moves after: " << final_bestmove_.as_string();
-      for (const auto& line : GetVerboseStats(edge.node())) {
-        LOGFILE << line;
-      }
-    }
-  }
-}
-*/
-
-/*   // Returns verbose information about given node, as vector of strings.
-  // Node can only be root or ponder (depth 1).
-  std::vector<std::string> GetVerboseStats(Node* node) const;
-
-
 std::vector<std::string> Search::GetVerboseStats(Node* node) const {
   assert(node == root_node_ || node->GetParent() == root_node_);
   const bool is_root = (node == root_node_);
