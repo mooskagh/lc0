@@ -138,6 +138,7 @@ class SearchParams {
   float GetMaxCollisionVisitsScalingPower() const {
     return kMaxCollisionVisitsScalingPower;
   }
+  bool GetSendJsonInfo() const { return kSendJsonInfo; }
 
   // Search parameter IDs.
   static const OptionId kMiniBatchSizeId;
@@ -201,6 +202,7 @@ class SearchParams {
   static const OptionId kMaxCollisionVisitsScalingStartId;
   static const OptionId kMaxCollisionVisitsScalingEndId;
   static const OptionId kMaxCollisionVisitsScalingPowerId;
+  static const OptionId kSendJsonInfoId;
 
  private:
   const OptionsDict& options_;
@@ -257,6 +259,7 @@ class SearchParams {
   const int kMaxCollisionVisitsScalingStart;
   const int kMaxCollisionVisitsScalingEnd;
   const float kMaxCollisionVisitsScalingPower;
+  const bool kSendJsonInfo;
 };
 
 }  // namespace lczero

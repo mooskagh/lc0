@@ -38,6 +38,7 @@
 #include <thread>
 
 #include "mcts/node.h"
+#include "mcts/search-responder.h"
 #include "neural/cache.h"
 #include "neural/encoder.h"
 #include "utils/fastmath.h"
@@ -46,8 +47,6 @@
 namespace lczero {
 
 namespace {
-// Maximum delay between outputting "uci info" when nothing interesting happens.
-const int kUciInfoMinimumFrequencyMs = 5000;
 
 MoveList MakeRootMoveFilter(const MoveList& searchmoves,
                             SyzygyTablebase* syzygy_tb,
@@ -166,7 +165,7 @@ Search::Search(const NodeTree& tree, Network* network,
       root_move_filter_(MakeRootMoveFilter(
           searchmoves_, syzygy_tb_, played_history_,
           params_.GetSyzygyFastPlay(), &tb_hits_, &root_is_in_dtz_)),
-      uci_responder_(std::move(uci_responder)) {
+      responder_(std::make_unique<Responder>(*this, std::move(uci_responder))) {
   if (params_.GetMaxConcurrentSearchers() != 0) {
     pending_searchers_.store(params_.GetMaxConcurrentSearchers(),
                              std::memory_order_release);
@@ -194,130 +193,12 @@ void ApplyDirichletNoise(Node* node, float eps, double alpha) {
 }
 }  // namespace
 
-void Search::SendUciInfo() REQUIRES(nodes_mutex_) REQUIRES(counters_mutex_) {
-  const auto max_pv = params_.GetMultiPv();
-  const auto edges = GetBestChildrenNoTemperature(root_node_, max_pv, 0);
-  const auto score_type = params_.GetScoreType();
-  const auto per_pv_counters = params_.GetPerPvCounters();
-  const auto display_cache_usage = params_.GetDisplayCacheUsage();
-  const auto draw_score = GetDrawScore(false);
-
-  std::vector<ThinkingInfo> uci_infos;
-
-  // Info common for all multipv variants.
-  ThinkingInfo common_info;
-  common_info.depth = cum_depth_ / (total_playouts_ ? total_playouts_ : 1);
-  common_info.seldepth = max_depth_;
-  common_info.time = GetTimeSinceStart();
-  if (!per_pv_counters) {
-    common_info.nodes = total_playouts_ + initial_visits_;
-  }
-  if (display_cache_usage) {
-    common_info.hashfull =
-        cache_->GetSize() * 1000LL / std::max(cache_->GetCapacity(), 1);
-  }
-  if (nps_start_time_) {
-    const auto time_since_first_batch_ms =
-        std::chrono::duration_cast<std::chrono::milliseconds>(
-            std::chrono::steady_clock::now() - *nps_start_time_)
-            .count();
-    if (time_since_first_batch_ms > 0) {
-      common_info.nps = total_playouts_ * 1000 / time_since_first_batch_ms;
-    }
-  }
-  common_info.tb_hits = tb_hits_.load(std::memory_order_acquire);
-
-  int multipv = 0;
-  const auto default_q = -root_node_->GetQ(-draw_score);
-  const auto default_wl = -root_node_->GetWL();
-  const auto default_d = root_node_->GetD();
-  for (const auto& edge : edges) {
-    ++multipv;
-    uci_infos.emplace_back(common_info);
-    auto& uci_info = uci_infos.back();
-    const auto wl = edge.GetWL(default_wl);
-    const auto floatD = edge.GetD(default_d);
-    const auto q = edge.GetQ(default_q, draw_score);
-    if (edge.IsTerminal() && wl != 0.0f) {
-      uci_info.mate = std::copysign(
-          std::round(edge.GetM(0.0f)) / 2 + (edge.IsTbTerminal() ? 101 : 1),
-          wl);
-    } else if (score_type == "centipawn_with_drawscore") {
-      uci_info.score = 90 * tan(1.5637541897 * q);
-    } else if (score_type == "centipawn") {
-      uci_info.score = 90 * tan(1.5637541897 * wl);
-    } else if (score_type == "centipawn_2019") {
-      uci_info.score = 295 * wl / (1 - 0.976953126 * std::pow(wl, 14));
-    } else if (score_type == "centipawn_2018") {
-      uci_info.score = 290.680623072 * tan(1.548090806 * wl);
-    } else if (score_type == "win_percentage") {
-      uci_info.score = wl * 5000 + 5000;
-    } else if (score_type == "Q") {
-      uci_info.score = q * 10000;
-    } else if (score_type == "W-L") {
-      uci_info.score = wl * 10000;
-    }
-
-    auto w =
-        std::max(0, static_cast<int>(std::round(500.0 * (1.0 + wl - floatD))));
-    auto l =
-        std::max(0, static_cast<int>(std::round(500.0 * (1.0 - wl - floatD))));
-    // Using 1000-w-l so that W+D+L add up to 1000.0.
-    auto d = 1000 - w - l;
-    if (d < 0) {
-      w = std::min(1000, std::max(0, w + d / 2));
-      l = 1000 - w;
-      d = 0;
-    }
-    uci_info.wdl = ThinkingInfo::WDL{w, d, l};
-    if (network_->GetCapabilities().has_mlh()) {
-      uci_info.moves_left = static_cast<int>(
-          (1.0f + edge.GetM(1.0f + root_node_->GetM())) / 2.0f);
-    }
-    if (max_pv > 1) uci_info.multipv = multipv;
-    if (per_pv_counters) uci_info.nodes = edge.GetN();
-    bool flip = played_history_.IsBlackToMove();
-    int depth = 0;
-    for (auto iter = edge; iter;
-         iter = GetBestChildNoTemperature(iter.node(), depth), flip = !flip) {
-      uci_info.pv.push_back(iter.GetMove(flip));
-      if (!iter.node()) break;  // Last edge was dangling, cannot continue.
-      depth += 1;
-    }
-  }
-
-  if (!uci_infos.empty()) last_outputted_uci_info_ = uci_infos.front();
-  if (current_best_edge_ && !edges.empty()) {
-    last_outputted_info_edge_ = current_best_edge_.edge();
-  }
-
-  uci_responder_->OutputThinkingInfo(&uci_infos);
-}
-
 // Decides whether anything important changed in stats and new info should be
 // shown to a user.
 void Search::MaybeOutputInfo() {
   SharedMutex::Lock lock(nodes_mutex_);
   Mutex::Lock counters_lock(counters_mutex_);
-  if (!bestmove_is_sent_ && current_best_edge_ &&
-      (current_best_edge_.edge() != last_outputted_info_edge_ ||
-       last_outputted_uci_info_.depth !=
-           static_cast<int>(cum_depth_ /
-                            (total_playouts_ ? total_playouts_ : 1)) ||
-       last_outputted_uci_info_.seldepth != max_depth_ ||
-       last_outputted_uci_info_.time + kUciInfoMinimumFrequencyMs <
-           GetTimeSinceStart())) {
-    SendUciInfo();
-    if (params_.GetLogLiveStats()) {
-      SendMovesStats();
-    }
-    if (stop_.load(std::memory_order_acquire) && !ok_to_respond_bestmove_) {
-      std::vector<ThinkingInfo> info(1);
-      info.back().comment =
-          "WARNING: Search has reached limit and does not make any progress.";
-      uci_responder_->OutputThinkingInfo(&info);
-    }
-  }
+  responder_->MaybeOutputInfo();
 }
 
 int64_t Search::GetTimeSinceStart() const {
@@ -370,138 +251,6 @@ inline float ComputeCpuct(const SearchParams& params, uint32_t N,
 }
 }  // namespace
 
-std::vector<std::string> Search::GetVerboseStats(Node* node) const {
-  assert(node == root_node_ || node->GetParent() == root_node_);
-  const bool is_root = (node == root_node_);
-  const bool is_odd_depth = !is_root;
-  const bool is_black_to_move = (played_history_.IsBlackToMove() == is_root);
-  const float draw_score = GetDrawScore(is_odd_depth);
-  const float fpu = GetFpu(params_, node, is_root, draw_score);
-  const float cpuct = ComputeCpuct(params_, node->GetN(), is_root);
-  const float U_coeff =
-      cpuct * std::sqrt(std::max(node->GetChildrenVisits(), 1u));
-  std::vector<EdgeAndNode> edges;
-  for (const auto& edge : node->Edges()) edges.push_back(edge);
-
-  std::sort(edges.begin(), edges.end(),
-            [&fpu, &U_coeff, &draw_score](EdgeAndNode a, EdgeAndNode b) {
-              return std::forward_as_tuple(
-                         a.GetN(), a.GetQ(fpu, draw_score) + a.GetU(U_coeff)) <
-                     std::forward_as_tuple(
-                         b.GetN(), b.GetQ(fpu, draw_score) + b.GetU(U_coeff));
-            });
-
-  auto print = [](auto* oss, auto pre, auto v, auto post, auto w, int p = 0) {
-    *oss << pre << std::setw(w) << std::setprecision(p) << v << post;
-  };
-  auto print_head = [&](auto* oss, auto label, int i, auto n, auto f, auto p) {
-    *oss << std::fixed;
-    print(oss, "", label, " ", 5);
-    print(oss, "(", i, ") ", 4);
-    *oss << std::right;
-    print(oss, "N: ", n, " ", 7);
-    print(oss, "(+", f, ") ", 2);
-    print(oss, "(P: ", p * 100, "%) ", 5, p >= 0.99995f ? 1 : 2);
-  };
-  auto print_stats = [&](auto* oss, const auto* n) {
-    const auto sign = n == node ? -1 : 1;
-    if (n) {
-      print(oss, "(WL: ", sign * n->GetWL(), ") ", 8, 5);
-      print(oss, "(D: ", n->GetD(), ") ", 5, 3);
-      print(oss, "(M: ", n->GetM(), ") ", 4, 1);
-    } else {
-      *oss << "(WL:  -.-----) (D: -.---) (M:  -.-) ";
-    }
-    print(oss, "(Q: ", n ? sign * n->GetQ(sign * draw_score) : fpu, ") ", 8, 5);
-  };
-  auto print_tail = [&](auto* oss, const auto* n) {
-    const auto sign = n == node ? -1 : 1;
-    std::optional<float> v;
-    if (n && n->IsTerminal()) {
-      v = n->GetQ(sign * draw_score);
-    } else {
-      NNCacheLock nneval = GetCachedNNEval(n);
-      if (nneval) v = -nneval->q;
-    }
-    if (v) {
-      print(oss, "(V: ", sign * *v, ") ", 7, 4);
-    } else {
-      *oss << "(V:  -.----) ";
-    }
-
-    if (n) {
-      auto [lo, up] = n->GetBounds();
-      if (sign == -1) {
-        lo = -lo;
-        up = -up;
-        std::swap(lo, up);
-      }
-      *oss << (lo == up                                                ? "(T) "
-               : lo == GameResult::DRAW && up == GameResult::WHITE_WON ? "(W) "
-               : lo == GameResult::BLACK_WON && up == GameResult::DRAW ? "(L) "
-                                                                       : "");
-    }
-  };
-
-  std::vector<std::string> infos;
-  const auto m_evaluator = network_->GetCapabilities().has_mlh()
-                               ? MEvaluator(params_, node)
-                               : MEvaluator();
-  for (const auto& edge : edges) {
-    float Q = edge.GetQ(fpu, draw_score);
-    float M = m_evaluator.GetM(edge, Q);
-    std::ostringstream oss;
-    oss << std::left;
-    // TODO: should this be displaying transformed index?
-    print_head(&oss, edge.GetMove(is_black_to_move).as_string(),
-               edge.GetMove().as_nn_index(0), edge.GetN(), edge.GetNInFlight(),
-               edge.GetP());
-    print_stats(&oss, edge.node());
-    print(&oss, "(U: ", edge.GetU(U_coeff), ") ", 6, 5);
-    print(&oss, "(S: ", Q + edge.GetU(U_coeff) + M, ") ", 8, 5);
-    print_tail(&oss, edge.node());
-    infos.emplace_back(oss.str());
-  }
-
-  // Include stats about the node in similar format to its children above.
-  std::ostringstream oss;
-  print_head(&oss, "node ", node->GetNumEdges(), node->GetN(),
-             node->GetNInFlight(), node->GetVisitedPolicy());
-  print_stats(&oss, node);
-  print_tail(&oss, node);
-  infos.emplace_back(oss.str());
-  return infos;
-}
-
-void Search::SendMovesStats() const REQUIRES(counters_mutex_) {
-  auto move_stats = GetVerboseStats(root_node_);
-
-  if (params_.GetVerboseStats()) {
-    std::vector<ThinkingInfo> infos;
-    std::transform(move_stats.begin(), move_stats.end(),
-                   std::back_inserter(infos), [](const std::string& line) {
-                     ThinkingInfo info;
-                     info.comment = line;
-                     return info;
-                   });
-    uci_responder_->OutputThinkingInfo(&infos);
-  } else {
-    LOGFILE << "=== Move stats:";
-    for (const auto& line : move_stats) LOGFILE << line;
-  }
-  for (auto& edge : root_node_->Edges()) {
-    if (!(edge.GetMove(played_history_.IsBlackToMove()) == final_bestmove_)) {
-      continue;
-    }
-    if (edge.HasNode()) {
-      LOGFILE << "--- Opponent moves after: " << final_bestmove_.as_string();
-      for (const auto& line : GetVerboseStats(edge.node())) {
-        LOGFILE << line;
-      }
-    }
-  }
-}
-
 NNCacheLock Search::GetCachedNNEval(const Node* node) const {
   if (!node) return {};
 
@@ -535,11 +284,10 @@ void Search::MaybeTriggerStop(const IterationStats& stats,
   // If we are the first to see that stop is needed.
   if (stop_.load(std::memory_order_acquire) && ok_to_respond_bestmove_ &&
       !bestmove_is_sent_) {
-    SendUciInfo();
+    responder_->SendUciInfo();
     EnsureBestMoveKnown();
-    SendMovesStats();
-    BestMoveInfo info(final_bestmove_, final_pondermove_);
-    uci_responder_->OutputBestMove(&info);
+    responder_->SendMovesStats();
+    responder_->OutputBestMove(final_bestmove_, final_pondermove_);
     stopper_->OnSearchDone(stats);
     bestmove_is_sent_ = true;
     current_best_edge_ = EdgeAndNode();

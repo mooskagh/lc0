@@ -115,11 +115,9 @@ class Search {
   int64_t GetTimeSinceFirstBatch() const;
   void MaybeTriggerStop(const IterationStats& stats, StoppersHints* hints);
   void MaybeOutputInfo();
-  void SendUciInfo();  // Requires nodes_mutex_ to be held.
   // Sets stop to true and notifies watchdog thread.
   void FireStopInternal();
 
-  void SendMovesStats() const;
   // Function which runs in a separate thread and watches for time and
   // uci `stop` command;
   void WatchdogThread();
@@ -128,10 +126,6 @@ class Search {
   // statistics. Currently all stats there (in IterationStats) are global
   // though.
   void PopulateCommonIterationStats(IterationStats* stats);
-
-  // Returns verbose information about given node, as vector of strings.
-  // Node can only be root or ponder (depth 1).
-  std::vector<std::string> GetVerboseStats(Node* node) const;
 
   // Returns the draw score at the root of the search. At odd depth pass true to
   // the value of @is_odd_depth to change the sign of the draw score.
@@ -181,8 +175,6 @@ class Search {
 
   mutable SharedMutex nodes_mutex_;
   EdgeAndNode current_best_edge_ GUARDED_BY(nodes_mutex_);
-  Edge* last_outputted_info_edge_ GUARDED_BY(nodes_mutex_) = nullptr;
-  ThinkingInfo last_outputted_uci_info_ GUARDED_BY(nodes_mutex_);
   int64_t total_playouts_ GUARDED_BY(nodes_mutex_) = 0;
   int64_t total_batches_ GUARDED_BY(nodes_mutex_) = 0;
   // Maximum search depth = length of longest path taken in PickNodetoExtend.
@@ -200,9 +192,11 @@ class Search {
   std::vector<std::pair<Node*, int>> shared_collisions_
       GUARDED_BY(nodes_mutex_);
 
-  std::unique_ptr<UciResponder> uci_responder_;
+  class Responder;
+  std::unique_ptr<Responder> responder_ GUARDED_BY(nodes_mutex_);
 
   friend class SearchWorker;
+  friend pblczero::JsonInfo GatherSearchJsonInfo(const Search&);
 };
 
 // Single thread worker of the search engine.
