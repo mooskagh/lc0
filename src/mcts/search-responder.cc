@@ -63,6 +63,11 @@ void Search::Responder::MaybeOutputInfo() const
   }
 }
 
+void Search::Responder::OutputBestMove(Move bestmove, Move pondermove) const {
+  BestMoveInfo info(bestmove, pondermove);
+  responder_->OutputBestMove(&info);
+}
+
 void Search::Responder::SendUciInfo() const REQUIRES(search_.nodes_mutex_)
     REQUIRES(search_.counters_mutex_) {
   const auto& params = search_.params_;
@@ -200,71 +205,22 @@ void Search::Responder::SendMovesStats() const
   }
 }
 
-}  // namespace lczero
-
-/*
-syntax = "proto2";
-
-package pblczero;
-
-// Messages are optimized to look nicer in JSON rather than protobuf.
-
-message WDL {
-    optional float w = 1;
-    optional float d = 2;
-    optional float l = 3;
+void Search::Responder::OutputComment(std::string_view text) const {
+  std::vector<ThinkingInfo> infos;
+  infos.emplace_back().comment = text;
+  responder_->OutputThinkingInfo(&infos);
 }
 
-message Evaluation {
-   optional int32 cp = 1;
-   optional float winprob = 2;
-   optional WDL wdl = 3;
-   optional int32 mate = 4;
-}
-
-message Lc0MoveInfo {
-    optional uint64 n = 1;
-    optional uint32 n_in_flight = 2;
-    optional float p = 3;
-    optional float wl = 4;
-    optional float d = 5;
-    optional float ml = 6;
-    optional float q = 7;
-    optional float v = 8;
-    optional float u = 9;
-    optional float s = 10;
-    optional float visited_policy = 11;
-}
-
-message NodeInfo {
-    repeated string position = 1;
-    optional Evaluation eval = 2;
-    optional uint32 depth = 3;
-    optional uint32 seldepth = 4;
-    optional uint64 nodes = 5;
-    optional uint32 nps = 6;
-    repeated string pv = 7;
-    optional uint64 tbhits = 8;
-    optional string comment = 9;
-    optional Lc0MoveInfo lc0_info = 10;
-}
-
-message JsonInfo {
-    optional NodeInfo posinfo = 1;
-    repeated NodeInfo moves = 2;
-    // Time management, cache usage.
-}
-*/
-
-/*
-std::vector<std::string> Search::GetVerboseStats(Node* node) const {
-  assert(node == root_node_ || node->GetParent() == root_node_);
-  const bool is_root = (node == root_node_);
+std::vector<std::string> Search::Responder::GetVerboseStats(Node* node) const
+    REQUIRES(search_.counters_mutex_) {
+  assert(node == search_.root_node_ || node->GetParent() == search_.root_node_);
+  const bool is_root = (node == search_.root_node_);
   const bool is_odd_depth = !is_root;
-  const bool is_black_to_move = (played_history_.IsBlackToMove() == is_root);
-  const float draw_score = GetDrawScore(is_odd_depth);
-  const float fpu = GetFpu(params_, node, is_root, draw_score);
-  const float cpuct = ComputeCpuct(params_, node->GetN(), is_root);
+  const bool is_black_to_move =
+      (search_.played_history_.IsBlackToMove() == is_root);
+  const float draw_score = search_.GetDrawScore(is_odd_depth);
+  const float fpu = GetFpu(search_.params_, node, is_root, draw_score);
+  const float cpuct = ComputeCpuct(search_.params_, node->GetN(), is_root);
   const float U_coeff =
       cpuct * std::sqrt(std::max(node->GetChildrenVisits(), 1u));
   std::vector<EdgeAndNode> edges;
@@ -307,7 +263,7 @@ std::vector<std::string> Search::GetVerboseStats(Node* node) const {
     if (n && n->IsTerminal()) {
       v = n->GetQ(sign * draw_score);
     } else {
-      NNCacheLock nneval = GetCachedNNEval(n);
+      NNCacheLock nneval = search_.GetCachedNNEval(n);
       if (nneval) v = -nneval->q;
     }
     if (v) {
@@ -331,8 +287,8 @@ std::vector<std::string> Search::GetVerboseStats(Node* node) const {
   };
 
   std::vector<std::string> infos;
-  const auto m_evaluator = network_->GetCapabilities().has_mlh()
-                               ? MEvaluator(params_, node)
+  const auto m_evaluator = search_.network_->GetCapabilities().has_mlh()
+                               ? MEvaluator(search_.params_, node)
                                : MEvaluator();
   for (const auto& edge : edges) {
     float Q = edge.GetQ(fpu, draw_score);
@@ -359,7 +315,4 @@ std::vector<std::string> Search::GetVerboseStats(Node* node) const {
   infos.emplace_back(oss.str());
   return infos;
 }
-
-
-
-*/
+}  // namespace lczero
