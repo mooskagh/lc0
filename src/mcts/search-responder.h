@@ -47,6 +47,11 @@ class Search::Responder {
   // Returns verbose information about given node, as vector of strings.
   // Node can only be root or ponder (depth 1).
   std::vector<std::string> GetVerboseStats(Node* node) const;
+  pblczero::MoveInfo GetMoveInfo(const EdgeAndNode& edge_and_node,
+                                 const pblczero::NodeInfo& parent_node_info,
+                                 bool is_odd_depth) const;
+  pblczero::NodeInfo GetNodeInfo(Node* node) const;
+  pblczero::CommonInfo GetCommonInfo() const;
   int Depth() const;
 
   const Search& search_;

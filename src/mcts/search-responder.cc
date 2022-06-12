@@ -29,6 +29,7 @@
 
 #include "chess/callbacks.h"
 #include "mcts/search.h"
+#include "proto/jsondata.pb.h"
 
 namespace lczero {
 namespace {
@@ -68,6 +69,20 @@ void Search::Responder::OutputBestMove(Move bestmove, Move pondermove) const {
   responder_->OutputBestMove(&info);
 }
 
+namespace {
+ThinkingInfo CommonToThinking(const pblczero::CommonInfo& info) {
+  ThinkingInfo result;
+  result.depth = info.depth();
+  result.seldepth = info.seldepth();
+  result.time = info.time();
+  result.hashfull = info.hashfull();
+  result.nodes = info.nodes();
+  result.nps = info.nps();
+  result.tb_hits = info.tbhits();
+  return result;
+}
+}  // namespace
+
 void Search::Responder::SendUciInfo() const REQUIRES(search_.nodes_mutex_)
     REQUIRES(search_.counters_mutex_) {
   const auto& params = search_.params_;
@@ -76,34 +91,11 @@ void Search::Responder::SendUciInfo() const REQUIRES(search_.nodes_mutex_)
   const auto edges = search_.GetBestChildrenNoTemperature(root_node, max_pv, 0);
   const auto score_type = params.GetScoreType();
   const auto per_pv_counters = params.GetPerPvCounters();
-  const auto display_cache_usage = params.GetDisplayCacheUsage();
   const auto draw_score = search_.GetDrawScore(false);
 
   std::vector<ThinkingInfo> uci_infos;
 
-  // Info common for all multipv variants.
-  ThinkingInfo common_info;
-  common_info.depth = Depth();
-  common_info.seldepth = search_.max_depth_;
-  common_info.time = search_.GetTimeSinceStart();
-  if (!per_pv_counters) {
-    common_info.nodes = search_.total_playouts_ + search_.initial_visits_;
-  }
-  if (display_cache_usage) {
-    common_info.hashfull = search_.cache_->GetSize() * 1000LL /
-                           std::max(search_.cache_->GetCapacity(), 1);
-  }
-  if (search_.nps_start_time_) {
-    const auto time_since_first_batch_ms =
-        std::chrono::duration_cast<std::chrono::milliseconds>(
-            std::chrono::steady_clock::now() - *search_.nps_start_time_)
-            .count();
-    if (time_since_first_batch_ms > 0) {
-      common_info.nps =
-          search_.total_playouts_ * 1000 / time_since_first_batch_ms;
-    }
-  }
-  common_info.tb_hits = search_.tb_hits_.load(std::memory_order_acquire);
+  auto common_info = GetCommonInfo();
 
   int multipv = 0;
   const auto default_q = -root_node->GetQ(-draw_score);
@@ -111,7 +103,7 @@ void Search::Responder::SendUciInfo() const REQUIRES(search_.nodes_mutex_)
   const auto default_d = root_node->GetD();
   for (const auto& edge : edges) {
     ++multipv;
-    uci_infos.emplace_back(common_info);
+    uci_infos.emplace_back(CommonToThinking(common_info));
     auto& uci_info = uci_infos.back();
     const auto wl = edge.GetWL(default_wl);
     const auto floatD = edge.GetD(default_d);
@@ -153,7 +145,11 @@ void Search::Responder::SendUciInfo() const REQUIRES(search_.nodes_mutex_)
           static_cast<int>((1.0f + edge.GetM(1.0f + root_node->GetM())) / 2.0f);
     }
     if (max_pv > 1) uci_info.multipv = multipv;
-    if (per_pv_counters) uci_info.nodes = edge.GetN();
+    if (per_pv_counters) {
+      uci_info.nodes = edge.GetN();
+    } else {
+      uci_info.nodes = search_.total_playouts_ + search_.initial_visits_;
+    }
     bool flip = search_.played_history_.IsBlackToMove();
     int depth = 0;
     for (auto iter = edge; iter;
@@ -314,5 +310,98 @@ std::vector<std::string> Search::Responder::GetVerboseStats(Node* node) const
   print_tail(&oss, node);
   infos.emplace_back(oss.str());
   return infos;
+}
+
+pblczero::CommonInfo Search::Responder::GetCommonInfo() const {
+  pblczero::CommonInfo info;
+  info.set_depth(Depth());
+  info.set_seldepth(search_.max_depth_);
+  info.set_time(search_.GetTimeSinceStart());
+  if (search_.params_.GetDisplayCacheUsage()) {
+    info.set_hashfull(search_.cache_->GetSize() * 1000LL /
+                      std::max(search_.cache_->GetCapacity(), 1));
+  }
+  info.set_nodes(search_.root_node_->GetN());
+  if (search_.nps_start_time_) {
+    const auto time_since_first_batch_ms =
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - *search_.nps_start_time_)
+            .count();
+    if (time_since_first_batch_ms > 0) {
+      info.set_nps(search_.total_playouts_ * 1000 / time_since_first_batch_ms);
+    }
+  }
+  info.set_tbhits(search_.tb_hits_.load(std::memory_order_acquire));
+  return info;
+}
+
+namespace {
+pblczero::Evaluation GetEvaluationInfo(const EdgeAndNode& edge_and_node,
+                                       float wl, float d, float draw_score,
+                                       const std::string& score_type) {
+  pblczero::Evaluation eval;
+  const auto q = wl + draw_score * d;
+  if (edge_and_node.IsTerminal() && wl != 0.0f) {
+    eval.set_mate(std::copysign(std::round(edge_and_node.GetM(0.0f)) / 2 +
+                                    (edge_and_node.IsTbTerminal() ? 101 : 1),
+                                wl));
+  } else if (score_type == "centipawn_with_drawscore") {
+    eval.set_cp(90 * tan(1.5637541897 * q));
+  } else if (score_type == "centipawn") {
+    eval.set_cp(90 * tan(1.5637541897 * wl));
+  } else if (score_type == "centipawn_2019") {
+    eval.set_cp(295 * wl / (1 - 0.976953126 * std::pow(wl, 14)));
+  } else if (score_type == "centipawn_2018") {
+    eval.set_cp(290.680623072 * tan(1.548090806 * wl));
+  } else if (score_type == "win_percentage") {
+    eval.set_cp(wl * 5000 + 5000);
+  } else if (score_type == "Q") {
+    eval.set_cp(q * 10000);
+  } else if (score_type == "W-L") {
+    eval.set_cp(wl * 10000);
+  }
+  float w = std::max(0.0f, 0.5f * (1.0f + wl - d));
+  float l = std::max(0.0f, 0.5f * (1.0f - wl - d));
+  d = 1.0f - w - l;
+  if (d < 0) {
+    w = std::min(1.0f, std::max(0.0f, w + 0.5f * d));
+    l = 1.0f - w;
+    d = 0.0f;
+  }
+  pblczero::WDL* wdl = eval.mutable_wdl();
+  wdl->set_w(w);
+  wdl->set_d(d);
+  wdl->set_l(l);
+  eval.set_expected_score(wl * 0.5f + 0.5f);
+  return eval;
+}
+}  //  namespace
+
+pblczero::MoveInfo Search::Responder::GetMoveInfo(
+    const EdgeAndNode& edge_and_node,
+    const pblczero::NodeInfo& parent_node_info, bool is_odd_depth) const {
+  pblczero::MoveInfo info;
+
+  const auto draw_score = search_.GetDrawScore(is_odd_depth);
+  if (edge_and_node.HasNode()) {
+    *info.mutable_node_info() = GetNodeInfo(edge_and_node.node());
+  }
+  const auto& node_info = info.node_info();
+  const auto wl = node_info.has_wl() ? node_info.wl() : -parent_node_info.wl();
+  const auto d = node_info.has_d() ? node_info.d() : parent_node_info.d();
+  *info.mutable_eval() = GetEvaluationInfo(edge_and_node, wl, d, draw_score,
+                                           search_.params_.GetScoreType());
+  info.set_nodes(edge_and_node.GetN());
+
+  bool flip = search_.played_history_.IsBlackToMove() ^ is_odd_depth;
+  int depth = 0;
+  for (auto iter = edge_and_node; iter;
+       iter = search_.GetBestChildNoTemperature(iter.node(), depth),
+            flip = !flip) {
+    info.add_pv(iter.GetMove(flip).as_string());
+    if (!iter.node()) break;  // Last edge was dangling, cannot continue.
+    depth += 1;
+  }
+  return info;
 }
 }  // namespace lczero
