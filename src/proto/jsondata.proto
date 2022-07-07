@@ -16,12 +16,6 @@ message Evaluation {
 }
 
 message NodeInfo {
-  message Edge {
-    optional string move = 1;
-    optional int32 move_idx = 2;
-    optional float p = 3;
-    repeated NodeInfo node = 4;
-  }
   optional uint64 n = 1;
   optional uint32 n_in_flight = 2;
   optional float wl = 4;
@@ -32,7 +26,14 @@ message NodeInfo {
   optional float u = 9;
   optional float s = 10;
   optional float visited_policy = 11;
-  repeated Edge edge = 12;
+  repeated EdgeInfo edge = 12;
+}
+
+message EdgeInfo {
+  optional string move = 1;
+  optional int32 move_idx = 2;
+  optional float p = 3;
+  optional NodeInfo node = 4;
 }
 
 message MoveInfo {

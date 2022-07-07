@@ -77,10 +77,11 @@ GRAMMAR = ([(r'%s\b' % x, x)
                 (r'"((?:[^"\\]|\\.)*)"', 'string'),
                 (r'\d+', 'number'),
                 (r'\w+', 'identifier'),
-])
+            ])
 
 
 class Lexer:
+
     def __init__(self, text):
         self.text = text
         self.grammar = [(re.compile(x, re.S + re.M), y) for x, y in GRAMMAR]
@@ -167,6 +168,7 @@ def LookupType(name, stack):
 
 
 class ProtoTypeParser:
+
     def __init__(self, lexer, object_stack):
         token, match = lexer.Pick()
         if token in TYPES:
@@ -175,9 +177,13 @@ class ProtoTypeParser:
             lexer.Consume(token)
         elif token == 'identifier':
             self.name = ReadIdentifierPath(lexer)
-            self.typetype = LookupType(self.name, object_stack)
+            self.typetype = 'forward'
         else:
             lexer.Error('Type expected')
+
+    def LookupForwardFieldType(self, object_stack):
+        if self.typetype == 'forward':
+            self.typetype = LookupType(self.name, object_stack)
 
     def IsZigzag(self):
         if self.typetype == 'basic':
@@ -254,6 +260,7 @@ class ProtoTypeParser:
 
 
 class ProtoFieldParser:
+
     def __init__(self, lexer, object_stack):
         token, match = lexer.Pick()
         if token not in ['repeated', 'optional', 'required']:
@@ -268,6 +275,9 @@ class ProtoFieldParser:
 
     def IsType(self):
         return False
+
+    def LookupForwardFieldType(self, object_stack):
+        self.type.LookupForwardFieldType(object_stack)
 
     def GetParser(self):
         name = self.name.group(0)
@@ -403,6 +413,7 @@ class ProtoFieldParser:
 
 
 class ProtoEnumParser:
+
     def __init__(self, lexer):
         lexer.Consume('enum')
         self.name = lexer.Consume('identifier').group(0)
@@ -427,6 +438,9 @@ class ProtoEnumParser:
 
     def IsType(self):
         return True
+
+    def ResolveForwardDeclarations(self, _):
+        pass
 
     def Generate(self, w):
         # Protobuf enum is mapped directly to C++ enum.
@@ -461,6 +475,7 @@ class ProtoEnumParser:
 
 
 class ProtoMessageParser:
+
     def __init__(self, lexer, type_stack):
         type_stack[0].append(self)
         self.types = []
@@ -500,6 +515,14 @@ class ProtoMessageParser:
         for x in self.fields:
             type_to_fields.setdefault(x.type.GetWireType(), []).append(x)
         return type_to_fields
+
+    def ResolveForwardDeclarations(self, type_stack):
+        type_stack.append(self.types)
+        for x in self.types:
+            x.ResolveForwardDeclarations(type_stack)
+        for x in self.fields:
+            x.LookupForwardFieldType(type_stack)
+        type_stack.pop()
 
     def WriteFieldParser(self, w, wire_id, fields):
         fname = {0: 'SetVarInt', 1: 'SetInt64', 2: 'SetString', 5: 'SetInt32'}
@@ -623,6 +646,11 @@ class ProtoFileParser:
         for x in reversed(self.package):
             w.Write('}  // namespace %s' % x)
 
+    def ResolveForwardDeclarations(self):
+        type_stack = [self.objects]
+        for object in self.objects:
+            object.ResolveForwardDeclarations(type_stack)
+
 
 class Writer:
     '''A helper class for writing file line by line with indent.'''
@@ -660,5 +688,6 @@ if __name__ == "__main__":
 
     with open(args.input, 'r') as input, open(dest_path, 'w') as output:
         proto_file = ProtoFileParser(Lexer(input.read()))
+        proto_file.ResolveForwardDeclarations()
         writer = Writer(output)
         proto_file.Generate(writer)
