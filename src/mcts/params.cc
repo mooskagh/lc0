@@ -316,6 +316,15 @@ const OptionId SearchParams::kMaxCollisionVisitsScalingEndId{
 const OptionId SearchParams::kMaxCollisionVisitsScalingPowerId{
     "max-collision-visits-scaling-power", "MaxCollisionVisitsScalingPower",
     "Power to apply to the interpolation between 1 and max to make it curved."};
+const OptionId SearchParams::kDrawFrustrationId{
+    "draw-frustration", "DrawFrustration",
+    "How frustrating is draw for everyone."};
+const OptionId SearchParams::kDrawDisappointmentId{
+    "draw-disappointment", "DrawDisappointment",
+    "How disappointing is draw for everyone."};
+const OptionId SearchParams::kScoreUpsetId{
+    "score-upset", "ScoreUpset",
+    "How upsetting is low score for everyone."};
 
 void SearchParams::Populate(OptionsParser* options) {
   // Here the uci optimized defaults" are set.
@@ -397,6 +406,10 @@ void SearchParams::Populate(OptionsParser* options) {
   options->Add<IntOption>(kMinimumWorkPerTaskForProcessingId, 1, 100000) = 8;
   options->Add<IntOption>(kIdlingMinimumWorkId, 0, 10000) = 0;
   options->Add<IntOption>(kThreadIdlingThresholdId, 0, 128) = 1;
+
+  options->Add<FloatOption>(kDrawFrustrationId, 0.0f, 10.0f) = 1.0f;
+  options->Add<FloatOption>(kDrawDisappointmentId, 0.0f, 10.0f) = 0.0f;
+  options->Add<FloatOption>(kScoreUpsetId, 0.0f, 10.0f) = 1.0f;
 
   options->HideOption(kNoiseEpsilonId);
   options->HideOption(kNoiseAlphaId);
@@ -486,7 +499,11 @@ SearchParams::SearchParams(const OptionsDict& options)
       kMaxCollisionVisitsScalingEnd(
           options.Get<int>(kMaxCollisionVisitsScalingEndId)),
       kMaxCollisionVisitsScalingPower(
-          options.Get<float>(kMaxCollisionVisitsScalingPowerId)) {
+          options.Get<float>(kMaxCollisionVisitsScalingPowerId)),
+      kDrawFrustration(options.Get<float>(kDrawFrustrationId)),
+      kDrawDisappointment(options.Get<float>(kDrawDisappointmentId)),
+      kScoreUpset(options.Get<float>(kScoreUpsetId))
+           {
   if (std::max(std::abs(kDrawScoreSidetomove), std::abs(kDrawScoreOpponent)) +
           std::max(std::abs(kDrawScoreWhite), std::abs(kDrawScoreBlack)) >
       1.0f) {

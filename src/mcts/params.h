@@ -138,6 +138,9 @@ class SearchParams {
   float GetMaxCollisionVisitsScalingPower() const {
     return kMaxCollisionVisitsScalingPower;
   }
+  float GetDrawFrustration() const { return kDrawFrustration; }
+  float GetDrawDisappointment() const { return kDrawDisappointment; }
+  float GetScoreUpset() const { return kScoreUpset; }
 
   // Search parameter IDs.
   static const OptionId kMiniBatchSizeId;
@@ -201,6 +204,9 @@ class SearchParams {
   static const OptionId kMaxCollisionVisitsScalingStartId;
   static const OptionId kMaxCollisionVisitsScalingEndId;
   static const OptionId kMaxCollisionVisitsScalingPowerId;
+  static const OptionId kDrawFrustrationId;
+  static const OptionId kDrawDisappointmentId;
+  static const OptionId kScoreUpsetId;
 
  private:
   const OptionsDict& options_;
@@ -257,6 +263,9 @@ class SearchParams {
   const int kMaxCollisionVisitsScalingStart;
   const int kMaxCollisionVisitsScalingEnd;
   const float kMaxCollisionVisitsScalingPower;
+  const float kDrawFrustration;
+  const float kDrawDisappointment;
+  const float kScoreUpset;
 };
 
 }  // namespace lczero

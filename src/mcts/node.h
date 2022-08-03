@@ -40,6 +40,7 @@
 #include "neural/encoder.h"
 #include "proto/net.pb.h"
 #include "utils/mutex.h"
+#include "utils/fastmath.h"
 
 namespace lczero {
 
@@ -164,7 +165,10 @@ class Node {
   uint32_t GetChildrenVisits() const { return n_ > 0 ? n_ - 1 : 0; }
   // Returns n = n_if_flight.
   int GetNStarted() const { return n_ + n_in_flight_; }
-  float GetQ(float draw_score) const { return wl_ + draw_score * d_; }
+  float GetQ(float draw_score, float frustration, float disappointment, float upset) const { 
+   const auto q = (wl_ + draw_score * d_) * std::pow(1 - std::pow(d_, frustration), disappointment);
+   return FastSign(q) * std::pow(std::abs(q), upset);
+  }
   // Returns node eval, i.e. average subtree V for non-terminal node and -1/0/1
   // for terminal nodes.
   float GetWL() const { return wl_; }
@@ -371,8 +375,8 @@ class EdgeAndNode {
   Node* node() const { return node_; }
 
   // Proxy functions for easier access to node/edge.
-  float GetQ(float default_q, float draw_score) const {
-    return (node_ && node_->GetN() > 0) ? node_->GetQ(draw_score) : default_q;
+  float GetQ(float default_q, float draw_score, float frustration, float disappointment, float upset) const {
+    return (node_ && node_->GetN() > 0) ? node_->GetQ(draw_score, frustration, disappointment, upset) : default_q;
   }
   float GetWL(float default_wl) const {
     return (node_ && node_->GetN() > 0) ? node_->GetWL() : default_wl;
