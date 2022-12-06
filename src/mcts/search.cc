@@ -173,6 +173,9 @@ NNCacheLock Search::GetCachedNNEval(const Node* node) const {
 void Search::MaybeTriggerStop(const IterationStats& stats,
                               StoppersHints* hints) {
   hints->Reset();
+  if (params_.GetNpsLimit() > 0) {
+    hints->UpdateEstimatedNps(params_.GetNpsLimit());
+  }
   SharedMutex::Lock nodes_lock(nodes_mutex_);
   Mutex::Lock lock(counters_mutex_);
   // Already responded bestmove, nothing to do here.
@@ -195,11 +198,6 @@ void Search::MaybeTriggerStop(const IterationStats& stats,
     bestmove_is_sent_ = true;
     current_best_edge_ = EdgeAndNode();
   }
-
-  // Use a 0 visit cancel score update to clear out any cached best edge, as
-  // at the next iteration remaining playouts may be different.
-  // TODO(crem) Is it really needed?
-  root_node_->CancelScoreUpdate(0);
 }
 
 // Return the evaluation of the actual best child, regardless of temperature
@@ -497,6 +495,7 @@ void Search::PopulateCommonIterationStats(IterationStats* stats) {
   stats->average_depth = cum_depth_ / (total_playouts_ ? total_playouts_ : 1);
   stats->edge_n.clear();
   stats->win_found = false;
+  stats->may_resign = true;
   stats->num_losing_edges = 0;
   stats->time_usage_hint_ = IterationStats::TimeUsageHint::kNormal;
 
@@ -523,6 +522,12 @@ void Search::PopulateCommonIterationStats(IterationStats* stats) {
       if (n > 0 && edge.IsTerminal() && edge.GetWL(0.0f) < 0.0f) {
         stats->num_losing_edges += 1;
       }
+      // If game is resignable, no need for moving quicker. This allows
+      // proving mate when losing anyway for better score output.
+      // Hardcoded resign threshold, because there is no available parameter.
+      if (n > 0 && q > -0.98f) {
+        stats->may_resign = false;
+      }
       if (max_n < n) {
         max_n = n;
         max_n_has_max_q_plus_m = false;
@@ -539,12 +544,10 @@ void Search::PopulateCommonIterationStats(IterationStats* stats) {
 }
 
 void Search::WatchdogThread() {
-  Numa::BindThread(0);
   LOGFILE << "Start a watchdog thread.";
   StoppersHints hints;
   IterationStats stats;
   while (true) {
-    hints.Reset();
     PopulateCommonIterationStats(&stats);
     MaybeTriggerStop(stats, &hints);
     MaybeOutputInfo();
@@ -728,7 +731,7 @@ void SearchWorker::ExecuteOneIteration() {
   }
 
   // 2. Gather minibatch.
-  GatherMinibatch2();
+  GatherMinibatch();
   task_count_.store(-1, std::memory_order_release);
   search_->backend_waiting_counter_.fetch_add(1, std::memory_order_relaxed);
 
@@ -812,7 +815,7 @@ int CalculateCollisionsLeft(int64_t nodes, const SearchParams& params) {
 }
 }  // namespace
 
-void SearchWorker::GatherMinibatch2() {
+void SearchWorker::GatherMinibatch() {
   // Total number of nodes to process.
   int minibatch_size = 0;
   int cur_n = 0;
