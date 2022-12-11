@@ -50,7 +50,15 @@ class Search::Responder {
   pblczero::MoveInfo GetMoveInfo(const EdgeAndNode& edge_and_node,
                                  const pblczero::NodeInfo& parent_node_info,
                                  bool is_odd_depth) const;
-  pblczero::NodeInfo GetNodeInfo(Node* node) const;
+  struct GetNodeInfoParams {
+    bool is_odd_depth = false;
+    bool is_black_to_move = false;
+    bool fetch_v_from_cache = false;
+    bool fill_visited_policy = false;
+    int depth = 0;
+  };
+  pblczero::NodeInfo GetNodeInfo(const Node& node,
+                                 const GetNodeInfoParams& params) const;
   pblczero::CommonInfo GetCommonInfo() const;
   int Depth() const;
 
@@ -129,8 +137,8 @@ class MEvaluator {
   bool parent_within_threshold_ = false;
 };
 
-inline float GetFpu(const SearchParams& params, Node* node, bool is_root_node,
-                    float draw_score) {
+inline float GetFpu(const SearchParams& params, const Node* node,
+                    bool is_root_node, float draw_score) {
   const auto value = params.GetFpuValue(is_root_node);
   return params.GetFpuAbsolute(is_root_node)
              ? value

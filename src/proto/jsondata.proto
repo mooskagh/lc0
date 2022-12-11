@@ -22,18 +22,18 @@ message NodeInfo {
   optional float d = 5;
   optional float ml = 6;
   optional float q = 7;
-  optional float v = 8;
-  optional float u = 9;
-  optional float s = 10;
-  optional float visited_policy = 11;
-  repeated EdgeInfo edge = 12;
+  optional float visited_policy = 8;
+  repeated EdgeInfo edge = 9;
 }
 
 message EdgeInfo {
   optional string move = 1;
-  optional int32 move_idx = 2;
+  optional int32 nn_idx = 2;
   optional float p = 3;
-  optional NodeInfo node = 4;
+  optional float v = 4;
+  optional float u = 5;
+  optional float s = 6;
+  optional NodeInfo node = 7;
 }
 
 message MoveInfo {

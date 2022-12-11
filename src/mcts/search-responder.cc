@@ -377,6 +377,58 @@ pblczero::Evaluation GetEvaluationInfo(const EdgeAndNode& edge_and_node,
 }
 }  //  namespace
 
+pblczero::NodeInfo Search::Responder::GetNodeInfo(
+    const Node& node, const GetNodeInfoParams& params) const {
+  const auto draw_score = search_.GetDrawScore(params.is_odd_depth);
+
+  pblczero::NodeInfo info;
+  info.set_n(node.GetN());
+  info.set_n_in_flight(node.GetNInFlight());
+  info.set_wl(node.GetWL());
+  info.set_d(node.GetD());
+  info.set_ml(node.GetM());
+  info.set_q(node.GetQ(draw_score));
+  if (params.fill_visited_policy) {
+    info.set_visited_policy(node.GetVisitedPolicy());
+  }
+  if (params.depth > 0) {
+    const auto m_evaluator = search_.network_->GetCapabilities().has_mlh()
+                                 ? MEvaluator(search_.params_, &node)
+                                 : MEvaluator();
+    auto child_params = params;
+    --child_params.depth;
+    child_params.is_odd_depth = !params.is_odd_depth;
+    child_params.is_black_to_move = !params.is_black_to_move;
+    const bool is_root = &node == search_.GetRootNode();
+    const float cpuct = ComputeCpuct(search_.params_, node.GetN(), is_root);
+    const float draw_score = search_.GetDrawScore(params.is_odd_depth);
+    const float fpu = GetFpu(search_.params_, &node, is_root, draw_score);
+    const float U_coeff =
+        cpuct * std::sqrt(std::max(node.GetChildrenVisits(), 1u));
+    for (const auto& edge : node.Edges()) {
+      auto* e = info.add_edge();
+      e->set_move(edge.GetMove(params.is_black_to_move).as_string());
+      // TODO: should this be displaying transformed index?
+      e->set_nn_idx(edge.GetMove().as_nn_index(0));
+      e->set_p(edge.GetP());
+      e->set_u(edge.GetU(U_coeff));
+      float Q = edge.GetQ(fpu, draw_score);
+      float M = m_evaluator.GetM(edge, Q);
+      e->set_s(Q + edge.GetU(U_coeff) + M);
+      if (edge.IsTerminal()) {
+        e->set_v(edge.GetQ(0.0, draw_score));
+      } else if (params.fetch_v_from_cache && edge.node()) {
+        NNCacheLock nneval = search_.GetCachedNNEval(edge.node());
+        if (nneval) e->set_v(-nneval->q);
+      }
+      if (edge.node()) {
+        *e->mutable_node() = GetNodeInfo(*edge.node(), child_params);
+      }
+    }
+  }
+  return info;
+}
+
 pblczero::MoveInfo Search::Responder::GetMoveInfo(
     const EdgeAndNode& edge_and_node,
     const pblczero::NodeInfo& parent_node_info, bool is_odd_depth) const {
@@ -384,7 +436,13 @@ pblczero::MoveInfo Search::Responder::GetMoveInfo(
 
   const auto draw_score = search_.GetDrawScore(is_odd_depth);
   if (edge_and_node.HasNode()) {
-    *info.mutable_node_info() = GetNodeInfo(edge_and_node.node());
+    const auto params = GetNodeInfoParams{
+        /* .depth = */ 0,
+        /* .is_odd_depth = */ is_odd_depth,
+        /* .is_black_to_move = */ search_.played_history_.IsBlackToMove(),
+        /* .fill_visited_policy = */ false,
+        /* .fetch_v_from_cache = */ false};
+    *info.mutable_node_info() = GetNodeInfo(*edge_and_node.node(), params);
   }
   const auto& node_info = info.node_info();
   const auto wl = node_info.has_wl() ? node_info.wl() : -parent_node_info.wl();
@@ -404,4 +462,5 @@ pblczero::MoveInfo Search::Responder::GetMoveInfo(
   }
   return info;
 }
+
 }  // namespace lczero

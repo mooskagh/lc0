@@ -98,6 +98,8 @@ class Search {
   // Returns NN eval for a given node from cache, if that node is cached.
   NNCacheLock GetCachedNNEval(const Node* node) const;
 
+  const Node* GetRootNode() const { return root_node_; }
+
  private:
   // Computes the best move, maybe with temperature (according to the settings).
   void EnsureBestMoveKnown();
