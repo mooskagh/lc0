@@ -98,6 +98,7 @@ class Search {
   // Returns NN eval for a given node from cache, if that node is cached.
   NNCacheLock GetCachedNNEval(const Node* node) const;
 
+  // Returns the root node of the search tree.
   const Node* GetRootNode() const { return root_node_; }
 
  private:
