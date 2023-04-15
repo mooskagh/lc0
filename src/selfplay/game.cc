@@ -132,17 +132,9 @@ void SelfPlayGame::Play(int white_threads, int black_threads, bool training,
   bool blacks_move = tree_[0]->IsBlackToMove();
 
   // If we are training, verify that input formats are consistent.
-<<<<<<< HEAD
-  if (training && options_[0].network->GetCapabilities().input_format !=
-                      options_[1].network->GetCapabilities().input_format) {
-||||||| 23768b7
-  if (training && options_[0].network->GetCapabilities().input_format !=
-      options_[1].network->GetCapabilities().input_format) {
-=======
   if (training &&
       options_[0].network->GetCapabilities().input_format !=
           options_[1].network->GetCapabilities().input_format) {
->>>>>>> upstream/master
     throw Exception("Can't mix networks with different input format!");
   }
   // Take syzygy tablebases from player1 options.
