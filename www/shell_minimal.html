@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="en-us">
+
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+  <title>Console</title>
+  <style>
+    #output {
+      width: 100%;
+      height: 50vh;
+      overflow: auto;
+      border: 1px solid #000;
+      font-family: monospace;
+      white-space: pre;
+    }
+  </style>
+</head>
+
+<body>
+  <div id="status">Downloading...</div>
+  <div id="counter">Zero</div>
+  <div id="output" rows="24" cols="80"></div>
+  <script type='text/javascript'>
+    var statusElement = document.getElementById('status');
+
+    var Module = {
+      preRun: function () {
+        let count = 0;
+        function stdin() {          
+          document.getElementById('counter').innerHTML = count;
+          // Return ASCII code of character, or null if no input
+          //if (count++ == 0) {
+          //  return "uci\n";
+         // }
+          return null;
+        }
+
+        function stdout(asciiCode) {
+          document.getElementById('output').innerHTML += String.fromCharCode(asciiCode);
+        }
+
+        function stderr(asciiCode) {
+          document.getElementById('output').innerHTML += String.fromCharCode(asciiCode);
+        }
+
+        FS.init(stdin, stdout, stderr);
+      },
+      postRun: [],
+      print: (function () {
+        var element = document.getElementById('output');
+        if (element) element.value = ''; // clear browser cache
+        return function (text) {
+          if (arguments.length > 1) text = Array.prototype.slice.call(arguments).join(' ');
+          // These replacements are necessary if you render to raw HTML
+          //text = text.replace(/&/g, "&amp;");
+          //text = text.replace(/</g, "&lt;");
+          //text = text.replace(/>/g, "&gt;");
+          //text = text.replace('\n', '<br>', 'g');
+          // console.log(text);
+          if (element) {
+            element.value += text + "\n";
+            element.scrollTop = element.scrollHeight; // focus on bottom
+          }
+        };
+      })(),
+      setStatus: function (text) {
+        statusElement.innerHTML = text;
+      },
+      totalDependencies: 0,
+      monitorRunDependencies: function (left) {
+        this.totalDependencies = Math.max(this.totalDependencies, left);
+        Module.setStatus(left ? 'Preparing... (' + (this.totalDependencies - left) + '/' + this.totalDependencies + ')' : 'All downloads complete.');
+      }
+    };
+    Module.setStatus('Downloading...');
+  </script>
+  <script src="lc0.js"> </script>
+</body>
+
+</html>

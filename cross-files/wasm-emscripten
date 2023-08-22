@@ -1,0 +1,17 @@
+[binaries]
+c = '/usr/lib/emscripten/emcc'
+cpp = '/usr/lib/emscripten/em++'
+ar = '/usr/lib/emscripten/emar'
+
+[built-in options]
+c_args = ['-msse','-msse2','-msse3','-msimd128', '-fwasm-exceptions']
+c_link_args = ['-sEXPORT_ALL=1', '-fwasm-exceptions']
+cpp_args = ['-msse','-msse2','-msse3','-msimd128', '-fwasm-exceptions']
+cpp_link_args = ['-sEXPORT_ALL=1', '-fwasm-exceptions']
+
+[host_machine]
+
+system = 'emscripten'
+cpu_family = 'wasm64'
+cpu = 'wasm64'
+endian = 'little'

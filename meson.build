@@ -658,13 +658,13 @@ endif
     # caused trouble (crashes or failed builds). Better safe than sorry.
     deps += subproject('zlib').get_variable('zlib_dep')
   else
-    deps += dependency('zlib', fallback: ['zlib', 'zlib_dep'])
+    deps += dependency('zlib', fallback: ['zlib', 'zlib_dep'], static: true)
   endif
 
   ## ~~~~~~~~
   ## Profiler
   ## ~~~~~~~~
-  if get_option('buildtype') != 'release'
+  if get_option('buildtype') != 'release' and host_machine.system() != 'emscripten'
     deps += cc.find_library('libprofiler',
       dirs: ['/usr/local/lib'], required: false)
   endif
