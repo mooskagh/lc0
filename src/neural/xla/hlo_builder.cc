@@ -97,10 +97,38 @@ pblczero::HloInstructionProto* HloBuilder::MakeInstruction(
 // same shape.
 pblczero::HloInstructionProto* HloBuilder::MakeElementwiseInstruction(
     std::string_view opcode, HloFlow lhs, HloFlow rhs) {
-  if (lhs->shape().dimensions() != rhs->shape().dimensions()) {
-    throw Exception("Elementwise operands must have the same shape");
+  std::vector<int64_t> broadcast_dimensions;
+  HloTensorType lhs_shape(lhs->shape());
+  HloTensorType rhs_shape(rhs->shape());
+  if (lhs_shape.GetElementType() != rhs_shape.GetElementType()) {
+    throw Exception("Elementwise operands must have the same element type");
   }
-  return MakeInstruction(opcode, lhs->shape(), {lhs, rhs});
+  if (lhs_shape.Rank() > rhs_shape.Rank()) {
+    std::swap(lhs_shape, rhs_shape);
+  }
+  HloTensorType target_shape(rhs_shape);
+  const size_t dims_to_broadcast = rhs_shape.Rank() - lhs_shape.Rank();
+  if (dims_to_broadcast > 0) {
+    // Doing implicit numpy-like broadcasting, only appending new dimensions to
+    // the left.
+    for (size_t i = 0; i < lhs_shape.Rank(); ++i) {
+      broadcast_dimensions.push_back(i + dims_to_broadcast);
+    }
+  }
+
+  for (size_t i = 0; i < target_shape.Rank(); ++i) {
+    size_t rhs_dim = rhs_shape.GetDimension(i);
+    size_t lhs_dim = i >= dims_to_broadcast
+                         ? lhs_shape.GetDimension(i - dims_to_broadcast)
+                         : 1;
+    target_shape.SetDimension(i, std::max(lhs_dim, rhs_dim));
+  }
+
+  auto* flow = MakeInstruction(opcode, target_shape.ToProto(), {lhs, rhs});
+  if (!broadcast_dimensions.empty()) {
+    *flow->mutable_dimensions() = broadcast_dimensions;
+  }
+  return flow;
 }
 
 ////////////////////////////////////////////////////////////////////////////

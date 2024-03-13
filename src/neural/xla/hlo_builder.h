@@ -65,6 +65,8 @@ class HloTensorType : public HloType {
  public:
   HloTensorType() = default;
   HloTensorType(const HloTensorType&) = default;
+  HloTensorType& operator=(const HloTensorType&) = default;
+  HloTensorType& operator=(HloTensorType&&) = default;
   explicit HloTensorType(pblczero::XlaShapeProto::Type el_type)
       : type_(el_type) {}
   explicit HloTensorType(pblczero::XlaShapeProto::Type el_type,
