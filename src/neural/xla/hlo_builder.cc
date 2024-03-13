@@ -107,20 +107,24 @@ pblczero::HloInstructionProto* HloBuilder::MakeElementwiseInstruction(
     std::swap(lhs_shape, rhs_shape);
   }
   HloTensorType target_shape(rhs_shape);
-  const size_t dims_to_broadcast = rhs_shape.Rank() - lhs_shape.Rank();
-  if (dims_to_broadcast > 0) {
+  const size_t num_dims_to_broadcast = rhs_shape.Rank() - lhs_shape.Rank();
+  if (num_dims_to_broadcast > 0) {
     // Doing implicit numpy-like broadcasting, only appending new dimensions to
     // the left.
     for (size_t i = 0; i < lhs_shape.Rank(); ++i) {
-      broadcast_dimensions.push_back(i + dims_to_broadcast);
+      broadcast_dimensions.push_back(i + num_dims_to_broadcast);
     }
   }
 
   for (size_t i = 0; i < target_shape.Rank(); ++i) {
     size_t rhs_dim = rhs_shape.GetDimension(i);
-    size_t lhs_dim = i >= dims_to_broadcast
-                         ? lhs_shape.GetDimension(i - dims_to_broadcast)
+    size_t lhs_dim = i >= num_dims_to_broadcast
+                         ? lhs_shape.GetDimension(i - num_dims_to_broadcast)
                          : 1;
+    if (lhs_dim != rhs_dim && lhs_dim != 1 && rhs_dim != 1) {
+      throw Exception("Elementwise operands must have compatible shapes, got " +
+                      lhs_shape.ToString() + " and " + rhs_shape.ToString());
+    }
     target_shape.SetDimension(i, std::max(lhs_dim, rhs_dim));
   }
 

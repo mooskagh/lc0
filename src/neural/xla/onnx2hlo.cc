@@ -596,9 +596,7 @@ class Onnx2HloConverter {
         axes.begin(), axes.end(), 1, [&](size_t acc, size_t axis) {
           return acc * input->shape().dimensions(axis);
         });
-    auto denominator =
-        DoBroadcast(MakeScalar(count, input->shape().element_type()),
-                    flow->shape().dimensions());
+    auto denominator = MakeScalar(count, input->shape().element_type());
     flow = builder_.Divide(flow, denominator);
     HloTensorType target_shape(input->shape());
     for (auto axis : axes) target_shape.SetDimension(axis, 1);
@@ -634,23 +632,20 @@ class Onnx2HloConverter {
     auto* flow = need_conv
                      ? builder_.Convert(input, pblczero::XlaShapeProto::F32)
                      : input;
-    flow = DoBroadcast(DoReduceMean(flow, {axis}), input->shape().dimensions());
+    flow = DoReduceMean(flow, {axis});
     auto* norm = builder_.Subtract(input, flow);
     flow = builder_.Multiply(norm, norm);
     flow = DoReduceMean(flow, {axis});
-    flow = builder_.Add(
-        flow, DoBroadcast(MakeScalar(epsilon, pblczero::XlaShapeProto::F32),
-                          flow->shape().dimensions()));
-    flow = builder_.Rsqrt(flow);
     flow =
-        builder_.Multiply(norm, DoBroadcast(flow, norm->shape().dimensions()));
+        builder_.Add(flow, MakeScalar(epsilon, pblczero::XlaShapeProto::F32));
+    flow = builder_.Rsqrt(flow);
+    flow = builder_.Multiply(norm, flow);
     if (need_conv) {
       flow = builder_.Convert(flow, input->shape().element_type());
     }
-    flow =
-        builder_.Multiply(flow, DoBroadcast(scale, flow->shape().dimensions()));
+    flow = builder_.Multiply(flow, scale);
     if (bias) {
-      flow = builder_.Add(flow, DoBroadcast(bias, flow->shape().dimensions()));
+      flow = builder_.Add(flow, bias);
     }
     return {flow};
   }
@@ -697,8 +692,7 @@ class Onnx2HloConverter {
     CheckKnownAttributes(node, 1, {});
     auto* input = GetInput(node, 0);
     auto* one = MakeScalar(1, input->shape().element_type());
-    return {
-        builder_.Divide(DoBroadcast(one, input->shape().dimensions()), input)};
+    return {builder_.Divide(one, input)};
   }
 
   std::vector<HloFlow> OpSoftplus(const pblczero::NodeProto& node) {
@@ -711,7 +705,6 @@ class Onnx2HloConverter {
     CheckKnownAttributes(node, 2, {});
     auto* lhs = GetInput(node, 0);
     auto* rhs = GetInput(node, 1);
-    std::tie(lhs, rhs) = EqualizeShape(lhs, rhs);
     return {builder_.Add(lhs, rhs)};
   }
 
@@ -719,7 +712,6 @@ class Onnx2HloConverter {
     CheckKnownAttributes(node, 2, {});
     auto* lhs = GetInput(node, 0);
     auto* rhs = GetInput(node, 1);
-    std::tie(lhs, rhs) = EqualizeShape(lhs, rhs);
     return {builder_.Subtract(lhs, rhs)};
   }
 
@@ -727,7 +719,6 @@ class Onnx2HloConverter {
     CheckKnownAttributes(node, 2, {});
     auto* lhs = GetInput(node, 0);
     auto* rhs = GetInput(node, 1);
-    std::tie(lhs, rhs) = EqualizeShape(lhs, rhs);
     return {builder_.Multiply(lhs, rhs)};
   }
 
@@ -894,7 +885,6 @@ class Onnx2HloConverter {
                                 MakeAddComputation(lhs->shape().element_type()),
                                 reduction_dims);
     auto denominator = MakeScalar(num_elements, lhs->shape().element_type());
-    std::tie(flow, denominator) = EqualizeShape(flow, denominator);
     flow = builder_.Divide(flow, denominator);
     HloTensorType output_shape(flow->shape());
     while (output_shape.Rank() < lhs->shape().dimensions_size()) {
@@ -1020,14 +1010,6 @@ class Onnx2HloConverter {
       flow = builder_.Reshape(flow, intermediate_shape);
     }
     return builder_.Broadcast(flow, target_shape, broadcast_dims);
-  }
-
-  // Take two inputs and optionally performs numpy-style broadcasting to make
-  // them equal shape.
-  std::pair<HloFlow, HloFlow> EqualizeShape(HloFlow lhs, HloFlow rhs) {
-    auto common_dims =
-        BuildCommonDims(lhs->shape().dimensions(), rhs->shape().dimensions());
-    return {DoBroadcast(lhs, common_dims), DoBroadcast(rhs, common_dims)};
   }
 
   // Convert ONNX inputs to HLO parameters.
