@@ -1,1 +1,0 @@
-../build/wasm/lc0.worker.js

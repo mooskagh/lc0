@@ -73,6 +73,12 @@ gen = generator(compile_proto, output: ['@BASENAME@.pb.h'],
     '--cpp_out=@BUILD_DIR@',
     '@INPUT@'])
 
+gen_proto_src = generator(compile_proto, output: ['@BASENAME@.pb.h'],
+  arguments : [
+    '--proto_path=@CURRENT_SOURCE_DIR@/src',
+    '--cpp_out=@BUILD_DIR@',
+    '@INPUT@'])
+
 # Handle submodules.
 git = find_program('git', required: false)
 if run_command('scripts/checkdir.py', 'libs/lczero-common/proto').returncode() != 0
@@ -94,7 +100,9 @@ endif
 pb_files = [
   'src/utils/protomessage.cc',
   gen.process('libs/lczero-common/proto/net.proto',
-    preserve_path_from : meson.current_source_dir() + '/libs/lczero-common/')
+    preserve_path_from : meson.current_source_dir() + '/libs/lczero-common/'),
+  gen_proto_src.process('src/neural/xla/hlo.proto',
+      preserve_path_from : meson.current_source_dir() + '/src/')
 ]
 common_files += pb_files
 
@@ -141,12 +149,6 @@ elif get_option('malloc') != ''
 endif
 
 # ONNX protobufs.
-gen_proto_src = generator(compile_proto, output: ['@BASENAME@.pb.h'],
-  arguments : [
-    '--proto_path=@CURRENT_SOURCE_DIR@/src',
-    '--cpp_out=@BUILD_DIR@',
-    '@INPUT@'])
-
 files += gen_proto_src.process('src/neural/onnx/onnx.proto',
   preserve_path_from : meson.current_source_dir() + '/src/')
 
@@ -208,6 +210,9 @@ files += [
   'src/neural/onnx/adapters.cc',
   'src/neural/onnx/builder.cc',
   'src/neural/onnx/converter.cc',
+  'src/neural/xla/hlo_builder.cc',
+  'src/neural/xla/onnx2hlo.cc',
+  'src/neural/xla/print_hlo.cc',
   'src/selfplay/game.cc',
   'src/selfplay/loop.cc',
   'src/selfplay/multigame.cc',
@@ -615,14 +620,6 @@ if get_option('build_backends')
   ## ~~~~~~~~
   ## XLA
   ## ~~~~~~~~
-  files += [
-        'src/neural/xla/hlo_builder.cc',
-        'src/neural/xla/onnx2hlo.cc',
-        'src/neural/xla/print_hlo.cc',
-  ]
-  files += gen_proto_src.process('src/neural/xla/hlo.proto',
-      preserve_path_from : meson.current_source_dir() + '/src/')
-
   if get_option('xla')
       files += [
         'src/neural/xla/network_xla.cc',

@@ -1,81 +1,70 @@
-<!doctype html>
-<html lang="en-us">
+<!DOCTYPE html>
+<html>
 
 <head>
-  <meta charset="utf-8">
-  <meta http-equiv="Content-Type" content="text/html; charset=utf-8">
-  <title>Console</title>
+  <script src="lc0.js"></script>
   <style>
-    #output {
+    pre {
+      border: 1px solid black;
+      padding: 5px;
+      background-color: lightgray;
+      color: black;
+      font-family: 'Courier New', monospace;
+      border-radius: 5px;
+      box-shadow: 2px 2px 5px rgba(0, 0, 0, 0.2);
+    }
+
+    input {
+      padding: 10px;
+      border: 1px solid gray;
+      border-radius: 5px;
+      font-family: 'Courier New', monospace;
+      font-size: 16px;
       width: 100%;
-      height: 50vh;
-      overflow: auto;
-      border: 1px solid #000;
-      font-family: monospace;
-      white-space: pre;
+    }
+
+    .input {
+      color: blue;
+      font-weight: bold;
     }
   </style>
 </head>
+<script>
+  let decoder = new TextDecoder('utf-8', { stream: true });
+  let lc0 = new Lc0(
+    (buf) => {
+      let str = decoder.decode(buf, { stream: true });
+      document.getElementById("stdout").innerText += str;
+    },
+    (buf) => {
+      let str = decoder.decode(buf, { stream: true });
+      document.getElementById("stderr").innerText += str;
+    },
+  );
+  lc0.run();
+</script>
 
 <body>
-  <div id="status">Downloading...</div>
-  <div id="counter">Zero</div>
-  <div id="output" rows="24" cols="80"></div>
-  <script type='text/javascript'>
-    var statusElement = document.getElementById('status');
-
-    var Module = {
-      preRun: function () {
-        let count = 0;
-        function stdin() {          
-          document.getElementById('counter').innerHTML = count;
-          // Return ASCII code of character, or null if no input
-          //if (count++ == 0) {
-          //  return "uci\n";
-         // }
-          return null;
-        }
-
-        function stdout(asciiCode) {
-          document.getElementById('output').innerHTML += String.fromCharCode(asciiCode);
-        }
-
-        function stderr(asciiCode) {
-          document.getElementById('output').innerHTML += String.fromCharCode(asciiCode);
-        }
-
-        FS.init(stdin, stdout, stderr);
-      },
-      postRun: [],
-      print: (function () {
-        var element = document.getElementById('output');
-        if (element) element.value = ''; // clear browser cache
-        return function (text) {
-          if (arguments.length > 1) text = Array.prototype.slice.call(arguments).join(' ');
-          // These replacements are necessary if you render to raw HTML
-          //text = text.replace(/&/g, "&amp;");
-          //text = text.replace(/</g, "&lt;");
-          //text = text.replace(/>/g, "&gt;");
-          //text = text.replace('\n', '<br>', 'g');
-          // console.log(text);
-          if (element) {
-            element.value += text + "\n";
-            element.scrollTop = element.scrollHeight; // focus on bottom
-          }
-        };
-      })(),
-      setStatus: function (text) {
-        statusElement.innerHTML = text;
-      },
-      totalDependencies: 0,
-      monitorRunDependencies: function (left) {
-        this.totalDependencies = Math.max(this.totalDependencies, left);
-        Module.setStatus(left ? 'Preparing... (' + (this.totalDependencies - left) + '/' + this.totalDependencies + ')' : 'All downloads complete.');
-      }
-    };
-    Module.setStatus('Downloading...');
-  </script>
-  <script src="lc0.js"> </script>
+  <h2>stdout</h2>
+  <pre id="stdout"></pre>
+  <h2>stdin</h2>
+  <input id="stdin" type="text" />
+  <h2>stderr</h2>
+  <pre id="stderr"></pre>
 </body>
+
+<script>
+  document.getElementById("stdin").addEventListener("keyup", function (event) {
+  if (event.key === "Enter") {
+    let inputText = document.getElementById("stdin").value;
+    let inputDiv = document.createElement("div");
+    inputDiv.className = "input";
+    inputDiv.innerText = inputText;
+    lc0.send(inputText);
+    document.getElementById("stdout").appendChild(inputDiv);
+    document.getElementById("stdin").value = "";
+  }
+  });
+</script>
 
 </html>
