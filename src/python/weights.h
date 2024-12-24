@@ -232,9 +232,9 @@ class Backend {
   std::unique_ptr<::lczero::Network> network_;
 };
 
-class GameState {
+class PyGameState {
  public:
-  GameState(const std::optional<std::string> startpos,
+  PyGameState(const std::optional<std::string> startpos,
             const std::vector<std::string>& moves) {
     ChessBoard starting_board;
     int no_capture_ply;

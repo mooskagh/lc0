@@ -105,7 +105,7 @@ backend.AddMethod('capabilities').AddRetVal(ObjCopyRetval(backend_caps))
 
 # PositionHistory class
 game_state = mod.AddClass(
-    Class('GameState', cpp_name='lczero::python::GameState'))
+    Class('GameState', cpp_name='lczero::python::PyGameState'))
 game_state.constructor.AddParameter(
     StringParameter('fen', optional=True, can_be_none=True),
     ListOfStringsParameter('moves', optional=True),
