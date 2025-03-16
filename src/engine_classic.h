@@ -54,7 +54,7 @@ class EngineClassic : public EngineControllerBase {
     search_.reset();
   }
 
-  static void PopulateOptions(OptionsParser* options);
+  void PopulateOptions(OptionsParser* options) override;
 
   // Blocks.
   void EnsureReady() override;

@@ -51,6 +51,7 @@ EngineLoop::EngineLoop(OptionsParser* options,
           [&](auto&& arg) { return SendInfo(arg); })),
       options_(options),
       engine_(std::move(engine)) {
+  engine_->PopulateOptions(options_);
   engine_->RegisterUciResponder(uci_responder_.get());
   options_->Add<StringOption>(kLogFileId);
   options_->Add<BoolOption>(kPreload) = false;

@@ -116,7 +116,6 @@ int main(int argc, const char** argv) {
         // Consuming optional "uci" mode.
         CommandLine::ConsumeCommand("uci");
         // Ordinary UCI engine.
-        EngineClassic::PopulateOptions(options_parser.get());
         EngineLoop loop(
             options_parser.get(),
             std::make_unique<EngineClassic>(options_parser->GetOptionsDict()));

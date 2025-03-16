@@ -39,6 +39,9 @@ class EngineControllerBase {
  public:
   virtual ~EngineControllerBase() = default;
 
+  // Adds the engine-level options.
+  virtual void PopulateOptions(OptionsParser*) = 0;
+
   // Blocks.
   virtual void EnsureReady() = 0;
 
