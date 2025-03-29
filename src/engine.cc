@@ -206,7 +206,10 @@ void Engine::SetPosition(const std::string& fen,
   if (!ponder_enabled_) InitializeSearchPosition(/*for_ponder=*/false);
 }
 
-void Engine::NewGame() { SetPosition(ChessBoard::kStartposFen, {}); }
+void Engine::NewGame() {
+  search_->NewGame();
+  SetPosition(ChessBoard::kStartposFen, {});
+}
 
 void Engine::Go(const GoParams& params) {
   if (!ponder_enabled_ && params.ponder) {
