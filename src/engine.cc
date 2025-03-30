@@ -35,6 +35,7 @@
 #include "neural/register.h"
 #include "neural/shared_params.h"
 #include "syzygy/syzygy.h"
+#include "utils/configfile.h"
 
 namespace lczero {
 namespace {
@@ -55,6 +56,7 @@ const OptionId kPonderId{
 }  // namespace
 
 void Engine::PopulateOptions(OptionsParser* options) {
+  ConfigFile::PopulateOptions(options);
   options->Add<BoolOption>(kPonderId) = false;
   options->Add<StringOption>(kSyzygyTablebaseId);
   options->Add<BoolOption>(kStrictUciTiming) = false;
