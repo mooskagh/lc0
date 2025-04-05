@@ -40,7 +40,6 @@ class RescoreLoop : public UciLoop {
   ~RescoreLoop();
 
   void RunLoop() override;
-  bool IsChess960() const { return false; }
 
  private:
   OptionsParser options_;
