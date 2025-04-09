@@ -242,6 +242,14 @@ includes += include_directories('src')
 
 deps += dependency('threads')
 
+### Lc3 Search Algorithm
+
+if get_option('lc3')
+  files += [
+    'src/search/lc3/lc3_engine.cc',
+  ]
+endif
+
 #############################################################################
 ## Platform specific files
 ############################################################################

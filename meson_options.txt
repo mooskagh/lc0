@@ -209,6 +209,11 @@ option('rescorer',
        value: false,
        description: 'Build rescorer')
 
+option('lc3',
+       type: 'boolean',
+       value: false,
+       description: 'Build Lc3 search algorithm')
+
 option('default_search',
        type: 'string',
        value: '',
