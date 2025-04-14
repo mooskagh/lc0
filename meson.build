@@ -247,6 +247,7 @@ deps += dependency('threads')
 if get_option('lc3')
   files += [
     'src/search/lc3/lc3_engine.cc',
+    'src/search/lc3/search.cc',
   ]
 endif
 
