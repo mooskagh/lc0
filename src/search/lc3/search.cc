@@ -23,42 +23,31 @@ std::vector<size_t> DistributeVisits(size_t num_visits,
 }
 }  // namespace
 
-NodeHash ComputePositionHash(const Position& pos) { NotImplemented(); }
-
 void HandleCollision() { NotImplemented(); }
 void HandleTerminal() { NotImplemented(); }
 
-void Search::GatherDescent(const Position& head, size_t target_batch_size) {
-  const NodeHash head_hash = ComputePositionHash(head);
-  struct WorkItem {
-    Position pos;
-    size_t batch_size;
-    // TreeNodeId tree_node;
-  };
-  std::vector<WorkItem> work_items;
-  std::vector<WorkItem> new_work_items;
-  work_items.push_back({
-      .pos = head, .batch_size = target_batch_size,
-      // .tree_node = work_tree_.MakeRootNode(),
-  });
-  work_tree_nodes_.push_back({
-      .parent = TreeNodeId(-1),
-      .node_hash = head_hash,
-  });
+void Search::GatherDescent(size_t target_batch_size) {
+  size_t queue_ptr = 0;
+  work_tree_nodes_.clear();
+  work_tree_nodes_.emplace_back(
+      /*parent_id=*/WorkTreeNode::kNoParent,
+      /*position=*/head_,
+      /*batch_size=*/target_batch_size);
 
   for (size_t depth = 0;; ++depth) {
-    if (work_items.empty()) break;
-    new_work_items.clear();
+    const size_t queue_head = work_tree_nodes_.size();
+    if (queue_ptr >= queue_head) break;
 
-    std::vector<WorkItem*> nodes_to_create;
+    std::vector<size_t> nodes_to_create;
     // Fetch nodes from the storage.
     {
-      UpdateLock lock = storage_.GetUpdateLock();
-      for (WorkItem& item : work_items) {
-        const NodeHash node_hash = ComputePositionHash(item.pos);
+      UpdateLock lock = storage_->GetUpdateLock();
+      for (; queue_ptr < queue_head; ++queue_ptr) {
+        WorkTreeNode& item = work_tree_nodes_[queue_ptr];
+        const NodeHash node_hash = item.position.hash;
         std::optional<NodeUpdate> update = lock.Fetch(node_hash);
         if (!update) {
-          nodes_to_create.push_back(&item);
+          nodes_to_create.push_back(queue_ptr);
           continue;
         }
         if (update->IsTerminal()) {
@@ -99,10 +88,11 @@ void Search::GatherDescent(const Position& head, size_t target_batch_size) {
         // Spawn new work items for the children.
         for (size_t i = 0; i < num_moves_to_fetch; ++i) {
           if (edge_visits[i] == 0) continue;
-          new_work_items.push_back({
-              .pos = Position(item.pos, moves[i]), .batch_size = edge_visits[i],
-              // .tree_node = work_tree_.MakeChildNode(item.tree_node),
-          });
+          work_tree_nodes_.emplace_back(
+              /*parent_id=*/queue_ptr,
+              /*position=*/
+              PositionChain::FromMove(&item.position, moves[i]),
+              /*batch_size=*/target_batch_size);
         }
       }
 
@@ -112,7 +102,6 @@ void Search::GatherDescent(const Position& head, size_t target_batch_size) {
         // Handle terminal
       }
     }
-    std::swap(work_items, new_work_items);
   }
 }
 

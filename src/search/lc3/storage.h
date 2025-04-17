@@ -45,7 +45,7 @@ struct CreateLock {
   std::optional<NodeCreate> Create(NodeHash node) { NotImplemented(); }
 };
 
-class Storage {
+class NodeStorage {
  public:
   UpdateLock GetUpdateLock() { NotImplemented(); }
 };

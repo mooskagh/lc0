@@ -25,6 +25,9 @@
   Program grant you additional permission to convey the resulting work.
 */
 
+#include "search/lc3/positions.h"
+#include "search/lc3/search.h"
+#include "search/lc3/storage.h"
 #include "search/register.h"
 #include "search/search.h"
 
@@ -36,13 +39,47 @@ class Lc3Engine : public SearchBase {
  public:
   using SearchBase::SearchBase;
 
-  void SetPosition(const GameState&) override { NotImplemented(); }
-  void StartSearch(const GoParams&) override { NotImplemented(); }
-  void StartClock() override { NotImplemented(); }
-  void WaitSearch() override { NotImplemented(); }
+  void SetPosition(const GameState&) override;
+  void StartSearch(const GoParams& go_params) override;
+  void StartClock() override { TODO("Start clock"); }
   void StopSearch() override { NotImplemented(); }
-  void AbortSearch() override { NotImplemented(); }
+  void AbortSearch() override;
+  void WaitSearch() override;
+
+ private:
+  void EnsureSearchStopped();
+
+  std::unique_ptr<Search> search_;
+  NodeStorage storage_;
+  // The positions that already occurred in the game.
+  std::vector<PositionChain> position_history_;
 };
+
+void Lc3Engine::AbortSearch() {
+  if (search_) search_->Abort();
+}
+
+void Lc3Engine::WaitSearch() {
+  if (search_) search_->Wait();
+}
+
+void Lc3Engine::EnsureSearchStopped() {
+  AbortSearch();
+  WaitSearch();
+}
+
+void Lc3Engine::SetPosition(const GameState& game_state) {
+  EnsureSearchStopped();
+  TODO("GC the storage_");
+  position_history_ = GameStateToPositionChain(game_state);
+}
+
+void Lc3Engine::StartSearch(const GoParams& go_params) {
+  TODO("Do not ignore go_params");
+  EnsureSearchStopped();
+  search_ = std::make_unique<Search>(&storage_, position_history_.back());
+  search_->OneStep();
+}
 
 class Lc3Factory : public SearchFactory {
   std::string_view GetName() const override { return "lc3"; }

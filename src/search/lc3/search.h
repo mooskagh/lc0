@@ -1,6 +1,7 @@
 #pragma once
 
 #include "chess/position.h"
+#include "search/lc3/positions.h"
 #include "search/lc3/storage.h"
 #include "search/lc3/treedata.h"
 #include "search/lc3/worktree.h"
@@ -10,13 +11,20 @@ namespace lc3 {
 
 class Search {
  public:
-  void GatherDescent(const Position& head, size_t target_batch_size);
+  Search(NodeStorage* storage, PositionChain head)
+      : storage_(storage), head_(head) {}
+
+  void Abort() { TODO(); }
+  void Wait() { TODO(); }
+
+  void GatherDescent(size_t target_batch_size);
+
+  void OneStep() { GatherDescent(256); }
 
  private:
-  WorkTree work_tree_;
-
-  std::vector<WorkTreeNode> work_tree_nodes_;
-  Storage storage_;
+  std::deque<WorkTreeNode> work_tree_nodes_;
+  NodeStorage* storage_;
+  PositionChain head_;
 };
 
 }  // namespace lc3

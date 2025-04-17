@@ -49,4 +49,19 @@ inline void NotImplemented(
                   ":" + std::to_string(location.line()));
 }
 
+inline void TODO(
+    const std::string& message = "",
+    const std::source_location& location = std::source_location::current()) {
+#ifdef NDEBUG
+  throw Exception("TODO(" + message +
+                  "): " + std::string(location.file_name()) + ":" +
+                  std::to_string(location.line()));
+
+#else
+  CERR << "WARNING: TODO(" << message
+       << "): " << std::string(location.file_name())
+       << ":" + std::to_string(location.line());
+#endif
+}
+
 }  // namespace lczero
