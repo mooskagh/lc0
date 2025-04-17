@@ -18,13 +18,15 @@ namespace {
 std::vector<size_t> DistributeVisits(size_t num_visits,
                                      std::span<const float> edge_P,
                                      std::span<const float> edge_Q,
-                                     std::span<const uint64_t> edge_N);
+                                     std::span<const uint64_t> edge_N) {
+  NotImplemented();
 }
+}  // namespace
 
-NodeHash ComputePositionHash(const Position& pos);
+NodeHash ComputePositionHash(const Position& pos) { NotImplemented(); }
 
-void HandleCollision();
-void HandleTerminal();
+void HandleCollision() { NotImplemented(); }
+void HandleTerminal() { NotImplemented(); }
 
 void Search::GatherDescent(const Position& head, size_t target_batch_size) {
   const NodeHash head_hash = ComputePositionHash(head);

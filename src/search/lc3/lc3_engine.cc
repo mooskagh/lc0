@@ -36,12 +36,12 @@ class Lc3Engine : public SearchBase {
  public:
   using SearchBase::SearchBase;
 
-  void SetPosition(const GameState&) override {}
-  void StartSearch(const GoParams&) override {}
-  void StartClock() override {}
-  void WaitSearch() override {}
-  void StopSearch() override {}
-  void AbortSearch() override {}
+  void SetPosition(const GameState&) override { NotImplemented(); }
+  void StartSearch(const GoParams&) override { NotImplemented(); }
+  void StartClock() override { NotImplemented(); }
+  void WaitSearch() override { NotImplemented(); }
+  void StopSearch() override { NotImplemented(); }
+  void AbortSearch() override { NotImplemented(); }
 };
 
 class Lc3Factory : public SearchFactory {

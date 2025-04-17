@@ -27,7 +27,9 @@
 
 #pragma once
 
+#include <source_location>
 #include <stdexcept>
+
 #include "utils/logging.h"
 
 namespace lczero {
@@ -39,5 +41,12 @@ class Exception : public std::runtime_error {
     LOGFILE << "Exception: " << what;
   }
 };
+
+[[noreturn]]
+inline void NotImplemented(
+    const std::source_location& location = std::source_location::current()) {
+  throw Exception("Not implemented: " + std::string(location.file_name()) +
+                  ":" + std::to_string(location.line()));
+}
 
 }  // namespace lczero
