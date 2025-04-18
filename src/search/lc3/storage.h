@@ -60,17 +60,24 @@ class UpdateLock {
   UpdateLock(NodeStorage* storage) : storage_(storage) {}
 
   NodeStorage* const storage_;
-#ifndef NDEBUG  
-  uint32_t ref_count_ = 0;   // For debugging only.
+#ifndef NDEBUG
+  uint32_t ref_count_ = 0;  // For debugging only.
 #endif
   friend class NodeUpdate;
   friend class NodeStorage;
+  friend class CreationLock;
 };
 
-struct CreationLock {
-  static CreationLock FromUpdateLock(UpdateLock&& lock) { NotImplemented(); }
+class CreationLock {
+ public:
+  static CreationLock FromUpdateLock(UpdateLock&& lock);
 
-  std::optional<NodeCreate> Create(NodeHash node) { NotImplemented(); }
+ private:
+  CreationLock(NodeStorage* storage) : storage_(storage) {}
+  NodeStorage* const storage_;
+#ifndef NDEBUG
+  uint32_t ref_count_ = 0;  // For debugging only.
+#endif
 };
 
 class NodeStorage {

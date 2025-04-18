@@ -18,4 +18,9 @@ std::optional<NodeUpdate> UpdateLock::Fetch(NodeHash node) {
 
 UpdateLock::~UpdateLock() { assert(ref_count_ == 0); }
 
+CreationLock CreationLock::FromUpdateLock(UpdateLock&& lock) {
+  assert(lock.ref_count_ == 0);
+  return CreationLock(lock.storage_);
+}
+
 }  // namespace lczero
