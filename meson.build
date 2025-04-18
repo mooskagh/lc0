@@ -280,9 +280,6 @@ if get_option('dag_classic')
     'src/search/dag_classic/stoppers/timemgr.cc',
     'src/search/dag_classic/wrapper.cc',
   ]
-
-  absl = subproject('abseil-cpp', default_options : ['warning_level=0', 'cpp_std=c++20'])
-  deps += absl.get_variable('absl_container_dep').as_system()
 endif
 
 #############################################################################
@@ -733,9 +730,8 @@ endif
   ## Abseil
   ## ~~~~~~
   # $ meson wrap install abseil-cpp
-  absl = subproject('abseil-cpp', default_options : ['warning_level=0'])
+  absl = subproject('abseil-cpp', default_options : ['warning_level=0', 'cpp_std=c++20'])
   deps += absl.get_variable('absl_container_dep').as_system()
-  includes += absl.get_variable('absl_include_dir')
 
   ## ~~~~
   ## zlib
