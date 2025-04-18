@@ -98,7 +98,8 @@ void MctsThread::GatherDescent(size_t target_batch_size) {
 
       // Create new nodes for the work items that were not found in the storage.
       if (!nodes_to_create.empty()) {
-        CreateLock create_lock = CreateLock::FromUpdateLock(std::move(lock));
+        CreationLock create_lock =
+            CreationLock::FromUpdateLock(std::move(lock));
         // Handle terminal
       }
     }

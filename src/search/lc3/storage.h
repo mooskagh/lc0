@@ -67,8 +67,8 @@ class UpdateLock {
   friend class NodeStorage;
 };
 
-struct CreateLock {
-  static CreateLock FromUpdateLock(UpdateLock&& lock) { NotImplemented(); }
+struct CreationLock {
+  static CreationLock FromUpdateLock(UpdateLock&& lock) { NotImplemented(); }
 
   std::optional<NodeCreate> Create(NodeHash node) { NotImplemented(); }
 };
