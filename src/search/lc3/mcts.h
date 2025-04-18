@@ -9,9 +9,9 @@
 namespace lczero {
 namespace lc3 {
 
-class Search {
+class MctsThread {
  public:
-  Search(NodeStorage* storage, PositionChain head)
+  MctsThread(NodeStorage* storage, PositionChain head)
       : storage_(storage), head_(head) {}
 
   void Abort() { TODO(); }

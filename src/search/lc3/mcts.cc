@@ -1,5 +1,5 @@
 
-#include "search/lc3/search.h"
+#include "search/lc3/mcts.h"
 
 #include <queue>
 #include <utility>
@@ -26,7 +26,7 @@ std::vector<size_t> DistributeVisits(size_t num_visits,
 void HandleCollision() { NotImplemented(); }
 void HandleTerminal() { NotImplemented(); }
 
-void Search::GatherDescent(size_t target_batch_size) {
+void MctsThread::GatherDescent(size_t target_batch_size) {
   size_t queue_ptr = 0;
   work_tree_nodes_.clear();
   work_tree_nodes_.emplace_back(
