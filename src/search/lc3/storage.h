@@ -1,5 +1,7 @@
 #pragma once
 
+#include <absl/container/flat_hash_map.h>
+
 #include <cstdint>
 #include <optional>
 #include <span>
@@ -9,13 +11,21 @@
 
 namespace lczero {
 
+class NodeStorage;
+class UpdateLock;
 struct NodeHash {
   uint64_t hash;
 };
 
+namespace internal {
+struct NodeData {};
+}  // namespace internal
+
 struct NodeCreate {};
 
-struct NodeUpdate {
+class NodeUpdate {
+ public:
+  ~NodeUpdate();
   bool HasVisits() const { NotImplemented(); }
   bool IsTerminal() const { NotImplemented(); }
   uint64_t IncrementN(int64_t n) { NotImplemented(); }
@@ -31,12 +41,30 @@ struct NodeUpdate {
 
   void FetchEdgeData(EdgeDataRequest request) const { NotImplemented(); }
   void UpdateEdgeN(std::span<const uint64_t> n) const { NotImplemented(); }
+
+ private:
+  NodeUpdate(UpdateLock* lock, internal::NodeData* data);
+  UpdateLock* const lock_;
+  internal::NodeData* const data_;
+  friend class UpdateLock;
 };
 
 // While this lock is held, no hashmap rehashing will occur.
-struct UpdateLock {
+class UpdateLock {
+ public:
   // Returns nullopt if the node is not found.
-  std::optional<NodeUpdate> Fetch(NodeHash node) { NotImplemented(); }
+  std::optional<NodeUpdate> Fetch(NodeHash node);
+  ~UpdateLock();
+
+ private:
+  UpdateLock(NodeStorage* storage) : storage_(storage) {}
+
+  NodeStorage* const storage_;
+#ifndef NDEBUG  
+  uint32_t ref_count_ = 0;   // For debugging only.
+#endif
+  friend class NodeUpdate;
+  friend class NodeStorage;
 };
 
 struct CreateLock {
@@ -47,7 +75,12 @@ struct CreateLock {
 
 class NodeStorage {
  public:
-  UpdateLock GetUpdateLock() { NotImplemented(); }
+  UpdateLock GetUpdateLock();
+
+ private:
+  absl::flat_hash_map<uint64_t, internal::NodeData> nodes_;
+  friend class UpdateLock;
+  friend class NodeUpdate;
 };
 
 }  // namespace lczero
