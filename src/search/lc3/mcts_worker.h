@@ -9,9 +9,9 @@
 namespace lczero {
 namespace lc3 {
 
-class MctsThread {
+class MctsWorker {
  public:
-  MctsThread(NodeStorage* storage, PositionChain head)
+  MctsWorker(NodeStorage* storage, PositionChain head)
       : storage_(storage), head_(head) {}
 
   void Abort() { TODO(); }

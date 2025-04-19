@@ -25,8 +25,9 @@
   Program grant you additional permission to convey the resulting work.
 */
 
-#include "search/lc3/mcts.h"
+#include "search/lc3/mcts_worker.h"
 #include "search/lc3/positions.h"
+#include "search/lc3/session.h"
 #include "search/lc3/storage.h"
 #include "search/register.h"
 #include "search/search.h"
@@ -49,7 +50,7 @@ class Lc3Engine : public SearchBase {
  private:
   void EnsureSearchStopped();
 
-  std::unique_ptr<MctsThread> search_;
+  std::unique_ptr<MctsWorker> search_;
   NodeStorage storage_;
   // The positions that already occurred in the game.
   std::vector<PositionChain> position_history_;
@@ -77,7 +78,7 @@ void Lc3Engine::SetPosition(const GameState& game_state) {
 void Lc3Engine::StartSearch(const GoParams& go_params) {
   TODO("Do not ignore go_params");
   EnsureSearchStopped();
-  search_ = std::make_unique<MctsThread>(&storage_, position_history_.back());
+  search_ = std::make_unique<MctsWorker>(&storage_, position_history_.back());
   search_->OneStep();
 }
 
