@@ -123,18 +123,21 @@ void MctsWorker::GatherDescent(size_t target_batch_size) {
       if (!nodes_to_create.empty()) {
         CreationLock create_lock =
             CreationLock::FromUpdateLock(std::move(lock));
-        std::vector<WorkTreeNode*> nodes_to_create_ptrs;
-        nodes_to_create_ptrs.reserve(nodes_to_create.size());
+        std::vector<EvalTask*> eval_tasks;
+        eval_tasks.reserve(nodes_to_create.size());
         for (NodeAndBatch& item : nodes_to_create) {
           if (create_lock.Create(item.node_id->position.hash)) {
-            nodes_to_create_ptrs.push_back(item.node_id);
+            EvalTask* task = eval_task_pool_.New(EvalTask{
+                .pending_node = item.node_id,
+                .num_visits = item.batch_size,
+            });
+            eval_tasks.push_back(task);
           } else {
             // Two moves result in the same position.
             HandleCollision();
           }
         }
-        eval_queue_->enqueue_bulk(ptok_, nodes_to_create_ptrs.data(),
-                                  nodes_to_create.size());
+        eval_queue_->enqueue_bulk(ptok_, eval_tasks.data(), eval_tasks.size());
       }
     }
   }

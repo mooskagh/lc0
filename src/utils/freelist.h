@@ -49,12 +49,13 @@ class FreeList {
   Node* head_ = nullptr;
 
   void AddNewBlock() {
-    buffers_.push_back(std::make_unique<Block>());
+    auto new_block = std::make_unique<Block>();
     for (size_t i = 0; i < BlockSize; ++i) {
       Node* current = std::addressof(new_block->nodes[BlockSize - 1 - i]);
       current->next = head_;
       head_ = current;
     }
+    buffers_.push_back(std::move(new_block));
   }
 };
 

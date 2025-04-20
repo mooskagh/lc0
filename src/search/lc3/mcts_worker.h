@@ -5,6 +5,7 @@
 #include "search/lc3/storage.h"
 #include "search/lc3/treedata.h"
 #include "search/lc3/types.h"
+#include "utils/freelist.h"
 
 namespace lczero {
 namespace lc3 {
@@ -23,6 +24,7 @@ class MctsWorker {
   std::unique_ptr<WorkTreeNode> root_;
   EvalQueue* const eval_queue_;
   moodycamel::ProducerToken ptok_{*eval_queue_};
+  FreeList<EvalTask, 1024> eval_task_pool_;
 };
 
 }  // namespace lc3
