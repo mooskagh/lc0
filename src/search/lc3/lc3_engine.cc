@@ -25,36 +25,15 @@
   Program grant you additional permission to convey the resulting work.
 */
 
-#include "search/lc3/mcts_worker.h"
+#include "search/lc3/lc3_engine.h"
+
 #include "search/lc3/positions.h"
 #include "search/lc3/session.h"
 #include "search/lc3/storage.h"
 #include "search/register.h"
-#include "search/search.h"
 
 namespace lczero {
 namespace lc3 {
-namespace {
-
-class Lc3Engine : public SearchBase {
- public:
-  using SearchBase::SearchBase;
-
-  void SetPosition(const GameState&) override;
-  void StartSearch(const GoParams& go_params) override;
-  void StartClock() override { TODO("Start clock"); }
-  void StopSearch() override { NotImplemented(); }
-  void AbortSearch() override;
-  void WaitSearch() override;
-
- private:
-  void EnsureSearchStopped();
-
-  std::unique_ptr<MctsWorker> search_;
-  NodeStorage storage_;
-  // The positions that already occurred in the game.
-  std::vector<PositionChain> position_history_;
-};
 
 void Lc3Engine::AbortSearch() {
   if (search_) search_->Abort();
@@ -82,6 +61,7 @@ void Lc3Engine::StartSearch(const GoParams& go_params) {
   search_->OneStep();
 }
 
+namespace {
 class Lc3Factory : public SearchFactory {
   std::string_view GetName() const override { return "lc3"; }
   std::unique_ptr<SearchBase> CreateSearch(UciResponder* responder,
