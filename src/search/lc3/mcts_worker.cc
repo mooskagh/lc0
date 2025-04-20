@@ -25,28 +25,38 @@ std::vector<size_t> DistributeVisits(size_t num_visits,
 void HandleCollision() { NotImplemented(); }
 void HandleTerminal() { NotImplemented(); }
 
+MctsWorker::MctsWorker(NodeStorage* storage, PositionChain head)
+    : storage_(storage),
+      root_(std::make_unique<WorkTreeNode>(
+          /*parent=*/nullptr,
+          /*position=*/head,
+          /*index_in_parent=*/-1)) {}
+
 void MctsWorker::GatherDescent(size_t target_batch_size) {
-  size_t queue_ptr = 0;
-  work_tree_nodes_.clear();
-  work_tree_nodes_.emplace_back(
-      /*parent_id=*/WorkTreeNode::kNoParent,
-      /*position=*/head_,
-      /*batch_size=*/target_batch_size);
+  struct NodeAndBatch {
+    WorkTreeNode* node_id;
+    size_t batch_size;
+  };
+  std::vector<NodeAndBatch> work_queue(1, NodeAndBatch{
+                                              .node_id = root_.get(),
+                                              .batch_size = target_batch_size,
+                                          });
+  std::vector<NodeAndBatch> next_iter_work_queue;
 
   for (size_t depth = 0;; ++depth) {
-    const size_t queue_head = work_tree_nodes_.size();
-    if (queue_ptr >= queue_head) break;
+    if (work_queue.empty()) break;
+    next_iter_work_queue.clear();
 
-    std::vector<size_t> nodes_to_create;
+    std::vector<NodeAndBatch> nodes_to_create;
     // Fetch nodes from the storage.
     {
       UpdateLock lock = storage_->GetUpdateLock();
-      for (; queue_ptr < queue_head; ++queue_ptr) {
-        WorkTreeNode& item = work_tree_nodes_[queue_ptr];
-        const NodeHash node_hash = item.position.hash;
+      for (NodeAndBatch& item : work_queue) {
+        WorkTreeNode& node = *item.node_id;
+        const NodeHash node_hash = node.position.hash;
         std::optional<NodeUpdate> update = lock.Fetch(node_hash);
         if (!update) {
-          nodes_to_create.push_back(queue_ptr);
+          nodes_to_create.push_back(item);
           continue;
         }
         if (update->IsTerminal()) {
@@ -87,11 +97,17 @@ void MctsWorker::GatherDescent(size_t target_batch_size) {
         // Spawn new work items for the children.
         for (size_t i = 0; i < num_moves_to_fetch; ++i) {
           if (edge_visits[i] == 0) continue;
-          work_tree_nodes_.emplace_back(
-              /*parent_id=*/queue_ptr,
-              /*position=*/
-              PositionChain::FromMove(&item.position, moves[i]),
-              /*batch_size=*/target_batch_size);
+          if (!node.children[i]) {
+            node.children[i] = std::make_unique<WorkTreeNode>(
+                /*parent=*/&node,
+                /*position=*/
+                PositionChain::FromMove(&node.position, moves[i]),
+                /*index_in_parent=*/i);
+          }
+          next_iter_work_queue.push_back(NodeAndBatch{
+              .node_id = node.children[i].get(),
+              .batch_size = edge_visits[i],
+          });
         }
       }
 
