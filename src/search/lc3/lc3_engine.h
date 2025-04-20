@@ -1,8 +1,9 @@
 #pragma once
 
 #include "search/lc3/mcts_worker.h"
-#include "search/search.h"
+#include "search/lc3/session.h"
 #include "search/lc3/types.h"
+#include "search/search.h"
 
 namespace lczero {
 namespace lc3 {
@@ -21,11 +22,10 @@ class Lc3Engine : public SearchBase {
  private:
   void EnsureSearchStopped();
 
-  std::unique_ptr<MctsWorker> search_;
+  std::unique_ptr<SearchSession> search_;
   NodeStorage storage_;
   // The positions that already occurred in the game.
   std::vector<PositionChain> position_history_;
-  EvalQueue eval_queue_;
 };
 
 }  // namespace lc3

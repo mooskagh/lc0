@@ -18,8 +18,6 @@ class MctsWorker {
 
   void GatherDescent(size_t target_batch_size);
 
-  void OneStep() { GatherDescent(256); }
-
  private:
   NodeStorage* const storage_;
   std::unique_ptr<WorkTreeNode> root_;
