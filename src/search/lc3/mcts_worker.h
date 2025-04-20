@@ -11,7 +11,7 @@ namespace lc3 {
 
 class MctsWorker {
  public:
-  MctsWorker(NodeStorage* storage, PositionChain head, EvalQueue* eval_queue);
+  MctsWorker(EvalQueue* eval_queue, NodeStorage* storage, PositionChain head);
 
   void Abort() { TODO(); }
   void Wait() { TODO(); }

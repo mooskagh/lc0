@@ -13,7 +13,7 @@ class Lc3Engine : public SearchBase {
   using SearchBase::SearchBase;
 
   void SetPosition(const GameState&) override;
-  void StartSearch(const GoParams& go_params) override;
+  void StartSearch(const GoParams&) override;
   void StartClock() override { TODO("Start clock"); }
   void StopSearch() override { NotImplemented(); }
   void AbortSearch() override;

@@ -28,7 +28,7 @@ class NodeUpdate {
   ~NodeUpdate();
   bool HasVisits() const { NotImplemented(); }
   bool IsTerminal() const { return data_->is_terminal; }
-  uint64_t IncrementN(int64_t n) { NotImplemented(); }
+  uint64_t IncrementN(int64_t) { NotImplemented(); }
   size_t FetchNumMoves() const { NotImplemented(); }
   size_t FetchNumMovesWithVisits() const { NotImplemented(); }
 
@@ -39,8 +39,8 @@ class NodeUpdate {
     std::span<uint64_t> n = {};
   };
 
-  void FetchEdgeData(EdgeDataRequest request) const { NotImplemented(); }
-  void UpdateEdgeN(std::span<const uint64_t> n) const { NotImplemented(); }
+  void FetchEdgeData(EdgeDataRequest) const { NotImplemented(); }
+  void UpdateEdgeN(std::span<const uint64_t>) const { NotImplemented(); }
 
  private:
   NodeUpdate(UpdateLock* lock, internal::NodeData* data);

@@ -39,8 +39,8 @@ struct EdgeInfos {
 void HandleCollision() { NotImplemented(); }
 void HandleTerminal() { NotImplemented(); }
 
-MctsWorker::MctsWorker(NodeStorage* storage, PositionChain head,
-                       EvalQueue* eval_queue)
+MctsWorker::MctsWorker(EvalQueue* eval_queue, NodeStorage* storage,
+                       PositionChain head)
     : storage_(storage),
       root_(std::make_unique<WorkTreeNode>(
           /*parent=*/nullptr,
@@ -96,17 +96,14 @@ void MctsWorker::GatherDescent(size_t target_batch_size) {
             .q = edge_infos.edge_Q,
             .n = edge_infos.edge_N,
         };
+        update->FetchEdgeData(request);
         std::vector<size_t> edge_visits =
             DistributeVisits(depth, new_n, edge_infos.edge_P, edge_infos.edge_Q,
                              edge_infos.edge_N);
-        for (size_t i = 0; i < num_moves_to_fetch; ++i) {
-          edge_infos.edge_N[i] += edge_visits[i];
-        }
-        update->UpdateEdgeN(edge_infos.edge_N);
-
         // Spawn new work items for the children.
         for (size_t i = 0; i < num_moves_to_fetch; ++i) {
           if (edge_visits[i] == 0) continue;
+          edge_infos.edge_N[i] += edge_visits[i];
           if (!node.children[i]) {
             node.children[i] = std::make_unique<WorkTreeNode>(
                 /*parent=*/&node,
@@ -119,6 +116,7 @@ void MctsWorker::GatherDescent(size_t target_batch_size) {
               .batch_size = edge_visits[i],
           });
         }
+        update->UpdateEdgeN(edge_infos.edge_N);
       }
 
       // Create new nodes for the work items that were not found in the storage.
