@@ -22,8 +22,13 @@ class MctsWorker {
  private:
   NodeStorage* const storage_;
   std::unique_ptr<WorkTreeNode> root_;
+
   EvalQueue* const eval_queue_;
   moodycamel::ProducerToken ptok_{*eval_queue_};
+
+  EvalQueue result_queue_;
+  moodycamel::ConsumerToken ctok_{result_queue_};
+
   FreeList<EvalTask, 1024> eval_task_pool_;
 };
 

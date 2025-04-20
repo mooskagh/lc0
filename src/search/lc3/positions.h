@@ -17,10 +17,15 @@ struct PositionChain {
   Position position{};
   const PositionChain* prev = nullptr;
 
+  int GetRepetitionCount() const { NotImplemented(); }
+
  private:
   PositionChain(NodeHash hash, Position position, const PositionChain* prev)
       : hash(hash), position(position), prev(prev) {}
 };
+
+size_t UnpackPositionsBackwards(const PositionChain& pos_chain,
+                                std::span<Position> positions);
 
 std::vector<PositionChain> GameStateToPositionChain(
     const GameState& game_state);

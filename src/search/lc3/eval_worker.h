@@ -1,5 +1,7 @@
 #pragma once
 
+#include <span>
+
 #include "neural/backend.h"
 #include "search/lc3/types.h"
 
@@ -20,11 +22,19 @@ class EvalWorker {
   void OneStep();
 
  private:
+  void NotifyEvalTaskDone(EvalTask* task) { NotImplemented(); }
+  void NotifyAllPendingTasksDone() { NotImplemented(); }
+
+  void Gather();
+  void EnqueueIncomingTasks(std::span<EvalTask*> tasks);
+
   EvalQueue* const eval_queue_ GUARDED_BY(queue_mutex_);
   moodycamel::ConsumerToken* const ctok_;
   absl::Mutex* const queue_mutex_;
 
   Backend* const backend_;
+  std::unique_ptr<BackendComputation> computation_;
+  std::vector<EvalTask*> tasks_to_notify_;
 };
 
 }  // namespace lc3
