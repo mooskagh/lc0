@@ -14,12 +14,27 @@ namespace lczero {
 namespace lc3 {
 
 namespace {
-std::vector<size_t> DistributeVisits(size_t num_visits,
+
+std::vector<size_t> DistributeVisits(size_t depth, size_t num_visits,
                                      std::span<const float> edge_P,
                                      std::span<const float> edge_Q,
                                      std::span<const uint64_t> edge_N) {
   NotImplemented();
 }
+
+struct EdgeInfos {
+  EdgeInfos(size_t num_edges)
+      : moves(num_edges),
+        edge_P(num_edges),
+        edge_Q(num_edges),
+        edge_N(num_edges) {}
+
+  InlineVector<Move> moves;
+  InlineVector<float> edge_P;
+  InlineVector<float> edge_Q;
+  InlineVector<uint64_t> edge_N;
+};
+
 }  // namespace
 
 void HandleCollision() { NotImplemented(); }
@@ -72,27 +87,21 @@ void MctsWorker::GatherDescent(size_t target_batch_size) {
         const size_t num_moves_with_visits = update->FetchNumMovesWithVisits();
         const size_t num_moves_to_fetch =
             std::min(num_moves, kExtraFetch + num_moves_with_visits);
-        InlineVector<Move> moves;
-        InlineVector<float> edge_P;
-        InlineVector<float> edge_Q;
-        InlineVector<uint64_t> edge_N;
 
-        moves.resize(num_moves_to_fetch);
-        edge_P.resize(num_moves_to_fetch);
-        edge_Q.resize(num_moves_to_fetch);
-        edge_N.resize(num_moves_to_fetch);
+        EdgeInfos edge_infos(num_moves_to_fetch);
         NodeUpdate::EdgeDataRequest request{
-            .moves = moves,
-            .p = edge_P,
-            .q = edge_Q,
-            .n = edge_N,
+            .moves = edge_infos.moves,
+            .p = edge_infos.edge_P,
+            .q = edge_infos.edge_Q,
+            .n = edge_infos.edge_N,
         };
         std::vector<size_t> edge_visits =
-            DistributeVisits(new_n, edge_P, edge_Q, edge_N);
+            DistributeVisits(depth, new_n, edge_infos.edge_P, edge_infos.edge_Q,
+                             edge_infos.edge_N);
         for (size_t i = 0; i < num_moves_to_fetch; ++i) {
-          edge_N[i] += edge_visits[i];
+          edge_infos.edge_N[i] += edge_visits[i];
         }
-        update->UpdateEdgeN(edge_N);
+        update->UpdateEdgeN(edge_infos.edge_N);
 
         // Spawn new work items for the children.
         for (size_t i = 0; i < num_moves_to_fetch; ++i) {
@@ -101,7 +110,7 @@ void MctsWorker::GatherDescent(size_t target_batch_size) {
             node.children[i] = std::make_unique<WorkTreeNode>(
                 /*parent=*/&node,
                 /*position=*/
-                PositionChain::FromMove(&node.position, moves[i]),
+                PositionChain::FromMove(&node.position, edge_infos.moves[i]),
                 /*index_in_parent=*/i);
           }
           next_iter_work_queue.push_back(NodeAndBatch{
