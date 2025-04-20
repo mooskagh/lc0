@@ -23,4 +23,8 @@ CreationLock CreationLock::FromUpdateLock(UpdateLock&& lock) {
   return CreationLock(lock.storage_);
 }
 
+bool CreationLock::Create(NodeHash node_hash) {
+  return storage_->nodes_.try_emplace(node_hash.hash).second;
+}
+
 }  // namespace lczero

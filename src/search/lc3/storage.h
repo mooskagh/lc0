@@ -18,14 +18,16 @@ struct NodeHash {
 };
 
 namespace internal {
-struct NodeData {};
+struct NodeData {
+  bool is_terminal = false;
+};
 }  // namespace internal
 
 class NodeUpdate {
  public:
   ~NodeUpdate();
   bool HasVisits() const { NotImplemented(); }
-  bool IsTerminal() const { NotImplemented(); }
+  bool IsTerminal() const { return data_->is_terminal; }
   uint64_t IncrementN(int64_t n) { NotImplemented(); }
   size_t FetchNumMoves() const { NotImplemented(); }
   size_t FetchNumMovesWithVisits() const { NotImplemented(); }
@@ -70,7 +72,7 @@ class CreationLock {
  public:
   static CreationLock FromUpdateLock(UpdateLock&& lock);
   // Creates "empty" node.
-  bool Create(NodeHash node_hash, size_t n_in_flight) { NotImplemented(); }
+  bool Create(NodeHash node_hash);
 
  private:
   CreationLock(NodeStorage* storage) : storage_(storage) {}
@@ -88,6 +90,7 @@ class NodeStorage {
   absl::flat_hash_map<uint64_t, internal::NodeData> nodes_;
   friend class UpdateLock;
   friend class NodeUpdate;
+  friend class CreationLock;
 };
 
 }  // namespace lczero

@@ -59,8 +59,8 @@ void MctsWorker::GatherDescent(size_t target_batch_size) {
                                           });
   std::vector<NodeAndBatch> next_iter_work_queue;
 
-  for (size_t depth = 0;; ++depth) {
-    if (work_queue.empty()) break;
+  for (size_t depth = 0; !work_queue.empty();
+       ++depth, next_iter_work_queue.swap(work_queue)) {
     next_iter_work_queue.clear();
 
     std::vector<NodeAndBatch> nodes_to_create;
@@ -128,8 +128,7 @@ void MctsWorker::GatherDescent(size_t target_batch_size) {
         std::vector<WorkTreeNode*> nodes_to_create_ptrs;
         nodes_to_create_ptrs.reserve(nodes_to_create.size());
         for (NodeAndBatch& item : nodes_to_create) {
-          if (create_lock.Create(item.node_id->position.hash,
-                                 item.batch_size)) {
+          if (create_lock.Create(item.node_id->position.hash)) {
             nodes_to_create_ptrs.push_back(item.node_id);
           } else {
             // Two moves result in the same position.
