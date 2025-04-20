@@ -12,7 +12,6 @@ using InlineVector = std::vector<T>;
 
 namespace lczero {
 namespace lc3 {
-
 namespace {
 
 std::vector<size_t> DistributeVisits(size_t depth, size_t num_visits,
@@ -40,12 +39,14 @@ struct EdgeInfos {
 void HandleCollision() { NotImplemented(); }
 void HandleTerminal() { NotImplemented(); }
 
-MctsWorker::MctsWorker(NodeStorage* storage, PositionChain head)
+MctsWorker::MctsWorker(NodeStorage* storage, PositionChain head,
+                       EvalQueue* eval_queue)
     : storage_(storage),
       root_(std::make_unique<WorkTreeNode>(
           /*parent=*/nullptr,
           /*position=*/head,
-          /*index_in_parent=*/-1)) {}
+          /*index_in_parent=*/-1)),
+      eval_queue_(eval_queue) {}
 
 void MctsWorker::GatherDescent(size_t target_batch_size) {
   struct NodeAndBatch {
@@ -124,7 +125,19 @@ void MctsWorker::GatherDescent(size_t target_batch_size) {
       if (!nodes_to_create.empty()) {
         CreationLock create_lock =
             CreationLock::FromUpdateLock(std::move(lock));
-        // Handle terminal
+        std::vector<WorkTreeNode*> nodes_to_create_ptrs;
+        nodes_to_create_ptrs.reserve(nodes_to_create.size());
+        for (NodeAndBatch& item : nodes_to_create) {
+          if (create_lock.Create(item.node_id->position.hash,
+                                 item.batch_size)) {
+            nodes_to_create_ptrs.push_back(item.node_id);
+          } else {
+            // Two moves result in the same position.
+            HandleCollision();
+          }
+        }
+        eval_queue_->enqueue_bulk(ptok_, nodes_to_create_ptrs.data(),
+                                  nodes_to_create.size());
       }
     }
   }

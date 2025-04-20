@@ -2,6 +2,7 @@
 
 #include "search/lc3/mcts_worker.h"
 #include "search/search.h"
+#include "search/lc3/types.h"
 
 namespace lczero {
 namespace lc3 {
@@ -24,6 +25,7 @@ class Lc3Engine : public SearchBase {
   NodeStorage storage_;
   // The positions that already occurred in the game.
   std::vector<PositionChain> position_history_;
+  EvalQueue eval_queue_;
 };
 
 }  // namespace lc3

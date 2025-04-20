@@ -1,6 +1,6 @@
 #pragma once
 
-#include "third_party/moodycamel/blockingconcurrentqueue.h"
+#include "search/lc3/types.h"
 
 namespace lczero {
 namespace lc3 {
@@ -10,7 +10,7 @@ struct WorkTreeNode;
 class EvalWorker {
  public:
  private:
-  moodycamel::BlockingConcurrentQueue<WorkTreeNode*>* task_queue_;
+  EvalQueue* const eval_queue_;
 };
 
 }  // namespace lc3

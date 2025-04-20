@@ -21,8 +21,6 @@ namespace internal {
 struct NodeData {};
 }  // namespace internal
 
-struct NodeCreate {};
-
 class NodeUpdate {
  public:
   ~NodeUpdate();
@@ -71,6 +69,8 @@ class UpdateLock {
 class CreationLock {
  public:
   static CreationLock FromUpdateLock(UpdateLock&& lock);
+  // Creates "empty" node.
+  bool Create(NodeHash node_hash, size_t n_in_flight) { NotImplemented(); }
 
  private:
   CreationLock(NodeStorage* storage) : storage_(storage) {}

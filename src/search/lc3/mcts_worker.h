@@ -4,13 +4,14 @@
 #include "search/lc3/positions.h"
 #include "search/lc3/storage.h"
 #include "search/lc3/treedata.h"
+#include "search/lc3/types.h"
 
 namespace lczero {
 namespace lc3 {
 
 class MctsWorker {
  public:
-  MctsWorker(NodeStorage* storage, PositionChain head);
+  MctsWorker(NodeStorage* storage, PositionChain head, EvalQueue* eval_queue);
 
   void Abort() { TODO(); }
   void Wait() { TODO(); }
@@ -20,8 +21,10 @@ class MctsWorker {
   void OneStep() { GatherDescent(256); }
 
  private:
-  NodeStorage* storage_;
+  NodeStorage* const storage_;
   std::unique_ptr<WorkTreeNode> root_;
+  EvalQueue* const eval_queue_;
+  moodycamel::ProducerToken ptok_{*eval_queue_};
 };
 
 }  // namespace lc3

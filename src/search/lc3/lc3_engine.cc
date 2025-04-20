@@ -57,7 +57,8 @@ void Lc3Engine::SetPosition(const GameState& game_state) {
 void Lc3Engine::StartSearch(const GoParams& go_params) {
   TODO("Do not ignore go_params");
   EnsureSearchStopped();
-  search_ = std::make_unique<MctsWorker>(&storage_, position_history_.back());
+  search_ = std::make_unique<MctsWorker>(&storage_, position_history_.back(),
+                                         &eval_queue_);
   search_->OneStep();
 }
 
