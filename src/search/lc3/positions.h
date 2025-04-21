@@ -17,7 +17,7 @@ struct PositionChain {
   Position position{};
   const PositionChain* prev = nullptr;
 
-  int GetRepetitionCount() const { NotImplemented(); }
+  int GetRepetitionCount() const;
 
  private:
   PositionChain(NodeHash hash, Position position, const PositionChain* prev)
@@ -39,6 +39,21 @@ struct PositionChain {
 
   return std::distance(positions.rbegin(), iter);
 }
+
+// TODO Move this too, maybe
+inline int PositionChain::GetRepetitionCount() const {
+  if (position.GetRule50Ply() < 4) return 0;
+  auto skip = [](const PositionChain* node, size_t count) {
+    for (; count > 0 && node; --count) node = node->prev;
+    return node;
+  };
+  int num_reps = 0;
+  for (const PositionChain* node = skip(this, 4); node; node = skip(node, 2)) {
+    if (node->position.GetBoard() == position.GetBoard()) ++num_reps;
+    if (node->position.GetRule50Ply() < 2) break;
+  }
+  return num_reps;
+};
 
 std::vector<PositionChain> GameStateToPositionChain(
     const GameState& game_state);
