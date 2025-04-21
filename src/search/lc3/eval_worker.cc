@@ -44,11 +44,12 @@ void EvalWorker::EnqueueIncomingTasks(std::span<EvalTask*> tasks) {
       NotifyEvalTaskDone(task);
       continue;
     }
-    tasks_to_notify_.push_back(task);
+    tasks_to_notify_[task->from_task_id].push_back(task);
   }
 }
 
 void EvalWorker::OneStep() {
+  tasks_to_notify_.resize(search_channels_->GetNumSourceTasks());
   computation_ = backend_->CreateComputation();
   Gather();
   computation_->ComputeBlocking();
@@ -80,6 +81,14 @@ void EvalWorker::Gather() {
         /*blocking=*/false);
     if (num_nodes == 0) break;
     EnqueueIncomingTasks(std::span(eval_tasks).subspan(0, num_nodes));
+  }
+}
+
+void EvalWorker::NotifyAllPendingTasksDone() {
+  for (size_t i = 0; i < tasks_to_notify_.size(); ++i) {
+    if (tasks_to_notify_[i].empty()) continue;
+    search_channels_->SendResults(eval_task_idx_, i, tasks_to_notify_[i]);
+    tasks_to_notify_[i].clear();
   }
 }
 

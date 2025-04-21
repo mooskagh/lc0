@@ -12,7 +12,7 @@ namespace lc3 {
 
 class MctsWorker {
  public:
-  MctsWorker(SearchChannels* search_channels, size_t worker_idx,
+  MctsWorker(SearchChannels* search_channels, size_t mcts_task_idx,
              NodeStorage* storage, PositionChain head);
 
   void Abort() { TODO(); }
@@ -25,7 +25,7 @@ class MctsWorker {
   std::unique_ptr<WorkTreeNode> root_;
 
   SearchChannels* const search_channels_;
-  const size_t worker_idx_;
+  const size_t mcts_task_idx_;
 
   FreeList<EvalTask, 1024> eval_task_pool_;
 };
