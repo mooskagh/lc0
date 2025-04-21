@@ -23,8 +23,12 @@ struct EvalTask {
 
 class SearchChannels {
  public:
+  SearchChannels(size_t size) { Resize(size); }
+
   void SendRequests(size_t task_idx, std::span<EvalTask*> tasks) {
-    NotImplemented();
+    assert(task_idx < request_producer_tokens_.size());
+    request_queue_.enqueue_bulk(request_producer_tokens_[task_idx],
+                                tasks.data(), tasks.size());
   }
   size_t FetchRequests(std::span<EvalTask*> tasks, bool block)
       REQUIRES(request_consumer_mutex_) {
@@ -36,12 +40,26 @@ class SearchChannels {
   }
   size_t FetchResults(std::span<EvalTask*>, bool block) { NotImplemented(); }
 
+  void Resize(size_t count) {
+    if (request_producer_tokens_.size() > count) {
+      request_producer_tokens_.erase(
+          request_producer_tokens_.begin() + count,
+          request_producer_tokens_.end());
+    }
+    while (request_producer_tokens_.size() < count) {
+      request_producer_tokens_.emplace_back(request_queue_);
+    }
+  }
+
   // TODO public mutex is ugly.
   absl::Mutex request_consumer_mutex_;
 
  private:
   using EvalRequestQueue = moodycamel::BlockingConcurrentQueue<EvalTask*>;
   using EvalResultQueue = moodycamel::ConcurrentQueue<EvalTask*>;
+
+  EvalRequestQueue request_queue_;
+  std::vector<moodycamel::ProducerToken> request_producer_tokens_;
 };
 
 }  // namespace lc3

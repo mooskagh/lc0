@@ -1,10 +1,10 @@
 #pragma once
 
 #include "chess/position.h"
+#include "search/lc3/channels.h"
 #include "search/lc3/positions.h"
 #include "search/lc3/storage.h"
 #include "search/lc3/treedata.h"
-#include "search/lc3/types.h"
 #include "utils/freelist.h"
 
 namespace lczero {

@@ -3,7 +3,7 @@
 #include <span>
 
 #include "neural/backend.h"
-#include "search/lc3/types.h"
+#include "search/lc3/channels.h"
 
 namespace lczero {
 namespace lc3 {

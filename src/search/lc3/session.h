@@ -13,7 +13,8 @@ namespace lc3 {
 class SearchSession {
  public:
   SearchSession(NodeStorage* storage, PositionChain head, Backend* backend)
-      : mcts_worker_(
+      : search_channels_(1),  // TODO: make this configurable
+        mcts_worker_(
             std::make_unique<MctsWorker>(&search_channels_, 0, storage, head)),
         eval_worker_(std::make_unique<EvalWorker>(&search_channels_, backend)) {
   }

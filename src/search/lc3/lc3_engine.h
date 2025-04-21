@@ -2,7 +2,6 @@
 
 #include "search/lc3/mcts_worker.h"
 #include "search/lc3/session.h"
-#include "search/lc3/types.h"
 #include "search/search.h"
 
 namespace lczero {
