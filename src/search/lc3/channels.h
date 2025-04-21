@@ -32,7 +32,13 @@ class SearchChannels {
   }
   size_t FetchRequests(std::span<EvalTask*> tasks, bool block)
       REQUIRES(request_consumer_mutex_) {
-    NotImplemented();
+    if (block) {
+      return request_queue_.wait_dequeue_bulk(request_consumer_token_,
+                                              tasks.data(), tasks.size());
+    } else {
+      return request_queue_.try_dequeue_bulk(request_consumer_token_,
+                                             tasks.data(), tasks.size());
+    }
   }
   void SendResult(size_t to_task_idx, EvalTask* task) { NotImplemented(); }
   void SendResults(size_t to_task_idx, std::span<EvalTask*> tasks) {
@@ -42,9 +48,8 @@ class SearchChannels {
 
   void Resize(size_t count) {
     if (request_producer_tokens_.size() > count) {
-      request_producer_tokens_.erase(
-          request_producer_tokens_.begin() + count,
-          request_producer_tokens_.end());
+      request_producer_tokens_.erase(request_producer_tokens_.begin() + count,
+                                     request_producer_tokens_.end());
     }
     while (request_producer_tokens_.size() < count) {
       request_producer_tokens_.emplace_back(request_queue_);
@@ -60,6 +65,7 @@ class SearchChannels {
 
   EvalRequestQueue request_queue_;
   std::vector<moodycamel::ProducerToken> request_producer_tokens_;
+  moodycamel::ConsumerToken request_consumer_token_{request_queue_};
 };
 
 }  // namespace lc3
