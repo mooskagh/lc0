@@ -24,8 +24,21 @@ struct PositionChain {
       : hash(hash), position(position), prev(prev) {}
 };
 
-size_t UnpackPositionsBackwards(const PositionChain& pos_chain,
-                                std::span<Position> positions);
+// TODO Move this function somewhere else.
+[[nodiscard]] inline size_t UnpackPositionsBackwards(
+    const PositionChain& pos_chain, std::span<Position> positions) {
+  const PositionChain* cur_node = &pos_chain;
+  auto iter = positions.rbegin();
+  const auto end = positions.rend();
+
+  while (iter != end && cur_node != nullptr) {
+    *iter = cur_node->position;
+    cur_node = cur_node->prev;
+    ++iter;
+  }
+
+  return std::distance(positions.rbegin(), iter);
+}
 
 std::vector<PositionChain> GameStateToPositionChain(
     const GameState& game_state);

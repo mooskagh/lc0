@@ -49,7 +49,7 @@ void EvalWorker::EnqueueIncomingTasks(std::span<EvalTask*> tasks) {
 }
 
 void EvalWorker::OneStep() {
-  auto computation_ = backend_->CreateComputation();
+  computation_ = backend_->CreateComputation();
   Gather();
   computation_->ComputeBlocking();
   NotifyAllPendingTasksDone();
