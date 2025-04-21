@@ -13,9 +13,10 @@ namespace lc3 {
 class SearchSession {
  public:
   SearchSession(NodeStorage* storage, PositionChain head, Backend* backend)
-      : mcts_worker_(std::make_unique<MctsWorker>(&eval_queue_, storage, head)),
-        eval_worker_(std::make_unique<EvalWorker>(&eval_queue_, &ctok_,
-                                                  &consumer_mutex_, backend)) {}
+      : mcts_worker_(
+            std::make_unique<MctsWorker>(&search_channels_, 0, storage, head)),
+        eval_worker_(std::make_unique<EvalWorker>(&search_channels_, backend)) {
+  }
 
   void Abort() { NotImplemented(); }
   void Wait() { NotImplemented(); }
@@ -25,10 +26,7 @@ class SearchSession {
   }
 
  private:
-  EvalQueue eval_queue_;
-  moodycamel::ConsumerToken ctok_{eval_queue_};
-  absl::Mutex consumer_mutex_;
-
+  SearchChannels search_channels_;
   std::unique_ptr<MctsWorker> mcts_worker_;
   std::unique_ptr<EvalWorker> eval_worker_;
 };

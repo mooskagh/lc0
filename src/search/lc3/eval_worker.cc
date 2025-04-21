@@ -58,23 +58,26 @@ void EvalWorker::OneStep() {
 void EvalWorker::Gather() {
   const size_t recommended_batch_size =
       backend_->GetAttributes().recommended_batch_size;
-  absl::MutexLock lock(queue_mutex_);
+  absl::MutexLock lock(&search_channels_->request_consumer_mutex_);
   // TODO replace with unique_ptr[]
   std::vector<EvalTask*> eval_tasks(recommended_batch_size);
 
   // While we have nothing to compute, wait blockingly.
   while (computation_->UsedBatchSize() == 0) {
-    size_t num_nodes = eval_queue_->wait_dequeue_bulk(
-        *ctok_, eval_tasks.begin(), recommended_batch_size);
+    size_t num_nodes = search_channels_->FetchRequests(
+        std::span<EvalTask*>(eval_tasks.data(), recommended_batch_size),
+        /*blocking=*/true);
     EnqueueIncomingTasks(std::span(eval_tasks).subspan(0, num_nodes));
   }
 
   // Now we have something to compute, but if we still have capacity, check if
   // there's more.
   while (computation_->UsedBatchSize() < recommended_batch_size) {
-    size_t num_nodes = eval_queue_->try_dequeue_bulk(
-        *ctok_, eval_tasks.begin(),
-        recommended_batch_size - computation_->UsedBatchSize());
+    size_t num_nodes = search_channels_->FetchRequests(
+        std::span<EvalTask*>(
+            eval_tasks.data(),
+            recommended_batch_size - computation_->UsedBatchSize()),
+        /*blocking=*/false);
     if (num_nodes == 0) break;
     EnqueueIncomingTasks(std::span(eval_tasks).subspan(0, num_nodes));
   }

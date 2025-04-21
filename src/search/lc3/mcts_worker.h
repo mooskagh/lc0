@@ -12,7 +12,8 @@ namespace lc3 {
 
 class MctsWorker {
  public:
-  MctsWorker(EvalQueue* eval_queue, NodeStorage* storage, PositionChain head);
+  MctsWorker(SearchChannels* search_channels, size_t worker_idx,
+             NodeStorage* storage, PositionChain head);
 
   void Abort() { TODO(); }
   void Wait() { TODO(); }
@@ -23,11 +24,8 @@ class MctsWorker {
   NodeStorage* const storage_;
   std::unique_ptr<WorkTreeNode> root_;
 
-  EvalQueue* const eval_queue_;
-  moodycamel::ProducerToken ptok_{*eval_queue_};
-
-  EvalQueue result_queue_;
-  moodycamel::ConsumerToken ctok_{result_queue_};
+  SearchChannels* const search_channels_;
+  const size_t worker_idx_;
 
   FreeList<EvalTask, 1024> eval_task_pool_;
 };

@@ -2,11 +2,13 @@
 
 #include "search/lc3/treedata.h"
 #include "third_party/moodycamel/blockingconcurrentqueue.h"
+#include "third_party/moodycamel/concurrentqueue.h"
 
 namespace lczero {
 namespace lc3 {
 
 struct EvalTask {
+  size_t from_task_id;
   WorkTreeNode* pending_node;
   size_t num_visits;
 
@@ -19,7 +21,28 @@ struct EvalTask {
   std::vector<float> p;
 };
 
-using EvalQueue = moodycamel::BlockingConcurrentQueue<EvalTask*>;
+class SearchChannels {
+ public:
+  void SendRequests(size_t task_idx, std::span<EvalTask*> tasks) {
+    NotImplemented();
+  }
+  size_t FetchRequests(std::span<EvalTask*> tasks, bool block)
+      REQUIRES(request_consumer_mutex_) {
+    NotImplemented();
+  }
+  void SendResult(size_t to_task_idx, EvalTask* task) { NotImplemented(); }
+  void SendResults(size_t to_task_idx, std::span<EvalTask*> tasks) {
+    NotImplemented();
+  }
+  size_t FetchResults(std::span<EvalTask*>, bool block) { NotImplemented(); }
+
+  // TODO public mutex is ugly.
+  absl::Mutex request_consumer_mutex_;
+
+ private:
+  using EvalRequestQueue = moodycamel::BlockingConcurrentQueue<EvalTask*>;
+  using EvalResultQueue = moodycamel::ConcurrentQueue<EvalTask*>;
+};
 
 }  // namespace lc3
 }  // namespace lczero

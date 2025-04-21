@@ -39,14 +39,15 @@ struct EdgeInfos {
 void HandleCollision() { NotImplemented(); }
 void HandleTerminal() { NotImplemented(); }
 
-MctsWorker::MctsWorker(EvalQueue* eval_queue, NodeStorage* storage,
-                       PositionChain head)
+MctsWorker::MctsWorker(SearchChannels* search_channels, size_t worker_idx,
+                       NodeStorage* storage, PositionChain head)
     : storage_(storage),
       root_(std::make_unique<WorkTreeNode>(
           /*parent=*/nullptr,
           /*position=*/head,
           /*index_in_parent=*/-1)),
-      eval_queue_(eval_queue) {}
+      search_channels_(search_channels),
+      worker_idx_(worker_idx) {}
 
 void MctsWorker::GatherDescent(size_t target_batch_size) {
   struct NodeAndBatch {
@@ -128,6 +129,7 @@ void MctsWorker::GatherDescent(size_t target_batch_size) {
         for (NodeAndBatch& item : nodes_to_create) {
           if (create_lock.Create(item.node_id->position.hash)) {
             EvalTask* task = eval_task_pool_.New(EvalTask{
+                .from_task_id = worker_idx_,
                 .pending_node = item.node_id,
                 .num_visits = item.batch_size,
             });
@@ -137,7 +139,7 @@ void MctsWorker::GatherDescent(size_t target_batch_size) {
             HandleCollision();
           }
         }
-        eval_queue_->enqueue_bulk(ptok_, eval_tasks.data(), eval_tasks.size());
+        search_channels_->SendRequests(worker_idx_, eval_tasks);
       }
     }
   }

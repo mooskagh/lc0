@@ -12,12 +12,8 @@ struct WorkTreeNode;
 
 class EvalWorker {
  public:
-  EvalWorker(EvalQueue* eval_queue, moodycamel::ConsumerToken* ctok,
-             absl::Mutex* queue_mutex, Backend* backend)
-      : eval_queue_(eval_queue),
-        ctok_(ctok),
-        queue_mutex_(queue_mutex),
-        backend_(backend) {}
+  EvalWorker(SearchChannels* search_channels, Backend* backend)
+      : search_channels_(search_channels), backend_(backend) {}
 
   void OneStep();
 
@@ -28,9 +24,7 @@ class EvalWorker {
   void Gather();
   void EnqueueIncomingTasks(std::span<EvalTask*> tasks);
 
-  EvalQueue* const eval_queue_ GUARDED_BY(queue_mutex_);
-  moodycamel::ConsumerToken* const ctok_;
-  absl::Mutex* const queue_mutex_;
+  SearchChannels* const search_channels_;
 
   Backend* const backend_;
   std::unique_ptr<BackendComputation> computation_;
