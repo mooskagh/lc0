@@ -49,7 +49,7 @@ void EvalWorker::EnqueueIncomingTasks(std::span<EvalTask*> tasks) {
 }
 
 void EvalWorker::OneStep() {
-  tasks_to_notify_.resize(search_channels_->GetNumSourceTasks());
+  tasks_to_notify_.resize(search_channels_->GetNumMctsThreads());
   computation_ = backend_->CreateComputation();
   Gather();
   computation_->ComputeBlocking();

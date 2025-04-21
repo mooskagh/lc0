@@ -52,17 +52,23 @@ class SearchChannels {
   size_t FetchResults(std::span<EvalTask*>, bool block) { NotImplemented(); }
 
   void Resize(size_t num_mcts_threads, size_t num_eval_threads) {
-    if (request_producer_tokens_.size() > num_mcts_threads) {
-      request_producer_tokens_.erase(
-          request_producer_tokens_.begin() + num_mcts_threads,
-          request_producer_tokens_.end());
-    }
-    while (request_producer_tokens_.size() < num_mcts_threads) {
-      request_producer_tokens_.emplace_back(request_queue_);
+    auto resize = [](auto& vec, size_t size, auto&& initializer) {
+      if (vec.size() > size) vec.erase(vec.begin() + size, vec.end());
+      while (vec.size() < size) vec.emplace_back(initializer(vec.size()));
+    };
+    resize(request_producer_tokens_, num_mcts_threads, [this](size_t) {
+      return moodycamel::ProducerToken(request_queue_);
+    });
+    result_queues_.resize(num_mcts_threads);
+    result_producer_tokens_.resize(num_eval_threads);
+    for (auto& token_vec : result_producer_tokens_) {
+      resize(token_vec, num_mcts_threads, [&](size_t i) {
+        return moodycamel::ProducerToken(result_queues_[i]);
+      });
     }
   }
 
-  size_t GetNumSourceTasks() const { return request_producer_tokens_.size(); }
+  size_t GetNumMctsThreads() const { return request_producer_tokens_.size(); }
 
   // TODO public mutex is ugly.
   absl::Mutex request_consumer_mutex_;
@@ -76,6 +82,9 @@ class SearchChannels {
   moodycamel::ConsumerToken request_consumer_token_{request_queue_};
 
   std::vector<EvalResultQueue> result_queues_;
+  std::vector<moodycamel::ConsumerToken> result_consumer_tokens_;
+  // Outer vector is for each eval thread, inner vector is for each mcts thread.
+  std::vector<std::vector<moodycamel::ProducerToken>> result_producer_tokens_;
 };
 
 }  // namespace lc3
