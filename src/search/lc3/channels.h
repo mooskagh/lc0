@@ -47,7 +47,9 @@ class SearchChannels {
   }
   void SendResults(size_t eval_task_idx, size_t mcts_task_idx,
                    std::span<EvalTask*> tasks) {
-    NotImplemented();
+    result_queues_[mcts_task_idx].enqueue_bulk(
+        result_producer_tokens_[eval_task_idx][mcts_task_idx], tasks.data(),
+        tasks.size());
   }
   size_t FetchResults(std::span<EvalTask*>, bool block) { NotImplemented(); }
 
