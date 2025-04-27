@@ -34,6 +34,19 @@ class FreeList {
   }
 
  private:
+  union Node {
+    static constexpr size_t StorageSize = std::max(sizeof(T), sizeof(Node*));
+    static constexpr size_t StorageAlign = std::max(alignof(T), alignof(Node*));
+
+    alignas(StorageAlign) std::byte storage[StorageSize];
+    Node* next;
+  };
+
+  struct alignas(alignof(Node)) Block {
+    Node nodes[BlockSize];
+    std::atomic<size_t> next_node_index_{0};
+  };
+
   Node* Pop() noexcept {
     Node* current_head = head_.load(std::memory_order_acquire);
     while (current_head) {
@@ -85,20 +98,8 @@ class FreeList {
     return &new_block_raw->nodes[0];
   }
 
-  union Node {
-    static constexpr size_t StorageSize = std::max(sizeof(T), sizeof(Node*));
-    static constexpr size_t StorageAlign = std::max(alignof(T), alignof(Node*));
-
-    alignas(StorageAlign) std::byte storage[StorageSize];
-    Node* next;
-  };
-
-  struct alignas(alignof(Node)) Block {
-    Node nodes[BlockSize];
-    std::atomic<size_t> next_node_index_{0};
-  };
-
   std::atomic<Node*> head_{nullptr};
+  std::atomic<Block*> current_allocation_block_{nullptr};
   std::vector<std::unique_ptr<Block>> buffers_;  // absl REQUIRES(block_mutex_);
   std::mutex block_mutex_;
 };
