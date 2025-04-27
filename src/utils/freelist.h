@@ -16,11 +16,11 @@ class FreeList {
   FreeList& operator=(FreeList&&) = delete;
 
   template <typename... Args>
-  [[nodiscard]] T* New(Args&&... args) {
+  [[nodiscard]] T* Allocate(Args&&... args) {
     Node* node = Pop();
-    while (!node) {
-      AllocateNewBlock();
-      node = Pop();
+    if (!node) {
+      node = TryAllocateFromCurrentBlock();
+      if (!node) node = AllocateNewBlock();
     }
     T* obj_ptr = reinterpret_cast<T*>(node);
     ::new (obj_ptr) T(std::forward<Args>(args)...);
@@ -56,30 +56,33 @@ class FreeList {
                                           std::memory_order_acquire));
   }
 
-  void AllocateNewBlock() {
+  Node* TryAllocateFromCurrentBlock() noexcept {
+    Block* current_block =
+        current_allocation_block_.load(std::memory_order_acquire);
+    if (current_block) {
+      size_t index = current_block->block_local_next_node_index_.fetch_add(
+          1, std::memory_order_acq_rel);
+      if (index < BlockSize) return current_block->nodes[index];
+    }
+    return nullptr;
+  }
+
+  Node* AllocateNewBlock() {
+    std::lock_guard<std::mutex> lock(block_mutex_);
+    Block* current_block =
+        current_allocation_block_.load(std::memory_order_relaxed);
+    if (current_block) {
+      size_t index = current_block->block_local_next_node_index_.fetch_add(
+          1, std::memory_order_relaxed);
+      if (index < BlockSize) return current_block->nodes[index];
+    }
     auto new_block_ptr = std::make_unique<Block>();
-    Block* block_raw_ptr = new_block_ptr.get();
-
-    {
-      std::lock_guard<std::mutex> lock(block_mutex_);
-      if (head_.load(std::memory_order_relaxed) != nullptr) return;
-      buffers_.push_back(std::move(new_block_ptr));
-    }
-
-    Node* block_head = &block_raw_ptr->nodes[0];
-    Node* block_tail = &block_raw_ptr->nodes[BlockSize - 1];
-
-    for (size_t i = 0; i < BlockSize - 1; ++i) {
-      block_raw_ptr->nodes[i].next = &block_raw_ptr->nodes[i + 1];
-    }
-    block_raw_ptr->nodes[BlockSize - 1].next = nullptr;
-
-    Node* current_head = head_.load(std::memory_order_acquire);
-    do {
-      block_tail->next = current_head;
-    } while (!head_.compare_exchange_weak(current_head, block_head,
-                                          std::memory_order_release,
-                                          std::memory_order_acquire));
+    Block* new_block_raw = new_block_ptr.get();
+    buffers_.push_back(std::move(new_block_ptr));
+    new_block_raw->block_local_next_node_index_.store(
+        1, std::memory_order_relaxed);
+    current_allocation_block_.store(new_block_raw, std::memory_order_release);
+    return &new_block_raw->nodes[0];
   }
 
   union Node {
@@ -92,6 +95,7 @@ class FreeList {
 
   struct alignas(alignof(Node)) Block {
     Node nodes[BlockSize];
+    std::atomic<size_t> next_node_index_{0};
   };
 
   std::atomic<Node*> head_{nullptr};
