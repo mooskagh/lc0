@@ -5,26 +5,29 @@
 namespace lczero {
 namespace lc3 {
 
-PositionChain PositionChain::FromStartpos(const Position& pos) {
-  return PositionChain{NodeHash{pos.Hash()}, pos, nullptr};
+PositionTree::PositionTree(const Position& startpos)
+    : root_{NodeHash{startpos.Hash()}, startpos, nullptr, kNoIdxInParent, 1} {}
+
+Variation* PositionTree::MakeVariation(Variation* parent, Move move,
+                                       size_t idx_in_parent) {
+  assert(parent->ref_count_.load(std::memory_order_relaxed) > 0);
+  parent->ref_count_.fetch_add(1, std::memory_order_relaxed);
+  Variation* new_var = variation_pool_.Allocate(
+      /*hash=*/NodeHash{HashCat(parent->hash.hash, move.raw_data())},
+      /*position=*/Position(parent->position, move),
+      /*parent=*/parent,
+      /*idx_in_parent=*/idx_in_parent,
+      /*ref_count_=*/1);
+  return new_var;
 }
 
-PositionChain PositionChain::FromMove(const PositionChain* prev, Move move) {
-  return PositionChain{
-      NodeHash{NodeHash{HashCat(prev->hash.hash, move.raw_data())}},
-      Position(prev->position, move), prev};
-}
-
-std::vector<PositionChain> GameStateToPositionChain(
-    const GameState& game_state) {
-  std::vector<PositionChain> positions;
-  positions.reserve(game_state.moves.size() + 1);
-  positions.push_back(PositionChain::FromStartpos(game_state.startpos));
-  for (const auto& move : game_state.moves) {
-    positions.push_back(PositionChain::FromMove(&positions.back(), move));
+void PositionTree::ReleaseVariation(Variation* var) {
+  assert(var->ref_count_.load(std::memory_order_relaxed) > 0);
+  if (var->ref_count_.fetch_sub(1, std::memory_order_acq_rel) == 1) {
+    variation_pool_.Release(var);
   }
-  return positions;
 }
+
 
 }  // namespace lc3
 }  // namespace lczero

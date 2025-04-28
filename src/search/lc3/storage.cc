@@ -1,6 +1,7 @@
 #include "search/lc3/storage.h"
 
 namespace lczero {
+namespace lc3 {
 
 UpdateLock NodeStorage::GetUpdateLock() { return UpdateLock(this); }
 
@@ -27,4 +28,5 @@ bool CreationLock::Create(NodeHash node_hash) {
   return storage_->nodes_.try_emplace(node_hash.hash).second;
 }
 
+}  // namespace lc3
 }  // namespace lczero

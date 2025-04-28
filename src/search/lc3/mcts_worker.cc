@@ -3,7 +3,11 @@
 #include <queue>
 #include <utility>
 
+#include "absl/cleanup/cleanup.h"
 #include "chess/gamestate.h"
+#include "search/lc3/channels.h"
+#include "search/lc3/positions.h"
+#include "search/lc3/storage.h"
 
 constexpr int kExtraFetch = 1;
 
@@ -14,10 +18,11 @@ namespace lczero {
 namespace lc3 {
 namespace {
 
-std::vector<size_t> DistributeVisits(size_t depth, size_t num_visits,
-                                     std::span<const float> edge_P,
-                                     std::span<const float> edge_Q,
-                                     std::span<const uint64_t> edge_N) {
+std::vector<size_t> DistributeVisits(size_t /* depth */,
+                                     size_t /* num_visits */,
+                                     std::span<const float> /* edge_P */,
+                                     std::span<const float> /* edge_Q */,
+                                     std::span<const uint64_t> /* edge_N */) {
   NotImplemented();
 }
 
@@ -39,43 +44,39 @@ struct EdgeInfos {
 void HandleCollision() { NotImplemented(); }
 void HandleTerminal() { NotImplemented(); }
 
-MctsWorker::MctsWorker(SearchChannels* search_channels, size_t mcts_task_idx,
-                       NodeStorage* storage, PositionChain head)
-    : storage_(storage),
-      root_(std::make_unique<WorkTreeNode>(
-          /*parent=*/nullptr,
-          /*position=*/head,
-          /*index_in_parent=*/-1)),
-      search_channels_(search_channels),
-      mcts_task_idx_(mcts_task_idx) {}
+MctsWorker::MctsWorker(const Context& context, size_t gather_task_idx)
+    : gather_task_idx_(gather_task_idx), ctx_(context) {}
 
 void MctsWorker::GatherDescent(size_t target_batch_size) {
   struct NodeAndBatch {
-    WorkTreeNode* node_id;
+    Variation* node;
     size_t batch_size;
   };
-  std::vector<NodeAndBatch> work_queue(1, NodeAndBatch{
-                                              .node_id = root_.get(),
-                                              .batch_size = target_batch_size,
-                                          });
+  std::vector<NodeAndBatch> work_queue(
+      1, NodeAndBatch{
+             .node = ctx_.position_tree->Clone(ctx_.head),
+             .batch_size = target_batch_size,
+         });
   std::vector<NodeAndBatch> next_iter_work_queue;
 
   for (size_t depth = 0; !work_queue.empty();
        ++depth, next_iter_work_queue.swap(work_queue)) {
+    // Work queue has variations that have to be owned or deleted.
     next_iter_work_queue.clear();
 
     std::vector<NodeAndBatch> nodes_to_create;
     // Fetch nodes from the storage.
     {
-      UpdateLock lock = storage_->GetUpdateLock();
+      UpdateLock lock = ctx_.storage->GetUpdateLock();
       for (NodeAndBatch& item : work_queue) {
-        WorkTreeNode& node = *item.node_id;
-        const NodeHash node_hash = node.position.hash;
-        std::optional<NodeUpdate> update = lock.Fetch(node_hash);
+        Variation* node = item.node;
+        std::optional<NodeUpdate> update = lock.Fetch(node->hash);
         if (!update) {
           nodes_to_create.push_back(item);
           continue;
         }
+        absl::Cleanup release_node(
+            [&]() { ctx_.position_tree->ReleaseVariation(node); });
         if (update->IsTerminal()) {
           HandleTerminal();
           continue;
@@ -84,7 +85,7 @@ void MctsWorker::GatherDescent(size_t target_batch_size) {
           HandleCollision();
           continue;
         }
-        const uint64_t new_n = update->IncrementN(item.batch_size);
+        const uint64_t node_n = update->GetN();
         const size_t num_moves = update->FetchNumMoves();
         const size_t num_moves_with_visits = update->FetchNumMovesWithVisits();
         const size_t num_moves_to_fetch =
@@ -99,21 +100,15 @@ void MctsWorker::GatherDescent(size_t target_batch_size) {
         };
         update->FetchEdgeData(request);
         std::vector<size_t> edge_visits =
-            DistributeVisits(depth, new_n, edge_infos.edge_P, edge_infos.edge_Q,
-                             edge_infos.edge_N);
+            DistributeVisits(depth, node_n, edge_infos.edge_P,
+                             edge_infos.edge_Q, edge_infos.edge_N);
         // Spawn new work items for the children.
         for (size_t i = 0; i < num_moves_to_fetch; ++i) {
-          if (edge_visits[i] == 0) continue;
           edge_infos.edge_N[i] += edge_visits[i];
-          if (!node.children[i]) {
-            node.children[i] = std::make_unique<WorkTreeNode>(
-                /*parent=*/&node,
-                /*position=*/
-                PositionChain::FromMove(&node.position, edge_infos.moves[i]),
-                /*index_in_parent=*/i);
-          }
+          Variation* new_variation = ctx_.position_tree->MakeVariation(
+              item.node, edge_infos.moves[i], /*idx_in_parent=*/i);
           next_iter_work_queue.push_back(NodeAndBatch{
-              .node_id = node.children[i].get(),
+              .node = new_variation,
               .batch_size = edge_visits[i],
           });
         }
@@ -127,19 +122,18 @@ void MctsWorker::GatherDescent(size_t target_batch_size) {
         std::vector<EvalTask*> eval_tasks;
         eval_tasks.reserve(nodes_to_create.size());
         for (NodeAndBatch& item : nodes_to_create) {
-          if (create_lock.Create(item.node_id->position.hash)) {
-            EvalTask* task = eval_task_pool_.New(EvalTask{
-                .from_task_id = mcts_task_idx_,
-                .pending_node = item.node_id,
-                .num_visits = item.batch_size,
-            });
+          if (create_lock.Create(item.node->hash)) {
+            EvalTask* task = ctx_.eval_task_pool->Allocate(
+                /*variation=*/item.node,
+                /*num_visits=*/item.batch_size);
             eval_tasks.push_back(task);
           } else {
             // Two moves result in the same position.
             HandleCollision();
+            ctx_.position_tree->ReleaseVariation(item.node);
           }
         }
-        search_channels_->SendRequests(mcts_task_idx_, eval_tasks);
+        ctx_.search_channels->SendEvalRequests(gather_task_idx_, eval_tasks);
       }
     }
   }

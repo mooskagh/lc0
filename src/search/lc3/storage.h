@@ -10,6 +10,7 @@
 #include "utils/exception.h"
 
 namespace lczero {
+namespace lc3 {
 
 class NodeStorage;
 class UpdateLock;
@@ -23,12 +24,20 @@ struct NodeData {
 };
 }  // namespace internal
 
+// NOtes:
+// - Node N doesn't include n_in_flight
+// - Edge N does ingluce n_in_flight
+// - Node Q is updated
+// - Edge Q is copied from node Q
+
+
 class NodeUpdate {
  public:
   ~NodeUpdate();
   bool HasVisits() const { NotImplemented(); }
   bool IsTerminal() const { return data_->is_terminal; }
-  uint64_t IncrementN(int64_t) { NotImplemented(); }
+  uint64_t GetN() const { NotImplemented(); }
+  // uint64_t IncrementN(int64_t) { NotImplemented(); }
   size_t FetchNumMoves() const { NotImplemented(); }
   size_t FetchNumMovesWithVisits() const { NotImplemented(); }
 
@@ -93,4 +102,5 @@ class NodeStorage {
   friend class CreationLock;
 };
 
+}  // namespace lc3
 }  // namespace lczero

@@ -73,9 +73,9 @@ class FreeList {
     Block* current_block =
         current_allocation_block_.load(std::memory_order_acquire);
     if (current_block) {
-      size_t index = current_block->block_local_next_node_index_.fetch_add(
+      size_t index = current_block->next_node_index_.fetch_add(
           1, std::memory_order_acq_rel);
-      if (index < BlockSize) return current_block->nodes[index];
+      if (index < BlockSize) return &current_block->nodes[index];
     }
     return nullptr;
   }
@@ -85,15 +85,14 @@ class FreeList {
     Block* current_block =
         current_allocation_block_.load(std::memory_order_relaxed);
     if (current_block) {
-      size_t index = current_block->block_local_next_node_index_.fetch_add(
+      size_t index = current_block->next_node_index_.fetch_add(
           1, std::memory_order_relaxed);
-      if (index < BlockSize) return current_block->nodes[index];
+      if (index < BlockSize) return &current_block->nodes[index];
     }
     auto new_block_ptr = std::make_unique<Block>();
     Block* new_block_raw = new_block_ptr.get();
     buffers_.push_back(std::move(new_block_ptr));
-    new_block_raw->block_local_next_node_index_.store(
-        1, std::memory_order_relaxed);
+    new_block_raw->next_node_index_.store(1, std::memory_order_relaxed);
     current_allocation_block_.store(new_block_raw, std::memory_order_release);
     return &new_block_raw->nodes[0];
   }

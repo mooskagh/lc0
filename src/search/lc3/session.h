@@ -5,6 +5,7 @@
 
 #include "search/lc3/eval_worker.h"
 #include "search/lc3/mcts_worker.h"
+#include "search/lc3/positions.h"
 #include "utils/exception.h"
 
 namespace lczero {
@@ -12,12 +13,26 @@ namespace lc3 {
 
 class SearchSession {
  public:
-  SearchSession(NodeStorage* storage, PositionChain head, Backend* backend)
-      : search_channels_(1, 1),  // TODO: make this configurable
-        mcts_worker_(
-            std::make_unique<MctsWorker>(&search_channels_, 0, storage, head)),
-        eval_worker_(
-            std::make_unique<EvalWorker>(&search_channels_, 0, backend)) {}
+  SearchSession(NodeStorage* storage, const GameState& game_state,
+                Backend* backend)
+      : position_tree_(game_state.startpos),
+        search_channels_(1, 1)  // TODO: make this configurable
+  {
+    Variation* head = position_tree_.GetRoot();
+    for (const auto& move : game_state.moves) {
+      head = position_tree_.MakeVariation(head, move, kNoIdxInParent);
+    }
+    Context context{
+        .storage = storage,
+        .position_tree = &position_tree_,
+        .search_channels = &search_channels_,
+        .head = head,
+        .eval_task_pool = nullptr,  // TODO: set this up
+    };
+    mcts_worker_ = std::make_unique<MctsWorker>(context, /*gather_task_idx=*/0);
+    eval_worker_ =
+        std::make_unique<EvalWorker>(context, /*eval_task_idx=*/0, backend);
+  }
 
   void Abort() { NotImplemented(); }
   void Wait() { NotImplemented(); }
@@ -27,6 +42,7 @@ class SearchSession {
   }
 
  private:
+  PositionTree position_tree_;
   SearchChannels search_channels_;
   std::unique_ptr<MctsWorker> mcts_worker_;
   std::unique_ptr<EvalWorker> eval_worker_;

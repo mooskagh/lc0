@@ -23,8 +23,7 @@ class Lc3Engine : public SearchBase {
 
   std::unique_ptr<SearchSession> search_;
   NodeStorage storage_;
-  // The positions that already occurred in the game.
-  std::vector<PositionChain> position_history_;
+  GameState game_state_;
 };
 
 }  // namespace lc3

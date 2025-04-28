@@ -5,35 +5,52 @@
 #include "chess/gamestate.h"
 #include "chess/position.h"
 #include "search/lc3/storage.h"
+#include "utils/freelist.h"
 
 namespace lczero {
 namespace lc3 {
 
-struct PositionChain {
-  static PositionChain FromStartpos(const Position& pos);
-  static PositionChain FromMove(const PositionChain* prev, Move move);
+constexpr size_t kNoIdxInParent = static_cast<size_t>(-1);
 
-  NodeHash hash{};
-  Position position{};
-  const PositionChain* prev = nullptr;
+struct Variation {
+  NodeHash hash;
+  Position position;
+  Variation* parent;
+  size_t idx_in_parent;
+  std::atomic<size_t> ref_count_;
 
-  int GetRepetitionCount() const;
+  Variation(NodeHash hash, Position position, Variation* parent,
+            size_t idx_in_parent, size_t ref_count)
+      : hash(hash),
+        position(std::move(position)),
+        parent(parent),
+        idx_in_parent(idx_in_parent),
+        ref_count_(ref_count) {}
+};
+
+class PositionTree {
+ public:
+  PositionTree(const Position& startpos);
+  Variation* GetRoot() { return &root_; }
+  Variation* MakeVariation(Variation* parent, Move move,
+                           size_t idx_in_parent /* = kNoIdxInParent */);
+  Variation* Clone(Variation* var);
+  void ReleaseVariation(Variation* var);
 
  private:
-  PositionChain(NodeHash hash, Position position, const PositionChain* prev)
-      : hash(hash), position(position), prev(prev) {}
+  Variation root_;
+  FreeList<Variation, 65536> variation_pool_;
 };
 
 // TODO Move this function somewhere else.
 [[nodiscard]] inline size_t UnpackPositionsBackwards(
-    const PositionChain& pos_chain, std::span<Position> positions) {
-  const PositionChain* cur_node = &pos_chain;
+    const Variation* variation, std::span<Position> positions) {
   auto iter = positions.rbegin();
   const auto end = positions.rend();
 
-  while (iter != end && cur_node != nullptr) {
-    *iter = cur_node->position;
-    cur_node = cur_node->prev;
+  while (iter != end && variation != nullptr) {
+    *iter = variation->position;
+    variation = variation->parent;
     ++iter;
   }
 
@@ -41,22 +58,19 @@ struct PositionChain {
 }
 
 // TODO Move this too, maybe
-inline int PositionChain::GetRepetitionCount() const {
-  if (position.GetRule50Ply() < 4) return 0;
-  auto skip = [](const PositionChain* node, size_t count) {
-    for (; count > 0 && node; --count) node = node->prev;
+inline int GetPositionRepetitionCount(const Variation* variation) {
+  if (variation->position.GetRule50Ply() < 4) return 0;
+  auto skip = [](const Variation* node, size_t count) {
+    for (; count > 0 && node; --count) node = node->parent;
     return node;
   };
   int num_reps = 0;
-  for (const PositionChain* node = skip(this, 4); node; node = skip(node, 2)) {
-    if (node->position.GetBoard() == position.GetBoard()) ++num_reps;
+  for (const Variation* node = skip(variation, 4); node; node = skip(node, 2)) {
+    if (node->position.GetBoard() == variation->position.GetBoard()) ++num_reps;
     if (node->position.GetRule50Ply() < 2) break;
   }
   return num_reps;
 };
-
-std::vector<PositionChain> GameStateToPositionChain(
-    const GameState& game_state);
 
 }  // namespace lc3
 }  // namespace lczero
