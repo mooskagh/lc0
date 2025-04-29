@@ -7,9 +7,9 @@
 namespace lczero {
 namespace lc3 {
 
-class MctsWorker {
+class MctsGatherWorker {
  public:
-  MctsWorker(const Context& context, size_t gather_task_idx);
+  MctsGatherWorker(const Context& context, size_t gather_task_idx);
 
   void Abort() { TODO(); }
   void Wait() { TODO(); }

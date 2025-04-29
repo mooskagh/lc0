@@ -1,4 +1,4 @@
-#include "search/lc3/mcts_worker.h"
+#include "search/lc3/gather_worker.h"
 
 #include <queue>
 #include <utility>
@@ -44,10 +44,11 @@ struct EdgeInfos {
 void HandleCollision() { NotImplemented(); }
 void HandleTerminal() { NotImplemented(); }
 
-MctsWorker::MctsWorker(const Context& context, size_t gather_task_idx)
+MctsGatherWorker::MctsGatherWorker(const Context& context,
+                                   size_t gather_task_idx)
     : gather_task_idx_(gather_task_idx), ctx_(context) {}
 
-void MctsWorker::GatherDescent(size_t target_batch_size) {
+void MctsGatherWorker::GatherDescent(size_t target_batch_size) {
   struct NodeAndBatch {
     Variation* node;
     size_t batch_size;

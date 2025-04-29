@@ -4,7 +4,7 @@
 #include <vector>
 
 #include "search/lc3/eval_worker.h"
-#include "search/lc3/mcts_worker.h"
+#include "search/lc3/gather_worker.h"
 #include "search/lc3/positions.h"
 #include "utils/exception.h"
 
@@ -29,7 +29,8 @@ class SearchSession {
         .head = head,
         .eval_task_pool = nullptr,  // TODO: set this up
     };
-    mcts_worker_ = std::make_unique<MctsWorker>(context, /*gather_task_idx=*/0);
+    mcts_worker_ =
+        std::make_unique<MctsGatherWorker>(context, /*gather_task_idx=*/0);
     eval_worker_ =
         std::make_unique<EvalWorker>(context, /*eval_task_idx=*/0, backend);
   }
@@ -44,7 +45,7 @@ class SearchSession {
  private:
   PositionTree position_tree_;
   SearchChannels search_channels_;
-  std::unique_ptr<MctsWorker> mcts_worker_;
+  std::unique_ptr<MctsGatherWorker> mcts_worker_;
   std::unique_ptr<EvalWorker> eval_worker_;
 };
 
