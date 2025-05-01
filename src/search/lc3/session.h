@@ -16,7 +16,7 @@ class SearchSession {
   SearchSession(NodeStorage* storage, const GameState& game_state,
                 Backend* backend)
       : position_tree_(game_state.startpos),
-        search_channels_(1, 1)  // TODO: make this configurable
+        search_channels_(1, 1, 1)  // TODO: make this configurable
   {
     Variation* head = position_tree_.GetRoot();
     for (const auto& move : game_state.moves) {

@@ -19,7 +19,7 @@ class EvalWorker {
 
  private:
   void SendCompletedEvalItem(EvalItem*) { NotImplemented(); }
-  void SendCompletedBatchItems() { NotImplemented(); }
+  void SendCompletedBatchItems();
 
   void Gather();
   void EnqueueIncomingTasks(std::span<EvalItem*> tasks);

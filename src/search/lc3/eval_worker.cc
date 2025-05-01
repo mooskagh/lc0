@@ -84,5 +84,11 @@ void EvalWorker::Gather() {
   }
 }
 
+void EvalWorker::SendCompletedBatchItems() {
+  ctx_.search_channels->SendEvalResults(eval_task_idx_,
+                                        std::span(batched_eval_items_));
+  batched_eval_items_.clear();
+}
+
 }  // namespace lc3
 }  // namespace lczero

@@ -32,23 +32,37 @@ void ResizeVector(Vec& vec, size_t size, Args&&... args) {
 
 class SearchChannels {
  public:
-  SearchChannels(size_t num_gather_threads, size_t num_eval_threads) {
-    ResizeVector(request_producer_tokens_, num_gather_threads, request_queue_);
+  SearchChannels(size_t num_gather_threads, size_t num_eval_threads,
+                 size_t num_backprop_threads) {
+    Resize(num_gather_threads, num_eval_threads, num_backprop_threads);
   }
-  void SendEvalRequests(size_t gather_task_idx, std::span<EvalItem*> tasks) {
+
+  void SendEvalRequests(size_t gather_task_idx, std::span<EvalItem*> items) {
     assert(gather_task_idx < request_producer_tokens_.size());
     request_queue_.enqueue_bulk(request_producer_tokens_[gather_task_idx],
-                                tasks.data(), tasks.size());
+                                items.data(), items.size());
   }
-  size_t FetchEvalRequests(std::span<EvalItem*> tasks, bool block)
+  size_t FetchEvalRequests(std::span<EvalItem*> items, bool block)
       REQUIRES(request_consumer_mutex_) {
     if (block) {
       return request_queue_.wait_dequeue_bulk(request_consumer_token_,
-                                              tasks.data(), tasks.size());
+                                              items.data(), items.size());
     } else {
       return request_queue_.try_dequeue_bulk(request_consumer_token_,
-                                             tasks.data(), tasks.size());
+                                             items.data(), items.size());
     }
+  }
+  void SendEvalResults(size_t eval_task_idx, std::span<EvalItem*> items) {
+    assert(eval_task_idx < result_producer_tokens_.size());
+    result_queue_.enqueue_bulk(result_producer_tokens_[eval_task_idx],
+                               items.data(), items.size());
+  }
+
+  void Resize(size_t num_gather_threads, size_t num_eval_threads,
+              size_t num_backprop_threads) {
+    ResizeVector(request_producer_tokens_, num_gather_threads, request_queue_);
+    ResizeVector(result_producer_tokens_, num_eval_threads, result_queue_);
+    ResizeVector(result_consumer_tokens_, num_backprop_threads, result_queue_);
   }
 
   // TODO public mutex is ugly.
@@ -61,6 +75,11 @@ class SearchChannels {
   EvalItemQueue request_queue_;
   moodycamel::ConsumerToken request_consumer_token_{request_queue_};
   std::vector<moodycamel::ProducerToken> request_producer_tokens_;
+
+  // Channel for sending from eval threads to backprop threads.
+  EvalItemQueue result_queue_;
+  std::vector<moodycamel::ProducerToken> result_producer_tokens_;
+  std::vector<moodycamel::ConsumerToken> result_consumer_tokens_;
 };
 
 // class SearchChannels {
