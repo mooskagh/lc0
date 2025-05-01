@@ -7,8 +7,8 @@
 namespace lczero {
 namespace lc3 {
 
-struct EvalTask {
-  EvalTask(Variation* variation, size_t num_visits)
+struct EvalItem {
+  EvalItem(Variation* variation, size_t num_visits)
       : variation(variation), num_visits(num_visits) {}
 
   // Input.
@@ -27,10 +27,10 @@ struct EvalTask {
 class SearchChannels {
  public:
   SearchChannels(size_t num_gather_threads, size_t num_eval_threads) {}
-  void SendEvalRequests(size_t gather_task_idx, std::span<EvalTask*> tasks) {
+  void SendEvalRequests(size_t gather_task_idx, std::span<EvalItem*> tasks) {
     NotImplemented();
   }
-  size_t FetchEvalRequests(std::span<EvalTask*> tasks, bool block)
+  size_t FetchEvalRequests(std::span<EvalItem*> tasks, bool block)
       REQUIRES(request_consumer_mutex_) {
     NotImplemented();
   }

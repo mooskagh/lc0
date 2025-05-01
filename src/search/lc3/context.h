@@ -14,16 +14,16 @@ class NodeStorage;
 class PositionTree;
 struct Variation;
 class SearchChannels;
-struct EvalTask;
+struct EvalItem;
 
-using EvalTaskPool = FreeList<EvalTask, 1024>;
+using EvalItemPool = FreeList<EvalItem, 1024>;
 
 struct Context {
   NodeStorage* storage;
   PositionTree* position_tree;
   SearchChannels* search_channels;
   Variation* head;
-  EvalTaskPool* eval_task_pool;
+  EvalItemPool* eval_item_pool;
 };
 
 }  // namespace lc3

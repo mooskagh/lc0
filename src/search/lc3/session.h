@@ -27,7 +27,7 @@ class SearchSession {
         .position_tree = &position_tree_,
         .search_channels = &search_channels_,
         .head = head,
-        .eval_task_pool = nullptr,  // TODO: set this up
+        .eval_item_pool = &eval_item_pool_,
     };
     mcts_worker_ =
         std::make_unique<MctsGatherWorker>(context, /*gather_task_idx=*/0);
@@ -47,6 +47,7 @@ class SearchSession {
   SearchChannels search_channels_;
   std::unique_ptr<MctsGatherWorker> mcts_worker_;
   std::unique_ptr<EvalWorker> eval_worker_;
+  EvalItemPool eval_item_pool_;
 };
 
 }  // namespace lc3

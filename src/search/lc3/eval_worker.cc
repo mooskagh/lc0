@@ -7,17 +7,17 @@
 namespace lczero {
 namespace lc3 {
 
-void EvalWorker::EnqueueIncomingTasks(std::span<EvalTask*> tasks) {
+void EvalWorker::EnqueueIncomingTasks(std::span<EvalItem*> tasks) {
   // TODO absl REQUIRES_MUTEX(queue_mutex_)
-  for (EvalTask* task : tasks) {
+  for (EvalItem* task : tasks) {
     const auto& board = task->variation->position.GetBoard();
     std::vector<Move> legal_moves = board.GenerateLegalMoves();
 
     // Handle terminals.
     if (legal_moves.empty()) {
       task->terminal_type = board.IsUnderCheck()
-                                ? EvalTask::TerminalType::kCheckmate
-                                : EvalTask::TerminalType::kDraw;
+                                ? EvalItem::TerminalType::kCheckmate
+                                : EvalItem::TerminalType::kDraw;
       NotifyEvalTaskDone(task);
       continue;
     }
@@ -25,7 +25,7 @@ void EvalWorker::EnqueueIncomingTasks(std::span<EvalTask*> tasks) {
         task->variation->position.GetRule50Ply() >= 100 ||
         GetPositionRepetitionCount(task->variation) >= 2) {
       // TODO have more proper handling of repetitions.
-      task->terminal_type = EvalTask::TerminalType::kDraw;
+      task->terminal_type = EvalItem::TerminalType::kDraw;
       NotifyEvalTaskDone(task);
       continue;
     }
@@ -61,12 +61,12 @@ void EvalWorker::Gather() {
       backend_->GetAttributes().recommended_batch_size;
   absl::MutexLock lock(&ctx_.search_channels->request_consumer_mutex_);
   // TODO replace with unique_ptr[]
-  std::vector<EvalTask*> eval_tasks(recommended_batch_size);
+  std::vector<EvalItem*> eval_tasks(recommended_batch_size);
 
   // While we have nothing to compute, wait blockingly.
   while (computation_->UsedBatchSize() == 0) {
     size_t num_nodes = ctx_.search_channels->FetchEvalRequests(
-        std::span<EvalTask*>(eval_tasks.data(), recommended_batch_size),
+        std::span<EvalItem*>(eval_tasks.data(), recommended_batch_size),
         /*blocking=*/true);
     EnqueueIncomingTasks(std::span(eval_tasks).subspan(0, num_nodes));
   }
@@ -75,7 +75,7 @@ void EvalWorker::Gather() {
   // there's more.
   while (computation_->UsedBatchSize() < recommended_batch_size) {
     size_t num_nodes = ctx_.search_channels->FetchEvalRequests(
-        std::span<EvalTask*>(
+        std::span<EvalItem*>(
             eval_tasks.data(),
             recommended_batch_size - computation_->UsedBatchSize()),
         /*blocking=*/false);

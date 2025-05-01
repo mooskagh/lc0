@@ -120,11 +120,11 @@ void MctsGatherWorker::GatherDescent(size_t target_batch_size) {
       if (!nodes_to_create.empty()) {
         CreationLock create_lock =
             CreationLock::FromUpdateLock(std::move(lock));
-        std::vector<EvalTask*> eval_tasks;
+        std::vector<EvalItem*> eval_tasks;
         eval_tasks.reserve(nodes_to_create.size());
         for (NodeAndBatch& item : nodes_to_create) {
           if (create_lock.Create(item.node->hash)) {
-            EvalTask* task = ctx_.eval_task_pool->Allocate(
+            EvalItem* task = ctx_.eval_item_pool->Allocate(
                 /*variation=*/item.node,
                 /*num_visits=*/item.batch_size);
             eval_tasks.push_back(task);
