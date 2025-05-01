@@ -28,6 +28,14 @@ void PositionTree::ReleaseVariation(Variation* var) {
   }
 }
 
+Variation* PositionTree::Clone(Variation* var) {
+  if (var->parent)
+    var->parent->ref_count_.fetch_add(1, std::memory_order_relaxed);
+  Variation* new_var =
+      variation_pool_.Allocate(var->hash, var->position, var->parent,
+                               var->idx_in_parent, /*ref_count_=*/1);
+  return new_var;
+}
 
 }  // namespace lc3
 }  // namespace lczero
