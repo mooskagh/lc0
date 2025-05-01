@@ -26,10 +26,14 @@ struct EvalTask {
 
 class SearchChannels {
  public:
-  SearchChannels(size_t num_gather_threads, size_t num_eval_threads);
-  void SendEvalRequests(size_t gather_task_idx, std::span<EvalTask*> tasks);
+  SearchChannels(size_t num_gather_threads, size_t num_eval_threads) {}
+  void SendEvalRequests(size_t gather_task_idx, std::span<EvalTask*> tasks) {
+    NotImplemented();
+  }
   size_t FetchEvalRequests(std::span<EvalTask*> tasks, bool block)
-      REQUIRES(request_consumer_mutex_);
+      REQUIRES(request_consumer_mutex_) {
+    NotImplemented();
+  }
 
   // TODO public mutex is ugly.
   absl::Mutex request_consumer_mutex_;

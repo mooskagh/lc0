@@ -19,7 +19,7 @@ class EvalWorker {
 
  private:
   void NotifyEvalTaskDone(EvalTask*) { NotImplemented(); }
-  void NotifyAllPendingTasksDone();
+  void NotifyAllPendingTasksDone() { NotImplemented(); }
 
   void Gather();
   void EnqueueIncomingTasks(std::span<EvalTask*> tasks);

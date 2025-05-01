@@ -34,7 +34,7 @@ class PositionTree {
   Variation* GetRoot() { return &root_; }
   Variation* MakeVariation(Variation* parent, Move move,
                            size_t idx_in_parent /* = kNoIdxInParent */);
-  Variation* Clone(Variation* var);
+  Variation* Clone(Variation* var) { NotImplemented(); }
   void ReleaseVariation(Variation* var);
 
  private:
