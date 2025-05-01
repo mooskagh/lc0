@@ -18,7 +18,7 @@ void EvalWorker::EnqueueIncomingTasks(std::span<EvalItem*> tasks) {
       task->terminal_type = board.IsUnderCheck()
                                 ? EvalItem::TerminalType::kCheckmate
                                 : EvalItem::TerminalType::kDraw;
-      NotifyEvalTaskDone(task);
+      SendCompletedEvalItem(task);
       continue;
     }
     if (!board.HasMatingMaterial() ||
@@ -26,7 +26,7 @@ void EvalWorker::EnqueueIncomingTasks(std::span<EvalItem*> tasks) {
         GetPositionRepetitionCount(task->variation) >= 2) {
       // TODO have more proper handling of repetitions.
       task->terminal_type = EvalItem::TerminalType::kDraw;
-      NotifyEvalTaskDone(task);
+      SendCompletedEvalItem(task);
       continue;
     }
 
@@ -42,10 +42,10 @@ void EvalWorker::EnqueueIncomingTasks(std::span<EvalItem*> tasks) {
         EvalResultPtr{
             .q = &task->q, .d = &task->d, .m = &task->m, .p = task->p});
     if (addinput_result == BackendComputation::FETCHED_IMMEDIATELY) {
-      NotifyEvalTaskDone(task);
+      SendCompletedEvalItem(task);
       continue;
     }
-    tasks_to_notify_after_computation_done_.push_back(task);
+    batched_eval_items_.push_back(task);
   }
 }
 
@@ -53,7 +53,7 @@ void EvalWorker::OneStep() {
   computation_ = backend_->CreateComputation();
   Gather();
   computation_->ComputeBlocking();
-  NotifyAllPendingTasksDone();
+  SendCompletedBatchItems();
 }
 
 void EvalWorker::Gather() {

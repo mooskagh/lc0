@@ -18,8 +18,8 @@ class EvalWorker {
   void OneStep();
 
  private:
-  void NotifyEvalTaskDone(EvalItem*) { NotImplemented(); }
-  void NotifyAllPendingTasksDone() { NotImplemented(); }
+  void SendCompletedEvalItem(EvalItem*) { NotImplemented(); }
+  void SendCompletedBatchItems() { NotImplemented(); }
 
   void Gather();
   void EnqueueIncomingTasks(std::span<EvalItem*> tasks);
@@ -29,7 +29,7 @@ class EvalWorker {
 
   Backend* const backend_;
   std::unique_ptr<BackendComputation> computation_;
-  std::vector<EvalItem*> tasks_to_notify_after_computation_done_;
+  std::vector<EvalItem*> batched_eval_items_;
 };
 
 }  // namespace lc3
