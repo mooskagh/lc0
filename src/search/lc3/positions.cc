@@ -6,7 +6,12 @@ namespace lczero {
 namespace lc3 {
 
 PositionTree::PositionTree(const Position& startpos)
-    : root_{NodeHash{startpos.Hash()}, startpos, nullptr, kNoIdxInParent, 1} {}
+    : root_{NodeHash{startpos.Hash()},
+            startpos,
+            /*depth=*/0,
+            /*parent=*/nullptr,
+            kNoIdxInParent,
+            /*ref_count=*/1} {}
 
 Variation* PositionTree::MakeVariation(Variation* parent, Move move,
                                        size_t idx_in_parent) {
@@ -15,6 +20,7 @@ Variation* PositionTree::MakeVariation(Variation* parent, Move move,
   Variation* new_var = variation_pool_.Allocate(
       /*hash=*/NodeHash{HashCat(parent->hash.hash, move.raw_data())},
       /*position=*/Position(parent->position, move),
+      /*depth=*/parent->depth + 1,
       /*parent=*/parent,
       /*idx_in_parent=*/idx_in_parent,
       /*ref_count_=*/1);
@@ -31,9 +37,9 @@ void PositionTree::ReleaseVariation(Variation* var) {
 Variation* PositionTree::Clone(Variation* var) {
   if (var->parent)
     var->parent->ref_count_.fetch_add(1, std::memory_order_relaxed);
-  Variation* new_var =
-      variation_pool_.Allocate(var->hash, var->position, var->parent,
-                               var->idx_in_parent, /*ref_count_=*/1);
+  Variation* new_var = variation_pool_.Allocate(
+      var->hash, var->position, var->depth, var->parent, var->idx_in_parent,
+      /*ref_count_=*/1);
   return new_var;
 }
 

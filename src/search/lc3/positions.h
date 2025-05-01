@@ -15,14 +15,16 @@ constexpr size_t kNoIdxInParent = static_cast<size_t>(-1);
 struct Variation {
   NodeHash hash;
   Position position;
+  size_t depth;
   Variation* parent;
   size_t idx_in_parent;
   std::atomic<size_t> ref_count_;
 
-  Variation(NodeHash hash, Position position, Variation* parent,
+  Variation(NodeHash hash, Position position, size_t depth, Variation* parent,
             size_t idx_in_parent, size_t ref_count)
       : hash(hash),
         position(std::move(position)),
+        depth(depth),
         parent(parent),
         idx_in_parent(idx_in_parent),
         ref_count_(ref_count) {}

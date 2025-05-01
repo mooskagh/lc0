@@ -3,6 +3,7 @@
 #include <memory>
 #include <vector>
 
+#include "search/lc3/backprop_worker.h"
 #include "search/lc3/eval_worker.h"
 #include "search/lc3/gather_worker.h"
 #include "search/lc3/positions.h"
@@ -16,7 +17,7 @@ class SearchSession {
   SearchSession(NodeStorage* storage, const GameState& game_state,
                 Backend* backend)
       : position_tree_(game_state.startpos),
-        search_channels_(1, 1, 1)  // TODO: make this configurable
+        search_channels_(1, 1)  // TODO: make this configurable
   {
     Variation* head = position_tree_.GetRoot();
     for (const auto& move : game_state.moves) {
@@ -33,6 +34,9 @@ class SearchSession {
         std::make_unique<MctsGatherWorker>(context, /*gather_task_idx=*/0);
     eval_worker_ =
         std::make_unique<EvalWorker>(context, /*eval_task_idx=*/0, backend);
+    backprop_worker_ =
+        std::make_unique<BackpropWorker>(context,
+                                         /*backprop_task_idx=*/0);
   }
 
   void Abort() { NotImplemented(); }
@@ -47,6 +51,7 @@ class SearchSession {
   SearchChannels search_channels_;
   std::unique_ptr<MctsGatherWorker> mcts_worker_;
   std::unique_ptr<EvalWorker> eval_worker_;
+  std::unique_ptr<BackpropWorker> backprop_worker_;
   EvalItemPool eval_item_pool_;
 };
 
