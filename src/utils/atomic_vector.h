@@ -66,8 +66,10 @@ class AtomicVector {
 
   // Not thread safe.
   void clear() {
-    for (size_t i = size_.load(std::memory_order_relaxed); i-- > 0;) {
-      reinterpret_cast<T*>(&data_[i])->~T();
+    if constexpr (!std::is_trivially_destructible_v<T>) {
+      for (size_t i = size_.load(std::memory_order_relaxed); i-- > 0;) {
+        reinterpret_cast<T*>(&data_[i])->~T();
+      }
     }
     size_.store(0, std::memory_order_relaxed);
   }

@@ -24,19 +24,43 @@ struct EvalItem {
   std::vector<float> p;
 };
 
+template <typename Vec, typename... Args>
+void ResizeVector(Vec& vec, size_t size, Args&&... args) {
+  if (vec.size() > size) vec.erase(vec.begin() + size, vec.end());
+  while (vec.size() < size) vec.emplace_back(std::forward<Args>(args)...);
+}
+
 class SearchChannels {
  public:
-  SearchChannels(size_t num_gather_threads, size_t num_eval_threads) {}
+  SearchChannels(size_t num_gather_threads, size_t num_eval_threads) {
+    ResizeVector(request_producer_tokens_, num_gather_threads, request_queue_);
+  }
   void SendEvalRequests(size_t gather_task_idx, std::span<EvalItem*> tasks) {
-    NotImplemented();
+    assert(gather_task_idx < request_producer_tokens_.size());
+    request_queue_.enqueue_bulk(request_producer_tokens_[gather_task_idx],
+                                tasks.data(), tasks.size());
   }
   size_t FetchEvalRequests(std::span<EvalItem*> tasks, bool block)
       REQUIRES(request_consumer_mutex_) {
-    NotImplemented();
+    if (block) {
+      return request_queue_.wait_dequeue_bulk(request_consumer_token_,
+                                              tasks.data(), tasks.size());
+    } else {
+      return request_queue_.try_dequeue_bulk(request_consumer_token_,
+                                             tasks.data(), tasks.size());
+    }
   }
 
   // TODO public mutex is ugly.
   absl::Mutex request_consumer_mutex_;
+
+ private:
+  using EvalItemQueue = moodycamel::BlockingConcurrentQueue<EvalItem*>;
+
+  // Channel for sending from gather threads to eval threads.
+  EvalItemQueue request_queue_;
+  moodycamel::ConsumerToken request_consumer_token_{request_queue_};
+  std::vector<moodycamel::ProducerToken> request_producer_tokens_;
 };
 
 // class SearchChannels {
