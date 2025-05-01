@@ -7,7 +7,11 @@ namespace lczero {
 
 template <typename T, size_t BlockSize>
 class FreeList {
+  class Deleter;
+
  public:
+  using Ptr = std::unique_ptr<T, Deleter>;
+
   FreeList() = default;
   ~FreeList() = default;
   FreeList(const FreeList&) = delete;
@@ -33,6 +37,12 @@ class FreeList {
     Push(node);
   }
 
+  template <typename... Args>
+  [[nodiscard]] Ptr Make(Args&&... args) {
+    T* raw_ptr = this->Allocate(std::forward<Args>(args)...);
+    return Ptr(raw_ptr, Deleter(this));
+  }
+
  private:
   union Node {
     static constexpr size_t StorageSize = std::max(sizeof(T), sizeof(Node*));
@@ -40,6 +50,25 @@ class FreeList {
 
     alignas(StorageAlign) std::byte storage[StorageSize];
     Node* next;
+  };
+
+  class Deleter {
+   public:
+    explicit Deleter(FreeList* list) noexcept : list_ptr_(list) {}
+
+    void operator()(T* p) const noexcept(noexcept(list_ptr_->Release(p))) {
+      if (p) list_ptr_->Release(p);
+    }
+
+    bool operator==(const Deleter& other) const noexcept {
+      return list_ptr_ == other.list_ptr_;
+    }
+    bool operator!=(const Deleter& other) const noexcept {
+      return !(*this == other);
+    }
+
+   private:
+    FreeList* list_ptr_;
   };
 
   struct alignas(alignof(Node)) Block {
