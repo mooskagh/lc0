@@ -18,9 +18,10 @@ struct EvalItem {
   // Result.
   enum class TerminalType { kNonTerminal, kCheckmate, kDraw };
   TerminalType terminal_type{TerminalType::kNonTerminal};
-  float q;
+  float v;
   float d;
   float m;
+  std::vector<Move> moves;
   std::vector<float> p;
 };
 

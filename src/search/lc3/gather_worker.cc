@@ -71,7 +71,7 @@ void MctsGatherWorker::GatherDescent(size_t target_batch_size) {
       UpdateLock lock = ctx_.storage->GetUpdateLock();
       for (NodeAndBatch& item : work_queue) {
         Variation* node = item.node;
-        std::optional<NodeUpdate> update = lock.Fetch(node->hash);
+        std::optional<NodeMutation> update = lock.Fetch(node->hash);
         if (!update) {
           nodes_to_create.push_back(item);
           continue;
@@ -93,7 +93,7 @@ void MctsGatherWorker::GatherDescent(size_t target_batch_size) {
             std::min(num_moves, kExtraFetch + num_moves_with_visits);
 
         EdgeInfos edge_infos(num_moves_to_fetch);
-        NodeUpdate::EdgeDataRequest request{
+        NodeMutation::EdgeDataRequest request{
             .moves = edge_infos.moves,
             .p = edge_infos.edge_P,
             .q = edge_infos.edge_Q,
@@ -113,7 +113,7 @@ void MctsGatherWorker::GatherDescent(size_t target_batch_size) {
               .batch_size = edge_visits[i],
           });
         }
-        update->UpdateEdgeN(edge_infos.edge_N);
+        update->IncrementEdgeN(edge_infos.edge_N);
       }
 
       // Create new nodes for the work items that were not found in the storage.

@@ -16,6 +16,7 @@ class NodeStorage;
 class UpdateLock;
 struct NodeHash {
   uint64_t hash;
+  bool operator==(const NodeHash& other) const = default;
 };
 
 namespace internal {
@@ -30,10 +31,16 @@ struct NodeData {
 // - Node Q is updated
 // - Edge Q is copied from node Q
 
+// TODO proper name and location
+struct EdgeUpdate {
+  size_t edge_idx;
+  int num_visits_to_decrement;
+  double q;
+};
 
-class NodeUpdate {
+class NodeMutation {
  public:
-  ~NodeUpdate();
+  ~NodeMutation();
   bool HasVisits() const { NotImplemented(); }
   bool IsTerminal() const { return data_->is_terminal; }
   uint64_t GetN() const { NotImplemented(); }
@@ -49,10 +56,17 @@ class NodeUpdate {
   };
 
   void FetchEdgeData(EdgeDataRequest) const { NotImplemented(); }
-  void UpdateEdgeN(std::span<const uint64_t>) const { NotImplemented(); }
+  void IncrementEdgeN(std::span<const uint64_t>) const { NotImplemented(); }
+  void SetEdgeData(std::span<const Move>, std::span<const float> p) {
+    NotImplemented();
+  }
+  void UpdateNodeData(int num_visits, float q, float d, float m) {
+    NotImplemented();
+  }
+  void UpdateEdgeData(std::span<const EdgeUpdate>) { NotImplemented(); }
 
  private:
-  NodeUpdate(UpdateLock* lock, internal::NodeData* data);
+  NodeMutation(UpdateLock* lock, internal::NodeData* data);
   UpdateLock* const lock_;
   internal::NodeData* const data_;
   friend class UpdateLock;
@@ -62,7 +76,7 @@ class NodeUpdate {
 class UpdateLock {
  public:
   // Returns nullopt if the node is not found.
-  std::optional<NodeUpdate> Fetch(NodeHash node);
+  std::optional<NodeMutation> Fetch(NodeHash node);
   ~UpdateLock();
 
  private:
@@ -72,7 +86,7 @@ class UpdateLock {
 #ifndef NDEBUG
   uint32_t ref_count_ = 0;  // For debugging only.
 #endif
-  friend class NodeUpdate;
+  friend class NodeMutation;
   friend class NodeStorage;
   friend class CreationLock;
 };
@@ -98,7 +112,7 @@ class NodeStorage {
  private:
   absl::flat_hash_map<uint64_t, internal::NodeData> nodes_;
   friend class UpdateLock;
-  friend class NodeUpdate;
+  friend class NodeMutation;
   friend class CreationLock;
 };
 

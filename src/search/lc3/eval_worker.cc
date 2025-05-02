@@ -11,10 +11,10 @@ void EvalWorker::EnqueueIncomingTasks(std::span<EvalItem*> tasks) {
   // TODO absl REQUIRES_MUTEX(queue_mutex_)
   for (EvalItem* task : tasks) {
     const auto& board = task->variation->position.GetBoard();
-    std::vector<Move> legal_moves = board.GenerateLegalMoves();
+    task->moves = board.GenerateLegalMoves();
 
     // Handle terminals.
-    if (legal_moves.empty()) {
+    if (task->moves.empty()) {
       task->terminal_type = board.IsUnderCheck()
                                 ? EvalItem::TerminalType::kCheckmate
                                 : EvalItem::TerminalType::kDraw;
@@ -31,16 +31,16 @@ void EvalWorker::EnqueueIncomingTasks(std::span<EvalItem*> tasks) {
     }
 
     // Attempt to call the backend.
-    task->p.resize(legal_moves.size());
+    task->p.resize(task->moves.size());
     std::array<Position, 8> positions;
     size_t num_positions = UnpackPositionsBackwards(task->variation, positions);
     const auto addinput_result = computation_->AddInput(
         EvalPosition{.pos = std::span<const Position>(
                          positions.begin() + (positions.size() - num_positions),
                          positions.end()),
-                     .legal_moves = legal_moves},
+                     .legal_moves = task->moves},
         EvalResultPtr{
-            .q = &task->q, .d = &task->d, .m = &task->m, .p = task->p});
+            .q = &task->v, .d = &task->d, .m = &task->m, .p = task->p});
     if (addinput_result == BackendComputation::FETCHED_IMMEDIATELY) {
       SendCompletedEvalItem(task);
       continue;
