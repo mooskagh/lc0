@@ -20,7 +20,7 @@ class FreeList {
   FreeList& operator=(FreeList&&) = delete;
 
   template <typename... Args>
-  [[nodiscard]] T* Allocate(Args&&... args) {
+  [[nodiscard]] T* AllocateRaw(Args&&... args) {
     Node* node = Pop();
     if (!node) {
       node = TryAllocateFromCurrentBlock();
@@ -31,7 +31,7 @@ class FreeList {
     return obj_ptr;
   }
 
-  void Release(T* p) noexcept(std::is_nothrow_destructible_v<T>) {
+  void ReleaseRaw(T* p) noexcept(std::is_nothrow_destructible_v<T>) {
     if constexpr (!std::is_trivially_destructible_v<T>) p->~T();
     Node* node = reinterpret_cast<Node*>(p);
     Push(node);
@@ -39,7 +39,7 @@ class FreeList {
 
   template <typename... Args>
   [[nodiscard]] Ptr Make(Args&&... args) {
-    T* raw_ptr = this->Allocate(std::forward<Args>(args)...);
+    T* raw_ptr = this->AllocateRaw(std::forward<Args>(args)...);
     return Ptr(raw_ptr, Deleter(this));
   }
 
@@ -56,8 +56,8 @@ class FreeList {
    public:
     explicit Deleter(FreeList* list) noexcept : list_ptr_(list) {}
 
-    void operator()(T* p) const noexcept(noexcept(list_ptr_->Release(p))) {
-      if (p) list_ptr_->Release(p);
+    void operator()(T* p) const noexcept(noexcept(list_ptr_->ReleaseRaw(p))) {
+      if (p) list_ptr_->ReleaseRaw(p);
     }
 
     bool operator==(const Deleter& other) const noexcept {
