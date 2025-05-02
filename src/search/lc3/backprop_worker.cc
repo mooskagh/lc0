@@ -82,6 +82,9 @@ void BackpropWorker::OneStep() {
             update_lock.Fetch(item->variation->hash);
         assert(update);
         update->SetEdgeData(item->moves, item->p);
+        if (item->terminal_type == EvalItem::TerminalType::kNonTerminal) {
+          NotImplemented();
+        }
         const size_t num_visits_to_apply =
             item->terminal_type == EvalItem::TerminalType::kNonTerminal
                 ? 1
