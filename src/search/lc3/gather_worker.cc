@@ -55,7 +55,7 @@ void MctsGatherWorker::GatherDescent(size_t target_batch_size) {
   };
   std::vector<NodeAndBatch> work_queue(
       1, NodeAndBatch{
-             .node = ctx_.position_tree->Clone(ctx_.head),
+             .node = ctx_.position_tree->CloneRaw(ctx_.head),
              .batch_size = target_batch_size,
          });
   std::vector<NodeAndBatch> next_iter_work_queue;
@@ -77,7 +77,7 @@ void MctsGatherWorker::GatherDescent(size_t target_batch_size) {
           continue;
         }
         absl::Cleanup release_node(
-            [&]() { ctx_.position_tree->ReleaseVariation(node); });
+            [&]() { ctx_.position_tree->ReleaseVariationRaw(node); });
         if (update->IsTerminal()) {
           HandleTerminal();
           continue;
@@ -106,7 +106,7 @@ void MctsGatherWorker::GatherDescent(size_t target_batch_size) {
         // Spawn new work items for the children.
         for (size_t i = 0; i < num_moves_to_fetch; ++i) {
           edge_infos.edge_N[i] += edge_visits[i];
-          Variation* new_variation = ctx_.position_tree->MakeVariation(
+          Variation* new_variation = ctx_.position_tree->MakeVariationRaw(
               item.node, edge_infos.moves[i], /*idx_in_parent=*/i);
           next_iter_work_queue.push_back(NodeAndBatch{
               .node = new_variation,
@@ -131,7 +131,7 @@ void MctsGatherWorker::GatherDescent(size_t target_batch_size) {
           } else {
             // Two moves result in the same position.
             HandleCollision();
-            ctx_.position_tree->ReleaseVariation(item.node);
+            ctx_.position_tree->ReleaseVariationRaw(item.node);
           }
         }
         ctx_.search_channels->SendEvalRequests(gather_task_idx_, eval_tasks);

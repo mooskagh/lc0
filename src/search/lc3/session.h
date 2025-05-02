@@ -19,9 +19,9 @@ class SearchSession {
       : position_tree_(game_state.startpos),
         search_channels_(1, 1)  // TODO: make this configurable
   {
-    Variation* head = position_tree_.GetRoot();
+    Variation* head = position_tree_.GetRootRaw();
     for (const auto& move : game_state.moves) {
-      head = position_tree_.MakeVariation(head, move, kNoIdxInParent);
+      head = position_tree_.MakeVariationRaw(head, move, kNoIdxInParent);
     }
     Context context{
         .storage = storage,

@@ -13,7 +13,7 @@ PositionTree::PositionTree(const Position& startpos)
             kNoIdxInParent,
             /*ref_count=*/1} {}
 
-Variation* PositionTree::MakeVariation(Variation* parent, Move move,
+Variation* PositionTree::MakeVariationRaw(Variation* parent, Move move,
                                        size_t idx_in_parent) {
   assert(parent->ref_count_.load(std::memory_order_relaxed) > 0);
   parent->ref_count_.fetch_add(1, std::memory_order_relaxed);
@@ -27,14 +27,14 @@ Variation* PositionTree::MakeVariation(Variation* parent, Move move,
   return new_var;
 }
 
-void PositionTree::ReleaseVariation(Variation* var) {
+void PositionTree::ReleaseVariationRaw(Variation* var) {
   assert(var->ref_count_.load(std::memory_order_relaxed) > 0);
   if (var->ref_count_.fetch_sub(1, std::memory_order_acq_rel) == 1) {
     variation_pool_.ReleaseRaw(var);
   }
 }
 
-Variation* PositionTree::Clone(Variation* var) {
+Variation* PositionTree::CloneRaw(Variation* var) {
   if (var->parent)
     var->parent->ref_count_.fetch_add(1, std::memory_order_relaxed);
   Variation* new_var = variation_pool_.AllocateRaw(
