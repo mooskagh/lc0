@@ -3,6 +3,8 @@
 #include <cstddef>
 #include <cstdint>
 
+#include "search/lc3/positions.h"
+
 namespace lczero {
 
 template <typename T, size_t N>
@@ -12,7 +14,6 @@ namespace lc3 {
 
 class NodeStorage;
 class PositionTree;
-struct Variation;
 class SearchChannels;
 struct EvalItem;
 
@@ -22,7 +23,7 @@ struct Context {
   NodeStorage* storage;
   PositionTree* position_tree;
   SearchChannels* search_channels;
-  Variation* head;
+  VariationPtr head;
   EvalItemPool* eval_item_pool;
 };
 

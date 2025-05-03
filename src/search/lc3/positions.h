@@ -50,7 +50,21 @@ class VariationPtr {
  public:
   VariationPtr() noexcept = default;
   ~VariationPtr() noexcept { reset(); }
-  VariationPtr(const VariationPtr& other) = delete;
+  VariationPtr(const VariationPtr& other)
+      : tree_(other.tree_),
+        variation_(other.variation_ ? tree_->CloneRaw(other.variation_)
+                                    : nullptr) {}
+
+  VariationPtr& operator=(const VariationPtr& other) {
+    if (this != &other) {
+      Variation* new_var =
+          other.variation_ ? other.tree_->CloneRaw(other.variation_) : nullptr;
+      reset();
+      tree_ = other.tree_;
+      variation_ = new_var;
+    }
+    return *this;
+  }
 
   VariationPtr(VariationPtr&& other) noexcept
       : tree_(other.tree_), variation_(other.variation_) {
@@ -67,11 +81,6 @@ class VariationPtr {
       other.variation_ = nullptr;
     }
     return *this;
-  }
-  VariationPtr Clone(const VariationPtr& other) {
-    if (!other) return VariationPtr();
-    Variation* new_var = other.tree_->CloneRaw(other.variation_);
-    return VariationPtr(other.tree_, new_var);
   }
 
   Variation& operator*() const noexcept { return *variation_; }

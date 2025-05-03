@@ -19,15 +19,15 @@ class SearchSession {
       : position_tree_(game_state.startpos),
         search_channels_(1, 1)  // TODO: make this configurable
   {
-    Variation* head = position_tree_.GetRootRaw();
+    VariationPtr head = position_tree_.GetRoot();  // Updated to use GetRoot()
     for (const auto& move : game_state.moves) {
-      head = position_tree_.MakeVariationRaw(head, move, kNoIdxInParent);
+      head = head.AddMove(move, kNoIdxInParent);  // Updated to use AddMove()
     }
     Context context{
         .storage = storage,
         .position_tree = &position_tree_,
         .search_channels = &search_channels_,
-        .head = head,
+        .head = std::move(head),
         .eval_item_pool = &eval_item_pool_,
     };
     mcts_worker_ =
