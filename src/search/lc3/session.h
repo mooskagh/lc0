@@ -8,6 +8,7 @@
 #include "search/lc3/gather_worker.h"
 #include "search/lc3/positions.h"
 #include "utils/exception.h"
+#include "utils/freelist.h"
 
 namespace lczero {
 namespace lc3 {
@@ -17,17 +18,20 @@ class SearchSession {
   SearchSession(NodeStorage* storage, const GameState& game_state,
                 Backend* backend)
       : position_tree_(game_state.startpos),
+        head_(position_tree_.root()),
         search_channels_(1, 1)  // TODO: make this configurable
   {
-    VariationPtr head = position_tree_.GetRoot();  // Updated to use GetRoot()
     for (const auto& move : game_state.moves) {
-      head = head.AddMove(move, kNoIdxInParent);  // Updated to use AddMove()
+      head_ = head_.make_child(
+          /*hash=*/NodeHash{HashCat(head_->hash.hash, move.raw_data())},
+          /*position=*/Position(head_->position, move),
+          /*depth=*/head_->depth + 1,
+          /*idx_in_parent=*/kNoIdxInParent);
     }
     Context context{
         .storage = storage,
-        .position_tree = &position_tree_,
         .search_channels = &search_channels_,
-        .head = std::move(head),
+        .head = &head_,
         .eval_item_pool = &eval_item_pool_,
     };
     mcts_worker_ =
@@ -48,6 +52,7 @@ class SearchSession {
 
  private:
   PositionTree position_tree_;
+  Variation head_;
   SearchChannels search_channels_;
   std::unique_ptr<MctsGatherWorker> mcts_worker_;
   std::unique_ptr<EvalWorker> eval_worker_;

@@ -26,7 +26,7 @@ void SortMovesByPolicy(std::span<Move> moves, std::span<float> p) {
 }
 
 struct NodeUpdate {
-  Variation* variation;
+  Variation variation;
   size_t backprop_edge_idx;
   size_t num_visits_to_apply;
   size_t num_visits_to_undo;
@@ -46,7 +46,7 @@ struct NodeUpdate {
 NodeUpdate EvalItemToParentNodeUpdate(EvalItem* item, size_t num_visits) {
   assert(item->variation->idx_in_parent != kNoIdxInParent);
   return NodeUpdate{
-      .variation = item->variation->parent,
+      .variation = item->variation.parent(),
       .backprop_edge_idx = item->variation->idx_in_parent,
       .num_visits_to_apply = num_visits,
       .num_visits_to_undo = item->num_visits - num_visits,
@@ -144,7 +144,6 @@ void BackpropWorker::OneStep() {
       std::push_heap(backprop_heap.begin(), backprop_heap.end());
     }
   }
-  // Release the items.
 }
 
 }  // namespace lc3

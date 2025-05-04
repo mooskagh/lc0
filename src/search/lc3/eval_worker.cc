@@ -23,7 +23,7 @@ void EvalWorker::EnqueueIncomingTasks(std::span<EvalItem*> tasks) {
     }
     if (!board.HasMatingMaterial() ||
         task->variation->position.GetRule50Ply() >= 100 ||
-        GetPositionRepetitionCount(task->variation.get()) >= 2) {
+        GetPositionRepetitionCount(task->variation) >= 2) {
       // TODO have more proper handling of repetitions.
       task->terminal_type = EvalItem::TerminalType::kDraw;
       SendCompletedEvalItem(task);
@@ -33,8 +33,7 @@ void EvalWorker::EnqueueIncomingTasks(std::span<EvalItem*> tasks) {
     // Attempt to call the backend.
     task->p.resize(task->moves.size());
     std::array<Position, 8> positions;
-    size_t num_positions =
-        UnpackPositionsBackwards(task->variation.get(), positions);
+    size_t num_positions = UnpackPositionsBackwards(task->variation, positions);
     const auto addinput_result = computation_->AddInput(
         EvalPosition{.pos = std::span<const Position>(
                          positions.begin() + (positions.size() - num_positions),

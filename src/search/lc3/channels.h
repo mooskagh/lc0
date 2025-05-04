@@ -8,11 +8,11 @@ namespace lczero {
 namespace lc3 {
 
 struct EvalItem {
-  EvalItem(VariationPtr variation, size_t num_visits)
+  EvalItem(Variation variation, size_t num_visits)
       : variation(std::move(variation)), num_visits(num_visits) {}
 
   // Input.
-  VariationPtr variation;
+  Variation variation;
   size_t num_visits;
 
   // Result.

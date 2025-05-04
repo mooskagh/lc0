@@ -8,6 +8,7 @@
 #include "search/lc3/channels.h"
 #include "search/lc3/positions.h"
 #include "search/lc3/storage.h"
+#include "utils/freelist.h"
 
 constexpr int kExtraFetch = 1;
 
@@ -50,11 +51,11 @@ MctsGatherWorker::MctsGatherWorker(const Context& context,
 
 void MctsGatherWorker::GatherDescent(size_t target_batch_size) {
   struct NodeAndBatch {
-    VariationPtr node;
+    Variation node;
     size_t batch_size;
   };
   std::vector<NodeAndBatch> work_queue(1, NodeAndBatch{
-                                              .node = ctx_.head,
+                                              .node = *ctx_.head,
                                               .batch_size = target_batch_size,
                                           });
   std::vector<NodeAndBatch> next_iter_work_queue;
@@ -69,7 +70,7 @@ void MctsGatherWorker::GatherDescent(size_t target_batch_size) {
     {
       UpdateLock lock = ctx_.storage->GetUpdateLock();
       for (NodeAndBatch& item : work_queue) {
-        VariationPtr& node = item.node;
+        Variation& node = item.node;
         std::optional<NodeMutation> update = lock.Fetch(node->hash);
         if (!update) {
           nodes_to_create.push_back(std::move(item));
@@ -103,9 +104,13 @@ void MctsGatherWorker::GatherDescent(size_t target_batch_size) {
         // Spawn new work items for the children.
         for (size_t i = 0; i < num_moves_to_fetch; ++i) {
           edge_infos.edge_N[i] += edge_visits[i];
+          const Move& move = edge_infos.moves[i];
           next_iter_work_queue.push_back(NodeAndBatch{
-              .node =
-                  item.node.AddMove(edge_infos.moves[i], /*idx_in_parent=*/i),
+              .node = node.make_child(
+                  /*hash=*/NodeHash{HashCat(node->hash.hash, move.raw_data())},
+                  /*position=*/Position(node->position, move),
+                  /*depth=*/node->depth + 1,
+                  /*idx_in_parent=*/i),
               .batch_size = edge_visits[i],
           });
         }

@@ -13,7 +13,6 @@ class FreeList;
 namespace lc3 {
 
 class NodeStorage;
-class PositionTree;
 class SearchChannels;
 struct EvalItem;
 
@@ -21,9 +20,8 @@ using EvalItemPool = FreeList<EvalItem, 1024>;
 
 struct Context {
   NodeStorage* storage;
-  PositionTree* position_tree;
   SearchChannels* search_channels;
-  VariationPtr head;
+  Variation* head;
   EvalItemPool* eval_item_pool;
 };
 
