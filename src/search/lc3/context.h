@@ -8,7 +8,7 @@
 namespace lczero {
 
 template <typename T, size_t N>
-class FreeList;
+class FreeListAllocator;
 
 namespace lc3 {
 
@@ -16,7 +16,7 @@ class NodeStorage;
 class SearchChannels;
 struct EvalItem;
 
-using EvalItemPool = FreeList<EvalItem, 1024>;
+using EvalItemPool = FreeListAllocator<EvalItem, 1024>;
 
 struct Context {
   NodeStorage* storage;

@@ -129,7 +129,8 @@ void MctsGatherWorker::GatherDescent(size_t target_batch_size) {
         eval_items.reserve(nodes_to_create.size());
         for (NodeAndBatch& item : nodes_to_create) {
           if (create_lock.Create(item.node->hash)) {
-            EvalItem* task = ctx_.eval_item_pool->AllocateRaw(
+            EvalItem* task = ctx_.eval_item_pool->allocate(1);
+            ::new (task) EvalItem(
                 /*variation=*/std::move(item.node),
                 /*num_visits=*/item.batch_size);
             CERR << "GatherDescent: created eval_item node="
