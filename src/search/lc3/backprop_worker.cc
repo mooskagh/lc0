@@ -57,11 +57,11 @@ NodeUpdate EvalItemToParentNodeUpdate(EvalItem* item, size_t num_visits) {
   };
 }
 
-void MergeNodeUpdates(NodeUpdate* dst, const NodeUpdate& src) {
+void MergeNodeUpdates(NodeUpdate* /* dst */, const NodeUpdate& /* src */) {
   NotImplemented();
 }
 
-void MoveNodeUpdateToParent(NodeUpdate* node_update) { NotImplemented(); }
+void MoveNodeUpdateToParent(NodeUpdate* /* node_update */) { NotImplemented(); }
 
 }  // namespace
 

@@ -17,7 +17,11 @@ class SearchSession {
  public:
   SearchSession(NodeStorage* storage, const GameState& game_state,
                 Backend* backend)
-      : position_tree_(game_state.startpos),
+      : position_tree_(
+            /*hash=*/NodeHash{game_state.startpos.Hash()},
+            /*position=*/game_state.startpos,
+            /*depth=*/0,
+            /*idx_in_parent=*/-1),
         head_(position_tree_.root()),
         search_channels_(1, 1)  // TODO: make this configurable
   {

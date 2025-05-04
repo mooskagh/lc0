@@ -10,7 +10,12 @@ class Tree {
   class node_handle;
 
   template <typename... Args>
-  Tree(Args&&... args);
+  Tree(Args&&... args) {
+    Node* new_node = allocator_.allocate(1);
+    ::new (new_node) Node(nullptr, this, std::forward<Args>(args)...);
+    root_ = node_handle(new_node);
+  }
+  ~Tree() { root_.reset(); }
   node_handle root() { return root_; }
 
  private:
@@ -22,6 +27,7 @@ class Tree {
     Tree* tree;
     std::atomic<size_t> ref_count_;
 
+    Node() = delete;
     template <typename... Args>
     Node(Node* parent, Tree* tree, Args&&... args)
         : data(std::forward<Args>(args)...),
@@ -36,14 +42,6 @@ class Tree {
   void deallocate_node(Node* p) {
     std::allocator_traits<NodeAllocator>::deallocate(allocator_, p, 1);
   }
-  template <typename... Args>
-  void construct_node(Node* p, Args&&... args) {
-    std::allocator_traits<NodeAllocator>::construct(
-        allocator_, p, std::forward<Args>(args)...);
-  }
-  void destroy_node(Node* p) {
-    std::allocator_traits<NodeAllocator>::destroy(allocator_, p);
-  }
 
   using NodeAllocator =
       typename std::allocator_traits<Allocator>::template rebind_alloc<Node>;
@@ -56,14 +54,30 @@ template <typename T, typename Allocator>
 class Tree<T, Allocator>::node_handle {
  public:
   node_handle() : node_(nullptr) {}
-  node_handle(const node_handle&);
-  node_handle& operator=(const node_handle&);
-  node_handle(node_handle&&);
-  node_handle& operator=(node_handle&&);
+  node_handle(const node_handle& other) : node_handle(other.node_) {}
+  node_handle& operator=(const node_handle& other) {
+    if (this != &other) {
+      reset();
+      node_ = other.node_;
+      if (node_) node_->ref_count_.fetch_add(1, std::memory_order_relaxed);
+    }
+    return *this;
+  }
+  node_handle(node_handle&& other) : node_(other.node_) {
+    other.node_ = nullptr;
+  }
+  node_handle& operator=(node_handle&& other) {
+    if (this != &other) {
+      reset();
+      node_ = other.node_;
+      other.node_ = nullptr;
+    }
+    return *this;
+  }
 
   operator bool() const { return node_ != nullptr; }
   bool has_parent() const { return node_->parent != nullptr; }
-  node_handle parent();
+  node_handle parent() { return node_handle(node_->parent); }
   T* operator->() const { return &node_->data; }
   T& operator*() const { return node_->data; }
 
@@ -76,13 +90,19 @@ class Tree<T, Allocator>::node_handle {
     return node_handle(new_node);
   }
 
-  ~node_handle() {
+  ~node_handle() { reset(); }
+  void reset() {
+    if (!node_) return;
     Node* node = node_;
     while (node &&
            node->ref_count_.fetch_sub(1, std::memory_order_acq_rel) == 1) {
+      Tree* tree = node->tree;
+      Node* parent = node->parent;
       node->~Node();
-      node->tree->allocator_.deallocate(node, 1);
+      tree->allocator_.deallocate(node, 1);
+      node = parent;
     }
+    node_ = nullptr;
   }
 
  private:
@@ -90,6 +110,7 @@ class Tree<T, Allocator>::node_handle {
     if (node_) node_->ref_count_.fetch_add(1, std::memory_order_relaxed);
   }
   Node* node_;
+  friend class Tree;
 };
 
 }  // namespace lczero
