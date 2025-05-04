@@ -38,7 +38,7 @@ class SearchSession {
         .head = &head_,
         .eval_item_pool = &eval_item_pool_,
     };
-    mcts_worker_ =
+    gather_worker_ =
         std::make_unique<MctsGatherWorker>(context, /*gather_task_idx=*/0);
     eval_worker_ =
         std::make_unique<EvalWorker>(context, /*eval_task_idx=*/0, backend);
@@ -50,15 +50,16 @@ class SearchSession {
   void Abort() { NotImplemented(); }
   void Wait() { NotImplemented(); }
   void OneStep() {
-    mcts_worker_->GatherDescent(256);
+    gather_worker_->GatherDescent(256);
     eval_worker_->OneStep();
+    backprop_worker_->OneStep();
   }
 
  private:
   PositionTree position_tree_;
   Variation head_;
   SearchChannels search_channels_;
-  std::unique_ptr<MctsGatherWorker> mcts_worker_;
+  std::unique_ptr<MctsGatherWorker> gather_worker_;
   std::unique_ptr<EvalWorker> eval_worker_;
   std::unique_ptr<BackpropWorker> backprop_worker_;
   EvalItemPool eval_item_pool_;
