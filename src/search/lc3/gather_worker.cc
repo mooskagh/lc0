@@ -50,6 +50,7 @@ MctsGatherWorker::MctsGatherWorker(const Context& context,
     : gather_task_idx_(gather_task_idx), ctx_(context) {}
 
 void MctsGatherWorker::GatherDescent(size_t target_batch_size) {
+  CERR << "GatherDescent: target_batch_size=" << target_batch_size;
   struct NodeAndBatch {
     Variation node;
     size_t batch_size;
@@ -70,6 +71,9 @@ void MctsGatherWorker::GatherDescent(size_t target_batch_size) {
     {
       UpdateLock lock = ctx_.storage->GetUpdateLock();
       for (NodeAndBatch& item : work_queue) {
+        CERR << "GatherDescent: depth=" << depth
+             << ", node=" << item.node->position.DebugString()
+             << ", batch_size=" << item.batch_size;
         Variation& node = item.node;
         std::optional<NodeMutation> update = lock.Fetch(node->hash);
         if (!update) {
@@ -121,23 +125,29 @@ void MctsGatherWorker::GatherDescent(size_t target_batch_size) {
       if (!nodes_to_create.empty()) {
         CreationLock create_lock =
             CreationLock::FromUpdateLock(std::move(lock));
-        std::vector<EvalItem*> eval_tasks;
-        eval_tasks.reserve(nodes_to_create.size());
+        std::vector<EvalItem*> eval_items;
+        eval_items.reserve(nodes_to_create.size());
         for (NodeAndBatch& item : nodes_to_create) {
           if (create_lock.Create(item.node->hash)) {
             EvalItem* task = ctx_.eval_item_pool->AllocateRaw(
                 /*variation=*/std::move(item.node),
                 /*num_visits=*/item.batch_size);
-            eval_tasks.push_back(task);
+            CERR << "GatherDescent: created eval_item node="
+                 << task->variation->position.DebugString()
+                 << ", num_visits=" << item.batch_size;
+            eval_items.push_back(task);
           } else {
             // Two moves result in the same position.
             HandleCollision();
           }
         }
-        ctx_.search_channels->SendEvalRequests(gather_task_idx_, eval_tasks);
+        CERR << "GatherDescent: sending eval_items.size()="
+             << eval_items.size();
+        ctx_.search_channels->SendEvalRequests(gather_task_idx_, eval_items);
       }
     }
   }
+  CERR << "GatherDescent, done";
 }
 
 }  // namespace lc3

@@ -75,6 +75,7 @@ void BackpropWorker::OneStep() {
         ctx_.search_channels->FetchEvalResults(buffer, /*block=*/true);
     UpdateLock update_lock = ctx_.storage->GetUpdateLock();
     do {
+      CERR << "BackpropWorker::OneStep: fetched num_items=" << num_items;
       for (size_t i = 0; i < num_items; ++i) {
         EvalItem* item = buffer[i];
         SortMovesByPolicy(item->moves, item->p);
