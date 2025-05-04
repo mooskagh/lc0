@@ -41,6 +41,14 @@ struct EdgeUpdate {
 class NodeMutation {
  public:
   ~NodeMutation();
+  // Should be private but std::optional needs it.
+  NodeMutation(UpdateLock* lock, internal::NodeData* data);
+  NodeMutation(const NodeMutation&) = delete;
+  NodeMutation& operator=(const NodeMutation&) = delete;
+  // If/when we implement move semantics, make the constructor above private.
+  NodeMutation(NodeMutation&&) = delete;
+  NodeMutation& operator=(NodeMutation&&) = delete;
+
   bool HasVisits() const { NotImplemented(); }
   bool IsTerminal() const { return data_->is_terminal; }
   uint64_t GetN() const { NotImplemented(); }
@@ -67,10 +75,10 @@ class NodeMutation {
   void UpdateEdgeData(std::span<const EdgeUpdate>) { NotImplemented(); }
 
  private:
-  NodeMutation(UpdateLock* lock, internal::NodeData* data);
   UpdateLock* const lock_;
   internal::NodeData* const data_;
   friend class UpdateLock;
+  friend class std::optional<NodeMutation>;
 };
 
 // While this lock is held, no hashmap rehashing will occur.

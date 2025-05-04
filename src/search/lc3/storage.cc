@@ -14,7 +14,7 @@ NodeMutation::~NodeMutation() { --lock_->ref_count_; }
 std::optional<NodeMutation> UpdateLock::Fetch(NodeHash node) {
   auto iter = storage_->nodes_.find(node.hash);
   if (iter == storage_->nodes_.end()) return std::nullopt;
-  return NodeMutation(this, &iter->second);
+  return std::optional<NodeMutation>(std::in_place, this, &iter->second);
 }
 
 UpdateLock::~UpdateLock() { assert(ref_count_ == 0); }
