@@ -42,6 +42,7 @@ class Exception : public std::runtime_error {
   }
 };
 
+#ifndef __NVCC__
 [[noreturn]]
 inline void NotImplemented(
     const std::source_location& location = std::source_location::current()) {
@@ -63,5 +64,6 @@ inline void TODO(
        << ":" + std::to_string(location.line());
 #endif
 }
+#endif  // __NVCC__
 
 }  // namespace lczero
