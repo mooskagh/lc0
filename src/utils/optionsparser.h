@@ -99,9 +99,9 @@ struct Ref : public std::reference_wrapper<T> {
 using ProgramOptions =
     CascadingDict<Ref<const OptionId>, bool, Button, int, std::string, float>;
 
-class OptionsParser {
+class ProgramOptionsManager {
  public:
-  OptionsParser();
+  ProgramOptionsManager();
 
   class Option {
    public:
@@ -136,7 +136,7 @@ class OptionsParser {
 
     const OptionId& id_;
     bool hidden_ = false;
-    friend class OptionsParser;
+    friend class ProgramOptionsManager;
   };
 
   // Add an option to the list of available options (from command line flags
@@ -195,7 +195,7 @@ class OptionsParser {
   ProgramOptions& values_;
 };
 
-class StringOption : public OptionsParser::Option {
+class StringOption : public ProgramOptionsManager::Option {
  public:
   using ValueType = std::string;
   StringOption(const OptionId& id);
@@ -214,7 +214,7 @@ class StringOption : public OptionsParser::Option {
   void SetVal(ProgramOptions* dict, const ValueType& val) const;
 };
 
-class IntOption : public OptionsParser::Option {
+class IntOption : public ProgramOptionsManager::Option {
  public:
   using ValueType = int;
   IntOption(const OptionId& id, int min, int max);
@@ -237,7 +237,7 @@ class IntOption : public OptionsParser::Option {
   int max_;
 };
 
-class FloatOption : public OptionsParser::Option {
+class FloatOption : public ProgramOptionsManager::Option {
  public:
   using ValueType = float;
   FloatOption(const OptionId& id, float min, float max);
@@ -259,7 +259,7 @@ class FloatOption : public OptionsParser::Option {
   float max_;
 };
 
-class BoolOption : public OptionsParser::Option {
+class BoolOption : public ProgramOptionsManager::Option {
  public:
   using ValueType = bool;
   BoolOption(const OptionId& id);
@@ -278,7 +278,7 @@ class BoolOption : public OptionsParser::Option {
   void ValidateBoolString(const std::string& val);
 };
 
-class ButtonOption : public OptionsParser::Option {
+class ButtonOption : public ProgramOptionsManager::Option {
  public:
   using ValueType = Button;
   ButtonOption(const OptionId& id);
@@ -296,7 +296,7 @@ class ButtonOption : public OptionsParser::Option {
   void SetVal(ProgramOptions* dict, const ValueType& val) const;
 };
 
-class ChoiceOption : public OptionsParser::Option {
+class ChoiceOption : public ProgramOptionsManager::Option {
  public:
   using ValueType = std::string;
   ChoiceOption(const OptionId& id, const std::vector<std::string>& choices);

@@ -82,7 +82,7 @@ EngineClassic::EngineClassic(const ProgramOptions& options)
   if (options_.Get<bool>(kPreload)) UpdateFromUciOptions();
 }
 
-void EngineClassic::PopulateOptions(OptionsParser* options) {
+void EngineClassic::PopulateOptions(ProgramOptionsManager* options) {
   using namespace std::placeholders;
   const bool is_simple =
       CommandLine::BinaryName().find("simple") != std::string::npos;

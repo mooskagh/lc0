@@ -83,7 +83,7 @@ const OptionId kPolicyHead{
     "'vanilla', 'optimistic' or 'soft', but only 'vanilla' is always "
     "available."};
 
-bool ProcessParameters(OptionsParser* options) {
+bool ProcessParameters(ProgramOptionsManager* options) {
   options->Add<StringOption>(kInputFilenameId);
   options->Add<StringOption>(kOutputFilenameId);
   options->Add<StringOption>(kHloTextOutputFilenameId);
@@ -122,7 +122,7 @@ bool ProcessParameters(OptionsParser* options) {
 }  // namespace
 
 void ConvertLeelaToOnnx() {
-  OptionsParser options_parser;
+  ProgramOptionsManager options_parser;
   if (!ProcessParameters(&options_parser)) return;
 
   const ProgramOptions& dict = options_parser.GetOptionsDict();
