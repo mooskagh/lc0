@@ -17,6 +17,14 @@ std::optional<NodeMutation> UpdateLock::Fetch(NodeHash node) {
   return std::optional<NodeMutation>(std::in_place, this, &iter->second);
 }
 
+void NodeMutation::SetEdgeData(std::span<const Move> moves, std::span<const float> p) {
+  if (moves.size() != p.size()) {
+    throw Exception("Moves and probabilities arrays must have the same size");
+  }
+  data_->moves.assign(moves.begin(), moves.end());
+  data_->p.assign(p.begin(), p.end());
+}
+
 UpdateLock::~UpdateLock() { assert(ref_count_ == 0); }
 
 CreationLock CreationLock::FromUpdateLock(UpdateLock&& lock) {

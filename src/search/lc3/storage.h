@@ -22,6 +22,8 @@ struct NodeHash {
 namespace internal {
 struct NodeData {
   bool is_terminal = false;
+  std::vector<Move> moves;
+  std::vector<float> p;
 };
 }  // namespace internal
 
@@ -65,9 +67,7 @@ class NodeMutation {
 
   void FetchEdgeData(EdgeDataRequest) const { NotImplemented(); }
   void IncrementEdgeN(std::span<const uint64_t>) const { NotImplemented(); }
-  void SetEdgeData(std::span<const Move>, std::span<const float> /* p */) {
-    NotImplemented();
-  }
+  void SetEdgeData(std::span<const Move> moves, std::span<const float> p);
   void UpdateNodeData(int /* num_visits */, float /* q */, float /* d */,
                       float /* m */) {
     NotImplemented();
