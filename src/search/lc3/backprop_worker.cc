@@ -69,33 +69,42 @@ void BackpropWorker::OneStep() {
   std::vector<NodeUpdate> backprop_heap;
 
   {
+    // Fetch eval results from the queue, update the nodes they reference, and
+    // forward the updates to the parent nodes.
     absl::MutexLock queue_lock(&ctx_.search_channels->request_consumer_mutex_);
     std::array<EvalItem*, 1024> buffer;
+    // Fetch the first batch blockingly, then try to fetch more non-blockingly.
     size_t num_items =
         ctx_.search_channels->FetchEvalResults(buffer, /*block=*/true);
     UpdateLock update_lock = ctx_.storage->GetUpdateLock();
     do {
       CERR << "BackpropWorker::OneStep: fetched num_items=" << num_items;
       for (size_t i = 0; i < num_items; ++i) {
+        // Process each EvalItem one by one.
         EvalItem* item = buffer[i];
         SortMovesByPolicy(item->moves, item->p);
-        std::optional<NodeMutation> update =
+        std::optional<NodeMutation> node_to_update =
             update_lock.Fetch(item->variation->hash);
-        assert(update);
-        update->SetEdgeData(item->moves, item->p);
-        if (item->terminal_type == EvalItem::TerminalType::kNonTerminal) {
-          NotImplemented();
+        // The node was already created by the gather thread.
+        assert(node_to_update);
+        node_to_update->SetEdgeData(item->moves, item->p);
+        if (item->terminal_type != EvalItem::TerminalType::kNonTerminal) {
+          node_to_update->SetIsTerminal();
         }
+        // If the node is terminal, we allow all visits to it, otherwise we
+        // only apply a single NN eval.
         const size_t num_visits_to_apply =
             item->terminal_type == EvalItem::TerminalType::kNonTerminal
                 ? 1
                 : item->num_visits;
-        update->UpdateNodeData(num_visits_to_apply, item->v, item->d, item->m);
+        node_to_update->UpdateNodeData(num_visits_to_apply, item->v, item->d,
+                                       item->m);
         if (item->variation->idx_in_parent != kNoIdxInParent) {
           backprop_heap.push_back(
               EvalItemToParentNodeUpdate(item, num_visits_to_apply));
         }
       }
+      // Fetch more items if they are available.
       num_items = ctx_.search_channels->FetchEvalResults(buffer,
                                                          /*block=*/false);
     } while (num_items > 0);

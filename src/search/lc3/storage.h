@@ -68,6 +68,7 @@ class NodeMutation {
   void FetchEdgeData(EdgeDataRequest) const { NotImplemented(); }
   void IncrementEdgeN(std::span<const uint64_t>) const { NotImplemented(); }
   void SetEdgeData(std::span<const Move> moves, std::span<const float> p);
+  void SetIsTerminal() { NotImplemented(); }
   void UpdateNodeData(int /* num_visits */, float /* q */, float /* d */,
                       float /* m */) {
     NotImplemented();
