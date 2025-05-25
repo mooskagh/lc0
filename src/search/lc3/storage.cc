@@ -17,12 +17,31 @@ std::optional<NodeMutation> UpdateLock::Fetch(NodeHash node) {
   return std::optional<NodeMutation>(std::in_place, this, &iter->second);
 }
 
-void NodeMutation::SetEdgeData(std::span<const Move> moves, std::span<const float> p) {
+void NodeMutation::SetEdgeData(std::span<const Move> moves,
+                               std::span<const float> p) {
   if (moves.size() != p.size()) {
     throw Exception("Moves and probabilities arrays must have the same size");
   }
   data_->moves.assign(moves.begin(), moves.end());
   data_->p.assign(p.begin(), p.end());
+}
+
+void NodeMutation::AccumulateNodeData(int new_visits, float q, float d,
+                                      float m) {
+  if (new_visits <= 0) return;
+
+  // Calculate the weight for the new data
+  float weight =
+      static_cast<float>(new_visits) / (data_->num_visits + new_visits);
+
+  // Use incremental update formulas (q_new = q_old + weight * (q_incoming -
+  // q_old))
+  data_->q += weight * (q - data_->q);
+  data_->d += weight * (d - data_->d);
+  data_->m += weight * (m - data_->m);
+
+  // Update visit count
+  data_->num_visits += new_visits;
 }
 
 UpdateLock::~UpdateLock() { assert(ref_count_ == 0); }

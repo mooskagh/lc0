@@ -97,7 +97,7 @@ void BackpropWorker::OneStep() {
             item->terminal_type == EvalItem::TerminalType::kNonTerminal
                 ? 1
                 : item->num_visits;
-        node_to_update->UpdateNodeData(num_visits_to_apply, item->v, item->d,
+        node_to_update->AccumulateNodeData(num_visits_to_apply, item->v, item->d,
                                        item->m);
         if (item->variation->idx_in_parent != kNoIdxInParent) {
           backprop_heap.push_back(
@@ -145,7 +145,7 @@ void BackpropWorker::OneStep() {
     std::optional<NodeMutation> update =
         update_lock.Fetch(node_update.variation->hash);
     assert(update);
-    update->UpdateNodeData(node_update.num_visits_to_apply, node_update.v,
+    update->AccumulateNodeData(node_update.num_visits_to_apply, node_update.v,
                            node_update.d, node_update.m);
     update->UpdateEdgeData(edge_updates);
     if (node_update.variation->idx_in_parent != kNoIdxInParent) {

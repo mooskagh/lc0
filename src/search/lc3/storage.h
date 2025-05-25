@@ -24,6 +24,10 @@ struct NodeData {
   bool is_terminal = false;
   std::vector<Move> moves;
   std::vector<float> p;
+  uint64_t num_visits = 0;  // Total number of visits to the node
+  float q = 0.0f;           // Average value (win/loss)
+  float d = 0.0f;           // Draw probability
+  float m = 0.0f;           // MoveScore (moves left)
 };
 }  // namespace internal
 
@@ -69,10 +73,7 @@ class NodeMutation {
   void IncrementEdgeN(std::span<const uint64_t>) const { NotImplemented(); }
   void SetEdgeData(std::span<const Move> moves, std::span<const float> p);
   void SetIsTerminal() { NotImplemented(); }
-  void UpdateNodeData(int /* num_visits */, float /* q */, float /* d */,
-                      float /* m */) {
-    NotImplemented();
-  }
+  void AccumulateNodeData(int new_visits, float q, float d, float m);
   void UpdateEdgeData(std::span<const EdgeUpdate>) { NotImplemented(); }
 
  private:
