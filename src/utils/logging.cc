@@ -31,6 +31,9 @@
 #include <iostream>
 #include <thread>
 
+#include "utils/esc_codes.h"
+#include "utils/hashcat.h"
+
 namespace lczero {
 
 namespace {
@@ -122,5 +125,51 @@ std::string FormatTime(
   }
   return ss.str();
 }
+
+#ifndef NDEBUG
+namespace {
+const char* HashToColor(uint64_t hash) {
+  // Use the last 3 bits of the hash to determine the color.
+  switch (hash % 6) {
+    case 0:
+      return EscCodes::Red();
+    case 1:
+      return EscCodes::Green();
+    case 2:
+      return EscCodes::Yellow();
+    case 3:
+      return EscCodes::Blue();
+    case 4:
+      return EscCodes::Magenta();
+    case 5:
+      return EscCodes::Cyan();
+    default:
+      return "";
+  }
+}
+}  // namespace
+
+thread_local std::vector<const char*> DebugLogIndentIncrementer::indent_stack_;
+
+DebugLogIndentIncrementer::DebugLogIndentIncrementer(const std::string& msg) {
+  const char* color = HashToColor(HashBuffer(msg));
+  CERR << LinePrefix() << color << "┌ " << EscCodes::Bold() << msg
+       << EscCodes::Reset();
+  indent_stack_.push_back(color);
+}
+
+DebugLogIndentIncrementer::~DebugLogIndentIncrementer() {
+  indent_stack_.pop_back();
+}
+
+std::string DebugLogIndentIncrementer::LinePrefix() {
+  std::ostringstream ss;
+  ss << std::this_thread::get_id() << " ";
+  for (auto color : indent_stack_) ss << color << "│";
+  ss << EscCodes::Reset();
+  return ss.str();
+}
+
+#endif
 
 }  // namespace lczero

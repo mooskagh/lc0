@@ -33,6 +33,7 @@
 #include <iomanip>
 #include <sstream>
 #include <string>
+#include <vector>
 
 #include "utils/mutex.h"
 
@@ -86,8 +87,34 @@ std::chrono::time_point<std::chrono::system_clock> SteadyClockToSystemClock(
     std::chrono::time_point<std::chrono::steady_clock> time);
 
 std::string FormatTime(std::chrono::time_point<std::chrono::system_clock> time);
-}  // namespace lczero
 
 #define LOGFILE ::lczero::LogMessage(__FILE__, __LINE__)
 #define CERR ::lczero::StderrLogMessage(__FILE__, __LINE__)
 #define COUT ::lczero::StdoutLogMessage(__FILE__, __LINE__)
+
+#ifndef NDEBUG
+class DebugLogIndentIncrementer {
+ public:
+  DebugLogIndentIncrementer(const std::string& msg);
+  ~DebugLogIndentIncrementer();
+  static std::string LinePrefix();
+
+ private:
+  static thread_local std::vector<const char*> indent_stack_;
+};
+#endif
+
+#if !defined(NDEBUG) && defined(LCZERO_DEBUG_LOGGING)
+
+#define DPRINT_SCOPE(msg) \
+  ::lczero::DebugLogIndentIncrementer debug_log_indent_incrementer(msg)
+#define DPRINT CERR << DebugLogIndentIncrementer::LinePrefix() << " "
+
+#else
+
+#define DPRINT_SCOPE(msg)
+#define DPRINT \
+  if constexpr (false) ::lczero::StderrLogMessage(__FILE__, __LINE__);
+#endif
+
+}  // namespace lczero

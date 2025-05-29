@@ -27,6 +27,7 @@
 
 #include <cstdint>
 #include <initializer_list>
+#include <string_view>
 
 #pragma once
 namespace lczero {
@@ -47,6 +48,22 @@ inline uint64_t HashCat(uint64_t hash, uint64_t x) {
 inline uint64_t HashCat(std::initializer_list<uint64_t> args) {
   uint64_t hash = 0;
   for (uint64_t x : args) hash = HashCat(hash, x);
+  return hash;
+}
+
+inline uint64_t HashBuffer(std::string_view buffer) {
+  uint64_t hash = 0;
+  // First, hashcat the head by casting it to uint64_t.
+  while (buffer.size() >= sizeof(uint64_t)) {
+    uint64_t x = *reinterpret_cast<const uint64_t*>(buffer.data());
+    hash = HashCat(hash, x);
+    buffer.remove_prefix(sizeof(uint64_t));
+  }
+  // Then, hashcat the tail byte by byte.
+  while (!buffer.empty()) {
+    hash = HashCat(hash, static_cast<uint64_t>(buffer[0]));
+    buffer.remove_prefix(1);
+  }
   return hash;
 }
 

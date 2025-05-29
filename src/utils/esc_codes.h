@@ -49,7 +49,7 @@ class EscCodes {
   static const char* Green() { return enabled_ ? "\033[32m" : ""; }
   static const char* Yellow() { return enabled_ ? "\033[33m" : ""; }
   static const char* Blue() { return enabled_ ? "\033[34m" : ""; }
-  static const char* Magenda() { return enabled_ ? "\033[35m" : ""; }
+  static const char* Magenta() { return enabled_ ? "\033[35m" : ""; }
   static const char* Cyan() { return enabled_ ? "\033[36m" : ""; }
   static const char* White() { return enabled_ ? "\033[37m" : ""; }
   static const char* BlackBg() { return enabled_ ? "\033[40m" : ""; }
@@ -57,7 +57,7 @@ class EscCodes {
   static const char* GreenBg() { return enabled_ ? "\033[42m" : ""; }
   static const char* YellowBg() { return enabled_ ? "\033[43m" : ""; }
   static const char* BlueBg() { return enabled_ ? "\033[44m" : ""; }
-  static const char* MagendaBg() { return enabled_ ? "\033[45m" : ""; }
+  static const char* MagentaBg() { return enabled_ ? "\033[45m" : ""; }
   static const char* CyanBg() { return enabled_ ? "\033[46m" : ""; }
   static const char* WhiteBg() { return enabled_ ? "\033[47m" : ""; }
 
