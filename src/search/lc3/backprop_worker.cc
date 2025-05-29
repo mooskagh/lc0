@@ -93,6 +93,13 @@ void BackpropWorker::OneStep() {
             update_lock.Fetch(item->variation->hash);
         // The node was already created by the gather thread.
         assert(node_to_update);
+        {
+          DPRINT_SCOPE("Moves:");
+          for (size_t j = 0; j < item->moves.size(); ++j) {
+            DPRINT << "  move=" << item->moves[j].ToString(true)
+                   << ", p=" << item->p[j];
+          }
+        }
         node_to_update->SetEdgeData(item->moves, item->p);
         if (item->terminal_type != EvalItem::TerminalType::kNonTerminal) {
           DPRINT << "Node is terminal, type=" << int(item->terminal_type);

@@ -157,6 +157,16 @@ void MctsGatherWorker::GatherDescent(size_t target_batch_size) {
             .n = edge_infos.edge_N,
         };
         update->FetchEdgeData(request);
+        {
+          DPRINT_SCOPE("Fetched moves:");
+          for (size_t i = 0; i < num_moves_to_fetch; ++i) {
+            DPRINT << "idx=" << i
+                   << " move=" << edge_infos.moves[i].ToString(true)
+                   << " p=" << edge_infos.edge_P[i]
+                   << " q=" << edge_infos.edge_Q[i]
+                   << " n=" << edge_infos.edge_N[i];
+          }
+        }
         std::vector<size_t> edge_visits =
             DistributeVisits(depth, item.batch_size, node_n, edge_infos.edge_P,
                              edge_infos.edge_Q, edge_infos.edge_N);
@@ -164,6 +174,9 @@ void MctsGatherWorker::GatherDescent(size_t target_batch_size) {
         for (size_t i = 0; i < num_moves_to_fetch; ++i) {
           edge_infos.edge_N[i] += edge_visits[i];
           const Move& move = edge_infos.moves[i];
+          DPRINT << "pos=" << node->position.DebugString()
+                 << ", move=" << move.ToString(true) << ", resulting="
+                 << Position(node->position, move).DebugString();
           next_iter_work_queue.push_back(NodeAndBatch{
               .node = node.make_child(
                   /*hash=*/NodeHash{HashCat(node->hash.hash, move.raw_data())},
@@ -210,11 +223,3 @@ void MctsGatherWorker::GatherDescent(size_t target_batch_size) {
 
 }  // namespace lc3
 }  // namespace lczero
-
-/*
-
- Q+U = edge_Q + Cpuct × sqrt((parent_N) / (1 + edge_N))
-
-
-
-*/
