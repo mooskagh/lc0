@@ -14,6 +14,8 @@
 
 // TODO Make it a function and move to logic.h
 constexpr int kExtraFetch = 2;
+constexpr float kCpuctConst = 1.745f;            // TODO: Make this configurable
+constexpr float kBatchIterationFraction = 0.4f;  // TODO: Make this configurable
 
 namespace {
 // TODO Implement proper InlineVector
@@ -26,16 +28,56 @@ namespace lc3 {
 namespace {
 
 // TODO move to logic.h
-std::vector<size_t> DistributeVisits(size_t depth, size_t num_visits,
+std::vector<size_t> DistributeVisits(size_t depth, size_t visits_to_distribute,
+                                     size_t node_n,
                                      std::span<const float> edge_P,
                                      std::span<const float> edge_Q,
                                      std::span<const uint64_t> edge_N) {
   DPRINT_SCOPE("DistributeVisits");
-  DPRINT << "depth=" << depth << ", num_visits=" << num_visits
-         << ", edge_P.size()=" << edge_P.size()
-         << ", edge_Q.size()=" << edge_Q.size()
-         << ", edge_N.size()=" << edge_N.size();
-  NotImplemented();
+  DPRINT << "depth=" << depth
+         << " visits_to_distribute=" << visits_to_distribute
+         << " node_n=" << node_n << " edge_P.size()=" << edge_P.size()
+         << " edge_Q.size()=" << edge_Q.size()
+         << " edge_N.size()=" << edge_N.size();
+
+  assert(edge_P.size() > 0);
+  assert(edge_P.size() == edge_Q.size());
+  assert(edge_P.size() == edge_N.size());
+  // If there is only one edge, we just return all visits to it.
+  if (edge_P.size() == 1) return {visits_to_distribute};
+
+  std::vector<size_t> result(edge_P.size(), 0);
+
+  // parent_n_sqrt × kCpuctConst
+  const float factor = std::sqrt(static_cast<float>(node_n)) * kCpuctConst;
+  auto q_plus_u = [&](size_t idx) {
+    return edge_Q[idx] +
+           factor * edge_P[idx] / (1.0f + edge_N[idx] + result[idx]);
+  };
+
+  while (visits_to_distribute > 0) {
+    const size_t visits_this_step = static_cast<size_t>(
+        std::ceil(visits_to_distribute * kBatchIterationFraction));
+    DPRINT_SCOPE("Distributing visits, remaining=" +
+                 std::to_string(visits_to_distribute) +
+                 " this_step=" + std::to_string(visits_this_step));
+
+    float best_score = q_plus_u(0);
+    size_t best_idx = 0;
+    for (size_t i = 1; i < edge_P.size(); ++i) {
+      const float cur_score = q_plus_u(i);
+      if (cur_score > best_score) {
+        best_score = cur_score;
+        best_idx = i;
+      }
+    }
+
+    DPRINT << "Routing to idx=" << best_idx << " (num=" << visits_this_step
+           << ")";
+    result[best_idx] += visits_this_step;
+    visits_to_distribute -= visits_this_step;
+  }
+  return result;
 }
 
 struct EdgeInfos {
@@ -116,7 +158,7 @@ void MctsGatherWorker::GatherDescent(size_t target_batch_size) {
         };
         update->FetchEdgeData(request);
         std::vector<size_t> edge_visits =
-            DistributeVisits(depth, node_n, edge_infos.edge_P,
+            DistributeVisits(depth, item.batch_size, node_n, edge_infos.edge_P,
                              edge_infos.edge_Q, edge_infos.edge_N);
         // Spawn new work items for the children.
         for (size_t i = 0; i < num_moves_to_fetch; ++i) {
