@@ -1,3 +1,5 @@
+#define LCZERO_DEBUG_LOGGING
+
 #include "search/lc3/gather_worker.h"
 
 #include <queue>
@@ -50,7 +52,8 @@ MctsGatherWorker::MctsGatherWorker(const Context& context,
     : gather_task_idx_(gather_task_idx), ctx_(context) {}
 
 void MctsGatherWorker::GatherDescent(size_t target_batch_size) {
-  CERR << "GatherDescent: target_batch_size=" << target_batch_size;
+  DPRINT_SCOPE("GatherDescent");
+  DPRINT << "target_batch_size=" << target_batch_size;
   struct NodeAndBatch {
     Variation node;
     size_t batch_size;
@@ -63,6 +66,7 @@ void MctsGatherWorker::GatherDescent(size_t target_batch_size) {
 
   for (size_t depth = 0; !work_queue.empty();
        ++depth, next_iter_work_queue.swap(work_queue)) {
+    DPRINT_SCOPE("depth=" + std::to_string(depth));
     // Work queue has variations that have to be owned or deleted.
     next_iter_work_queue.clear();
 
@@ -71,12 +75,12 @@ void MctsGatherWorker::GatherDescent(size_t target_batch_size) {
     {
       UpdateLock lock = ctx_.storage->GetUpdateLock();
       for (NodeAndBatch& item : work_queue) {
-        CERR << "GatherDescent: depth=" << depth
-             << ", node=" << item.node->position.DebugString()
-             << ", batch_size=" << item.batch_size;
+        DPRINT_SCOPE("Item " + item.node->position.DebugString());
+        DPRINT << "batch_size=" << item.batch_size;
         Variation& node = item.node;
         std::optional<NodeMutation> update = lock.Fetch(node->hash);
         if (!update) {
+          DPRINT << "Node not found in storage, creating new node";
           nodes_to_create.push_back(std::move(item));
           continue;
         }
@@ -123,32 +127,34 @@ void MctsGatherWorker::GatherDescent(size_t target_batch_size) {
 
       // Create new nodes for the work items that were not found in the storage.
       if (!nodes_to_create.empty()) {
+        DPRINT_SCOPE("Creating new nodes. count="
+                     + std::to_string(nodes_to_create.size()));
         CreationLock create_lock =
             CreationLock::FromUpdateLock(std::move(lock));
         std::vector<EvalItem*> eval_items;
         eval_items.reserve(nodes_to_create.size());
         for (NodeAndBatch& item : nodes_to_create) {
+          DPRINT_SCOPE("Creating node " + item.node->position.DebugString());
           if (create_lock.Create(item.node->hash)) {
             EvalItem* task = ctx_.eval_item_pool->allocate(1);
             ::new (task) EvalItem(
                 /*variation=*/std::move(item.node),
                 /*num_visits=*/item.batch_size);
-            CERR << "GatherDescent: created eval_item node="
-                 << task->variation->position.DebugString()
-                 << ", num_visits=" << item.batch_size;
+            DPRINT << "created eval_item node="
+                   << task->variation->position.DebugString()
+                   << ", num_visits=" << item.batch_size;
             eval_items.push_back(task);
           } else {
+            DPRINT << "Collision";
             // Two moves result in the same position.
             HandleCollision();
           }
         }
-        CERR << "GatherDescent: sending eval_items.size()="
-             << eval_items.size();
+        DPRINT << "sending eval_items.size()=" << eval_items.size();
         ctx_.search_channels->SendEvalRequests(gather_task_idx_, eval_items);
       }
     }
   }
-  CERR << "GatherDescent, done";
 }
 
 }  // namespace lc3
