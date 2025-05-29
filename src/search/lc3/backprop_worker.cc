@@ -47,6 +47,7 @@ struct NodeUpdate {
 
 NodeUpdate EvalItemToParentNodeUpdate(EvalItem* item, size_t num_visits) {
   assert(item->variation->idx_in_parent != kNoIdxInParent);
+  assert(item->variation.has_parent());
   return NodeUpdate{
       .variation = item->variation.parent(),
       .backprop_edge_idx = item->variation->idx_in_parent,
@@ -114,7 +115,8 @@ void BackpropWorker::OneStep() {
         node_to_update->AccumulateNodeData(num_visits_to_apply, item->v,
                                            item->d, item->m);
         if (item->variation->idx_in_parent != kNoIdxInParent) {
-          DPRINT << "Forwarding to parent";
+          DPRINT << "Forwarding to parent as " << num_visits_to_apply
+                 << " visits";
           backprop_heap.push_back(
               EvalItemToParentNodeUpdate(item, num_visits_to_apply));
         }

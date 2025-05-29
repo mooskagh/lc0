@@ -211,7 +211,7 @@ option('rescorer',
 
 option('lc3',
        type: 'boolean',
-       value: false,
+       value: true,
        description: 'Build Lc3 search algorithm')
 
 option('default_search',
