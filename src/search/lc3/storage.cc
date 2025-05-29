@@ -66,6 +66,12 @@ void NodeMutation::FetchEdgeData(EdgeDataRequest request) const {
   }
 }
 
+void NodeMutation::IncrementEdgeN(std::span<const uint64_t> n_delta) const {
+  auto& edges = data_->edges;
+  if (n_delta.size() > edges.size()) edges.resize(n_delta.size());
+  for (size_t i = 0; i < n_delta.size(); ++i) edges[i].n += n_delta[i];
+}
+
 UpdateLock::~UpdateLock() { assert(ref_count_ == 0); }
 
 CreationLock CreationLock::FromUpdateLock(UpdateLock&& lock) {
