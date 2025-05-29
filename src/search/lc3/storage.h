@@ -20,14 +20,19 @@ struct NodeHash {
 };
 
 namespace internal {
+struct EdgeData {
+  float q = 0.0f;
+  uint64_t n = 0;
+};
 struct NodeData {
   bool is_terminal = false;
   std::vector<Move> moves;
   std::vector<float> p;
-  uint64_t num_visits = 0;  // Total number of visits to the node
-  float q = 0.0f;           // Average value (win/loss)
-  float d = 0.0f;           // Draw probability
-  float m = 0.0f;           // MoveScore (moves left)
+  uint64_t num_visits = 0;      // Total number of visits to the node
+  float q = 0.0f;               // Average value (win/loss)
+  float d = 0.0f;               // Draw probability
+  float m = 0.0f;               // MoveScore (moves left)
+  std::vector<EdgeData> edges;  // Edges to children, indexed by move
 };
 }  // namespace internal
 
@@ -55,21 +60,23 @@ class NodeMutation {
   NodeMutation(NodeMutation&&) = delete;
   NodeMutation& operator=(NodeMutation&&) = delete;
 
-  bool HasVisits() const { NotImplemented(); }
+  bool HasVisits() const { return data_->num_visits > 0; }
   bool IsTerminal() const { return data_->is_terminal; }
-  uint64_t GetN() const { NotImplemented(); }
-  // uint64_t IncrementN(int64_t) { NotImplemented(); }
-  size_t FetchNumMoves() const { NotImplemented(); }
-  size_t FetchNumMovesWithVisits() const { NotImplemented(); }
+  uint64_t GetN() const { return data_->num_visits; }
+  size_t FetchNumMoves() const { return data_->moves.size(); }
+  size_t FetchNumMovesWithVisits() const { return data_->edges.size(); }
 
+  // All fields are out parameters. FetchEdgeData fills these spans with data
+  // from the node's internal arrays. The moves, p, q, and n arrays are parallel
+  // with the same index representing the same move across all arrays.
+  // Spans should be pre-allocated with sufficient size.
   struct EdgeDataRequest {
     std::span<Move> moves = {};
     std::span<float> p = {};
     std::span<float> q = {};
     std::span<uint64_t> n = {};
   };
-
-  void FetchEdgeData(EdgeDataRequest) const { NotImplemented(); }
+  void FetchEdgeData(EdgeDataRequest request) const;
   void IncrementEdgeN(std::span<const uint64_t>) const { NotImplemented(); }
   void SetEdgeData(std::span<const Move> moves, std::span<const float> p);
   void SetIsTerminal() { NotImplemented(); }

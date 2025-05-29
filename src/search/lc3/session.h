@@ -50,9 +50,12 @@ class SearchSession {
   void Abort() { NotImplemented(); }
   void Wait() { NotImplemented(); }
   void OneStep() {
-    gather_worker_->GatherDescent(256);
-    eval_worker_->OneStep();
-    backprop_worker_->OneStep();
+    for (int i = 0; i < 2; ++i) {
+      gather_worker_->GatherDescent(256);
+      eval_worker_->OneStep();
+      backprop_worker_->OneStep();
+      CERR << "Done " << i << " step(s) of the search session.";
+    }
   }
 
  private:

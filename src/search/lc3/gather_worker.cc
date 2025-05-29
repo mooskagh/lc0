@@ -12,20 +12,29 @@
 #include "search/lc3/storage.h"
 #include "utils/freelist.h"
 
-constexpr int kExtraFetch = 1;
+// TODO Make it a function and move to logic.h
+constexpr int kExtraFetch = 2;
 
+namespace {
+// TODO Implement proper InlineVector
 template <typename T>
 using InlineVector = std::vector<T>;
+}  // namespace
 
 namespace lczero {
 namespace lc3 {
 namespace {
 
-std::vector<size_t> DistributeVisits(size_t /* depth */,
-                                     size_t /* num_visits */,
-                                     std::span<const float> /* edge_P */,
-                                     std::span<const float> /* edge_Q */,
-                                     std::span<const uint64_t> /* edge_N */) {
+// TODO move to logic.h
+std::vector<size_t> DistributeVisits(size_t depth, size_t num_visits,
+                                     std::span<const float> edge_P,
+                                     std::span<const float> edge_Q,
+                                     std::span<const uint64_t> edge_N) {
+  DPRINT_SCOPE("DistributeVisits");
+  DPRINT << "depth=" << depth << ", num_visits=" << num_visits
+         << ", edge_P.size()=" << edge_P.size()
+         << ", edge_Q.size()=" << edge_Q.size()
+         << ", edge_N.size()=" << edge_N.size();
   NotImplemented();
 }
 
@@ -127,8 +136,8 @@ void MctsGatherWorker::GatherDescent(size_t target_batch_size) {
 
       // Create new nodes for the work items that were not found in the storage.
       if (!nodes_to_create.empty()) {
-        DPRINT_SCOPE("Creating new nodes. count="
-                     + std::to_string(nodes_to_create.size()));
+        DPRINT_SCOPE("Creating new nodes. count=" +
+                     std::to_string(nodes_to_create.size()));
         CreationLock create_lock =
             CreationLock::FromUpdateLock(std::move(lock));
         std::vector<EvalItem*> eval_items;

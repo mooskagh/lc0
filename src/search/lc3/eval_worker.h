@@ -21,7 +21,7 @@ class EvalWorker {
   void SendCompletedEvalItem(EvalItem*) { NotImplemented(); }
   void SendCompletedBatchItems();
 
-  void Gather();
+  void Collect();
   void EnqueueIncomingTasks(std::span<EvalItem*> tasks);
 
   Context ctx_;
