@@ -85,8 +85,7 @@ class Tree<T, Allocator>::node_handle {
   node_handle make_child(Args&&... args) {
     node_->ref_count_.fetch_add(1, std::memory_order_relaxed);
     Node* new_node = node_->tree->allocator_.allocate(1);
-    ::new (new_node)
-        Node(node_->parent, node_->tree, std::forward<Args>(args)...);
+    ::new (new_node) Node(node_, node_->tree, std::forward<Args>(args)...);
     return node_handle(new_node);
   }
 
