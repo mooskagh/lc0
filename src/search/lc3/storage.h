@@ -47,10 +47,10 @@ struct NodeData {
 // - Edge Q is copied from node Q
 
 // TODO proper name and location
-struct EdgeUpdate {
+struct StorageEdgePatch {
   size_t edge_idx;
-  size_t num_visits_to_decrement;
-  float q;
+  size_t visits_to_undo;
+  float agg_q;
 };
 
 class NodeMutation {
@@ -83,7 +83,7 @@ class NodeMutation {
   void FetchEdgeData(EdgeDataRequest request) const;
   // TODO potentially combine IncrementEdgeN and UpdateEdgeData
   void IncrementEdgeN(std::span<const uint64_t>) const;
-  void UpdateEdgeData(std::span<const EdgeUpdate>);
+  void UpdateEdgeData(std::span<const StorageEdgePatch>);
   void SetEdgeData(std::span<const Move> moves, std::span<const float> p);
   void SetIsTerminal() { NotImplemented(); }
   StorageNodeData AccumulateNodeData(StorageNodeData);

@@ -40,21 +40,21 @@ StorageNodeData NodeMutation::AccumulateNodeData(StorageNodeData new_data) {
   return data_->value;
 }
 
-void NodeMutation::UpdateEdgeData(std::span<const EdgeUpdate> updates) {
+void NodeMutation::UpdateEdgeData(std::span<const StorageEdgePatch> updates) {
   assert(!updates.empty());
   size_t max_idx =
       std::max_element(updates.begin(), updates.end(),
-                       [](const EdgeUpdate& a, const EdgeUpdate& b) {
+                       [](const StorageEdgePatch& a, const StorageEdgePatch& b) {
                          return a.edge_idx < b.edge_idx;
                        })
           ->edge_idx;
   if (max_idx >= data_->edges.size()) {
     data_->edges.resize(max_idx + 1);
   }
-  for (const EdgeUpdate& update : updates) {
+  for (const StorageEdgePatch& update : updates) {
     internal::EdgeData& edge = data_->edges[update.edge_idx];
-    edge.q = update.q;
-    edge.n -= update.num_visits_to_decrement;
+    edge.q = update.agg_q;
+    edge.n -= update.visits_to_undo;
   }
 }
 

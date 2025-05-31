@@ -56,7 +56,7 @@ void MoveNodeUpdateToParent(NodeUpdate* /* node_update */) { NotImplemented(); }
 
 struct BackPropItem {
   NodeUpdate node_update;
-  EdgeUpdate edge_update;
+  StorageEdgePatch edge_update;
 
   bool operator<(const BackPropItem& other) const {
     if (node_update.variation->depth != other.node_update.variation->depth) {
@@ -75,8 +75,8 @@ struct BackPropItem {
            ", m=" + std::to_string(node_update.m) +
            ", edge_update.edge_idx=" + std::to_string(edge_update.edge_idx) +
            ", edge_update.num_visits_to_decrement=" +
-           std::to_string(edge_update.num_visits_to_decrement) +
-           ", edge_update.q=" + std::to_string(edge_update.q) + "}";
+           std::to_string(edge_update.visits_to_undo) +
+           ", edge_update.q=" + std::to_string(edge_update.agg_q) + "}";
   }
 };
 
@@ -95,8 +95,8 @@ BackPropItem EvalItemToBackpropItem(EvalItem* item, size_t num_visits) {
       .edge_update =
           {
               .edge_idx = item->variation->idx_in_parent,
-              .num_visits_to_decrement = item->num_visits - num_visits,
-              .q = -ComputeQ(item->v, item->d, item->m),
+              .visits_to_undo = item->num_visits - num_visits,
+              .agg_q = -ComputeQ(item->v, item->d, item->m),
           },
   };
 }
@@ -175,8 +175,8 @@ void BackpropWorker::OneStep() {
     DPRINT << "Processing backprop item: " << backprop_item.ToString();
 
     // Extract the first item from the heap.
-    size_t visits_to_undo = backprop_item.edge_update.num_visits_to_decrement;
-    std::vector<EdgeUpdate> edge_updates{backprop_item.edge_update};
+    size_t visits_to_undo = backprop_item.edge_update.visits_to_undo;
+    std::vector<StorageEdgePatch> edge_updates{backprop_item.edge_update};
     NodeUpdate node_update = backprop_item.node_update;
     backprop_heap.pop_back();
 
@@ -187,7 +187,7 @@ void BackpropWorker::OneStep() {
       BackPropItem& backprop_item = backprop_heap.front();
       DPRINT << "Merging backprop item: " << backprop_item.ToString();
 
-      visits_to_undo += backprop_item.edge_update.num_visits_to_decrement;
+      visits_to_undo += backprop_item.edge_update.visits_to_undo;
       MergeNodeUpdates(&node_update, backprop_item.node_update);
       edge_updates.push_back(backprop_item.edge_update);
 
@@ -214,8 +214,8 @@ void BackpropWorker::OneStep() {
       backprop_heap.push_back(
           {.node_update = node_update,
            .edge_update = {.edge_idx = node_update.variation->idx_in_parent,
-                           .num_visits_to_decrement = visits_to_undo,
-                           .q = ComputeQ(node_value.agg_v, node_value.agg_d,
+                           .visits_to_undo = visits_to_undo,
+                           .agg_q = ComputeQ(node_value.agg_v, node_value.agg_d,
                                          node_value.agg_m)}});
       std::push_heap(backprop_heap.begin(), backprop_heap.end());
     }
