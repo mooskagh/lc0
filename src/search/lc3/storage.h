@@ -50,7 +50,7 @@ struct NodeData {
 struct EdgeUpdate {
   size_t edge_idx;
   size_t num_visits_to_decrement;
-  double q;
+  float q;
 };
 
 class NodeMutation {
@@ -81,11 +81,12 @@ class NodeMutation {
     std::span<uint64_t> n = {};
   };
   void FetchEdgeData(EdgeDataRequest request) const;
+  // TODO potentially combine IncrementEdgeN and UpdateEdgeData
   void IncrementEdgeN(std::span<const uint64_t>) const;
+  void UpdateEdgeData(std::span<const EdgeUpdate>);
   void SetEdgeData(std::span<const Move> moves, std::span<const float> p);
   void SetIsTerminal() { NotImplemented(); }
   NodeValue AccumulateNodeData(NodeValue);
-  void UpdateEdgeData(std::span<const EdgeUpdate>) { NotImplemented(); }
 
  private:
   UpdateLock* const lock_;

@@ -40,6 +40,24 @@ NodeValue NodeMutation::AccumulateNodeData(NodeValue new_data) {
   return data_->value;
 }
 
+void NodeMutation::UpdateEdgeData(std::span<const EdgeUpdate> updates) {
+  assert(!updates.empty());
+  size_t max_idx =
+      std::max_element(updates.begin(), updates.end(),
+                       [](const EdgeUpdate& a, const EdgeUpdate& b) {
+                         return a.edge_idx < b.edge_idx;
+                       })
+          ->edge_idx;
+  if (max_idx >= data_->edges.size()) {
+    data_->edges.resize(max_idx + 1);
+  }
+  for (const EdgeUpdate& update : updates) {
+    internal::EdgeData& edge = data_->edges[update.edge_idx];
+    edge.q = update.q;
+    edge.n -= update.num_visits_to_decrement;
+  }
+}
+
 void NodeMutation::FetchEdgeData(EdgeDataRequest request) const {
   const size_t num_moves = request.moves.size();
   assert(request.p.size() >= num_moves);

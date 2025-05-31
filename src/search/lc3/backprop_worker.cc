@@ -36,7 +36,7 @@ struct NodeUpdate {
 };
 
 // TODO move to logic.h
-double NNValueToQ(double v, double d, double m) { return v; }
+float NNValueToQ(float v, float /* d */, float /* m */) { return v; }
 
 // TODO move to logic.h
 void MergeNodeUpdates(NodeUpdate* dst, const NodeUpdate& src) {
