@@ -26,7 +26,7 @@ void NodeMutation::SetEdgeData(std::span<const Move> moves,
   data_->p.assign(p.begin(), p.end());
 }
 
-NodeValue NodeMutation::AccumulateNodeData(NodeValue new_data) {
+StorageNodeData NodeMutation::AccumulateNodeData(StorageNodeData new_data) {
   if (new_data.n <= 0) return data_->value;
 
   // Calculate the weight for the new data

@@ -19,7 +19,7 @@ struct NodeHash {
   bool operator==(const NodeHash& other) const = default;
 };
 
-struct NodeValue {
+struct StorageNodeData {
   size_t n;
   double q;
   float d;
@@ -35,7 +35,7 @@ struct NodeData {
   bool is_terminal = false;
   std::vector<Move> moves;
   std::vector<float> p;
-  NodeValue value;
+  StorageNodeData value;
   std::vector<EdgeData> edges;  // Edges to children, indexed by move
 };
 }  // namespace internal
@@ -86,7 +86,7 @@ class NodeMutation {
   void UpdateEdgeData(std::span<const EdgeUpdate>);
   void SetEdgeData(std::span<const Move> moves, std::span<const float> p);
   void SetIsTerminal() { NotImplemented(); }
-  NodeValue AccumulateNodeData(NodeValue);
+  StorageNodeData AccumulateNodeData(StorageNodeData);
 
  private:
   UpdateLock* const lock_;

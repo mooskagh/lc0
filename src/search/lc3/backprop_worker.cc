@@ -201,7 +201,7 @@ void BackpropWorker::OneStep() {
     std::optional<NodeMutation> update =
         update_lock.Fetch(node_update.variation->hash);
     assert(update);
-    NodeValue node_value = update->AccumulateNodeData({
+    StorageNodeData node_value = update->AccumulateNodeData({
         .n = node_update.num_visits - visits_to_undo,
         .q = NNValueToQ(node_update.v, node_update.d, node_update.m),
         .d = node_update.d,
