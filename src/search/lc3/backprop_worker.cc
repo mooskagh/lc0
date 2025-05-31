@@ -29,47 +29,69 @@ void SortMovesByPolicy(std::span<Move> moves, std::span<float> p) {
 
 struct NodeUpdate {
   Variation variation;
-  size_t backprop_edge_idx;
-  size_t num_visits_to_apply;
-  size_t num_visits_to_undo;
+  size_t num_visits;
   double v;
   float d;
   float m;
-  double q;
-
-  bool operator<(const NodeUpdate& other) const {
-    if (variation->depth != other.variation->depth) {
-      return variation->depth < other.variation->depth;
-    }
-    return variation->hash.hash < other.variation->hash.hash;
-  }
 };
 
-NodeUpdate EvalItemToParentNodeUpdate(EvalItem* item, size_t num_visits) {
-  assert(item->variation->idx_in_parent != kNoIdxInParent);
-  assert(item->variation.has_parent());
-  return NodeUpdate{
-      .variation = item->variation.parent(),
-      .backprop_edge_idx = item->variation->idx_in_parent,
-      .num_visits_to_apply = num_visits,
-      .num_visits_to_undo = item->num_visits - num_visits,
-      .v = -item->v,
-      .d = -item->d,
-      .m = item->m - 1,
-      .q = -item->v,
-  };
-}
+// TODO move to logic.h
+double NNValueToQ(double v, double d, double m) { return v; }
 
-void MergeNodeUpdates(NodeUpdate* /* dst */, const NodeUpdate& /* src */) {
-  NotImplemented();
+// TODO move to logic.h
+void MergeNodeUpdates(NodeUpdate* dst, const NodeUpdate& src) {
+  assert(dst->variation->hash == src.variation->hash);
+
+  // dst v, d and q are weighted averages of v, d, q, weighted by
+  // num_visits_to_apply.
+  const double total_visits = dst->num_visits + src.num_visits;
+  const double weight = static_cast<double>(src.num_visits) / total_visits;
+  dst->v += (src.v - dst->v) * weight;
+  dst->d += (src.d - dst->d) * weight;
+  dst->m += (src.m - dst->m) * weight;
+  dst->num_visits += src.num_visits;
 }
 
 void MoveNodeUpdateToParent(NodeUpdate* /* node_update */) { NotImplemented(); }
 
+struct BackPropItem {
+  NodeUpdate node_update;
+  EdgeUpdate edge_update;
+
+  bool operator<(const BackPropItem& other) const {
+    if (node_update.variation->depth != other.node_update.variation->depth) {
+      return node_update.variation->depth < other.node_update.variation->depth;
+    }
+    return node_update.variation->hash.hash <
+           other.node_update.variation->hash.hash;
+  }
+};
+
+BackPropItem EvalItemToBackpropItem(EvalItem* item, size_t num_visits) {
+  assert(item->variation->idx_in_parent != kNoIdxInParent);
+  assert(item->variation.has_parent());
+  return BackPropItem{
+      .node_update =
+          {
+              .variation = item->variation.parent(),
+              .num_visits = num_visits,
+              .v = -item->v,
+              .d = -item->d,
+              .m = item->m - 1,
+          },
+      .edge_update =
+          {
+              .edge_idx = item->variation->idx_in_parent,
+              .num_visits_to_decrement = item->num_visits - num_visits,
+              .q = -NNValueToQ(item->v, item->d, item->m),
+          },
+  };
+}
+
 }  // namespace
 
 void BackpropWorker::OneStep() {
-  std::vector<NodeUpdate> backprop_heap;
+  std::vector<BackPropItem> backprop_heap;
 
   {
     DPRINT_SCOPE("Fetching eval results");
@@ -112,13 +134,17 @@ void BackpropWorker::OneStep() {
             item->terminal_type == EvalItem::TerminalType::kNonTerminal
                 ? 1
                 : item->num_visits;
-        node_to_update->AccumulateNodeData(num_visits_to_apply, item->v,
-                                           item->d, item->m);
+        node_to_update->AccumulateNodeData({
+            .n = num_visits_to_apply,
+            .q = item->v,
+            .d = item->d,
+            .m = item->m,
+        });
         if (item->variation->idx_in_parent != kNoIdxInParent) {
           DPRINT << "Forwarding to parent as " << num_visits_to_apply
                  << " visits";
           backprop_heap.push_back(
-              EvalItemToParentNodeUpdate(item, num_visits_to_apply));
+              EvalItemToBackpropItem(item, num_visits_to_apply));
         }
       }
       // Fetch more items if they are available.
@@ -127,47 +153,55 @@ void BackpropWorker::OneStep() {
     } while (num_items > 0);
   }
 
-  std::vector<EdgeUpdate> edge_updates;
-
   std::make_heap(backprop_heap.begin(), backprop_heap.end());
   while (!backprop_heap.empty()) {
-    edge_updates.clear();
+    DPRINT_SCOPE("Processing backprop heap, size=" +
+                 std::to_string(backprop_heap.size()));
     std::pop_heap(backprop_heap.begin(), backprop_heap.end());
-    NodeUpdate node_update = backprop_heap.back();
-    edge_updates.push_back(EdgeUpdate{
-        .edge_idx = node_update.backprop_edge_idx,
-        .num_visits_to_decrement =
-            static_cast<int>(node_update.num_visits_to_undo) -
-            static_cast<int>(node_update.num_visits_to_apply),
-        .q = node_update.q,
-    });
-    NodeHash cur_hash = node_update.variation->hash;
+    BackPropItem& backprop_item = backprop_heap.back();
+
+    // Extract the first item from the heap.
+    size_t visits_to_undo = backprop_item.edge_update.num_visits_to_decrement;
+    std::vector<EdgeUpdate> edge_updates{backprop_item.edge_update};
+    NodeUpdate node_update = backprop_item.node_update;
     backprop_heap.pop_back();
+
+    // Now accumulate all updates for the same variation.
+    NodeHash cur_hash = node_update.variation->hash;
     while (!backprop_heap.empty() &&
-           backprop_heap.front().variation->hash == cur_hash) {
-      const NodeUpdate& upd = backprop_heap.front();
-      edge_updates.push_back(EdgeUpdate{
-          .edge_idx = upd.backprop_edge_idx,
-          .num_visits_to_decrement =
-              static_cast<int>(node_update.num_visits_to_undo) -
-              static_cast<int>(node_update.num_visits_to_apply),
-          .q = upd.q,
-      });
-      MergeNodeUpdates(&node_update, upd);
+           backprop_heap.front().node_update.variation->hash == cur_hash) {
+      BackPropItem& backprop_item = backprop_heap.front();
+
+      visits_to_undo += backprop_item.edge_update.num_visits_to_decrement;
+      MergeNodeUpdates(&node_update, backprop_item.node_update);
+      edge_updates.push_back(backprop_item.edge_update);
+
       std::pop_heap(backprop_heap.begin(), backprop_heap.end());
       backprop_heap.pop_back();
     }
+    DPRINT << "Merged " << edge_updates.size() << " items";
+
     // TODO buffer this and apply in batches.
     UpdateLock update_lock = ctx_.storage->GetUpdateLock();
     std::optional<NodeMutation> update =
         update_lock.Fetch(node_update.variation->hash);
     assert(update);
-    update->AccumulateNodeData(node_update.num_visits_to_apply, node_update.v,
-                               node_update.d, node_update.m);
+    NodeValue node_value = update->AccumulateNodeData({
+        .n = node_update.num_visits - visits_to_undo,
+        .q = NNValueToQ(node_update.v, node_update.d, node_update.m),
+        .d = node_update.d,
+        .m = node_update.m,
+    });
+    DPRINT << "Accumulated " << edge_updates.size() << " edge updates.";
     update->UpdateEdgeData(edge_updates);
     if (node_update.variation->idx_in_parent != kNoIdxInParent) {
       MoveNodeUpdateToParent(&node_update);
-      backprop_heap.push_back(node_update);
+      backprop_heap.push_back(
+          {.node_update = node_update,
+           .edge_update = {
+               .edge_idx = node_update.variation->idx_in_parent,
+               .num_visits_to_decrement = visits_to_undo,
+               .q = NNValueToQ(node_value.q, node_value.d, node_value.m)}});
       std::push_heap(backprop_heap.begin(), backprop_heap.end());
     }
   }

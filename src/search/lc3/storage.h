@@ -19,6 +19,13 @@ struct NodeHash {
   bool operator==(const NodeHash& other) const = default;
 };
 
+struct NodeValue {
+  size_t n;
+  double q;
+  float d;
+  float m;
+};
+
 namespace internal {
 struct EdgeData {
   float q = 0.0f;
@@ -28,10 +35,7 @@ struct NodeData {
   bool is_terminal = false;
   std::vector<Move> moves;
   std::vector<float> p;
-  uint64_t num_visits = 0;      // Total number of visits to the node
-  float q = 0.0f;               // Average value (win/loss)
-  float d = 0.0f;               // Draw probability
-  float m = 0.0f;               // MoveScore (moves left)
+  NodeValue value;
   std::vector<EdgeData> edges;  // Edges to children, indexed by move
 };
 }  // namespace internal
@@ -45,7 +49,7 @@ struct NodeData {
 // TODO proper name and location
 struct EdgeUpdate {
   size_t edge_idx;
-  int num_visits_to_decrement;
+  size_t num_visits_to_decrement;
   double q;
 };
 
@@ -60,9 +64,9 @@ class NodeMutation {
   NodeMutation(NodeMutation&&) = delete;
   NodeMutation& operator=(NodeMutation&&) = delete;
 
-  bool HasVisits() const { return data_->num_visits > 0; }
+  bool HasVisits() const { return data_->value.n > 0; }
   bool IsTerminal() const { return data_->is_terminal; }
-  uint64_t GetN() const { return data_->num_visits; }
+  uint64_t GetN() const { return data_->value.n; }
   size_t FetchNumMoves() const { return data_->moves.size(); }
   size_t FetchNumMovesWithVisits() const { return data_->edges.size(); }
 
@@ -80,7 +84,7 @@ class NodeMutation {
   void IncrementEdgeN(std::span<const uint64_t>) const;
   void SetEdgeData(std::span<const Move> moves, std::span<const float> p);
   void SetIsTerminal() { NotImplemented(); }
-  void AccumulateNodeData(int new_visits, float q, float d, float m);
+  NodeValue AccumulateNodeData(NodeValue);
   void UpdateEdgeData(std::span<const EdgeUpdate>) { NotImplemented(); }
 
  private:

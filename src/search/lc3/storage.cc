@@ -26,22 +26,18 @@ void NodeMutation::SetEdgeData(std::span<const Move> moves,
   data_->p.assign(p.begin(), p.end());
 }
 
-void NodeMutation::AccumulateNodeData(int new_visits, float q, float d,
-                                      float m) {
-  if (new_visits <= 0) return;
+NodeValue NodeMutation::AccumulateNodeData(NodeValue new_data) {
+  if (new_data.n <= 0) return data_->value;
 
   // Calculate the weight for the new data
-  float weight =
-      static_cast<float>(new_visits) / (data_->num_visits + new_visits);
+  float weight = static_cast<float>(new_data.n) / (data_->value.n + new_data.n);
 
-  // Use incremental update formulas (q_new = q_old + weight * (q_incoming -
-  // q_old))
-  data_->q += weight * (q - data_->q);
-  data_->d += weight * (d - data_->d);
-  data_->m += weight * (m - data_->m);
+  data_->value.n += new_data.n;
+  data_->value.q += weight * (new_data.q - data_->value.q);
+  data_->value.d += weight * (new_data.d - data_->value.d);
+  data_->value.m += weight * (new_data.m - data_->value.m);
 
-  // Update visit count
-  data_->num_visits += new_visits;
+  return data_->value;
 }
 
 void NodeMutation::FetchEdgeData(EdgeDataRequest request) const {
