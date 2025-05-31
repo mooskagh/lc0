@@ -33,9 +33,9 @@ StorageNodeData NodeMutation::AccumulateNodeData(StorageNodeData new_data) {
   float weight = static_cast<float>(new_data.n) / (data_->value.n + new_data.n);
 
   data_->value.n += new_data.n;
-  data_->value.q += weight * (new_data.q - data_->value.q);
-  data_->value.d += weight * (new_data.d - data_->value.d);
-  data_->value.m += weight * (new_data.m - data_->value.m);
+  data_->value.agg_v += weight * (new_data.agg_v - data_->value.agg_v);
+  data_->value.agg_d += weight * (new_data.agg_d - data_->value.agg_d);
+  data_->value.agg_m += weight * (new_data.agg_m - data_->value.agg_m);
 
   return data_->value;
 }

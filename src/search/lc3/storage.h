@@ -21,9 +21,9 @@ struct NodeHash {
 
 struct StorageNodeData {
   size_t n;
-  double q;
-  float d;
-  float m;
+  double agg_v;
+  float agg_d;
+  float agg_m;
 };
 
 namespace internal {

@@ -36,7 +36,7 @@ struct NodeUpdate {
 };
 
 // TODO move to logic.h
-float NNValueToQ(float v, float /* d */, float /* m */) { return v; }
+float ComputeQ(float v, float /* d */, float /* m */) { return v; }
 
 // TODO move to logic.h
 void MergeNodeUpdates(NodeUpdate* dst, const NodeUpdate& src) {
@@ -96,7 +96,7 @@ BackPropItem EvalItemToBackpropItem(EvalItem* item, size_t num_visits) {
           {
               .edge_idx = item->variation->idx_in_parent,
               .num_visits_to_decrement = item->num_visits - num_visits,
-              .q = -NNValueToQ(item->v, item->d, item->m),
+              .q = -ComputeQ(item->v, item->d, item->m),
           },
   };
 }
@@ -149,9 +149,9 @@ void BackpropWorker::OneStep() {
                 : item->num_visits;
         node_to_update->AccumulateNodeData({
             .n = num_visits_to_apply,
-            .q = item->v,
-            .d = item->d,
-            .m = item->m,
+            .agg_v = item->v,
+            .agg_d = item->d,
+            .agg_m = item->m,
         });
         if (item->variation->idx_in_parent != kNoIdxInParent) {
           DPRINT << "Forwarding to parent as " << num_visits_to_apply
@@ -203,9 +203,9 @@ void BackpropWorker::OneStep() {
     assert(update);
     StorageNodeData node_value = update->AccumulateNodeData({
         .n = node_update.num_visits - visits_to_undo,
-        .q = NNValueToQ(node_update.v, node_update.d, node_update.m),
-        .d = node_update.d,
-        .m = node_update.m,
+        .agg_v = node_update.v,
+        .agg_d = node_update.d,
+        .agg_m = node_update.m,
     });
     DPRINT << "Accumulated " << edge_updates.size() << " edge updates.";
     update->UpdateEdgeData(edge_updates);
@@ -213,10 +213,10 @@ void BackpropWorker::OneStep() {
       MoveNodeUpdateToParent(&node_update);
       backprop_heap.push_back(
           {.node_update = node_update,
-           .edge_update = {
-               .edge_idx = node_update.variation->idx_in_parent,
-               .num_visits_to_decrement = visits_to_undo,
-               .q = NNValueToQ(node_value.q, node_value.d, node_value.m)}});
+           .edge_update = {.edge_idx = node_update.variation->idx_in_parent,
+                           .num_visits_to_decrement = visits_to_undo,
+                           .q = ComputeQ(node_value.agg_v, node_value.agg_d,
+                                         node_value.agg_m)}});
       std::push_heap(backprop_heap.begin(), backprop_heap.end());
     }
   }
