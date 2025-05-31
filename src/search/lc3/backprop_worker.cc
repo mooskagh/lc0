@@ -65,6 +65,19 @@ struct BackPropItem {
     return node_update.variation->hash.hash <
            other.node_update.variation->hash.hash;
   }
+
+  std::string ToString() const {
+    return "BackPropItem{variation=" +
+           node_update.variation->position.DebugString() +
+           ", num_visits=" + std::to_string(node_update.num_visits) +
+           ", v=" + std::to_string(node_update.v) +
+           ", d=" + std::to_string(node_update.d) +
+           ", m=" + std::to_string(node_update.m) +
+           ", edge_update.edge_idx=" + std::to_string(edge_update.edge_idx) +
+           ", edge_update.num_visits_to_decrement=" +
+           std::to_string(edge_update.num_visits_to_decrement) +
+           ", edge_update.q=" + std::to_string(edge_update.q) + "}";
+  }
 };
 
 BackPropItem EvalItemToBackpropItem(EvalItem* item, size_t num_visits) {
@@ -159,6 +172,7 @@ void BackpropWorker::OneStep() {
                  std::to_string(backprop_heap.size()));
     std::pop_heap(backprop_heap.begin(), backprop_heap.end());
     BackPropItem& backprop_item = backprop_heap.back();
+    DPRINT << "Processing backprop item: " << backprop_item.ToString();
 
     // Extract the first item from the heap.
     size_t visits_to_undo = backprop_item.edge_update.num_visits_to_decrement;
@@ -171,6 +185,7 @@ void BackpropWorker::OneStep() {
     while (!backprop_heap.empty() &&
            backprop_heap.front().node_update.variation->hash == cur_hash) {
       BackPropItem& backprop_item = backprop_heap.front();
+      DPRINT << "Merging backprop item: " << backprop_item.ToString();
 
       visits_to_undo += backprop_item.edge_update.num_visits_to_decrement;
       MergeNodeUpdates(&node_update, backprop_item.node_update);
