@@ -52,7 +52,14 @@ void MergeNodeUpdates(NodeUpdate* dst, const NodeUpdate& src) {
   dst->num_visits += src.num_visits;
 }
 
-void MoveNodeUpdateToParent(NodeUpdate* /* node_update */) { NotImplemented(); }
+void MoveNodeUpdateToParent(NodeUpdate* node_update) {
+  assert(node_update->variation.has_parent());
+  node_update->variation =
+      node_update->variation.parent();  // Move to parent variation.
+  node_update->v = -node_update->v;     // Negate v for backprop as it's a
+                                     // opponent's perspective.
+  node_update->m -= 1;  // Decrement "moves left" for a parent node.
+};
 
 struct BackPropItem {
   NodeUpdate node_update;
@@ -216,7 +223,7 @@ void BackpropWorker::OneStep() {
            .edge_update = {.edge_idx = node_update.variation->idx_in_parent,
                            .visits_to_undo = visits_to_undo,
                            .agg_q = ComputeQ(node_value.agg_v, node_value.agg_d,
-                                         node_value.agg_m)}});
+                                             node_value.agg_m)}});
       std::push_heap(backprop_heap.begin(), backprop_heap.end());
     }
   }
