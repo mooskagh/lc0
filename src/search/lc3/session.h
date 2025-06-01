@@ -15,7 +15,7 @@ namespace lc3 {
 
 class SearchSession {
  public:
-  SearchSession(NodeStorage* storage, const GameState& game_state,
+  SearchSession(NodeRepository* node_repository, const GameState& game_state,
                 Backend* backend)
       : position_tree_(
             /*hash=*/NodeHash{game_state.startpos.Hash()},
@@ -33,7 +33,7 @@ class SearchSession {
           /*idx_in_parent=*/kNoIdxInParent);
     }
     Context context{
-        .storage = storage,
+        .node_repository = node_repository,
         .search_channels = &search_channels_,
         .head = &head_,
         .eval_item_pool = &eval_item_pool_,

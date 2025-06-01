@@ -12,7 +12,7 @@
 namespace lczero {
 namespace lc3 {
 
-class NodeStorage;
+class NodeRepository;
 class UpdateLock;
 struct NodeHash {
   uint64_t hash;
@@ -103,14 +103,14 @@ class UpdateLock {
   ~UpdateLock();
 
  private:
-  UpdateLock(NodeStorage* storage) : storage_(storage) {}
+  UpdateLock(NodeRepository* node_repository) : node_repository_(node_repository) {}
 
-  NodeStorage* const storage_;
+  NodeRepository* const node_repository_;
 #ifndef NDEBUG
   uint32_t ref_count_ = 0;  // For debugging only.
 #endif
   friend class NodeMutation;
-  friend class NodeStorage;
+  friend class NodeRepository;
   friend class CreationLock;
 };
 
@@ -121,14 +121,14 @@ class CreationLock {
   bool Create(NodeHash node_hash);
 
  private:
-  CreationLock(NodeStorage* storage) : storage_(storage) {}
-  NodeStorage* const storage_;
+  CreationLock(NodeRepository* node_repository) : node_repository_(node_repository) {}
+  NodeRepository* const node_repository_;
 #ifndef NDEBUG
   uint32_t ref_count_ = 0;  // For debugging only.
 #endif
 };
 
-class NodeStorage {
+class NodeRepository {
  public:
   UpdateLock GetUpdateLock();
 

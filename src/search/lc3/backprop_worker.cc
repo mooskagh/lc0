@@ -122,7 +122,7 @@ void BackpropWorker::OneStep() {
     // Fetch the first batch blockingly, then try to fetch more non-blockingly.
     size_t num_items =
         ctx_.search_channels->FetchEvalResults(buffer, /*block=*/true);
-    UpdateLock update_lock = ctx_.storage->GetUpdateLock();
+    UpdateLock update_lock = ctx_.node_repository->GetUpdateLock();
     do {
       DPRINT << "fetched num_items=" << num_items;
       for (size_t i = 0; i < num_items; ++i) {
@@ -204,7 +204,7 @@ void BackpropWorker::OneStep() {
     DPRINT << "Merged " << edge_updates.size() << " items";
 
     // TODO buffer this and apply in batches.
-    UpdateLock update_lock = ctx_.storage->GetUpdateLock();
+    UpdateLock update_lock = ctx_.node_repository->GetUpdateLock();
     std::optional<NodeMutation> update =
         update_lock.Fetch(node_update.variation->hash);
     assert(update);

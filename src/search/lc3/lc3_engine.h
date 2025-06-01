@@ -21,7 +21,7 @@ class Lc3Engine : public SearchBase {
   void EnsureSearchStopped();
 
   std::unique_ptr<SearchSession> search_;
-  NodeStorage storage_;
+  NodeRepository node_repository_;
   GameState game_state_;
 };
 

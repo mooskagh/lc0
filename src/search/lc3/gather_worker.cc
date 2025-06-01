@@ -9,7 +9,7 @@
 #include "chess/gamestate.h"
 #include "search/lc3/channels.h"
 #include "search/lc3/positions.h"
-#include "search/lc3/storage.h"
+#include "search/lc3/node_repository.h"
 #include "utils/freelist.h"
 
 // TODO Make it a function and move to logic.h
@@ -122,16 +122,16 @@ void MctsGatherWorker::GatherDescent(size_t target_batch_size) {
     next_iter_work_queue.clear();
 
     std::vector<NodeAndBatch> nodes_to_create;
-    // Fetch nodes from the storage.
+    // Fetch nodes from the node_repository.
     {
-      UpdateLock lock = ctx_.storage->GetUpdateLock();
+      UpdateLock lock = ctx_.node_repository->GetUpdateLock();
       for (NodeAndBatch& item : work_queue) {
         DPRINT_SCOPE("Item " + item.node->position.DebugString());
         DPRINT << "batch_size=" << item.batch_size;
         Variation& node = item.node;
         std::optional<NodeMutation> update = lock.Fetch(node->hash);
         if (!update) {
-          DPRINT << "Node not found in storage, creating new node";
+          DPRINT << "Node not found in node_repository, creating new node";
           nodes_to_create.push_back(std::move(item));
           continue;
         }
@@ -189,7 +189,7 @@ void MctsGatherWorker::GatherDescent(size_t target_batch_size) {
         update->IncrementEdgeN(edge_infos.edge_N);
       }
 
-      // Create new nodes for the work items that were not found in the storage.
+      // Create new nodes for the work items that were not found in the node_repository.
       if (!nodes_to_create.empty()) {
         DPRINT_SCOPE("Creating new nodes. count=" +
                      std::to_string(nodes_to_create.size()));

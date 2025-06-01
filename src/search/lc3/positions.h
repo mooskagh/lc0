@@ -4,7 +4,7 @@
 
 #include "chess/gamestate.h"
 #include "chess/position.h"
-#include "search/lc3/storage.h"
+#include "search/lc3/node_repository.h"
 #include "utils/tree.h"
 
 namespace lczero {

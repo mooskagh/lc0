@@ -12,14 +12,14 @@ class FreeListAllocator;
 
 namespace lc3 {
 
-class NodeStorage;
+class NodeRepository;
 class SearchChannels;
 struct EvalItem;
 
 using EvalItemPool = FreeListAllocator<EvalItem, 1024>;
 
 struct Context {
-  NodeStorage* storage;
+  NodeRepository* node_repository;
   SearchChannels* search_channels;
   Variation* head;
   EvalItemPool* eval_item_pool;
