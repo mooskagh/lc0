@@ -96,6 +96,10 @@ void EvalWorker::Collect() {
   DPRINT << "Collected " << batched_eval_items_.size() << " items";
 }
 
+void EvalWorker::SendCompletedEvalItem(EvalItem* item) {
+  ctx_.search_channels->SendEvalResults(eval_task_idx_, std::span(&item, 1));
+}
+
 void EvalWorker::SendCompletedBatchItems() {
   ctx_.search_channels->SendEvalResults(eval_task_idx_,
                                         std::span(batched_eval_items_));

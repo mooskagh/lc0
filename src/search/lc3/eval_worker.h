@@ -18,7 +18,7 @@ class EvalWorker {
   void OneStep();
 
  private:
-  void SendCompletedEvalItem(EvalItem*) { NotImplemented(); }
+  void SendCompletedEvalItem(EvalItem*);
   void SendCompletedBatchItems();
 
   void Collect();
