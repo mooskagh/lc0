@@ -52,13 +52,16 @@ void MergeNodeUpdates(NodeUpdate* dst, const NodeUpdate& src) {
   dst->num_visits += src.num_visits;
 }
 
-void MoveNodeUpdateToParent(NodeUpdate* node_update) {
+size_t MoveNodeUpdateToParent(NodeUpdate* node_update) {
   assert(node_update->variation.has_parent());
+  size_t idx_in_parent =
+      node_update->variation->idx_in_parent;  // Save idx_in_parent for later.
   node_update->variation =
       node_update->variation.parent();  // Move to parent variation.
   node_update->v = -node_update->v;     // Negate v for backprop as it's a
-                                     // opponent's perspective.
+                                        // opponent's perspective.
   node_update->m -= 1;  // Decrement "moves left" for a parent node.
+  return idx_in_parent;
 };
 
 struct BackPropItem {
@@ -136,13 +139,13 @@ void BackpropWorker::OneStep() {
             update_lock.Fetch(item->variation->hash);
         // The node was already created by the gather thread.
         assert(node_to_update);
-        {
-          DPRINT_SCOPE("Moves:");
-          for (size_t j = 0; j < item->moves.size(); ++j) {
-            DPRINT << "  move=" << item->moves[j].ToString(true)
-                   << ", p=" << item->p[j];
-          }
-        }
+        // {
+        //   DPRINT_SCOPE("Moves:");
+        //   for (size_t j = 0; j < item->moves.size(); ++j) {
+        //     DPRINT << "  move=" << item->moves[j].ToString(true)
+        //            << ", p=" << item->p[j];
+        //   }
+        // }
         node_to_update->SetEdgeData(item->moves, item->p);
         if (item->terminal_type != EvalItem::TerminalType::kNonTerminal) {
           DPRINT << "Node is terminal, type=" << int(item->terminal_type);
@@ -161,10 +164,9 @@ void BackpropWorker::OneStep() {
             .agg_m = item->m,
         });
         if (item->variation->idx_in_parent != kNoIdxInParent) {
-          DPRINT << "Forwarding to parent as " << num_visits_to_apply
-                 << " visits";
           backprop_heap.push_back(
               EvalItemToBackpropItem(item, num_visits_to_apply));
+          DPRINT << "Forwarde to parent " << backprop_heap.back().ToString();
         }
       }
       // Fetch more items if they are available.
@@ -191,8 +193,9 @@ void BackpropWorker::OneStep() {
     NodeHash cur_hash = node_update.variation->hash;
     while (!backprop_heap.empty() &&
            backprop_heap.front().node_update.variation->hash == cur_hash) {
+      DPRINT_SCOPE("Merging backprop");
       BackPropItem& backprop_item = backprop_heap.front();
-      DPRINT << "Merging backprop item: " << backprop_item.ToString();
+      DPRINT << backprop_item.ToString();
 
       visits_to_undo += backprop_item.edge_update.visits_to_undo;
       MergeNodeUpdates(&node_update, backprop_item.node_update);
@@ -217,13 +220,14 @@ void BackpropWorker::OneStep() {
     DPRINT << "Accumulated " << edge_updates.size() << " edge updates.";
     update->UpdateEdgeData(edge_updates);
     if (node_update.variation->idx_in_parent != kNoIdxInParent) {
-      MoveNodeUpdateToParent(&node_update);
+      const size_t idx_in_parent = MoveNodeUpdateToParent(&node_update);
       backprop_heap.push_back(
           {.node_update = node_update,
-           .edge_update = {.edge_idx = node_update.variation->idx_in_parent,
+           .edge_update = {.edge_idx = idx_in_parent,
                            .visits_to_undo = visits_to_undo,
                            .agg_q = ComputeQ(node_value.agg_v, node_value.agg_d,
                                              node_value.agg_m)}});
+      DPRINT << "Forwarded to parent " << backprop_heap.back().ToString();
       std::push_heap(backprop_heap.begin(), backprop_heap.end());
     }
   }
