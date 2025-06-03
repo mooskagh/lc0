@@ -1,3 +1,5 @@
+#define LCZERO_DEBUG_LOGGING
+
 #include "search/lc3/node_repository.h"
 
 namespace lczero {
@@ -26,7 +28,17 @@ void NodeMutation::SetEdgeData(std::span<const Move> moves,
   data_->p.assign(p.begin(), p.end());
 }
 
+namespace {
+void PrintStorageNodeData(const char* prefix, const StorageNodeData& data) {
+  DPRINT << prefix << " n=" << data.n << ", agg_v=" << data.agg_v
+         << ", agg_d=" << data.agg_d << ", agg_m=" << data.agg_m;
+}
+}  // namespace
+
 StorageNodeData NodeMutation::AccumulateNodeData(StorageNodeData new_data) {
+  DPRINT_SCOPE("AccumulateNodeData");
+  PrintStorageNodeData("Cur:", data_->value);
+  PrintStorageNodeData("New:", new_data);
   if (new_data.n <= 0) return data_->value;
 
   // Calculate the weight for the new data
@@ -37,17 +49,18 @@ StorageNodeData NodeMutation::AccumulateNodeData(StorageNodeData new_data) {
   data_->value.agg_d += weight * (new_data.agg_d - data_->value.agg_d);
   data_->value.agg_m += weight * (new_data.agg_m - data_->value.agg_m);
 
+  PrintStorageNodeData("Res:", data_->value);
   return data_->value;
 }
 
 void NodeMutation::UpdateEdgeData(std::span<const StorageEdgePatch> updates) {
   assert(!updates.empty());
-  size_t max_idx =
-      std::max_element(updates.begin(), updates.end(),
-                       [](const StorageEdgePatch& a, const StorageEdgePatch& b) {
-                         return a.edge_idx < b.edge_idx;
-                       })
-          ->edge_idx;
+  size_t max_idx = std::max_element(updates.begin(), updates.end(),
+                                    [](const StorageEdgePatch& a,
+                                       const StorageEdgePatch& b) {
+                                      return a.edge_idx < b.edge_idx;
+                                    })
+                       ->edge_idx;
   if (max_idx >= data_->edges.size()) {
     data_->edges.resize(max_idx + 1);
   }

@@ -171,6 +171,7 @@ void MctsGatherWorker::GatherDescent(size_t target_batch_size) {
             DistributeVisits(depth, item.batch_size, node_n, edge_infos.edge_P,
                              edge_infos.edge_Q, edge_infos.edge_N);
         // Spawn new work items for the children.
+        DPRINT_SCOPE("Spawning children");
         for (size_t i = 0; i < num_moves_to_fetch; ++i) {
           if (edge_visits[i] == 0) continue;  // TODO factor out into variable.
           edge_infos.edge_N[i] += edge_visits[i];

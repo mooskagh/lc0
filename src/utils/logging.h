@@ -106,8 +106,11 @@ class DebugLogIndentIncrementer {
 
 #if !defined(NDEBUG) && defined(LCZERO_DEBUG_LOGGING)
 
+#define _DPRINT_CONCAT_IMPL(prefix, suffix) prefix##suffix
+#define _DPRINT_CONCAT(prefix, suffix) _DPRINT_CONCAT_IMPL(prefix, suffix)
 #define DPRINT_SCOPE(msg) \
-  ::lczero::DebugLogIndentIncrementer debug_log_indent_incrementer(msg)
+  ::lczero::DebugLogIndentIncrementer _DPRINT_CONCAT(n890v3h0da_, __LINE__)(msg)
+
 #define DPRINT CERR << DebugLogIndentIncrementer::LinePrefix() << " "
 
 #else

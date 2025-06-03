@@ -185,6 +185,7 @@ void BackpropWorker::OneStep() {
 
     // Extract the first item from the heap.
     size_t visits_to_undo = backprop_item.edge_update.visits_to_undo;
+    DPRINT << "visits_to_undo_so_far=" << visits_to_undo;
     std::vector<StorageEdgePatch> edge_updates{backprop_item.edge_update};
     NodeUpdate node_update = backprop_item.node_update;
     backprop_heap.pop_back();
@@ -198,6 +199,9 @@ void BackpropWorker::OneStep() {
       DPRINT << backprop_item.ToString();
 
       visits_to_undo += backprop_item.edge_update.visits_to_undo;
+      DPRINT << "visits_to_undo += " << backprop_item.edge_update.visits_to_undo
+             << " = " << visits_to_undo;
+
       MergeNodeUpdates(&node_update, backprop_item.node_update);
       edge_updates.push_back(backprop_item.edge_update);
 
@@ -211,8 +215,10 @@ void BackpropWorker::OneStep() {
     std::optional<NodeMutation> update =
         update_lock.Fetch(node_update.variation->hash);
     assert(update);
+    DPRINT << "About to call accumulate: num_visits=" << node_update.num_visits
+           << ", visits_to_undo=" << visits_to_undo;
     StorageNodeData node_value = update->AccumulateNodeData({
-        .n = node_update.num_visits - visits_to_undo,
+        .n = node_update.num_visits,
         .agg_v = node_update.v,
         .agg_d = node_update.d,
         .agg_m = node_update.m,
