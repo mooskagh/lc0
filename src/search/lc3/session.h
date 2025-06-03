@@ -50,11 +50,14 @@ class SearchSession {
   void Abort() { NotImplemented(); }
   void Wait() { NotImplemented(); }
   void OneStep() {
-    for (int i = 0; i < 2; ++i) {
+    for (int i = 0; i < 20000; ++i) {
       gather_worker_->GatherDescent(256);
       eval_worker_->OneStep();
       backprop_worker_->OneStep();
+      CERR
+          << "\n\n\n##########################################################";
       CERR << "Done " << i << " step(s) of the search session.";
+      CERR << "##########################################################\n";
     }
   }
 

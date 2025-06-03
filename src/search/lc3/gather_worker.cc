@@ -170,11 +170,12 @@ void MctsGatherWorker::GatherDescent(size_t target_batch_size) {
         std::vector<size_t> edge_visits =
             DistributeVisits(depth, item.batch_size, node_n, edge_infos.edge_P,
                              edge_infos.edge_Q, edge_infos.edge_N);
+        update->IncrementEdgeN(edge_visits);
         // Spawn new work items for the children.
         DPRINT_SCOPE("Spawning children");
+        // TODO no need to hold an `update` lock.
         for (size_t i = 0; i < num_moves_to_fetch; ++i) {
           if (edge_visits[i] == 0) continue;  // TODO factor out into variable.
-          edge_infos.edge_N[i] += edge_visits[i];
           const Move& move = edge_infos.moves[i];
           DPRINT << "pos=" << node->position.DebugString()
                  << ", move=" << move.ToString(true) << ", resulting="
@@ -188,7 +189,6 @@ void MctsGatherWorker::GatherDescent(size_t target_batch_size) {
               .batch_size = edge_visits[i],
           });
         }
-        update->IncrementEdgeN(edge_infos.edge_N);
       }
 
       // Create new nodes for the work items that were not found in the
