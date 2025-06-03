@@ -8,8 +8,8 @@
 #include "absl/cleanup/cleanup.h"
 #include "chess/gamestate.h"
 #include "search/lc3/channels.h"
-#include "search/lc3/positions.h"
 #include "search/lc3/node_repository.h"
+#include "search/lc3/positions.h"
 #include "utils/freelist.h"
 
 // TODO Make it a function and move to logic.h
@@ -172,6 +172,7 @@ void MctsGatherWorker::GatherDescent(size_t target_batch_size) {
                              edge_infos.edge_Q, edge_infos.edge_N);
         // Spawn new work items for the children.
         for (size_t i = 0; i < num_moves_to_fetch; ++i) {
+          if (edge_visits[i] == 0) continue;  // TODO factor out into variable.
           edge_infos.edge_N[i] += edge_visits[i];
           const Move& move = edge_infos.moves[i];
           DPRINT << "pos=" << node->position.DebugString()
@@ -189,7 +190,8 @@ void MctsGatherWorker::GatherDescent(size_t target_batch_size) {
         update->IncrementEdgeN(edge_infos.edge_N);
       }
 
-      // Create new nodes for the work items that were not found in the node_repository.
+      // Create new nodes for the work items that were not found in the
+      // node_repository.
       if (!nodes_to_create.empty()) {
         DPRINT_SCOPE("Creating new nodes. count=" +
                      std::to_string(nodes_to_create.size()));
