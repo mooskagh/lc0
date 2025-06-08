@@ -117,7 +117,7 @@ class DebugLogIndentIncrementer {
 
 #define DPRINT_SCOPE(msg)
 #define DPRINT \
-  if constexpr (false) ::lczero::StderrLogMessage(__FILE__, __LINE__);
+  if constexpr (false) ::lczero::StderrLogMessage(__FILE__, __LINE__)
 #endif
 
 }  // namespace lczero

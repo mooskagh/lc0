@@ -9,9 +9,15 @@ UpdateLock NodeRepository::GetUpdateLock() { return UpdateLock(this); }
 
 NodeMutation::NodeMutation(UpdateLock* lock, internal::NodeData* data)
     : lock_(lock), data_(data) {
+#ifndef NDEBUG
   ++lock_->ref_count_;
+#endif
 }
-NodeMutation::~NodeMutation() { --lock_->ref_count_; }
+NodeMutation::~NodeMutation() {
+#ifndef NDEBUG
+  --lock_->ref_count_;
+#endif
+}
 
 std::optional<NodeMutation> UpdateLock::Fetch(NodeHash node) {
   auto iter = node_repository_->nodes_.find(node.hash);
