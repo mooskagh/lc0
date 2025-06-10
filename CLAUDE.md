@@ -36,6 +36,7 @@
 * `src/chess/` - Contains chess logic (position, movegen, etc.):
 * `src/utils/` - Contains utility code (logging, exceptions, etc.):
 * `src/tools/`, `src/selfplay` - Contains tools (benchmark, network conversion, etc.):
+* Directories `subprojects/`, `builddir/`, `build/` contain gazillion of unrelated files, exclude them from your searches.
 
 ## Coding standards
 
@@ -46,3 +47,5 @@
   * Use `lczero::Exception` for exceptions, no other exceptions allowed. No much exception safety is needed.
   * Non-const reference function parameters are not encouraged (over pointers) nor discouraged.
   * Single-statement if blocks should be written on one line without braces.
+* Every new file should contain a GPLv3 banner with:
+  * Additional exception under GNU GPL version 3 section 7 regarding NVIDIA libraries (see examples in other files).
