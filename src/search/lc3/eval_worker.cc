@@ -60,7 +60,7 @@ void EvalWorker::EnqueueIncomingTasks(std::span<EvalItem*> tasks) {
 void EvalWorker::OneStep() {
   computation_ = backend_->CreateComputation();
   Collect();
-  computation_->ComputeBlocking();
+  if (computation_->UsedBatchSize() > 0) computation_->ComputeBlocking();
   SendCompletedBatchItems();
 }
 
@@ -73,8 +73,8 @@ void EvalWorker::Collect() {
   // TODO replace with unique_ptr[]
   std::vector<EvalItem*> eval_tasks(recommended_batch_size);
 
-  // While we have nothing to compute, wait blockingly.
-  while (computation_->UsedBatchSize() == 0) {
+  // Do one blocking fetch to get initial work.
+  {
     DPRINT << "Waiting blockingly";
     size_t num_nodes = ctx_.search_channels->FetchEvalRequests(
         std::span<EvalItem*>(eval_tasks.data(), recommended_batch_size),
