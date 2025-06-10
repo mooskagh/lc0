@@ -47,5 +47,6 @@
   * Use `lczero::Exception` for exceptions, no other exceptions allowed. No much exception safety is needed.
   * Non-const reference function parameters are not encouraged (over pointers) nor discouraged.
   * Single-statement if blocks should be written on one line without braces.
+* Run `clang-format` on the code before committing.
 * Every new file should contain a GPLv3 banner with:
   * Additional exception under GNU GPL version 3 section 7 regarding NVIDIA libraries (see examples in other files).
