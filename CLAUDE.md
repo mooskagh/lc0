@@ -45,3 +45,4 @@
   * Use `#pragma once` instead of header guards.
   * Use `lczero::Exception` for exceptions, no other exceptions allowed. No much exception safety is needed.
   * Non-const reference function parameters are not encouraged (over pointers) nor discouraged.
+  * Single-statement if blocks should be written on one line without braces.
