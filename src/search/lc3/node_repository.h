@@ -53,6 +53,17 @@ struct StorageEdgePatch {
   float agg_q;
 };
 
+// All fields are out parameters. FetchEdgeData fills these spans with data
+// from the node's internal arrays. The moves, p, q, and n arrays are parallel
+// with the same index representing the same move across all arrays.
+// Spans should be pre-allocated with sufficient size.
+struct EdgeDataRequest {
+  std::span<Move> moves = {};
+  std::span<float> p = {};
+  std::span<float> q = {};
+  std::span<uint64_t> n = {};
+};
+
 class NodeMutation {
  public:
   ~NodeMutation();
@@ -70,16 +81,6 @@ class NodeMutation {
   size_t FetchNumMoves() const { return data_->moves.size(); }
   size_t FetchNumMovesWithVisits() const { return data_->edges.size(); }
 
-  // All fields are out parameters. FetchEdgeData fills these spans with data
-  // from the node's internal arrays. The moves, p, q, and n arrays are parallel
-  // with the same index representing the same move across all arrays.
-  // Spans should be pre-allocated with sufficient size.
-  struct EdgeDataRequest {
-    std::span<Move> moves = {};
-    std::span<float> p = {};
-    std::span<float> q = {};
-    std::span<uint64_t> n = {};
-  };
   void FetchEdgeData(EdgeDataRequest request) const;
   // TODO potentially combine IncrementEdgeN and UpdateEdgeData
   void IncrementEdgeN(std::span<const uint64_t>) const;
@@ -102,6 +103,10 @@ class NodeView {
   NodeView(AccessLock* lock, internal::NodeData* data);
 
   uint64_t GetN() const { return data_->value.n; }
+  size_t FetchNumMoves() const { return data_->moves.size(); }
+  size_t FetchNumMovesWithVisits() const { return data_->edges.size(); }
+
+  void FetchEdgeData(EdgeDataRequest request) const;
 
  private:
   AccessLock* const lock_;

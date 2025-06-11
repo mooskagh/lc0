@@ -129,6 +129,28 @@ void NodeMutation::IncrementEdgeN(std::span<const uint64_t> n_delta) const {
   for (size_t i = 0; i < n_delta.size(); ++i) edges[i].n += n_delta[i];
 }
 
+void NodeView::FetchEdgeData(EdgeDataRequest request) const {
+  const size_t num_moves = request.moves.size();
+  assert(request.p.size() >= num_moves);
+  assert(request.q.size() >= num_moves);
+  assert(request.n.size() >= num_moves);
+
+  std::memcpy(request.moves.data(), data_->moves.data(),
+              num_moves * sizeof(Move));
+  std::memcpy(request.p.data(), data_->p.data(), num_moves * sizeof(float));
+  const size_t num_edges = std::min(num_moves, data_->edges.size());
+  for (size_t i = 0; i < num_edges; ++i) {
+    request.q[i] = data_->edges[i].q;
+    request.n[i] = data_->edges[i].n;
+  }
+  if (num_edges < num_moves) {
+    std::memset(request.q.data() + num_edges, 0,
+                (num_moves - num_edges) * sizeof(request.q[0]));
+    std::memset(request.n.data() + num_edges, 0,
+                (num_moves - num_edges) * sizeof(request.n[0]));
+  }
+}
+
 AccessLock::~AccessLock() { assert(ref_count_ == 0); }
 
 CreationLock CreationLock::FromAccessLock(AccessLock&& lock) {
