@@ -125,7 +125,7 @@ void BackpropWorker::OneStep() {
     // Fetch the first batch blockingly, then try to fetch more non-blockingly.
     size_t num_items =
         ctx_.search_channels->FetchEvalResults(buffer, /*block=*/true);
-    UpdateLock update_lock = ctx_.node_repository->GetUpdateLock();
+    AccessLock update_lock = ctx_.node_repository->GetAccessLock();
     do {
       DPRINT << "fetched num_items=" << num_items;
       for (size_t i = 0; i < num_items; ++i) {
@@ -136,7 +136,7 @@ void BackpropWorker::OneStep() {
                      ", num_visits=" + std::to_string(item->num_visits));
         SortMovesByPolicy(item->moves, item->p);
         std::optional<NodeMutation> node_to_update =
-            update_lock.Fetch(item->variation->hash);
+            update_lock.FetchMutable(item->variation->hash);
         // The node was already created by the gather thread.
         assert(node_to_update);
         // {
@@ -211,9 +211,9 @@ void BackpropWorker::OneStep() {
     DPRINT << "Merged " << edge_updates.size() << " items";
 
     // TODO buffer this and apply in batches.
-    UpdateLock update_lock = ctx_.node_repository->GetUpdateLock();
+    AccessLock update_lock = ctx_.node_repository->GetAccessLock();
     std::optional<NodeMutation> update =
-        update_lock.Fetch(node_update.variation->hash);
+        update_lock.FetchMutable(node_update.variation->hash);
     assert(update);
     DPRINT << "About to call accumulate: num_visits=" << node_update.num_visits
            << ", visits_to_undo=" << visits_to_undo;

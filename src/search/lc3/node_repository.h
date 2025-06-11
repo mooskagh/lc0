@@ -13,7 +13,7 @@ namespace lczero {
 namespace lc3 {
 
 class NodeRepository;
-class UpdateLock;
+class AccessLock;
 struct NodeHash {
   uint64_t hash;
   bool operator==(const NodeHash& other) const = default;
@@ -57,7 +57,7 @@ class NodeMutation {
  public:
   ~NodeMutation();
   // Should be private but std::optional needs it.
-  NodeMutation(UpdateLock* lock, internal::NodeData* data);
+  NodeMutation(AccessLock* lock, internal::NodeData* data);
   NodeMutation(const NodeMutation&) = delete;
   NodeMutation& operator=(const NodeMutation&) = delete;
   // If/when we implement move semantics, make the constructor above private.
@@ -89,21 +89,22 @@ class NodeMutation {
   StorageNodeData AccumulateNodeData(StorageNodeData);
 
  private:
-  UpdateLock* const lock_;
+  AccessLock* const lock_;
   internal::NodeData* const data_;
-  friend class UpdateLock;
+  friend class AccessLock;
   friend class std::optional<NodeMutation>;
 };
 
 // While this lock is held, no hashmap rehashing will occur.
-class UpdateLock {
+class AccessLock {
  public:
   // Returns nullopt if the node is not found.
-  std::optional<NodeMutation> Fetch(NodeHash node);
-  ~UpdateLock();
+  std::optional<NodeMutation> FetchMutable(NodeHash node);
+  ~AccessLock();
 
  private:
-  UpdateLock(NodeRepository* node_repository) : node_repository_(node_repository) {}
+  AccessLock(NodeRepository* node_repository)
+      : node_repository_(node_repository) {}
 
   NodeRepository* const node_repository_;
 #ifndef NDEBUG
@@ -116,12 +117,13 @@ class UpdateLock {
 
 class CreationLock {
  public:
-  static CreationLock FromUpdateLock(UpdateLock&& lock);
+  static CreationLock FromAccessLock(AccessLock&& lock);
   // Creates "empty" node.
   bool Create(NodeHash node_hash);
 
  private:
-  CreationLock(NodeRepository* node_repository) : node_repository_(node_repository) {}
+  CreationLock(NodeRepository* node_repository)
+      : node_repository_(node_repository) {}
   NodeRepository* const node_repository_;
 #ifndef NDEBUG
   uint32_t ref_count_ = 0;  // For debugging only.
@@ -130,11 +132,11 @@ class CreationLock {
 
 class NodeRepository {
  public:
-  UpdateLock GetUpdateLock();
+  AccessLock GetAccessLock();
 
  private:
   absl::flat_hash_map<uint64_t, internal::NodeData> nodes_;
-  friend class UpdateLock;
+  friend class AccessLock;
   friend class NodeMutation;
   friend class CreationLock;
 };

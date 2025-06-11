@@ -5,9 +5,9 @@
 namespace lczero {
 namespace lc3 {
 
-UpdateLock NodeRepository::GetUpdateLock() { return UpdateLock(this); }
+AccessLock NodeRepository::GetAccessLock() { return AccessLock(this); }
 
-NodeMutation::NodeMutation(UpdateLock* lock, internal::NodeData* data)
+NodeMutation::NodeMutation(AccessLock* lock, internal::NodeData* data)
     : lock_(lock), data_(data) {
 #ifndef NDEBUG
   ++lock_->ref_count_;
@@ -19,7 +19,7 @@ NodeMutation::~NodeMutation() {
 #endif
 }
 
-std::optional<NodeMutation> UpdateLock::Fetch(NodeHash node) {
+std::optional<NodeMutation> AccessLock::FetchMutable(NodeHash node) {
   auto iter = node_repository_->nodes_.find(node.hash);
   if (iter == node_repository_->nodes_.end()) return std::nullopt;
   return std::optional<NodeMutation>(std::in_place, this, &iter->second);
@@ -110,9 +110,9 @@ void NodeMutation::IncrementEdgeN(std::span<const uint64_t> n_delta) const {
   for (size_t i = 0; i < n_delta.size(); ++i) edges[i].n += n_delta[i];
 }
 
-UpdateLock::~UpdateLock() { assert(ref_count_ == 0); }
+AccessLock::~AccessLock() { assert(ref_count_ == 0); }
 
-CreationLock CreationLock::FromUpdateLock(UpdateLock&& lock) {
+CreationLock CreationLock::FromAccessLock(AccessLock&& lock) {
   assert(lock.ref_count_ == 0);
   return CreationLock(lock.node_repository_);
 }

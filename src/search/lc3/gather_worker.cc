@@ -124,12 +124,12 @@ void MctsGatherWorker::GatherDescent(size_t target_batch_size) {
     std::vector<NodeAndBatch> nodes_to_create;
     // Fetch nodes from the node_repository.
     {
-      UpdateLock lock = ctx_.node_repository->GetUpdateLock();
+      AccessLock lock = ctx_.node_repository->GetAccessLock();
       for (NodeAndBatch& item : work_queue) {
         DPRINT_SCOPE("Item " + item.node->position.DebugString());
         DPRINT << "batch_size=" << item.batch_size;
         Variation& node = item.node;
-        std::optional<NodeMutation> update = lock.Fetch(node->hash);
+        std::optional<NodeMutation> update = lock.FetchMutable(node->hash);
         if (!update) {
           DPRINT << "Node not found in node_repository, creating new node";
           nodes_to_create.push_back(std::move(item));
@@ -197,7 +197,7 @@ void MctsGatherWorker::GatherDescent(size_t target_batch_size) {
         DPRINT_SCOPE("Creating new nodes. count=" +
                      std::to_string(nodes_to_create.size()));
         CreationLock create_lock =
-            CreationLock::FromUpdateLock(std::move(lock));
+            CreationLock::FromAccessLock(std::move(lock));
         std::vector<EvalItem*> eval_items;
         eval_items.reserve(nodes_to_create.size());
         for (NodeAndBatch& item : nodes_to_create) {
