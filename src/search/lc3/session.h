@@ -7,6 +7,7 @@
 #include "search/lc3/eval_worker.h"
 #include "search/lc3/gather_worker.h"
 #include "search/lc3/positions.h"
+#include "search/lc3/watchdog_worker.h"
 #include "utils/exception.h"
 #include "utils/freelist.h"
 
@@ -45,6 +46,7 @@ class SearchSession {
     backprop_worker_ =
         std::make_unique<BackpropWorker>(context,
                                          /*backprop_task_idx=*/0);
+    watchdog_worker_ = std::make_unique<WatchdogWorker>(context);
   }
 
   void Abort() { NotImplemented(); }
@@ -54,6 +56,7 @@ class SearchSession {
       gather_worker_->GatherDescent(256);
       eval_worker_->OneStep();
       backprop_worker_->OneStep();
+      watchdog_worker_->CheckOnce();
       CERR
           << "\n\n\n##########################################################";
       CERR << "Done " << i << " step(s) of the search session.";
@@ -68,6 +71,7 @@ class SearchSession {
   std::unique_ptr<MctsGatherWorker> gather_worker_;
   std::unique_ptr<EvalWorker> eval_worker_;
   std::unique_ptr<BackpropWorker> backprop_worker_;
+  std::unique_ptr<WatchdogWorker> watchdog_worker_;
   EvalItemPool eval_item_pool_;
 };
 

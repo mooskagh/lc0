@@ -19,10 +19,29 @@ NodeMutation::~NodeMutation() {
 #endif
 }
 
+NodeView::NodeView(AccessLock* lock, internal::NodeData* data)
+    : lock_(lock), data_(data) {
+#ifndef NDEBUG
+  ++lock_->ref_count_;
+#endif
+}
+
+NodeView::~NodeView() {
+#ifndef NDEBUG
+  --lock_->ref_count_;
+#endif
+}
+
 std::optional<NodeMutation> AccessLock::FetchMutable(NodeHash node) {
   auto iter = node_repository_->nodes_.find(node.hash);
   if (iter == node_repository_->nodes_.end()) return std::nullopt;
   return std::optional<NodeMutation>(std::in_place, this, &iter->second);
+}
+
+std::optional<NodeView> AccessLock::FetchReadOnly(NodeHash node) {
+  auto iter = node_repository_->nodes_.find(node.hash);
+  if (iter == node_repository_->nodes_.end()) return std::nullopt;
+  return std::optional<NodeView>(std::in_place, this, &iter->second);
 }
 
 void NodeMutation::SetEdgeData(std::span<const Move> moves,

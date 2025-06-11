@@ -60,6 +60,7 @@ void EvalWorker::EnqueueIncomingTasks(std::span<EvalItem*> tasks) {
 void EvalWorker::OneStep() {
   computation_ = backend_->CreateComputation();
   Collect();
+  CERR << computation_->UsedBatchSize() << " items to compute";
   if (computation_->UsedBatchSize() > 0) computation_->ComputeBlocking();
   SendCompletedBatchItems();
 }

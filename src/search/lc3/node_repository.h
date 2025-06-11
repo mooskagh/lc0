@@ -95,11 +95,25 @@ class NodeMutation {
   friend class std::optional<NodeMutation>;
 };
 
+class NodeView {
+ public:
+  ~NodeView();
+  // Should be private but std::optional needs it.
+  NodeView(AccessLock* lock, internal::NodeData* data);
+
+  uint64_t GetN() const { return data_->value.n; }
+
+ private:
+  AccessLock* const lock_;
+  internal::NodeData* const data_;
+};
+
 // While this lock is held, no hashmap rehashing will occur.
 class AccessLock {
  public:
   // Returns nullopt if the node is not found.
   std::optional<NodeMutation> FetchMutable(NodeHash node);
+  std::optional<NodeView> FetchReadOnly(NodeHash node);
   ~AccessLock();
 
  private:
@@ -111,6 +125,7 @@ class AccessLock {
   uint32_t ref_count_ = 0;  // For debugging only.
 #endif
   friend class NodeMutation;
+  friend class NodeView;
   friend class NodeRepository;
   friend class CreationLock;
 };
