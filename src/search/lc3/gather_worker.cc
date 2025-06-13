@@ -150,7 +150,7 @@ void MctsGatherWorker::GatherDescent(size_t target_batch_size) {
             std::min(num_moves, kExtraFetch + num_moves_with_visits);
 
         EdgeInfos edge_infos(num_moves_to_fetch);
-        NodeMutation::EdgeDataRequest request{
+        EdgeDataRequest request{
             .moves = edge_infos.moves,
             .p = edge_infos.edge_P,
             .q = edge_infos.edge_Q,

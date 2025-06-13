@@ -10,6 +10,7 @@ class WatchdogWorker {
   WatchdogWorker(const Context& context) : ctx_(context) {}
 
   void CheckOnce();
+  std::vector<Move> BuildPV() const;
 
  private:
   const Context ctx_;
