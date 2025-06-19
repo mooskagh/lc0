@@ -17,7 +17,7 @@ namespace lc3 {
 class SearchSession {
  public:
   SearchSession(NodeRepository* node_repository, const GameState& game_state,
-                Backend* backend)
+                Backend* backend, UciResponder* uci_responder)
       : position_tree_(
             /*hash=*/NodeHash{game_state.startpos.Hash()},
             /*position=*/game_state.startpos,
@@ -38,6 +38,7 @@ class SearchSession {
         .search_channels = &search_channels_,
         .head = &head_,
         .eval_item_pool = &eval_item_pool_,
+        .uci_responder = uci_responder,
     };
     gather_worker_ =
         std::make_unique<MctsGatherWorker>(context, /*gather_task_idx=*/0);
@@ -52,7 +53,7 @@ class SearchSession {
   void Abort() { NotImplemented(); }
   void Wait() { NotImplemented(); }
   void OneStep() {
-    for (int i = 0; i < 20000; ++i) {
+    for (int i = 0; i < 5; ++i) {
       gather_worker_->GatherDescent(256);
       eval_worker_->OneStep();
       backprop_worker_->OneStep();

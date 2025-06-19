@@ -27,9 +27,9 @@
 
 #include "search/lc3/lc3_engine.h"
 
+#include "search/lc3/node_repository.h"
 #include "search/lc3/positions.h"
 #include "search/lc3/session.h"
-#include "search/lc3/node_repository.h"
 #include "search/register.h"
 
 namespace lczero {
@@ -57,7 +57,8 @@ void Lc3Engine::SetPosition(const GameState& game_state) {
 void Lc3Engine::StartSearch(const GoParams& /* go_params */) {
   TODO("Do not ignore go_params");
   EnsureSearchStopped();
-  search_ = std::make_unique<SearchSession>(&node_repository_, game_state_, backend_);
+  search_ = std::make_unique<SearchSession>(&node_repository_, game_state_,
+                                            backend_, uci_responder_);
   search_->OneStep();
 }
 

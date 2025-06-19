@@ -4,6 +4,7 @@
 #include <string>
 #include <vector>
 
+#include "chess/callbacks.h"
 #include "chess/position.h"
 #include "utils/hashcat.h"
 
@@ -11,16 +12,19 @@ namespace lczero {
 namespace lc3 {
 
 void WatchdogWorker::CheckOnce() {
-  AccessLock lock = ctx_.node_repository->GetAccessLock();
-  std::optional<NodeView> root_view = lock.FetchReadOnly((*ctx_.head)->hash);
+  auto lock = ctx_.node_repository->GetAccessLock();
+  auto root_view = lock.FetchReadOnly((*ctx_.head)->hash);
   if (!root_view) return;
 
-  std::vector<Move> pv = BuildPV();
-  std::string pv_str = "N=" + std::to_string(root_view->GetN()) + " PV=";
-  for (const Move& move : pv) {
-    pv_str += move.ToString(true) + " ";
+  auto pv = BuildPV();
+  const bool head_is_black = (*ctx_.head)->position.IsBlackToMove();
+  for (size_t i = 0; i < pv.size(); ++i) {
+    if (head_is_black == (i % 2 == 0)) pv[i].Flip();
   }
-  CERR << pv_str;
+
+  std::vector<ThinkingInfo> infos = {
+      {.nodes = static_cast<int64_t>(root_view->GetN()), .pv = std::move(pv)}};
+  ctx_.uci_responder->OutputThinkingInfo(&infos);
 }
 
 std::vector<Move> WatchdogWorker::BuildPV() const {

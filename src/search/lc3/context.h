@@ -10,6 +10,8 @@ namespace lczero {
 template <typename T, size_t N>
 class FreeListAllocator;
 
+class UciResponder;
+
 namespace lc3 {
 
 class NodeRepository;
@@ -23,6 +25,7 @@ struct Context {
   SearchChannels* search_channels;
   Variation* head;
   EvalItemPool* eval_item_pool;
+  UciResponder* uci_responder;
 };
 
 }  // namespace lc3
