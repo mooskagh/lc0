@@ -1,4 +1,4 @@
-// #define LCZERO_DEBUG_LOGGING
+#define LCZERO_DEBUG_LOGGING
 
 #include "search/lc3/node_repository.h"
 
@@ -161,6 +161,13 @@ void NodeView::FetchEdgeData(EdgeDataRequest request) const {
 
   fill_edge_data(request.q, [](const auto& edge) { return edge.q; });
   fill_edge_data(request.n, [](const auto& edge) { return edge.n; });
+}
+
+void NodeView::FetchNodeValue(NodeValueRequest request) const {
+  if (request.n) *request.n = data_->value.n;
+  if (request.agg_v) *request.agg_v = data_->value.agg_v;
+  if (request.agg_d) *request.agg_d = data_->value.agg_d;
+  if (request.agg_m) *request.agg_m = data_->value.agg_m;
 }
 
 AccessLock::~AccessLock() { assert(ref_count_ == 0); }

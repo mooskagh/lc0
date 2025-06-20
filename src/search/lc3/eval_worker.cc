@@ -1,4 +1,4 @@
-// #define LCZERO_DEBUG_LOGGING
+#define LCZERO_DEBUG_LOGGING
 
 #include "search/lc3/eval_worker.h"
 
@@ -60,7 +60,7 @@ void EvalWorker::EnqueueIncomingTasks(std::span<EvalItem*> tasks) {
 void EvalWorker::OneStep() {
   computation_ = backend_->CreateComputation();
   Collect();
-  CERR << computation_->UsedBatchSize() << " items to compute";
+  DPRINT << computation_->UsedBatchSize() << " items to compute";
   if (computation_->UsedBatchSize() > 0) computation_->ComputeBlocking();
   SendCompletedBatchItems();
 }

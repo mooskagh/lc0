@@ -64,6 +64,16 @@ struct EdgeDataRequest {
   std::span<uint64_t> n = {};
 };
 
+// All fields are out parameters. FetchNodeValue fills the pointed values
+// with data from the node's internal storage. Pointers may be null if
+// the corresponding value is not needed.
+struct NodeValueRequest {
+  uint64_t* n = nullptr;
+  double* agg_v = nullptr;
+  float* agg_d = nullptr;
+  float* agg_m = nullptr;
+};
+
 class NodeMutation {
  public:
   ~NodeMutation();
@@ -107,6 +117,7 @@ class NodeView {
   size_t FetchNumMovesWithVisits() const { return data_->edges.size(); }
 
   void FetchEdgeData(EdgeDataRequest request) const;
+  void FetchNodeValue(NodeValueRequest request) const;
 
  private:
   AccessLock* const lock_;

@@ -6,6 +6,7 @@
 
 #include "chess/callbacks.h"
 #include "chess/position.h"
+#include "search/lc3/debug.h"
 #include "utils/hashcat.h"
 
 namespace lczero {
@@ -15,6 +16,11 @@ void WatchdogWorker::CheckOnce() {
   auto lock = ctx_.node_repository->GetAccessLock();
   auto root_view = lock.FetchReadOnly((*ctx_.head)->hash);
   if (!root_view) return;
+
+  for (const auto& debug_line :
+       DebugNodeDataFromStorage(*root_view).ToStrings()) {
+    CERR << debug_line;
+  }
 
   auto pv = BuildPV();
   const bool head_is_black = (*ctx_.head)->position.IsBlackToMove();
