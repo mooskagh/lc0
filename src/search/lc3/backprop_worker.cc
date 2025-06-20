@@ -33,6 +33,13 @@ struct NodeUpdate {
   double v;
   float d;
   float m;
+
+  std::string ToString() const {
+    return "NodeUpdate{variation=" + variation->position.DebugString() +
+           ", num_visits=" + std::to_string(num_visits) +
+           ", v=" + std::to_string(v) + ", d=" + std::to_string(d) +
+           ", m=" + std::to_string(m) + "}";
+  }
 };
 
 // TODO move to logic.h
@@ -41,6 +48,8 @@ float ComputeQ(float v, float /* d */, float /* m */) { return v; }
 // TODO move to logic.h
 void MergeNodeUpdates(NodeUpdate* dst, const NodeUpdate& src) {
   assert(dst->variation->hash == src.variation->hash);
+  DPRINT << "Merging node updates: " << dst->ToString() << " <- "
+         << src.ToString();
 
   // dst v, d and q are weighted averages of v, d, q, weighted by
   // num_visits_to_apply.
@@ -50,6 +59,10 @@ void MergeNodeUpdates(NodeUpdate* dst, const NodeUpdate& src) {
   dst->d += (src.d - dst->d) * weight;
   dst->m += (src.m - dst->m) * weight;
   dst->num_visits += src.num_visits;
+
+  DPRINT << "Merge result: " << dst->ToString()
+         << ", total_visits=" << total_visits << ", weight=" << weight
+         << ", src.num_visits=" << src.num_visits;
 }
 
 size_t MoveNodeUpdateToParent(NodeUpdate* node_update) {
@@ -99,7 +112,7 @@ BackPropItem EvalItemToBackpropItem(EvalItem* item, size_t num_visits) {
               .variation = item->variation.parent(),
               .num_visits = num_visits,
               .v = -item->v,
-              .d = -item->d,
+              .d = item->d,
               .m = item->m - 1,
           },
       .edge_update =
