@@ -242,10 +242,11 @@ void BackpropWorker::OneStep() {
       const size_t idx_in_parent = MoveNodeUpdateToParent(&node_update);
       backprop_heap.push_back(
           {.node_update = node_update,
-           .edge_update = {.edge_idx = idx_in_parent,
-                           .visits_to_undo = visits_to_undo,
-                           .agg_q = ComputeQ(node_value.agg_v, node_value.agg_d,
-                                             node_value.agg_m)}});
+           .edge_update = {
+               .edge_idx = idx_in_parent,
+               .visits_to_undo = visits_to_undo,
+               .agg_q = -ComputeQ(node_value.agg_v, node_value.agg_d,
+                                  node_value.agg_m)}});
       DPRINT << "Forwarded to parent " << backprop_heap.back().ToString();
       std::push_heap(backprop_heap.begin(), backprop_heap.end());
     }

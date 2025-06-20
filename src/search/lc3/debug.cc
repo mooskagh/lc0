@@ -6,6 +6,8 @@
 #include <cstdint>
 #include <vector>
 
+#include "chess/position.h"
+
 namespace lczero {
 namespace lc3 {
 
@@ -45,6 +47,35 @@ DebugNodeData DebugNodeDataFromStorage(const NodeView& node_view) {
   }
 
   return result;
+}
+
+void PrintNodeTree(AccessLock* lock, std::ostream& os, const Position& pos,
+                   const NodeHash& root, int indent) {
+  std::optional<NodeView> node_view = lock->FetchReadOnly(root);
+  if (!node_view) {
+    os << "(nil)\n";
+    return;
+  }
+  DebugNodeData node = DebugNodeDataFromStorage(*node_view);
+  node_view->FetchNodeValue({.n = &node.n,
+                             .agg_v = &node.agg_v,
+                             .agg_d = &node.agg_d,
+                             .agg_m = &node.agg_m});
+  os << "AV:" << node.agg_v << " AD:" << node.agg_d << " AM:" << node.agg_m
+     << " N:" << node.n << " (" << pos.DebugString() << ")\n";
+
+  for (const auto& edge : node.edges) {
+    if (edge.n == 0) continue;  // Skip edges with no visits.
+    for (int i = 0; i < indent; ++i) {
+      os << "│ ";  // Indentation for child nodes.
+    }
+    os << edge.move.ToString(false)
+       << " P:" << edge.p << " Q:" << edge.q << " N:" << edge.n << " --> ";
+    Position child_pos(pos, edge.move);
+    PrintNodeTree(lock, os, child_pos,
+                  NodeHash{HashCat(root.hash, edge.move.raw_data())},
+                  indent + 1);
+  }
 }
 
 }  // namespace lc3

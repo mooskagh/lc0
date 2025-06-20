@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <cstdint>
 
+#include "chess/position.h"
 #include "chess/types.h"
 #include "search/lc3/node_repository.h"
 
@@ -29,6 +30,9 @@ struct DebugNodeData {
 };
 
 DebugNodeData DebugNodeDataFromStorage(const NodeView& node_view);
+
+void PrintNodeTree(AccessLock* lock, std::ostream& os, const Position& pos,
+                   const NodeHash& root, int indent = 0);
 
 }  // namespace lc3
 }  // namespace lczero
