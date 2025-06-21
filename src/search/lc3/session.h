@@ -19,7 +19,7 @@ class SearchSession {
   SearchSession(NodeRepository* node_repository, const GameState& game_state,
                 Backend* backend, UciResponder* uci_responder)
       : position_tree_(
-            /*hash=*/NodeHash{game_state.startpos.Hash()},
+            /*hash=*/NodeKey{game_state.startpos.Hash()},
             /*position=*/game_state.startpos,
             /*depth=*/0,
             /*idx_in_parent=*/-1),
@@ -28,7 +28,7 @@ class SearchSession {
   {
     for (const auto& move : game_state.moves) {
       head_ = head_.make_child(
-          /*hash=*/NodeHash{HashCat(head_->hash.hash, move.raw_data())},
+          /*hash=*/NodeKey{HashCat(head_->key.hash, move.raw_data())},
           /*position=*/Position(head_->position, move),
           /*depth=*/head_->depth + 1,
           /*idx_in_parent=*/kNoIdxInParent);

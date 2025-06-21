@@ -127,8 +127,11 @@ void MctsGatherWorker::GatherDescent(size_t target_batch_size) {
         DPRINT_SCOPE("Item " + item.node->position.DebugString());
         DPRINT << "batch_size=" << item.batch_size;
         Variation& node = item.node;
-        NodeHandle update = ctx_.node_repository->GetNodeForUpdate(node->key);
-        if (!update) {
+        NodeHandle update =
+            ctx_.node_repository->GetNodeForUpdate(node->key,
+                                                   /*create_if_missing=*/true);
+        assert(update);
+        if (update.IsNew()) {
           DPRINT << "Node not found in node_repository, creating new node";
           EnqueueNodeForEval(std::move(node), item.batch_size);
           continue;

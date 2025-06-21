@@ -14,7 +14,7 @@ namespace lc3 {
 
 struct NodeKey {
   uint64_t hash;
-  bool operator==(const NodeKey& other) const = default;
+  auto operator<=>(const NodeKey& other) const = default;
 };
 
 class NodeHandle {
@@ -58,6 +58,7 @@ class NodeHandle {
 
   // Return true if the handle is valid (i.e., it points to a node).
   operator bool() const;
+  // Returns true if the node has just been created.
   bool IsNew() const;
 
   // Node aggregates.
@@ -75,9 +76,8 @@ class NodeHandle {
 
 class NodeRepository {
  public:
-  NodeHandle GetNodeForUpdate(const NodeKey& key, bool create_if_missing = false);
-  // Returns whether the node was created.
-  bool CreateEmptyNode(const NodeKey& key);
+  NodeRepository() = default;
+  NodeHandle GetNodeForUpdate(const NodeKey& key, bool create_if_missing);
 
  private:
   // Disable copy and move semantics for NodeRepository.

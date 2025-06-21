@@ -13,12 +13,12 @@ namespace lczero {
 namespace lc3 {
 
 void WatchdogWorker::CheckOnce() {
-  auto lock = ctx_.node_repository->GetAccessLock();
-
-  // PrintNodeTree(&lock, std::cerr, (*ctx_.head)->position, (*ctx_.head)->hash);
-
-  auto root_view = lock.FetchReadOnly((*ctx_.head)->hash);
-  if (!root_view) return;
+  // PrintNodeTree(&lock, std::cerr, (*ctx_.head)->position,
+  // (*ctx_.head)->hash);
+  NodeHandle node_handle =
+      ctx_.node_repository->GetNodeForUpdate((*ctx_.head)->key,
+                                             /*create_if_missing=*/false);
+  if (!node_handle) return;
 
   // for (const auto& debug_line :
   //      DebugNodeDataFromStorage(*root_view).ToStrings()) {
@@ -32,27 +32,29 @@ void WatchdogWorker::CheckOnce() {
   }
 
   std::vector<ThinkingInfo> infos = {
-      {.nodes = static_cast<int64_t>(root_view->GetN()), .pv = std::move(pv)}};
+      {.nodes = static_cast<int64_t>(node_handle.GetNodeAggregates().n),
+       .pv = std::move(pv)}};
   ctx_.uci_responder->OutputThinkingInfo(&infos);
 }
 
 std::vector<Move> WatchdogWorker::BuildPV() const {
   std::vector<Move> pv;
-  AccessLock lock = ctx_.node_repository->GetAccessLock();
-  NodeHash current_hash = (*ctx_.head)->hash;
+  NodeKey current_hash = (*ctx_.head)->key;
   Position current_position = (*ctx_.head)->position;
 
-  while (auto node_view = lock.FetchReadOnly(current_hash)) {
-    const size_t num_moves = node_view->FetchNumMovesWithVisits();
+  while (NodeHandle node_handle = ctx_.node_repository->GetNodeForUpdate(
+             current_hash,
+             /*create_if_missing=*/false)) {
+    const size_t num_moves = node_handle.FetchMoveCounts().with_visits;
     if (num_moves == 0) break;
     std::vector<Move> moves(num_moves);
     std::vector<uint64_t> n(num_moves);
-    node_view->FetchEdgeData({.moves = moves, .n = n});
+    node_handle.FetchEdgeData({.moves = moves, .n = n});
     const size_t best_idx = std::max_element(n.begin(), n.end()) - n.begin();
     const Move best_move = moves[best_idx];
     pv.push_back(best_move);
     current_position = Position(current_position, best_move);
-    current_hash = NodeHash{HashCat(current_hash.hash, best_move.raw_data())};
+    current_hash = NodeKey{HashCat(current_hash.hash, best_move.raw_data())};
   }
 
   return pv;

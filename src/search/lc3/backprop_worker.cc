@@ -47,7 +47,7 @@ float ComputeQ(float v, float /* d */, float /* m */) { return v; }
 
 // TODO move to logic.h
 void MergeNodeUpdates(NodeUpdate* dst, const NodeUpdate& src) {
-  assert(dst->variation->hash == src.variation->hash);
+  assert(dst->variation->key == src.variation->key);
   DPRINT << "Merging node updates: " << dst->ToString() << " <- "
          << src.ToString();
 
@@ -79,14 +79,13 @@ size_t MoveNodeUpdateToParent(NodeUpdate* node_update) {
 
 struct BackPropItem {
   NodeUpdate node_update;
-  StorageEdgePatch edge_update;
+  NodeHandle::EdgePatch edge_update;
 
   bool operator<(const BackPropItem& other) const {
     if (node_update.variation->depth != other.node_update.variation->depth) {
       return node_update.variation->depth < other.node_update.variation->depth;
     }
-    return node_update.variation->hash.hash <
-           other.node_update.variation->hash.hash;
+    return node_update.variation->key < other.node_update.variation->key;
   }
 
   std::string ToString() const {
@@ -138,7 +137,6 @@ void BackpropWorker::OneStep() {
     // Fetch the first batch blockingly, then try to fetch more non-blockingly.
     size_t num_items =
         ctx_.search_channels->FetchEvalResults(buffer, /*block=*/true);
-    AccessLock update_lock = ctx_.node_repository->GetAccessLock();
     do {
       DPRINT << "fetched num_items=" << num_items;
       for (size_t i = 0; i < num_items; ++i) {
@@ -148,8 +146,9 @@ void BackpropWorker::OneStep() {
                      item->variation->position.DebugString() +
                      ", num_visits=" + std::to_string(item->num_visits));
         SortMovesByPolicy(item->moves, item->p);
-        std::optional<NodeMutation> node_to_update =
-            update_lock.FetchMutable(item->variation->hash);
+        NodeHandle node_to_update =
+            ctx_.node_repository->GetNodeForUpdate(item->variation->key,
+                                                   /*create_if_missing=*/false);
         // The node was already created by the gather thread.
         assert(node_to_update);
         // {
@@ -159,10 +158,11 @@ void BackpropWorker::OneStep() {
         //            << ", p=" << item->p[j];
         //   }
         // }
-        node_to_update->SetEdgeData(item->moves, item->p);
+        node_to_update.InitializeEdgeData(item->moves, item->p);
         if (item->terminal_type != EvalItem::TerminalType::kNonTerminal) {
           DPRINT << "Node is terminal, type=" << int(item->terminal_type);
-          node_to_update->SetIsTerminal();
+          NotImplemented();
+          // node_to_update.SetIsTerminal();
         }
         // If the node is terminal, we allow all visits to it, otherwise we
         // only apply a single NN eval.
@@ -170,7 +170,7 @@ void BackpropWorker::OneStep() {
             item->terminal_type == EvalItem::TerminalType::kNonTerminal
                 ? 1
                 : item->num_visits;
-        node_to_update->AccumulateNodeData({
+        node_to_update.ApplyNodeUpdate({
             .n = num_visits_to_apply,
             .agg_v = item->v,
             .agg_d = item->d,
@@ -199,14 +199,14 @@ void BackpropWorker::OneStep() {
     // Extract the first item from the heap.
     size_t visits_to_undo = backprop_item.edge_update.visits_to_undo;
     DPRINT << "visits_to_undo_so_far=" << visits_to_undo;
-    std::vector<StorageEdgePatch> edge_updates{backprop_item.edge_update};
+    std::vector<NodeHandle::EdgePatch> edge_updates{backprop_item.edge_update};
     NodeUpdate node_update = backprop_item.node_update;
     backprop_heap.pop_back();
 
     // Now accumulate all updates for the same variation.
-    NodeHash cur_hash = node_update.variation->hash;
+    NodeKey cur_hash = node_update.variation->key;
     while (!backprop_heap.empty() &&
-           backprop_heap.front().node_update.variation->hash == cur_hash) {
+           backprop_heap.front().node_update.variation->key == cur_hash) {
       DPRINT_SCOPE("Merging backprop");
       BackPropItem& backprop_item = backprop_heap.front();
       DPRINT << backprop_item.ToString();
@@ -224,22 +224,23 @@ void BackpropWorker::OneStep() {
     DPRINT << "Merged " << edge_updates.size() << " items";
 
     // TODO buffer this and apply in batches.
-    AccessLock update_lock = ctx_.node_repository->GetAccessLock();
-    std::optional<NodeMutation> update =
-        update_lock.FetchMutable(node_update.variation->hash);
+    NodeHandle update =
+        ctx_.node_repository->GetNodeForUpdate(node_update.variation->key,
+                                               /*create_if_missing=*/false);
     assert(update);
     DPRINT << "About to call accumulate: num_visits=" << node_update.num_visits
            << ", visits_to_undo=" << visits_to_undo;
-    StorageNodeData node_value = update->AccumulateNodeData({
+    update.ApplyNodeUpdate({
         .n = node_update.num_visits,
         .agg_v = node_update.v,
         .agg_d = node_update.d,
         .agg_m = node_update.m,
     });
     DPRINT << "Accumulated " << edge_updates.size() << " edge updates.";
-    update->UpdateEdgeData(edge_updates);
+    update.UpdateEdgeData(edge_updates);
     if (node_update.variation->idx_in_parent != kNoIdxInParent) {
       const size_t idx_in_parent = MoveNodeUpdateToParent(&node_update);
+      NodeHandle::NodeAggregates node_value = update.GetNodeAggregates();
       backprop_heap.push_back(
           {.node_update = node_update,
            .edge_update = {

@@ -29,10 +29,8 @@ struct DebugNodeData {
   std::vector<std::string> ToStrings() const;
 };
 
-DebugNodeData DebugNodeDataFromStorage(const NodeView& node_view);
-
-void PrintNodeTree(AccessLock* lock, std::ostream& os, const Position& pos,
-                   const NodeHash& root, int indent = 0);
+void PrintNodeTree(NodeRepository& node_repository, std::ostream& os,
+                   const Position& pos, const NodeKey& root, int indent = 0);
 
 }  // namespace lc3
 }  // namespace lczero

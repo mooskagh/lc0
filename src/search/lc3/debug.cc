@@ -25,14 +25,17 @@ std::vector<std::string> DebugNodeData::ToStrings() const {
   return result;
 }
 
-DebugNodeData DebugNodeDataFromStorage(const NodeView& node_view) {
-  DebugNodeData result;
-  node_view.FetchNodeValue({.n = &result.n,
-                            .agg_v = &result.agg_v,
-                            .agg_d = &result.agg_d,
-                            .agg_m = &result.agg_m});
-
-  const size_t num_moves = node_view.FetchNumMoves();
+namespace {
+DebugNodeData DebugNodeDataFromStorage(const NodeHandle& node_view) {
+  NodeHandle::NodeAggregates node_aggregates = node_view.GetNodeAggregates();
+  DebugNodeData result{
+      .n = node_aggregates.n,
+      .agg_v = node_aggregates.agg_v,
+      .agg_d = node_aggregates.agg_d,
+      .agg_m = node_aggregates.agg_m,
+      .edges = {},
+  };
+  const size_t num_moves = node_view.FetchMoveCounts().with_visits;
   if (num_moves == 0) return result;
 
   std::vector<Move> moves(num_moves);
@@ -48,19 +51,17 @@ DebugNodeData DebugNodeDataFromStorage(const NodeView& node_view) {
 
   return result;
 }
+}  // namespace
 
-void PrintNodeTree(AccessLock* lock, std::ostream& os, const Position& pos,
-                   const NodeHash& root, int indent) {
-  std::optional<NodeView> node_view = lock->FetchReadOnly(root);
-  if (!node_view) {
+void PrintNodeTree(NodeRepository& node_repository, std::ostream& os,
+                   const Position& pos, const NodeKey& root, int indent) {
+  NodeHandle node_handle =
+      node_repository.GetNodeForUpdate(root, /*create_if_missing=*/false);
+  if (!node_handle) {
     os << "(nil)\n";
     return;
   }
-  DebugNodeData node = DebugNodeDataFromStorage(*node_view);
-  node_view->FetchNodeValue({.n = &node.n,
-                             .agg_v = &node.agg_v,
-                             .agg_d = &node.agg_d,
-                             .agg_m = &node.agg_m});
+  DebugNodeData node = DebugNodeDataFromStorage(node_handle);
   os << "AV:" << node.agg_v << " AD:" << node.agg_d << " AM:" << node.agg_m
      << " N:" << node.n << " (" << pos.DebugString() << ")\n";
 
@@ -69,11 +70,11 @@ void PrintNodeTree(AccessLock* lock, std::ostream& os, const Position& pos,
     for (int i = 0; i < indent; ++i) {
       os << "│ ";  // Indentation for child nodes.
     }
-    os << edge.move.ToString(false)
-       << " P:" << edge.p << " Q:" << edge.q << " N:" << edge.n << " --> ";
+    os << edge.move.ToString(false) << " P:" << edge.p << " Q:" << edge.q
+       << " N:" << edge.n << " --> ";
     Position child_pos(pos, edge.move);
-    PrintNodeTree(lock, os, child_pos,
-                  NodeHash{HashCat(root.hash, edge.move.raw_data())},
+    PrintNodeTree(node_repository, os, child_pos,
+                  NodeKey{HashCat(root.hash, edge.move.raw_data())},
                   indent + 1);
   }
 }
