@@ -55,7 +55,9 @@ class SearchSession {
   void OneStep() {
     for (int i = 0; i < 5000; ++i) {
       gather_worker_->GatherDescent(2560);
-      eval_worker_->OneStep();
+      while (search_channels_.GetApproximateNumPendingEvalRequests()) {
+        eval_worker_->OneStep();
+      }
       backprop_worker_->OneStep();
       watchdog_worker_->CheckOnce();
     }

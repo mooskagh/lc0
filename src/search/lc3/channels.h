@@ -57,6 +57,9 @@ class SearchChannels {
                                              items.data(), items.size());
     }
   }
+  size_t GetApproximateNumPendingEvalRequests() const {
+    return request_queue_.size_approx();
+  }
   void SendEvalResults(size_t eval_task_idx, std::span<EvalItem*> items) {
     assert(eval_task_idx < result_producer_tokens_.size());
     result_queue_.enqueue_bulk(result_producer_tokens_[eval_task_idx],
