@@ -32,6 +32,7 @@ void EvalWorker::EnqueueIncomingTasks(std::span<EvalItem*> tasks) {
       DPRINT << "Terminal position (draw by various rules)";
       // TODO have more proper handling of repetitions.
       task->terminal_type = EvalItem::TerminalType::kDraw;
+      task->moves.clear();
       SendCompletedEvalItem(task);
       continue;
     }

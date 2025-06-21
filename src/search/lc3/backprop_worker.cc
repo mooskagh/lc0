@@ -141,6 +141,9 @@ std::vector<BackpropWorker::BackPropItem> BackpropWorker::FetchEvalResults() {
     for (size_t i = 0; i < num_items; ++i) {
       // Process each EvalItem one by one.
       EvalItem* item = buffer[i];
+      if (item->terminal_type != EvalItem::TerminalType::kNonTerminal) {
+        NotImplemented();
+      }
       DPRINT_SCOPE("Processing eval item " +
                    item->variation->position.DebugString() +
                    ", num_visits=" + std::to_string(item->num_visits));
