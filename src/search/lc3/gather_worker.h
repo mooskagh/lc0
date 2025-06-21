@@ -17,6 +17,8 @@ class MctsGatherWorker {
   void GatherDescent(size_t target_batch_size);
 
  private:
+  void EnqueueNodeForEval(Variation&& node, size_t batch_size);
+
   const size_t gather_task_idx_;
   Context const ctx_;
 };

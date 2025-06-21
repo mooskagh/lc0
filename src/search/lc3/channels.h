@@ -37,6 +37,11 @@ class SearchChannels {
     Resize(num_gather_threads, num_eval_threads);
   }
 
+  void SendEvalRequest(size_t gather_task_idx, EvalItem* item) {
+    assert(gather_task_idx < request_producer_tokens_.size());
+    request_queue_.enqueue(request_producer_tokens_[gather_task_idx], item);
+  }
+
   void SendEvalRequests(size_t gather_task_idx, std::span<EvalItem*> items) {
     assert(gather_task_idx < request_producer_tokens_.size());
     request_queue_.enqueue_bulk(request_producer_tokens_[gather_task_idx],

@@ -12,12 +12,85 @@
 namespace lczero {
 namespace lc3 {
 
+struct NodeKey {
+  uint64_t hash;
+  bool operator==(const NodeKey& other) const = default;
+};
+
+class NodeHandle {
+ public:
+  // All fields are out parameters. FetchEdgeData fills these spans with data
+  // from the node's internal arrays. The moves, p, q, and n arrays are parallel
+  // with the same index representing the same move across all arrays.
+  // Spans should be pre-allocated with sufficient size.
+  struct EdgeDataDestination {
+    std::span<Move> moves = {};
+    std::span<float> p = {};
+    std::span<float> q = {};
+    std::span<uint64_t> n = {};
+  };
+
+  struct EdgePatch {
+    size_t edge_idx;
+    size_t visits_to_undo;
+    float agg_q;
+  };
+
+  enum class CertaintyState {
+    kNonTerminal,  // The node is non-terminal.
+    kTerminal,     // The node is terminal.
+  };
+
+  struct NodeAggregates {
+    size_t n;
+    double agg_v;
+    float agg_d;
+    float agg_m;
+    CertaintyState state = CertaintyState::kNonTerminal;
+
+    bool IsTerminal() const { return state == CertaintyState::kTerminal; }
+  };
+
+  struct MoveCounts {
+    size_t total = 0;
+    size_t with_visits = 0;
+  };
+
+  // Return true if the handle is valid (i.e., it points to a node).
+  operator bool() const;
+  bool IsNew() const;
+
+  // Node aggregates.
+  void ApplyNodeUpdate(NodeAggregates);
+  NodeAggregates GetNodeAggregates() const;  // { return data_->value.n; }
+
+  // Edges.
+  MoveCounts FetchMoveCounts() const;
+  void InitializeEdgeData(std::span<const Move> moves,
+                          std::span<const float> p);
+  void FetchEdgeData(EdgeDataDestination request) const;
+  void AddEdgeVisits(std::span<const uint64_t>) const;
+  void UpdateEdgeData(std::span<const EdgePatch>);
+};
+
+class NodeRepository {
+ public:
+  NodeHandle GetNodeForUpdate(const NodeKey& key, bool create_if_missing = false);
+  // Returns whether the node was created.
+  bool CreateEmptyNode(const NodeKey& key);
+
+ private:
+  // Disable copy and move semantics for NodeRepository.
+  NodeRepository(const NodeRepository&) = delete;
+  NodeRepository& operator=(const NodeRepository&) = delete;
+  NodeRepository(NodeRepository&&) = delete;
+  NodeRepository& operator=(NodeRepository&&) = delete;
+};
+
+/*
+
 class NodeRepository;
 class AccessLock;
-struct NodeHash {
-  uint64_t hash;
-  bool operator==(const NodeHash& other) const = default;
-};
 
 struct StorageNodeData {
   size_t n;
@@ -171,6 +244,9 @@ class NodeRepository {
   friend class NodeMutation;
   friend class CreationLock;
 };
+
+
+*/
 
 }  // namespace lc3
 }  // namespace lczero

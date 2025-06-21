@@ -1,4 +1,4 @@
-#define LCZERO_DEBUG_LOGGING
+// #define LCZERO_DEBUG_LOGGING
 
 #include "search/lc3/eval_worker.h"
 

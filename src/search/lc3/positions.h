@@ -13,14 +13,14 @@ namespace lc3 {
 constexpr size_t kNoIdxInParent = static_cast<size_t>(-1);
 
 struct VariationNode {
-  NodeHash hash;
+  NodeKey key;
   Position position;
   size_t depth;
   size_t idx_in_parent;
 
-  VariationNode(NodeHash hash, Position position, size_t depth,
+  VariationNode(NodeKey key, Position position, size_t depth,
                 size_t idx_in_parent)
-      : hash(hash),
+      : key(key),
         position(std::move(position)),
         depth(depth),
         idx_in_parent(idx_in_parent) {}
