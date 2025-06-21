@@ -27,6 +27,8 @@ void SortMovesByPolicy(std::span<Move> moves, std::span<float> p) {
   }
 }
 
+}  // namespace
+
 struct NodeUpdate {
   Variation variation;
   size_t num_visits;
@@ -77,7 +79,7 @@ size_t MoveNodeUpdateToParent(NodeUpdate* node_update) {
   return idx_in_parent;
 };
 
-struct BackPropItem {
+struct BackpropWorker::BackPropItem {
   NodeUpdate node_update;
   NodeHandle::EdgePatch edge_update;
 
@@ -102,7 +104,8 @@ struct BackPropItem {
   }
 };
 
-BackPropItem EvalItemToBackpropItem(EvalItem* item, size_t num_visits) {
+BackpropWorker::BackPropItem BackpropWorker::EvalItemToBackpropItem(
+    EvalItem* item, size_t num_visits) {
   assert(item->variation->idx_in_parent != kNoIdxInParent);
   assert(item->variation.has_parent());
   return BackPropItem{
@@ -123,70 +126,70 @@ BackPropItem EvalItemToBackpropItem(EvalItem* item, size_t num_visits) {
   };
 }
 
-}  // namespace
+std::vector<BackpropWorker::BackPropItem> BackpropWorker::FetchEvalResults() {
+  std::vector<BackPropItem> backprop_items;
+  DPRINT_SCOPE("Fetching eval results");
+  // Fetch eval results from the queue, update the nodes they reference, and
+  // forward the updates to the parent nodes.
+  absl::MutexLock queue_lock(&ctx_.search_channels->request_consumer_mutex_);
+  std::array<EvalItem*, 1024> buffer;
+  // Fetch the first batch blockingly, then try to fetch more non-blockingly.
+  size_t num_items =
+      ctx_.search_channels->FetchEvalResults(buffer, /*block=*/true);
+  do {
+    DPRINT << "fetched num_items=" << num_items;
+    for (size_t i = 0; i < num_items; ++i) {
+      // Process each EvalItem one by one.
+      EvalItem* item = buffer[i];
+      DPRINT_SCOPE("Processing eval item " +
+                   item->variation->position.DebugString() +
+                   ", num_visits=" + std::to_string(item->num_visits));
+      SortMovesByPolicy(item->moves, item->p);
+      NodeHandle node_to_update =
+          ctx_.node_repository->GetNodeForUpdate(item->variation->key,
+                                                 /*create_if_missing=*/false);
+      // The node was already created by the gather thread.
+      assert(node_to_update);
+      // {
+      //   DPRINT_SCOPE("Moves:");
+      //   for (size_t j = 0; j < item->moves.size(); ++j) {
+      //     DPRINT << "  move=" << item->moves[j].ToString(true)
+      //            << ", p=" << item->p[j];
+      //   }
+      // }
+      node_to_update.InitializeEdges(item->moves, item->p);
+      if (item->terminal_type != EvalItem::TerminalType::kNonTerminal) {
+        DPRINT << "Node is terminal, type=" << int(item->terminal_type);
+        NotImplemented();
+        // node_to_update.SetIsTerminal();
+      }
+      // If the node is terminal, we allow all visits to it, otherwise we
+      // only apply a single NN eval.
+      const size_t num_visits_to_apply =
+          item->terminal_type == EvalItem::TerminalType::kNonTerminal
+              ? 1
+              : item->num_visits;
+      node_to_update.ApplyNodeUpdate({
+          .n = num_visits_to_apply,
+          .agg_v = item->v,
+          .agg_d = item->d,
+          .agg_m = item->m,
+      });
+      if (item->variation->idx_in_parent != kNoIdxInParent) {
+        backprop_items.push_back(
+            EvalItemToBackpropItem(item, num_visits_to_apply));
+        DPRINT << "Forwarde to parent " << backprop_items.back().ToString();
+      }
+    }
+    // Fetch more items if they are available.
+    num_items = ctx_.search_channels->FetchEvalResults(buffer,
+                                                       /*block=*/false);
+  } while (num_items > 0);
+  return backprop_items;
+}
 
 void BackpropWorker::OneStep() {
-  std::vector<BackPropItem> backprop_heap;
-
-  {
-    DPRINT_SCOPE("Fetching eval results");
-    // Fetch eval results from the queue, update the nodes they reference, and
-    // forward the updates to the parent nodes.
-    absl::MutexLock queue_lock(&ctx_.search_channels->request_consumer_mutex_);
-    std::array<EvalItem*, 1024> buffer;
-    // Fetch the first batch blockingly, then try to fetch more non-blockingly.
-    size_t num_items =
-        ctx_.search_channels->FetchEvalResults(buffer, /*block=*/true);
-    do {
-      DPRINT << "fetched num_items=" << num_items;
-      for (size_t i = 0; i < num_items; ++i) {
-        // Process each EvalItem one by one.
-        EvalItem* item = buffer[i];
-        DPRINT_SCOPE("Processing eval item " +
-                     item->variation->position.DebugString() +
-                     ", num_visits=" + std::to_string(item->num_visits));
-        SortMovesByPolicy(item->moves, item->p);
-        NodeHandle node_to_update =
-            ctx_.node_repository->GetNodeForUpdate(item->variation->key,
-                                                   /*create_if_missing=*/false);
-        // The node was already created by the gather thread.
-        assert(node_to_update);
-        // {
-        //   DPRINT_SCOPE("Moves:");
-        //   for (size_t j = 0; j < item->moves.size(); ++j) {
-        //     DPRINT << "  move=" << item->moves[j].ToString(true)
-        //            << ", p=" << item->p[j];
-        //   }
-        // }
-        node_to_update.InitializeEdges(item->moves, item->p);
-        if (item->terminal_type != EvalItem::TerminalType::kNonTerminal) {
-          DPRINT << "Node is terminal, type=" << int(item->terminal_type);
-          NotImplemented();
-          // node_to_update.SetIsTerminal();
-        }
-        // If the node is terminal, we allow all visits to it, otherwise we
-        // only apply a single NN eval.
-        const size_t num_visits_to_apply =
-            item->terminal_type == EvalItem::TerminalType::kNonTerminal
-                ? 1
-                : item->num_visits;
-        node_to_update.ApplyNodeUpdate({
-            .n = num_visits_to_apply,
-            .agg_v = item->v,
-            .agg_d = item->d,
-            .agg_m = item->m,
-        });
-        if (item->variation->idx_in_parent != kNoIdxInParent) {
-          backprop_heap.push_back(
-              EvalItemToBackpropItem(item, num_visits_to_apply));
-          DPRINT << "Forwarde to parent " << backprop_heap.back().ToString();
-        }
-      }
-      // Fetch more items if they are available.
-      num_items = ctx_.search_channels->FetchEvalResults(buffer,
-                                                         /*block=*/false);
-    } while (num_items > 0);
-  }
+  std::vector<BackPropItem> backprop_heap = FetchEvalResults();
 
   std::make_heap(backprop_heap.begin(), backprop_heap.end());
   while (!backprop_heap.empty()) {

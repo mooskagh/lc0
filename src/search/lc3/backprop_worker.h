@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstddef>
+#include <vector>
 
 #include "search/lc3/context.h"
 
@@ -15,6 +16,11 @@ class BackpropWorker {
   void OneStep();
 
  private:
+  struct BackPropItem;
+
+  std::vector<BackPropItem> FetchEvalResults();
+  static BackPropItem EvalItemToBackpropItem(EvalItem* item, size_t num_visits);
+
   Context ctx_;
   const size_t backprop_task_idx_;
 };
