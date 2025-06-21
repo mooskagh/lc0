@@ -157,7 +157,7 @@ void MctsGatherWorker::GatherDescent(size_t target_batch_size) {
             .q = edge_infos.edge_Q,
             .n = edge_infos.edge_N,
         };
-        update.FetchEdgeData(request);
+        update.FetchEdges(request);
         {
           DPRINT_SCOPE("Fetched moves:");
           for (size_t i = 0; i < num_moves_to_fetch; ++i) {

@@ -42,7 +42,7 @@ DebugNodeData DebugNodeDataFromStorage(const NodeHandle& node_view) {
   std::vector<float> p(num_moves), q(num_moves);
   std::vector<uint64_t> n(num_moves);
 
-  node_view.FetchEdgeData({moves, p, q, n});
+  node_view.FetchEdges({moves, p, q, n});
 
   result.edges.reserve(num_moves);
   for (size_t i = 0; i < num_moves; ++i) {

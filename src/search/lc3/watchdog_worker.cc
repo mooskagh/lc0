@@ -49,7 +49,7 @@ std::vector<Move> WatchdogWorker::BuildPV() const {
     if (num_moves == 0) break;
     std::vector<Move> moves(num_moves);
     std::vector<uint64_t> n(num_moves);
-    node_handle.FetchEdgeData({.moves = moves, .n = n});
+    node_handle.FetchEdges({.moves = moves, .n = n});
     const size_t best_idx = std::max_element(n.begin(), n.end()) - n.begin();
     const Move best_move = moves[best_idx];
     pv.push_back(best_move);

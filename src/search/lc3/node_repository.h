@@ -57,9 +57,9 @@ class NodeHandle {
   };
 
   // Return true if the handle is valid (i.e., it points to a node).
-  operator bool() const;
+  operator bool() const { return data_ != nullptr; }
   // Returns true if the node has just been created.
-  bool IsNew() const;
+  bool IsNew() const { return is_new_; }
 
   // Node aggregates.
   void ApplyNodeUpdate(NodeAggregates);
@@ -67,16 +67,27 @@ class NodeHandle {
 
   // Edges.
   MoveCounts FetchMoveCounts() const;
-  void InitializeEdgeData(std::span<const Move> moves,
-                          std::span<const float> p);
-  void FetchEdgeData(EdgeDataDestination request) const;
+  void InitializeEdges(std::span<const Move> moves, std::span<const float> p);
+  void FetchEdges(EdgeDataDestination request) const;
   void AddEdgeVisits(std::span<const uint64_t>) const;
-  void UpdateEdgeData(std::span<const EdgePatch>);
+  void UpdateEdges(std::span<const EdgePatch>);
+  friend class NodeRepository;
+
+ private:
+  struct NodeData;
+  NodeHandle() = default;
+  NodeHandle(NodeData* data, std::unique_lock<std::mutex> lock, bool is_new)
+      : data_(data), lock_(std::move(lock)), is_new_(is_new) {}
+
+  NodeData* data_ = nullptr;
+  std::unique_lock<std::mutex> lock_;
+  bool is_new_ = false;
 };
 
 class NodeRepository {
  public:
-  NodeRepository() = default;
+  NodeRepository();
+  ~NodeRepository();
   NodeHandle GetNodeForUpdate(const NodeKey& key, bool create_if_missing);
 
  private:
@@ -85,6 +96,11 @@ class NodeRepository {
   NodeRepository& operator=(const NodeRepository&) = delete;
   NodeRepository(NodeRepository&&) = delete;
   NodeRepository& operator=(NodeRepository&&) = delete;
+
+  struct StorageImpl;
+  struct Shard;
+  std::unique_ptr<StorageImpl> storage_impl_;
+  friend class NodeHandle;
 };
 
 /*

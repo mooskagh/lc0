@@ -158,7 +158,7 @@ void BackpropWorker::OneStep() {
         //            << ", p=" << item->p[j];
         //   }
         // }
-        node_to_update.InitializeEdgeData(item->moves, item->p);
+        node_to_update.InitializeEdges(item->moves, item->p);
         if (item->terminal_type != EvalItem::TerminalType::kNonTerminal) {
           DPRINT << "Node is terminal, type=" << int(item->terminal_type);
           NotImplemented();
@@ -237,7 +237,7 @@ void BackpropWorker::OneStep() {
         .agg_m = node_update.m,
     });
     DPRINT << "Accumulated " << edge_updates.size() << " edge updates.";
-    update.UpdateEdgeData(edge_updates);
+    update.UpdateEdges(edge_updates);
     if (node_update.variation->idx_in_parent != kNoIdxInParent) {
       const size_t idx_in_parent = MoveNodeUpdateToParent(&node_update);
       NodeHandle::NodeAggregates node_value = update.GetNodeAggregates();
