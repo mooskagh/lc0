@@ -3,45 +3,5 @@
 #include "utils/hashcat.h"
 
 namespace lczero {
-namespace lc3 {
-
-// PositionTree::PositionTree(const Position& startpos)
-//     : root_{NodeHash{startpos.Hash()},
-//             startpos,
-//             /*depth=*/0,
-//             /*parent=*/nullptr,
-//             kNoIdxInParent,
-//             /*ref_count=*/1} {}
-
-// Variation* PositionTree::MakeVariationRaw(Variation* parent, Move move,
-//                                        size_t idx_in_parent) {
-//   assert(parent->ref_count_.load(std::memory_order_relaxed) > 0);
-//   parent->ref_count_.fetch_add(1, std::memory_order_relaxed);
-//   Variation* new_var = variation_pool_.AllocateRaw(
-//       /*hash=*/NodeHash{HashCat(parent->hash.hash, move.raw_data())},
-//       /*position=*/Position(parent->position, move),
-//       /*depth=*/parent->depth + 1,
-//       /*parent=*/parent,
-//       /*idx_in_parent=*/idx_in_parent,
-//       /*ref_count_=*/1);
-//   return new_var;
-// }
-
-// void PositionTree::ReleaseVariationRaw(Variation* var) {
-//   assert(var->ref_count_.load(std::memory_order_relaxed) > 0);
-//   if (var->ref_count_.fetch_sub(1, std::memory_order_acq_rel) == 1) {
-//     variation_pool_.ReleaseRaw(var);
-//   }
-// }
-
-// Variation* PositionTree::CloneRaw(Variation* var) {
-//   if (var->parent)
-//     var->parent->ref_count_.fetch_add(1, std::memory_order_relaxed);
-//   Variation* new_var = variation_pool_.AllocateRaw(
-//       var->hash, var->position, var->depth, var->parent, var->idx_in_parent,
-//       /*ref_count_=*/1);
-//   return new_var;
-// }
-
-}  // namespace lc3
+namespace lc3 {}  // namespace lc3
 }  // namespace lczero

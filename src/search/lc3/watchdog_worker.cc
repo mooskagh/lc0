@@ -13,17 +13,12 @@ namespace lczero {
 namespace lc3 {
 
 void WatchdogWorker::CheckOnce() {
-  // PrintNodeTree(&lock, std::cerr, (*ctx_.head)->position,
-  // (*ctx_.head)->hash);
   NodeHandle node_handle =
       ctx_.node_repository->GetNodeForUpdate((*ctx_.head)->key,
                                              /*create_if_missing=*/false);
   if (!node_handle) return;
-
-  // for (const auto& debug_line :
-  //      DebugNodeDataFromStorage(*root_view).ToStrings()) {
-  //   CERR << debug_line;
-  // }
+  const int64_t nodes = node_handle.GetNodeAggregates().n;
+  node_handle.Release();
 
   auto pv = BuildPV();
   const bool head_is_black = (*ctx_.head)->position.IsBlackToMove();
@@ -32,8 +27,7 @@ void WatchdogWorker::CheckOnce() {
   }
 
   std::vector<ThinkingInfo> infos = {
-      {.nodes = static_cast<int64_t>(node_handle.GetNodeAggregates().n),
-       .pv = std::move(pv)}};
+      {.nodes = static_cast<int64_t>(nodes), .pv = std::move(pv)}};
   ctx_.uci_responder->OutputThinkingInfo(&infos);
 }
 
@@ -50,6 +44,7 @@ std::vector<Move> WatchdogWorker::BuildPV() const {
     std::vector<Move> moves(num_moves);
     std::vector<uint64_t> n(num_moves);
     node_handle.FetchEdges({.moves = moves, .n = n});
+    node_handle.Release();
     const size_t best_idx = std::max_element(n.begin(), n.end()) - n.begin();
     const Move best_move = moves[best_idx];
     pv.push_back(best_move);

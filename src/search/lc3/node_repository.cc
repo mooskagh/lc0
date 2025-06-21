@@ -55,6 +55,12 @@ NodeHandle NodeRepository::GetNodeForUpdate(const NodeKey& key,
   return NodeHandle(&new_iter->second, std::move(lock), true);
 }
 
+void NodeHandle::Release() {
+  if (data_ == nullptr) return;
+  lock_.unlock();
+  data_ = nullptr;
+}
+
 void NodeHandle::ApplyNodeUpdate(NodeAggregates new_data) {
   if (new_data.n <= 0) return;
 
@@ -134,186 +140,6 @@ void NodeHandle::UpdateEdges(std::span<const EdgePatch> updates) {
     edge.n -= update.visits_to_undo;
   }
 }
-
-/*
-
-AccessLock NodeRepository::GetAccessLock() { return AccessLock(this); }
-
-NodeMutation::NodeMutation(AccessLock* lock, internal::NodeData* data)
-  : lock_(lock), data_(data) {
-#ifndef NDEBUG
-++lock_->ref_count_;
-#endif
-}
-NodeMutation::~NodeMutation() {
-#ifndef NDEBUG
---lock_->ref_count_;
-#endif
-}
-
-NodeView::NodeView(AccessLock* lock, internal::NodeData* data)
-  : lock_(lock), data_(data) {
-#ifndef NDEBUG
-++lock_->ref_count_;
-#endif
-}
-
-NodeView::~NodeView() {
-#ifndef NDEBUG
---lock_->ref_count_;
-#endif
-}
-
-std::optional<NodeMutation> AccessLock::FetchMutable(NodeHash node) {
-auto iter = node_repository_->nodes_.find(node.hash);
-if (iter == node_repository_->nodes_.end()) return std::nullopt;
-return std::optional<NodeMutation>(std::in_place, this, &iter->second);
-}
-
-std::optional<NodeView> AccessLock::FetchReadOnly(NodeHash node) {
-auto iter = node_repository_->nodes_.find(node.hash);
-if (iter == node_repository_->nodes_.end()) return std::nullopt;
-return std::optional<NodeView>(std::in_place, this, &iter->second);
-}
-
-void NodeMutation::SetEdgeData(std::span<const Move> moves,
-                             std::span<const float> p) {
-if (moves.size() != p.size()) {
-  throw Exception("Moves and probabilities arrays must have the same size");
-}
-data_->moves.assign(moves.begin(), moves.end());
-data_->p.assign(p.begin(), p.end());
-}
-
-namespace {
-void PrintStorageNodeData(const char* prefix, const StorageNodeData& data) {
-DPRINT << prefix << " n=" << data.n << ", agg_v=" << data.agg_v
-       << ", agg_d=" << data.agg_d << ", agg_m=" << data.agg_m;
-}
-}  // namespace
-
-StorageNodeData NodeMutation::AccumulateNodeData(StorageNodeData new_data) {
-DPRINT_SCOPE("AccumulateNodeData");
-PrintStorageNodeData("Cur:", data_->value);
-PrintStorageNodeData("New:", new_data);
-if (new_data.n <= 0) return data_->value;
-
-// Calculate the weight for the new data
-float weight = static_cast<float>(new_data.n) / (data_->value.n + new_data.n);
-
-data_->value.n += new_data.n;
-data_->value.agg_v += weight * (new_data.agg_v - data_->value.agg_v);
-data_->value.agg_d += weight * (new_data.agg_d - data_->value.agg_d);
-data_->value.agg_m += weight * (new_data.agg_m - data_->value.agg_m);
-
-PrintStorageNodeData("Res:", data_->value);
-return data_->value;
-}
-
-void NodeMutation::UpdateEdgeData(std::span<const StorageEdgePatch> updates) {
-assert(!updates.empty());
-size_t max_idx = std::max_element(updates.begin(), updates.end(),
-                                  [](const StorageEdgePatch& a,
-                                     const StorageEdgePatch& b) {
-                                    return a.edge_idx < b.edge_idx;
-                                  })
-                     ->edge_idx;
-if (max_idx >= data_->edges.size()) {
-  data_->edges.resize(max_idx + 1);
-}
-for (const StorageEdgePatch& update : updates) {
-  internal::EdgeData& edge = data_->edges[update.edge_idx];
-  edge.q = update.agg_q;
-  edge.n -= update.visits_to_undo;
-}
-}
-
-void NodeMutation::FetchEdgeData(EdgeDataRequest request) const {
-const size_t num_moves = request.moves.size();
-const size_t num_edges = std::min(num_moves, data_->edges.size());
-
-assert(request.p.empty() || request.p.size() >= num_moves);
-assert(request.q.empty() || request.q.size() >= num_moves);
-assert(request.n.empty() || request.n.size() >= num_moves);
-
-std::memcpy(request.moves.data(), data_->moves.data(),
-            num_moves * sizeof(Move));
-if (!request.p.empty()) {
-  std::memcpy(request.p.data(), data_->p.data(), num_moves * sizeof(float));
-}
-
-auto fill_edge_data = [&](auto& dst, const auto& src_accessor) {
-  if (dst.empty()) return;
-  for (size_t i = 0; i < num_edges; ++i)
-    dst[i] = src_accessor(data_->edges[i]);
-  if (num_edges < num_moves) {
-    std::memset(dst.data() + num_edges, 0,
-                (num_moves - num_edges) * sizeof(dst[0]));
-  }
-};
-
-fill_edge_data(request.q, [](const auto& edge) { return edge.q; });
-fill_edge_data(request.n, [](const auto& edge) { return edge.n; });
-}
-
-void NodeMutation::IncrementEdgeN(std::span<const uint64_t> n_delta) const {
-DPRINT_SCOPE("IncrementEdgeN");
-auto& edges = data_->edges;
-if (n_delta.size() > edges.size()) edges.resize(n_delta.size());
-for (size_t i = 0; i < n_delta.size(); ++i) {
-  DPRINT << "Incrementing edge[" << i << "] " << edges[i].n
-         << "+=" << n_delta[i];
-}
-for (size_t i = 0; i < n_delta.size(); ++i) edges[i].n += n_delta[i];
-}
-
-void NodeView::FetchEdgeData(EdgeDataRequest request) const {
-const size_t num_moves = request.moves.size();
-const size_t num_edges = std::min(num_moves, data_->edges.size());
-
-assert(request.p.empty() || request.p.size() >= num_moves);
-assert(request.q.empty() || request.q.size() >= num_moves);
-assert(request.n.empty() || request.n.size() >= num_moves);
-
-std::memcpy(request.moves.data(), data_->moves.data(),
-            num_moves * sizeof(Move));
-if (!request.p.empty()) {
-  std::memcpy(request.p.data(), data_->p.data(), num_moves * sizeof(float));
-}
-
-auto fill_edge_data = [&](auto& dst, const auto& src_accessor) {
-  if (dst.empty()) return;
-  for (size_t i = 0; i < num_edges; ++i)
-    dst[i] = src_accessor(data_->edges[i]);
-  if (num_edges < num_moves) {
-    std::memset(dst.data() + num_edges, 0,
-                (num_moves - num_edges) * sizeof(dst[0]));
-  }
-};
-
-fill_edge_data(request.q, [](const auto& edge) { return edge.q; });
-fill_edge_data(request.n, [](const auto& edge) { return edge.n; });
-}
-
-void NodeView::FetchNodeValue(NodeValueRequest request) const {
-if (request.n) *request.n = data_->value.n;
-if (request.agg_v) *request.agg_v = data_->value.agg_v;
-if (request.agg_d) *request.agg_d = data_->value.agg_d;
-if (request.agg_m) *request.agg_m = data_->value.agg_m;
-}
-
-AccessLock::~AccessLock() { assert(ref_count_ == 0); }
-
-CreationLock CreationLock::FromAccessLock(AccessLock&& lock) {
-assert(lock.ref_count_ == 0);
-return CreationLock(lock.node_repository_);
-}
-
-bool CreationLock::Create(NodeHash node_hash) {
-return node_repository_->nodes_.try_emplace(node_hash.hash).second;
-}
-
-*/
 
 }  // namespace lc3
 }  // namespace lczero
