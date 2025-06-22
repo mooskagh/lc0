@@ -203,7 +203,7 @@ void MctsGatherWorker::EnqueueNodeForEval(Variation&& node, size_t batch_size) {
       /*num_visits=*/batch_size);
   DPRINT << "created eval_item node=" << task->variation->position.DebugString()
          << ", num_visits=" << batch_size;
-  channels_.SendEvalRequest(task);
+  channels_.SendForEval(task);
 }
 
 }  // namespace lc3

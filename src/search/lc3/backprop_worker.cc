@@ -131,10 +131,10 @@ std::vector<BackpropWorker::BackPropItem> BackpropWorker::FetchEvalResults() {
   DPRINT_SCOPE("Fetching eval results");
   // Fetch eval results from the queue, update the nodes they reference, and
   // forward the updates to the parent nodes.
-  absl::MutexLock queue_lock(channels_.GetMutex());
+  absl::MutexLock queue_lock(channels_.BackpropTasksMutex());
   std::array<EvalItem*, 1024> buffer;
   // Fetch the first batch blockingly, then try to fetch more non-blockingly.
-  size_t num_items = channels_.FetchEvalResults(buffer, /*block=*/true);
+  size_t num_items = channels_.CollectBackpropTasks(buffer, /*block=*/true);
   do {
     DPRINT << "fetched num_items=" << num_items;
     for (size_t i = 0; i < num_items; ++i) {
@@ -180,11 +180,11 @@ std::vector<BackpropWorker::BackPropItem> BackpropWorker::FetchEvalResults() {
       if (item->variation->idx_in_parent != kNoIdxInParent) {
         backprop_items.push_back(
             EvalItemToBackpropItem(item, num_visits_to_apply));
-        DPRINT << "Forwarde to parent " << backprop_items.back().ToString();
+        DPRINT << "Forwarded to parent " << backprop_items.back().ToString();
       }
     }
     // Fetch more items if they are available.
-    num_items = channels_.FetchEvalResults(buffer, /*block=*/false);
+    num_items = channels_.CollectBackpropTasks(buffer, /*block=*/false);
   } while (num_items > 0);
   return backprop_items;
 }
