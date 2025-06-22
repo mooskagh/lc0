@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstddef>
+#include <optional>
 #include <vector>
 
 #include "search/lc3/channels.h"
@@ -19,7 +20,8 @@ class BackpropWorker {
  private:
   struct BackPropItem;
 
-  std::vector<BackPropItem> FetchEvalResults();
+  std::vector<BackPropItem> FetchBackpropTasks();
+  std::optional<BackPropItem> ProcessSingleBackpropTask(EvalItem* item);
   static BackPropItem EvalItemToBackpropItem(EvalItem* item, size_t num_visits);
 
   Context ctx_;
