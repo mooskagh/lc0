@@ -21,7 +21,8 @@ class BackpropWorker {
   struct BackPropItem;
 
   std::vector<BackPropItem> FetchBackpropTasks();
-  std::optional<BackPropItem> ProcessSingleBackpropTask(EvalItem* item);
+  std::pair<std::optional<BackpropWorker::BackPropItem>, bool>
+  ProcessSingleBackpropTask(EvalItem* item);
   static BackPropItem EvalItemToBackpropItem(EvalItem* item, size_t num_visits);
 
   Context ctx_;

@@ -127,7 +127,7 @@ BackpropWorker::BackPropItem BackpropWorker::EvalItemToBackpropItem(
   };
 }
 
-std::optional<BackpropWorker::BackPropItem>
+std::pair<std::optional<BackpropWorker::BackPropItem>, bool>
 BackpropWorker::ProcessSingleBackpropTask(EvalItem* item) {
   // If the node is terminal, we allow all visits to it, otherwise we
   // only apply a single NN eval.
@@ -154,7 +154,10 @@ BackpropWorker::ProcessSingleBackpropTask(EvalItem* item) {
     node_to_update.InitializeEdges(item->moves, item->p);
   }
 
-  if (item->result_type != EvalItem::ResultType::kCollisionRollback) {
+  const bool is_collision_rollback =
+      item->result_type == EvalItem::ResultType::kCollisionRollback;
+
+  if (!is_collision_rollback) {
     node_to_update.ApplyNodeUpdate({
         .n = num_visits_to_apply,
         .agg_v = item->v,
@@ -166,8 +169,11 @@ BackpropWorker::ProcessSingleBackpropTask(EvalItem* item) {
     });
   }
 
-  if (item->variation->idx_in_parent == kNoIdxInParent) return std::nullopt;
-  return EvalItemToBackpropItem(item, num_visits_to_apply);
+  if (item->variation->idx_in_parent == kNoIdxInParent) {
+    return {std::nullopt, is_collision_rollback};
+  }
+  return {EvalItemToBackpropItem(item, num_visits_to_apply),
+          is_collision_rollback};
 }
 
 std::vector<BackpropWorker::BackPropItem> BackpropWorker::FetchBackpropTasks() {
@@ -179,15 +185,19 @@ std::vector<BackpropWorker::BackPropItem> BackpropWorker::FetchBackpropTasks() {
   std::array<EvalItem*, 1024> buffer;
   // Fetch the first batch blockingly, then try to fetch more non-blockingly.
   size_t num_items = channels_.CollectBackpropTasks(buffer, /*block=*/true);
+  bool all_items_collisions = true;
   do {
     DPRINT << "fetched num_items=" << num_items;
     for (size_t i = 0; i < num_items; ++i) {
-      if (auto backprop_item = ProcessSingleBackpropTask(buffer[i])) {
-        backprop_items.push_back(*backprop_item);
-      }
+      auto [backprop_item, is_collision_rollback] =
+          ProcessSingleBackpropTask(buffer[i]);
+      if (backprop_item) backprop_items.push_back(*backprop_item);
+      all_items_collisions &= is_collision_rollback;
     }
-    // Fetch more items if they are available.
-    num_items = channels_.CollectBackpropTasks(buffer, /*block=*/false);
+    // Fetch more items if they are available. If all items were collisions, do
+    // not process them until we get some non-collision items.
+    num_items =
+        channels_.CollectBackpropTasks(buffer, /*block=*/all_items_collisions);
   } while (num_items > 0);
   return backprop_items;
 }
