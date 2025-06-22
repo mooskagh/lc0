@@ -2,6 +2,7 @@
 
 #include <memory>
 #include <vector>
+#include <thread>
 
 #include "search/lc3/backprop_worker.h"
 #include "search/lc3/eval_worker.h"
@@ -54,15 +55,17 @@ class SearchSession {
 
   void Abort() { NotImplemented(); }
   void Wait() { NotImplemented(); }
-  void OneStep() {
-    for (int i = 0; i < 500000; ++i) {
-      gather_worker_->GatherDescent(2560);
-      while (search_channels_.GetApproximateNumPendingEvalRequests()) {
-        eval_worker_->OneStep();
+  void StartSyncronized() {
+    tmp_thread_ = std::thread([this]() {
+      for (int i = 0; i < 500000; ++i) {
+        gather_worker_->GatherDescent(2560);
+        while (search_channels_.GetApproximateNumPendingEvalRequests()) {
+          eval_worker_->OneStep();
+        }
+        backprop_worker_->OneStep();
+        watchdog_worker_->CheckOnce();
       }
-      backprop_worker_->OneStep();
-      watchdog_worker_->CheckOnce();
-    }
+    });
   }
 
  private:
@@ -74,6 +77,9 @@ class SearchSession {
   std::unique_ptr<BackpropWorker> backprop_worker_;
   std::unique_ptr<WatchdogWorker> watchdog_worker_;
   EvalItemPool eval_item_pool_;
+
+  // Temporary for debugging.
+  std::thread tmp_thread_;
 };
 
 }  // namespace lc3

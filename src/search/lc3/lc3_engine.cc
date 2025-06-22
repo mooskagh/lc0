@@ -59,7 +59,7 @@ void Lc3Engine::StartSearch(const GoParams& /* go_params */) {
   EnsureSearchStopped();
   search_ = std::make_unique<SearchSession>(&node_repository_, game_state_,
                                             backend_, uci_responder_);
-  search_->OneStep();
+  search_->StartSyncronized();
 }
 
 namespace {
