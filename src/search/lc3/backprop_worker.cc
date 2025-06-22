@@ -129,50 +129,35 @@ BackpropWorker::BackPropItem BackpropWorker::EvalItemToBackpropItem(
 
 std::optional<BackpropWorker::BackPropItem>
 BackpropWorker::ProcessSingleBackpropTask(EvalItem* item) {
-  if (item->terminal_type != EvalItem::TerminalType::kNonTerminal) {
-    NotImplemented();
-  }
-  DPRINT_SCOPE("Processing eval item " +
-               item->variation->position.DebugString() +
-               ", num_visits=" + std::to_string(item->num_visits));
-  SortMovesByPolicy(item->moves, item->p);
+  const bool visit_is_terminal =
+      item->terminal_type != EvalItem::TerminalType::kNonTerminal;
+
+  // If the node is terminal, we allow all visits to it, otherwise we
+  // only apply a single NN eval.
+  const size_t num_visits_to_apply = visit_is_terminal ? item->num_visits : 1;
+
   NodeHandle node_to_update =
       ctx_.node_repository->GetNodeForUpdate(item->variation->key,
                                              /*create_if_missing=*/false);
   // The node was already created by the gather thread.
   assert(node_to_update);
-  // {
-  //   DPRINT_SCOPE("Moves:");
-  //   for (size_t j = 0; j < item->moves.size(); ++j) {
-  //     DPRINT << "  move=" << item->moves[j].ToString(true)
-  //            << ", p=" << item->p[j];
-  //   }
-  // }
-  node_to_update.InitializeEdges(item->moves, item->p);
-  if (item->terminal_type != EvalItem::TerminalType::kNonTerminal) {
-    DPRINT << "Node is terminal, type=" << int(item->terminal_type);
-    NotImplemented();
-    // node_to_update.SetIsTerminal();
+
+  if (!visit_is_terminal) {
+    SortMovesByPolicy(item->moves, item->p);
+    node_to_update.InitializeEdges(item->moves, item->p);
   }
-  // If the node is terminal, we allow all visits to it, otherwise we
-  // only apply a single NN eval.
-  const size_t num_visits_to_apply =
-      item->terminal_type == EvalItem::TerminalType::kNonTerminal
-          ? 1
-          : item->num_visits;
+
   node_to_update.ApplyNodeUpdate({
       .n = num_visits_to_apply,
       .agg_v = item->v,
       .agg_d = item->d,
       .agg_m = item->m,
+      .state = visit_is_terminal ? NodeHandle::CertaintyState::kTerminal
+                                 : NodeHandle::CertaintyState::kNonTerminal,
   });
-  if (item->variation->idx_in_parent != kNoIdxInParent) {
-    BackPropItem backprop_item =
-        EvalItemToBackpropItem(item, num_visits_to_apply);
-    DPRINT << "Forwarded to parent " << backprop_item.ToString();
-    return backprop_item;
-  }
-  return std::nullopt;
+
+  if (item->variation->idx_in_parent == kNoIdxInParent) return std::nullopt;
+  return EvalItemToBackpropItem(item, num_visits_to_apply);
 }
 
 std::vector<BackpropWorker::BackPropItem> BackpropWorker::FetchBackpropTasks() {
@@ -187,10 +172,8 @@ std::vector<BackpropWorker::BackPropItem> BackpropWorker::FetchBackpropTasks() {
   do {
     DPRINT << "fetched num_items=" << num_items;
     for (size_t i = 0; i < num_items; ++i) {
-      EvalItem* item = buffer[i];
-      auto backprop_item = ProcessSingleBackpropTask(item);
-      if (backprop_item.has_value()) {
-        backprop_items.push_back(backprop_item.value());
+      if (auto backprop_item = ProcessSingleBackpropTask(buffer[i])) {
+        backprop_items.push_back(*backprop_item);
       }
     }
     // Fetch more items if they are available.
@@ -249,6 +232,7 @@ void BackpropWorker::OneStep() {
         .agg_v = node_update.v,
         .agg_d = node_update.d,
         .agg_m = node_update.m,
+        .state = NodeHandle::CertaintyState::kNonTerminal,
     });
     DPRINT << "Accumulated " << edge_updates.size() << " edge updates.";
     update.UpdateEdges(edge_updates);

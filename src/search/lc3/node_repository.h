@@ -46,7 +46,7 @@ class NodeHandle {
     double agg_v;
     float agg_d;
     float agg_m;
-    CertaintyState state = CertaintyState::kNonTerminal;
+    CertaintyState state;
 
     bool IsTerminal() const { return state != CertaintyState::kNonTerminal; }
   };

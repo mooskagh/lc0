@@ -71,6 +71,8 @@ void NodeHandle::ApplyNodeUpdate(NodeAggregates new_data) {
   data_->value.agg_v += weight * (new_data.agg_v - data_->value.agg_v);
   data_->value.agg_d += weight * (new_data.agg_d - data_->value.agg_d);
   data_->value.agg_m += weight * (new_data.agg_m - data_->value.agg_m);
+  // TODO probably with certainty propagation we'll need something smarter here.
+  data_->value.state = new_data.state;
 }
 
 NodeHandle::NodeAggregates NodeHandle::GetNodeAggregates() const {
