@@ -26,9 +26,30 @@ void WatchdogWorker::CheckOnce() {
     if (head_is_black == (i % 2 == 0)) pv[i].Flip();
   }
 
-  std::vector<ThinkingInfo> infos = {
-      {.nodes = static_cast<int64_t>(nodes), .pv = std::move(pv)}};
-  ctx_.uci_responder->OutputThinkingInfo(&infos);
+  const auto now = std::chrono::steady_clock::now();
+  if (pv != previous_pv_ || last_check_time_ + std::chrono::seconds(5) < now) {
+    if (current_nps_check_time_ + std::chrono::seconds(1) < now) {
+      prev_nps_check_time_ = current_nps_check_time_;
+      prev_nps_check_nodes_ = current_nps_check_nodes_;
+      current_nps_check_time_ = now;
+      current_nps_check_nodes_ = nodes;
+    }
+
+    const auto num_seconds_since_prev_check =
+        std::chrono::duration_cast<std::chrono::microseconds>(
+            now - prev_nps_check_time_)
+            .count() /
+        1000000.0;
+    const int nps = num_seconds_since_prev_check > 0
+                        ? static_cast<int>((nodes - prev_nps_check_nodes_) /
+                                           num_seconds_since_prev_check)
+                        : 0;
+    std::vector<ThinkingInfo> infos = {
+        {.nodes = static_cast<int64_t>(nodes), .nps = nps, .pv = pv}};
+    ctx_.uci_responder->OutputThinkingInfo(&infos);
+    previous_pv_ = std::move(pv);
+    last_check_time_ = std::chrono::steady_clock::now();
+  }
 }
 
 std::vector<Move> WatchdogWorker::BuildPV() const {
