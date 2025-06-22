@@ -11,13 +11,21 @@ struct EvalItem {
   EvalItem(Variation variation, size_t num_visits)
       : variation(std::move(variation)), num_visits(num_visits) {}
 
+  EvalItem(Variation variation, size_t num_visits, bool is_terminal, float v,
+           float d, float m)
+      : variation(std::move(variation)),
+        num_visits(num_visits),
+        is_terminal(is_terminal),
+        v(v),
+        d(d),
+        m(m) {}
+
   // Input.
   Variation variation;
   size_t num_visits;
 
   // Result.
-  enum class TerminalType { kNonTerminal, kCheckmate, kDraw };
-  TerminalType terminal_type{TerminalType::kNonTerminal};
+  bool is_terminal;
   float v;
   float d;
   float m;
@@ -36,16 +44,26 @@ class GatherWorkerChannels {
   void SendForEval(EvalItem* item) {
     eval_queue_->enqueue(*eval_queue_token_, item);
   }
+  void SendForBackprop(EvalItem* item) {
+    backprop_queue_->enqueue(*backprop_queue_token_, item);
+  }
 
  private:
   moodycamel::BlockingConcurrentQueue<EvalItem*>* const eval_queue_;
   moodycamel::ProducerToken* const eval_queue_token_;
+  moodycamel::BlockingConcurrentQueue<EvalItem*>* const backprop_queue_;
+  moodycamel::ProducerToken* const backprop_queue_token_;
 
   friend class SearchChannels;
   GatherWorkerChannels(
-      moodycamel::BlockingConcurrentQueue<EvalItem*>* request_queue,
-      moodycamel::ProducerToken* request_producer_token)
-      : eval_queue_(request_queue), eval_queue_token_(request_producer_token) {}
+      moodycamel::BlockingConcurrentQueue<EvalItem*>* eval_queue,
+      moodycamel::ProducerToken* eval_queue_token,
+      moodycamel::BlockingConcurrentQueue<EvalItem*>* backprop_queue,
+      moodycamel::ProducerToken* backprop_queue_token)
+      : eval_queue_(eval_queue),
+        eval_queue_token_(eval_queue_token),
+        backprop_queue_(backprop_queue),
+        backprop_queue_token_(backprop_queue_token) {}
 };
 
 class EvalWorkerChannels {
@@ -76,26 +94,26 @@ class EvalWorkerChannels {
 
   friend class SearchChannels;
   EvalWorkerChannels(
-      absl::Mutex* request_consumer_mutex,
-      moodycamel::BlockingConcurrentQueue<EvalItem*>* request_queue,
-      moodycamel::ConsumerToken* request_consumer_token,
-      moodycamel::BlockingConcurrentQueue<EvalItem*>* result_queue,
-      moodycamel::ProducerToken* result_producer_token)
-      : eval_tasks_mutex_(request_consumer_mutex),
-        eval_queue_(request_queue),
-        eval_queue_token_(request_consumer_token),
-        backprop_queue_(result_queue),
-        backprop_queue_token_(result_producer_token) {}
+      absl::Mutex* eval_tasks_mutex,
+      moodycamel::BlockingConcurrentQueue<EvalItem*>* eval_queue,
+      moodycamel::ConsumerToken* eval_queue_token,
+      moodycamel::BlockingConcurrentQueue<EvalItem*>* backprop_queue,
+      moodycamel::ProducerToken* backprop_queue_token)
+      : eval_tasks_mutex_(eval_tasks_mutex),
+        eval_queue_(eval_queue),
+        eval_queue_token_(eval_queue_token),
+        backprop_queue_(backprop_queue),
+        backprop_queue_token_(backprop_queue_token) {}
 };
 
 class BackpropWorkerChannels {
  public:
   size_t CollectBackpropTasks(std::span<EvalItem*> items, bool block) {
     if (block) {
-      return backprop_queue_->wait_dequeue_bulk(*bakprop_queue_token_,
+      return backprop_queue_->wait_dequeue_bulk(*backprop_queue_token_,
                                                 items.data(), items.size());
     } else {
-      return backprop_queue_->try_dequeue_bulk(*bakprop_queue_token_,
+      return backprop_queue_->try_dequeue_bulk(*backprop_queue_token_,
                                                items.data(), items.size());
     }
   }
@@ -105,16 +123,16 @@ class BackpropWorkerChannels {
  private:
   absl::Mutex* backprop_tasks_mutex_;
   moodycamel::BlockingConcurrentQueue<EvalItem*>* const backprop_queue_;
-  moodycamel::ConsumerToken* const bakprop_queue_token_;
+  moodycamel::ConsumerToken* const backprop_queue_token_;
 
   friend class SearchChannels;
   BackpropWorkerChannels(
-      absl::Mutex* result_consumer_mutex,
-      moodycamel::BlockingConcurrentQueue<EvalItem*>* result_queue,
-      moodycamel::ConsumerToken* result_consumer_token)
-      : backprop_tasks_mutex_(result_consumer_mutex),
-        backprop_queue_(result_queue),
-        bakprop_queue_token_(result_consumer_token) {}
+      absl::Mutex* backprop_tasks_mutex,
+      moodycamel::BlockingConcurrentQueue<EvalItem*>* backprop_queue,
+      moodycamel::ConsumerToken* backprop_queue_token)
+      : backprop_tasks_mutex_(backprop_tasks_mutex),
+        backprop_queue_(backprop_queue),
+        backprop_queue_token_(backprop_queue_token) {}
 };
 
 class SearchChannels {
@@ -125,8 +143,10 @@ class SearchChannels {
 
   GatherWorkerChannels MakeGatherWorkerChannels(size_t gather_task_idx) {
     assert(gather_task_idx < gather_to_eval_tokens_.size());
-    return GatherWorkerChannels(&eval_queue_,
-                                &gather_to_eval_tokens_[gather_task_idx]);
+    assert(gather_task_idx < gather_to_backprop_tokens_.size());
+    return GatherWorkerChannels(
+        &eval_queue_, &gather_to_eval_tokens_[gather_task_idx],
+        &backprop_queue_, &gather_to_backprop_tokens_[gather_task_idx]);
   }
 
   EvalWorkerChannels MakeEvalWorkerChannels(size_t eval_task_idx) {
@@ -149,6 +169,8 @@ class SearchChannels {
  private:
   void Resize(size_t num_gather_threads, size_t num_eval_threads) {
     ResizeVector(gather_to_eval_tokens_, num_gather_threads, eval_queue_);
+    ResizeVector(gather_to_backprop_tokens_, num_gather_threads,
+                 backprop_queue_);
     ResizeVector(eval_to_backprop_tokens_, num_eval_threads, backprop_queue_);
   }
 
@@ -164,6 +186,7 @@ class SearchChannels {
 
   // Channel for sending from eval threads to backprop threads.
   EvalItemQueue backprop_queue_;
+  std::vector<moodycamel::ProducerToken> gather_to_backprop_tokens_;
   std::vector<moodycamel::ProducerToken> eval_to_backprop_tokens_;
   moodycamel::ConsumerToken backprop_token_{backprop_queue_};
 };

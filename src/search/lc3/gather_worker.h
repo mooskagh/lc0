@@ -19,6 +19,10 @@ class MctsGatherWorker {
 
  private:
   void EnqueueNodeForEval(Variation&& node, size_t batch_size);
+  void EnqueueNodeForBackprop(Variation&& node, 
+    const NodeHandle::NodeAggregates& aggregates,
+    size_t batch_size);
+  void EnqueueNodeForCollisionRollback(Variation&& node, size_t batch_size);
 
   Context const ctx_;
   GatherWorkerChannels channels_;

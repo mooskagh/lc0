@@ -95,9 +95,6 @@ struct EdgeInfos {
 
 }  // namespace
 
-void HandleCollision() { NotImplemented(); }
-void HandleTerminal() { NotImplemented(); }
-
 MctsGatherWorker::MctsGatherWorker(const Context& context,
                                    GatherWorkerChannels channels)
     : ctx_(context), channels_(std::move(channels)) {}
@@ -138,11 +135,11 @@ void MctsGatherWorker::GatherDescent(size_t target_batch_size) {
         }
         NodeHandle::NodeAggregates aggregates = update.GetNodeAggregates();
         if (aggregates.IsTerminal()) {
-          HandleTerminal();
+          EnqueueNodeForBackprop(std::move(node), aggregates, item.batch_size);
           continue;
         }
         if (aggregates.n == 0) {
-          HandleCollision();
+          EnqueueNodeForCollisionRollback(std::move(node), item.batch_size);
           continue;
         }
 
@@ -196,14 +193,29 @@ void MctsGatherWorker::GatherDescent(size_t target_batch_size) {
 }
 
 void MctsGatherWorker::EnqueueNodeForEval(Variation&& node, size_t batch_size) {
-  DPRINT_SCOPE("EnqueueNodeForEval");
   EvalItem* task = ctx_.eval_item_pool->allocate(1);
   ::new (task) EvalItem(
       /*variation=*/std::move(node),
       /*num_visits=*/batch_size);
-  DPRINT << "created eval_item node=" << task->variation->position.DebugString()
-         << ", num_visits=" << batch_size;
   channels_.SendForEval(task);
+}
+
+void MctsGatherWorker::EnqueueNodeForBackprop(
+    Variation&& node, const NodeHandle::NodeAggregates& aggregates,
+    size_t batch_size) {
+  EvalItem* task = ctx_.eval_item_pool->allocate(1);
+  ::new (task) EvalItem(
+      /*variation=*/std::move(node),
+      /*num_visits=*/batch_size,
+      /*is_terminal=*/aggregates.IsTerminal(),
+      /*v=*/aggregates.agg_v,
+      /*d=*/aggregates.agg_d,
+      /*m=*/aggregates.agg_m);
+  channels_.SendForBackprop(task);
+}
+
+void MctsGatherWorker::EnqueueNodeForCollisionRollback(Variation&&, size_t) {
+  NotImplemented();
 }
 
 }  // namespace lc3

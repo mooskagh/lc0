@@ -48,7 +48,7 @@ class NodeHandle {
     float agg_m;
     CertaintyState state;
 
-    bool IsTerminal() const { return state != CertaintyState::kNonTerminal; }
+    bool IsTerminal() const { return state == CertaintyState::kTerminal; }
   };
 
   struct MoveCounts {

@@ -20,9 +20,11 @@ void EvalWorker::EnqueueIncomingTasks(std::span<EvalItem*> tasks) {
     // Handle terminals.
     if (task->moves.empty()) {
       DPRINT << "Terminal position (no legal moves)";
-      task->terminal_type = board.IsUnderCheck()
-                                ? EvalItem::TerminalType::kCheckmate
-                                : EvalItem::TerminalType::kDraw;
+      task->is_terminal = true;
+      const bool is_under_check = board.IsUnderCheck();
+      task->v = is_under_check ? -1.0f : 0.0f;
+      task->d = is_under_check ? 0.0f : 1.0f;
+      task->m = 0.0f;
       SendCompletedEvalItem(task);
       continue;
     }
@@ -30,8 +32,10 @@ void EvalWorker::EnqueueIncomingTasks(std::span<EvalItem*> tasks) {
         task->variation->position.GetRule50Ply() >= 100 ||
         GetPositionRepetitionCount(task->variation) >= 2) {
       DPRINT << "Terminal position (draw by various rules)";
-      // TODO have more proper handling of repetitions.
-      task->terminal_type = EvalItem::TerminalType::kDraw;
+      task->is_terminal = true;
+      task->v = 0.0f;
+      task->d = 1.0f;
+      task->m = 0.0f;
       task->moves.clear();
       SendCompletedEvalItem(task);
       continue;

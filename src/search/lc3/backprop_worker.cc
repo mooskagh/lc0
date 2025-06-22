@@ -129,12 +129,9 @@ BackpropWorker::BackPropItem BackpropWorker::EvalItemToBackpropItem(
 
 std::optional<BackpropWorker::BackPropItem>
 BackpropWorker::ProcessSingleBackpropTask(EvalItem* item) {
-  const bool visit_is_terminal =
-      item->terminal_type != EvalItem::TerminalType::kNonTerminal;
-
   // If the node is terminal, we allow all visits to it, otherwise we
   // only apply a single NN eval.
-  const size_t num_visits_to_apply = visit_is_terminal ? item->num_visits : 1;
+  const size_t num_visits_to_apply = item->is_terminal ? item->num_visits : 1;
 
   NodeHandle node_to_update =
       ctx_.node_repository->GetNodeForUpdate(item->variation->key,
@@ -142,7 +139,7 @@ BackpropWorker::ProcessSingleBackpropTask(EvalItem* item) {
   // The node was already created by the gather thread.
   assert(node_to_update);
 
-  if (!visit_is_terminal) {
+  if (!item->is_terminal) {
     SortMovesByPolicy(item->moves, item->p);
     node_to_update.InitializeEdges(item->moves, item->p);
   }
@@ -152,7 +149,7 @@ BackpropWorker::ProcessSingleBackpropTask(EvalItem* item) {
       .agg_v = item->v,
       .agg_d = item->d,
       .agg_m = item->m,
-      .state = visit_is_terminal ? NodeHandle::CertaintyState::kTerminal
+      .state = item->is_terminal ? NodeHandle::CertaintyState::kTerminal
                                  : NodeHandle::CertaintyState::kNonTerminal,
   });
 
