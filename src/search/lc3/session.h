@@ -48,8 +48,7 @@ class SearchSession {
                                          /*eval_task_idx=*/0),
                                      backend);
     backprop_worker_ = std::make_unique<BackpropWorker>(
-        context, search_channels_.MakeBackpropWorkerChannels(
-                     /*backprop_task_idx=*/0));
+        context, search_channels_.MakeBackpropWorkerChannels());
     watchdog_worker_ = std::make_unique<WatchdogWorker>(context);
   }
 

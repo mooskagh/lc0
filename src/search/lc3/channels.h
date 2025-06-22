@@ -156,8 +156,7 @@ class SearchChannels {
                               &eval_to_backprop_tokens_[eval_task_idx]);
   }
 
-  BackpropWorkerChannels MakeBackpropWorkerChannels(size_t backprop_task_idx) {
-    assert(backprop_task_idx < eval_to_backprop_tokens_.size());
+  BackpropWorkerChannels MakeBackpropWorkerChannels() {
     return BackpropWorkerChannels(&backprop_tasks_mutex_, &backprop_queue_,
                                   &backprop_token_);
   }
