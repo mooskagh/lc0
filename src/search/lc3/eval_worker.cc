@@ -71,14 +71,14 @@ void EvalWorker::Collect() {
       backend_->GetAttributes().recommended_batch_size;
   DPRINT_SCOPE("EvalWorker::Collect, recommended_batch_size=" +
                std::to_string(recommended_batch_size));
-  absl::MutexLock lock(&ctx_.search_channels->request_consumer_mutex_);
+  absl::MutexLock lock(channels_.GetMutex());
   // TODO replace with unique_ptr[]
   std::vector<EvalItem*> eval_tasks(recommended_batch_size);
 
   // Do one blocking fetch to get initial work.
   {
     DPRINT << "Waiting blockingly";
-    size_t num_nodes = ctx_.search_channels->FetchEvalRequests(
+    size_t num_nodes = channels_.FetchEvalRequests(
         std::span<EvalItem*>(eval_tasks.data(), recommended_batch_size),
         /*blocking=*/true);
     EnqueueIncomingTasks(std::span(eval_tasks).subspan(0, num_nodes));
@@ -87,7 +87,7 @@ void EvalWorker::Collect() {
   // Now we have something to compute, but if we still have capacity, check if
   // there's more.
   while (computation_->UsedBatchSize() < recommended_batch_size) {
-    size_t num_nodes = ctx_.search_channels->FetchEvalRequests(
+    size_t num_nodes = channels_.FetchEvalRequests(
         std::span<EvalItem*>(
             eval_tasks.data(),
             recommended_batch_size - computation_->UsedBatchSize()),
@@ -99,12 +99,11 @@ void EvalWorker::Collect() {
 }
 
 void EvalWorker::SendCompletedEvalItem(EvalItem* item) {
-  ctx_.search_channels->SendEvalResults(eval_task_idx_, std::span(&item, 1));
+  channels_.SendEvalResults(std::span(&item, 1));
 }
 
 void EvalWorker::SendCompletedBatchItems() {
-  ctx_.search_channels->SendEvalResults(eval_task_idx_,
-                                        std::span(batched_eval_items_));
+  channels_.SendEvalResults(std::span(batched_eval_items_));
   batched_eval_items_.clear();
 }
 

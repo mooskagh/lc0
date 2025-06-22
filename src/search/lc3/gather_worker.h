@@ -1,6 +1,7 @@
 #pragma once
 
 #include "chess/position.h"
+#include "search/lc3/channels.h"
 #include "search/lc3/context.h"
 #include "utils/exception.h"
 
@@ -9,7 +10,7 @@ namespace lc3 {
 
 class MctsGatherWorker {
  public:
-  MctsGatherWorker(const Context& context, size_t gather_task_idx);
+  MctsGatherWorker(const Context& context, GatherWorkerChannels);
 
   void Abort() { TODO(); }
   void Wait() { TODO(); }
@@ -19,8 +20,8 @@ class MctsGatherWorker {
  private:
   void EnqueueNodeForEval(Variation&& node, size_t batch_size);
 
-  const size_t gather_task_idx_;
   Context const ctx_;
+  GatherWorkerChannels channels_;
 };
 
 }  // namespace lc3

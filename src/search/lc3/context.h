@@ -22,7 +22,6 @@ using EvalItemPool = FreeListAllocator<EvalItem, 1024>;
 
 struct Context {
   NodeRepository* node_repository;
-  SearchChannels* search_channels;
   Variation* head;
   EvalItemPool* eval_item_pool;
   UciResponder* uci_responder;

@@ -13,8 +13,9 @@ struct WorkTreeNode;
 
 class EvalWorker {
  public:
-  EvalWorker(const Context& context, size_t eval_task_idx, Backend* backend)
-      : ctx_(context), eval_task_idx_(eval_task_idx), backend_(backend) {}
+  EvalWorker(const Context& context, EvalWorkerChannels channels,
+             Backend* backend)
+      : ctx_(context), channels_(std::move(channels)), backend_(backend) {}
   void OneStep();
 
  private:
@@ -25,7 +26,7 @@ class EvalWorker {
   void EnqueueIncomingTasks(std::span<EvalItem*> tasks);
 
   Context ctx_;
-  const size_t eval_task_idx_;
+  EvalWorkerChannels channels_;
 
   Backend* const backend_;
   std::unique_ptr<BackendComputation> computation_;

@@ -35,18 +35,21 @@ class SearchSession {
     }
     Context context{
         .node_repository = node_repository,
-        .search_channels = &search_channels_,
         .head = &head_,
         .eval_item_pool = &eval_item_pool_,
         .uci_responder = uci_responder,
     };
-    gather_worker_ =
-        std::make_unique<MctsGatherWorker>(context, /*gather_task_idx=*/0);
+    gather_worker_ = std::make_unique<MctsGatherWorker>(
+        context, search_channels_.MakeGatherWorkerChannels(
+                     /*gather_task_idx=*/0));
     eval_worker_ =
-        std::make_unique<EvalWorker>(context, /*eval_task_idx=*/0, backend);
-    backprop_worker_ =
-        std::make_unique<BackpropWorker>(context,
-                                         /*backprop_task_idx=*/0);
+        std::make_unique<EvalWorker>(context,
+                                     search_channels_.MakeEvalWorkerChannels(
+                                         /*eval_task_idx=*/0),
+                                     backend);
+    backprop_worker_ = std::make_unique<BackpropWorker>(
+        context, search_channels_.MakeBackpropWorkerChannels(
+                     /*backprop_task_idx=*/0));
     watchdog_worker_ = std::make_unique<WatchdogWorker>(context);
   }
 

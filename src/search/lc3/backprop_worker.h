@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <vector>
 
+#include "search/lc3/channels.h"
 #include "search/lc3/context.h"
 
 namespace lczero {
@@ -10,8 +11,8 @@ namespace lc3 {
 
 class BackpropWorker {
  public:
-  BackpropWorker(const Context& context, size_t backprop_task_idx)
-      : ctx_(context), backprop_task_idx_(backprop_task_idx) {}
+  BackpropWorker(const Context& context, BackpropWorkerChannels channels)
+      : ctx_(context), channels_(std::move(channels)) {}
 
   void OneStep();
 
@@ -22,7 +23,7 @@ class BackpropWorker {
   static BackPropItem EvalItemToBackpropItem(EvalItem* item, size_t num_visits);
 
   Context ctx_;
-  const size_t backprop_task_idx_;
+  BackpropWorkerChannels channels_;
 };
 
 };  // namespace lc3

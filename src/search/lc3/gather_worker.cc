@@ -99,8 +99,8 @@ void HandleCollision() { NotImplemented(); }
 void HandleTerminal() { NotImplemented(); }
 
 MctsGatherWorker::MctsGatherWorker(const Context& context,
-                                   size_t gather_task_idx)
-    : gather_task_idx_(gather_task_idx), ctx_(context) {}
+                                   GatherWorkerChannels channels)
+    : ctx_(context), channels_(std::move(channels)) {}
 
 void MctsGatherWorker::GatherDescent(size_t target_batch_size) {
   DPRINT_SCOPE("GatherDescent");
@@ -203,7 +203,7 @@ void MctsGatherWorker::EnqueueNodeForEval(Variation&& node, size_t batch_size) {
       /*num_visits=*/batch_size);
   DPRINT << "created eval_item node=" << task->variation->position.DebugString()
          << ", num_visits=" << batch_size;
-  ctx_.search_channels->SendEvalRequest(gather_task_idx_, task);
+  channels_.SendEvalRequest(task);
 }
 
 }  // namespace lc3
