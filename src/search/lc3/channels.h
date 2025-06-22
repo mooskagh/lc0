@@ -8,14 +8,21 @@ namespace lczero {
 namespace lc3 {
 
 struct EvalItem {
+  enum class ResultType : uint8_t { kNormal, kTerminal, kCollisionRollback };
+
   EvalItem(Variation variation, size_t num_visits)
       : variation(std::move(variation)), num_visits(num_visits) {}
 
-  EvalItem(Variation variation, size_t num_visits, bool is_terminal, float v,
-           float d, float m)
+  EvalItem(Variation variation, size_t num_visits, ResultType result_type)
       : variation(std::move(variation)),
         num_visits(num_visits),
-        is_terminal(is_terminal),
+        result_type(result_type) {}
+
+  EvalItem(Variation variation, size_t num_visits, ResultType result_type,
+           float v, float d, float m)
+      : variation(std::move(variation)),
+        num_visits(num_visits),
+        result_type(result_type),
         v(v),
         d(d),
         m(m) {}
@@ -25,7 +32,7 @@ struct EvalItem {
   size_t num_visits;
 
   // Result.
-  bool is_terminal;
+  ResultType result_type;
   float v;
   float d;
   float m;

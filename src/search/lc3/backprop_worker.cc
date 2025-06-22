@@ -131,7 +131,17 @@ std::optional<BackpropWorker::BackPropItem>
 BackpropWorker::ProcessSingleBackpropTask(EvalItem* item) {
   // If the node is terminal, we allow all visits to it, otherwise we
   // only apply a single NN eval.
-  const size_t num_visits_to_apply = item->is_terminal ? item->num_visits : 1;
+  size_t num_visits_to_apply;
+  switch (item->result_type) {
+    case EvalItem::ResultType::kNormal:
+      num_visits_to_apply = 1;
+      break;
+    case EvalItem::ResultType::kTerminal:
+      num_visits_to_apply = item->num_visits;
+      break;
+    case EvalItem::ResultType::kCollisionRollback:
+      num_visits_to_apply = 0;
+  }
 
   NodeHandle node_to_update =
       ctx_.node_repository->GetNodeForUpdate(item->variation->key,
@@ -139,19 +149,22 @@ BackpropWorker::ProcessSingleBackpropTask(EvalItem* item) {
   // The node was already created by the gather thread.
   assert(node_to_update);
 
-  if (!item->is_terminal) {
+  if (item->result_type == EvalItem::ResultType::kNormal) {
     SortMovesByPolicy(item->moves, item->p);
     node_to_update.InitializeEdges(item->moves, item->p);
   }
 
-  node_to_update.ApplyNodeUpdate({
-      .n = num_visits_to_apply,
-      .agg_v = item->v,
-      .agg_d = item->d,
-      .agg_m = item->m,
-      .state = item->is_terminal ? NodeHandle::CertaintyState::kTerminal
-                                 : NodeHandle::CertaintyState::kNonTerminal,
-  });
+  if (item->result_type != EvalItem::ResultType::kCollisionRollback) {
+    node_to_update.ApplyNodeUpdate({
+        .n = num_visits_to_apply,
+        .agg_v = item->v,
+        .agg_d = item->d,
+        .agg_m = item->m,
+        .state = item->result_type == EvalItem::ResultType::kTerminal
+                     ? NodeHandle::CertaintyState::kTerminal
+                     : NodeHandle::CertaintyState::kNonTerminal,
+    });
+  }
 
   if (item->variation->idx_in_parent == kNoIdxInParent) return std::nullopt;
   return EvalItemToBackpropItem(item, num_visits_to_apply);
@@ -224,13 +237,16 @@ void BackpropWorker::OneStep() {
     assert(update);
     DPRINT << "About to call accumulate: num_visits=" << node_update.num_visits
            << ", visits_to_undo=" << visits_to_undo;
-    update.ApplyNodeUpdate({
-        .n = node_update.num_visits,
-        .agg_v = node_update.v,
-        .agg_d = node_update.d,
-        .agg_m = node_update.m,
-        .state = NodeHandle::CertaintyState::kNonTerminal,
-    });
+    // When we rollback a collision, we don't need to apply the node update.
+    if (node_update.num_visits != 0) {
+      update.ApplyNodeUpdate({
+          .n = node_update.num_visits,
+          .agg_v = node_update.v,
+          .agg_d = node_update.d,
+          .agg_m = node_update.m,
+          .state = NodeHandle::CertaintyState::kNonTerminal,
+      });
+    }
     DPRINT << "Accumulated " << edge_updates.size() << " edge updates.";
     update.UpdateEdges(edge_updates);
     if (node_update.variation->idx_in_parent != kNoIdxInParent) {

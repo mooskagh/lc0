@@ -20,7 +20,7 @@ void EvalWorker::EnqueueIncomingTasks(std::span<EvalItem*> tasks) {
     // Handle terminals.
     if (task->moves.empty()) {
       DPRINT << "Terminal position (no legal moves)";
-      task->is_terminal = true;
+      task->result_type = EvalItem::ResultType::kTerminal;
       const bool is_under_check = board.IsUnderCheck();
       task->v = is_under_check ? -1.0f : 0.0f;
       task->d = is_under_check ? 0.0f : 1.0f;
@@ -32,7 +32,7 @@ void EvalWorker::EnqueueIncomingTasks(std::span<EvalItem*> tasks) {
         task->variation->position.GetRule50Ply() >= 100 ||
         GetPositionRepetitionCount(task->variation) >= 2) {
       DPRINT << "Terminal position (draw by various rules)";
-      task->is_terminal = true;
+      task->result_type = EvalItem::ResultType::kTerminal;
       task->v = 0.0f;
       task->d = 1.0f;
       task->m = 0.0f;
@@ -41,6 +41,7 @@ void EvalWorker::EnqueueIncomingTasks(std::span<EvalItem*> tasks) {
       continue;
     }
 
+    task->result_type = EvalItem::ResultType::kNormal;
     // Attempt to call the backend.
     task->p.resize(task->moves.size());
     std::array<Position, 8> positions;

@@ -204,18 +204,27 @@ void MctsGatherWorker::EnqueueNodeForBackprop(
     Variation&& node, const NodeHandle::NodeAggregates& aggregates,
     size_t batch_size) {
   EvalItem* task = ctx_.eval_item_pool->allocate(1);
+  // For now we only do that for terminal nodes, but if needed, we can change
+  // result_type below.
+  assert(aggregates.IsTerminal());
   ::new (task) EvalItem(
       /*variation=*/std::move(node),
       /*num_visits=*/batch_size,
-      /*is_terminal=*/aggregates.IsTerminal(),
+      /*result_type=*/EvalItem::ResultType::kTerminal,
       /*v=*/aggregates.agg_v,
       /*d=*/aggregates.agg_d,
       /*m=*/aggregates.agg_m);
   channels_.SendForBackprop(task);
 }
 
-void MctsGatherWorker::EnqueueNodeForCollisionRollback(Variation&&, size_t) {
-  NotImplemented();
+void MctsGatherWorker::EnqueueNodeForCollisionRollback(Variation&& node,
+                                                       size_t batch_size) {
+  EvalItem* task = ctx_.eval_item_pool->allocate(1);
+  ::new (task) EvalItem(
+      /*variation=*/std::move(node),
+      /*num_visits=*/batch_size,
+      /*result_type=*/EvalItem::ResultType::kCollisionRollback);
+  channels_.SendForEval(task);
 }
 
 }  // namespace lc3
