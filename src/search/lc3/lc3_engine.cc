@@ -30,6 +30,7 @@
 #include "search/lc3/node_repository.h"
 #include "search/lc3/positions.h"
 #include "search/lc3/session.h"
+#include "search/lc3/settings.h"
 #include "search/register.h"
 
 namespace lczero {
@@ -65,6 +66,9 @@ void Lc3Engine::StartSearch(const GoParams& /* go_params */) {
 namespace {
 class Lc3Factory : public SearchFactory {
   std::string_view GetName() const override { return "lc3"; }
+  void PopulateParams(OptionsParser* options) const override {
+    Settings::Populate(options);
+  }
   std::unique_ptr<SearchBase> CreateSearch(UciResponder* responder,
                                            const OptionsDict*) const override {
     return std::make_unique<Lc3Engine>(responder);
