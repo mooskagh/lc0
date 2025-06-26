@@ -16,9 +16,11 @@ class EvalWorker {
   EvalWorker(const Context& context, EvalWorkerChannels channels,
              Backend* backend)
       : ctx_(context), channels_(std::move(channels)), backend_(backend) {}
-  void OneStep();
+
+  void Run();
 
  private:
+  void OneStep();
   void SendCompletedEvalItem(EvalItem*);
   void SendCompletedBatchItems();
 

@@ -12,6 +12,13 @@
 namespace lczero {
 namespace lc3 {
 
+void WatchdogWorker::Run() {
+  while (true) {
+    CheckOnce();
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+}
+
 void WatchdogWorker::CheckOnce() {
   NodeHandle node_handle =
       ctx_.node_repository->GetNodeForUpdate((*ctx_.head)->key,

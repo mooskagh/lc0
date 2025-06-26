@@ -15,9 +15,10 @@ class BackpropWorker {
   BackpropWorker(const Context& context, BackpropWorkerChannels channels)
       : ctx_(context), channels_(std::move(channels)) {}
 
-  void OneStep();
+  void Run();
 
  private:
+  void OneStep();
   struct BackPropItem;
 
   std::vector<BackPropItem> FetchBackpropTasks();

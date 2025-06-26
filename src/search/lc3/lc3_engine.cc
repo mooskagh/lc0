@@ -59,8 +59,8 @@ void Lc3Engine::StartSearch(const GoParams& /* go_params */) {
   TODO("Do not ignore go_params");
   EnsureSearchStopped();
   search_ = std::make_unique<SearchSession>(&node_repository_, game_state_,
-                                            backend_, uci_responder_);
-  search_->StartSyncronized();
+                                            backend_, uci_responder_,
+                                            &search_channels_, options_);
 }
 
 namespace {
@@ -69,9 +69,9 @@ class Lc3Factory : public SearchFactory {
   void PopulateParams(OptionsParser* options) const override {
     Settings::Populate(options);
   }
-  std::unique_ptr<SearchBase> CreateSearch(UciResponder* responder,
-                                           const OptionsDict*) const override {
-    return std::make_unique<Lc3Engine>(responder);
+  std::unique_ptr<SearchBase> CreateSearch(
+      UciResponder* responder, const OptionsDict* options) const override {
+    return std::make_unique<Lc3Engine>(responder, options);
   }
 };
 

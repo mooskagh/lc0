@@ -99,6 +99,10 @@ MctsGatherWorker::MctsGatherWorker(const Context& context,
                                    GatherWorkerChannels channels)
     : ctx_(context), channels_(std::move(channels)) {}
 
+void MctsGatherWorker::Run() {
+  while (true) GatherDescent(2560);
+}
+
 void MctsGatherWorker::GatherDescent(size_t target_batch_size) {
   DPRINT_SCOPE("GatherDescent");
   DPRINT << "target_batch_size=" << target_batch_size;

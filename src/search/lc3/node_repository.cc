@@ -73,6 +73,11 @@ void NodeHandle::ApplyNodeUpdate(NodeAggregates new_data) {
   data_->value.agg_m += weight * (new_data.agg_m - data_->value.agg_m);
   // TODO probably with certainty propagation we'll need something smarter here.
   data_->value.state = new_data.state;
+
+  if (data_->value.n > 10000) {
+    // DDebug break
+    __builtin_trap();
+  }
 }
 
 NodeHandle::NodeAggregates NodeHandle::GetNodeAggregates() const {

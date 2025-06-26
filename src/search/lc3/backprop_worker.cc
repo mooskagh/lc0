@@ -202,6 +202,10 @@ std::vector<BackpropWorker::BackPropItem> BackpropWorker::FetchBackpropTasks() {
   return backprop_items;
 }
 
+void BackpropWorker::Run() {
+  while (true) OneStep();
+}
+
 void BackpropWorker::OneStep() {
   std::vector<BackPropItem> backprop_heap = FetchBackpropTasks();
 

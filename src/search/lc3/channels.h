@@ -144,6 +144,7 @@ class BackpropWorkerChannels {
 
 class SearchChannels {
  public:
+  SearchChannels() = default;
   SearchChannels(size_t num_gather_threads, size_t num_eval_threads) {
     Resize(num_gather_threads, num_eval_threads);
   }
@@ -172,7 +173,6 @@ class SearchChannels {
     return eval_queue_.size_approx();
   }
 
- private:
   void Resize(size_t num_gather_threads, size_t num_eval_threads) {
     ResizeVector(gather_to_eval_tokens_, num_gather_threads, eval_queue_);
     ResizeVector(gather_to_backprop_tokens_, num_gather_threads,
@@ -180,6 +180,7 @@ class SearchChannels {
     ResizeVector(eval_to_backprop_tokens_, num_eval_threads, backprop_queue_);
   }
 
+ private:
   absl::Mutex eval_tasks_mutex_;
   absl::Mutex backprop_tasks_mutex_;
 

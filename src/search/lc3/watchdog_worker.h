@@ -9,10 +9,12 @@ class WatchdogWorker {
  public:
   WatchdogWorker(const Context& context) : ctx_(context) {}
 
+  void Run();
+
+ private:
   void CheckOnce();
   std::vector<Move> BuildPV() const;
 
- private:
   const Context ctx_;
   std::vector<Move> previous_pv_;
   std::chrono::steady_clock::time_point last_check_time_;
