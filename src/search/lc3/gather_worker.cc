@@ -28,18 +28,11 @@ namespace lc3 {
 namespace {
 
 // TODO move to logic.h
-std::vector<size_t> DistributeVisits(size_t depth, size_t visits_to_distribute,
-                                     size_t node_n,
+std::vector<size_t> DistributeVisits(size_t /* depth */,
+                                     size_t visits_to_distribute, size_t node_n,
                                      std::span<const float> edge_P,
                                      std::span<const float> edge_Q,
                                      std::span<const uint64_t> edge_N) {
-  DPRINT_SCOPE("DistributeVisits");
-  DPRINT << "depth=" << depth
-         << " visits_to_distribute=" << visits_to_distribute
-         << " node_n=" << node_n << " edge_P.size()=" << edge_P.size()
-         << " edge_Q.size()=" << edge_Q.size()
-         << " edge_N.size()=" << edge_N.size();
-
   assert(edge_P.size() > 0);
   assert(edge_P.size() == edge_Q.size());
   assert(edge_P.size() == edge_N.size());
@@ -58,9 +51,6 @@ std::vector<size_t> DistributeVisits(size_t depth, size_t visits_to_distribute,
   while (visits_to_distribute > 0) {
     const size_t visits_this_step = static_cast<size_t>(
         std::ceil(visits_to_distribute * kBatchIterationFraction));
-    DPRINT_SCOPE("Distributing visits, remaining=" +
-                 std::to_string(visits_to_distribute) +
-                 " this_step=" + std::to_string(visits_this_step));
 
     float best_score = q_plus_u(0);
     size_t best_idx = 0;
@@ -72,8 +62,6 @@ std::vector<size_t> DistributeVisits(size_t depth, size_t visits_to_distribute,
       }
     }
 
-    DPRINT << "Routing to idx=" << best_idx << " (num=" << visits_this_step
-           << ")";
     result[best_idx] += visits_this_step;
     visits_to_distribute -= visits_this_step;
   }
@@ -104,8 +92,6 @@ void MctsGatherWorker::Run() {
 }
 
 void MctsGatherWorker::GatherDescent(size_t target_batch_size) {
-  DPRINT_SCOPE("GatherDescent");
-  DPRINT << "target_batch_size=" << target_batch_size;
   struct NodeAndBatch {
     Variation node;
     size_t batch_size;
@@ -118,22 +104,18 @@ void MctsGatherWorker::GatherDescent(size_t target_batch_size) {
 
   for (size_t depth = 0; !work_queue.empty();
        ++depth, next_iter_work_queue.swap(work_queue)) {
-    DPRINT_SCOPE("depth=" + std::to_string(depth));
     // Work queue has variations that have to be owned or deleted.
     next_iter_work_queue.clear();
 
     // Fetch nodes from the node_repository.
     {
       for (NodeAndBatch& item : work_queue) {
-        DPRINT_SCOPE("Item " + item.node->position.DebugString());
-        DPRINT << "batch_size=" << item.batch_size;
         Variation& node = item.node;
         NodeHandle update =
             ctx_.node_repository->GetNodeForUpdate(node->key,
                                                    /*create_if_missing=*/true);
         assert(update);
         if (update.IsNew()) {
-          DPRINT << "Node not found in node_repository, creating new node";
           EnqueueNodeForEval(std::move(node), item.batch_size);
           continue;
         }
@@ -159,29 +141,15 @@ void MctsGatherWorker::GatherDescent(size_t target_batch_size) {
             .n = edge_infos.edge_N,
         };
         update.FetchEdges(request);
-        {
-          DPRINT_SCOPE("Fetched moves:");
-          for (size_t i = 0; i < num_moves_to_fetch; ++i) {
-            DPRINT << "idx=" << i
-                   << " move=" << edge_infos.moves[i].ToString(true)
-                   << " p=" << edge_infos.edge_P[i]
-                   << " q=" << edge_infos.edge_Q[i]
-                   << " n=" << edge_infos.edge_N[i];
-          }
-        }
         std::vector<size_t> edge_visits = DistributeVisits(
             depth, item.batch_size, aggregates.n, edge_infos.edge_P,
             edge_infos.edge_Q, edge_infos.edge_N);
         update.AddEdgeVisits(edge_visits);
         // Spawn new work items for the children.
-        DPRINT_SCOPE("Spawning children");
         // TODO no need to hold an `update` lock.
         for (size_t i = 0; i < num_moves_to_fetch; ++i) {
           if (edge_visits[i] == 0) continue;  // TODO factor out into variable.
           const Move& move = edge_infos.moves[i];
-          DPRINT << "pos=" << node->position.DebugString()
-                 << ", move=" << move.ToString(true) << ", resulting="
-                 << Position(node->position, move).DebugString();
           next_iter_work_queue.push_back(NodeAndBatch{
               .node = node.make_child(
                   /*hash=*/NodeKey{HashCat(node->key.hash, move.raw_data())},
@@ -228,7 +196,7 @@ void MctsGatherWorker::EnqueueNodeForCollisionRollback(Variation&& node,
       /*variation=*/std::move(node),
       /*num_visits=*/batch_size,
       /*result_type=*/EvalItem::ResultType::kCollisionRollback);
-  channels_.SendForEval(task);
+  channels_.SendForBackprop(task);
 }
 
 }  // namespace lc3

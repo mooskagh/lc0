@@ -2,6 +2,8 @@
 
 #include "search/lc3/backprop_worker.h"
 
+#include <signal.h>
+
 #include <array>
 #include <optional>
 #include <vector>
@@ -51,8 +53,7 @@ float ComputeQ(float v, float /* d */, float /* m */) { return v; }
 // TODO move to logic.h
 void MergeNodeUpdates(NodeUpdate* dst, const NodeUpdate& src) {
   assert(dst->variation->key == src.variation->key);
-  DPRINT << "Merging node updates: " << dst->ToString() << " <- "
-         << src.ToString();
+  if (src.num_visits == 0) return;
 
   // dst v, d and q are weighted averages of v, d, q, weighted by
   // num_visits_to_apply.
@@ -62,10 +63,6 @@ void MergeNodeUpdates(NodeUpdate* dst, const NodeUpdate& src) {
   dst->d += (src.d - dst->d) * weight;
   dst->m += (src.m - dst->m) * weight;
   dst->num_visits += src.num_visits;
-
-  DPRINT << "Merge result: " << dst->ToString()
-         << ", total_visits=" << total_visits << ", weight=" << weight
-         << ", src.num_visits=" << src.num_visits;
 }
 
 size_t MoveNodeUpdateToParent(NodeUpdate* node_update) {
@@ -178,7 +175,6 @@ BackpropWorker::ProcessSingleBackpropTask(EvalItem* item) {
 
 std::vector<BackpropWorker::BackPropItem> BackpropWorker::FetchBackpropTasks() {
   std::vector<BackPropItem> backprop_items;
-  DPRINT_SCOPE("Fetching eval results");
   // Fetch eval results from the queue, update the nodes they reference, and
   // forward the updates to the parent nodes.
   absl::MutexLock queue_lock(channels_.BackpropTasksMutex());
@@ -187,7 +183,6 @@ std::vector<BackpropWorker::BackPropItem> BackpropWorker::FetchBackpropTasks() {
   size_t num_items = channels_.CollectBackpropTasks(buffer, /*block=*/true);
   bool all_items_collisions = true;
   do {
-    DPRINT << "fetched num_items=" << num_items;
     for (size_t i = 0; i < num_items; ++i) {
       auto [backprop_item, is_collision_rollback] =
           ProcessSingleBackpropTask(buffer[i]);
@@ -211,15 +206,11 @@ void BackpropWorker::OneStep() {
 
   std::make_heap(backprop_heap.begin(), backprop_heap.end());
   while (!backprop_heap.empty()) {
-    DPRINT_SCOPE("Processing backprop heap, size=" +
-                 std::to_string(backprop_heap.size()));
     std::pop_heap(backprop_heap.begin(), backprop_heap.end());
     BackPropItem& backprop_item = backprop_heap.back();
-    DPRINT << "Processing backprop item: " << backprop_item.ToString();
 
     // Extract the first item from the heap.
     size_t visits_to_undo = backprop_item.edge_update.visits_to_undo;
-    DPRINT << "visits_to_undo_so_far=" << visits_to_undo;
     std::vector<NodeHandle::EdgePatch> edge_updates{backprop_item.edge_update};
     NodeUpdate node_update = backprop_item.node_update;
     backprop_heap.pop_back();
@@ -228,13 +219,9 @@ void BackpropWorker::OneStep() {
     NodeKey cur_hash = node_update.variation->key;
     while (!backprop_heap.empty() &&
            backprop_heap.front().node_update.variation->key == cur_hash) {
-      DPRINT_SCOPE("Merging backprop");
       BackPropItem& backprop_item = backprop_heap.front();
-      DPRINT << backprop_item.ToString();
 
       visits_to_undo += backprop_item.edge_update.visits_to_undo;
-      DPRINT << "visits_to_undo += " << backprop_item.edge_update.visits_to_undo
-             << " = " << visits_to_undo;
 
       MergeNodeUpdates(&node_update, backprop_item.node_update);
       edge_updates.push_back(backprop_item.edge_update);
@@ -242,15 +229,12 @@ void BackpropWorker::OneStep() {
       std::pop_heap(backprop_heap.begin(), backprop_heap.end());
       backprop_heap.pop_back();
     }
-    DPRINT << "Merged " << edge_updates.size() << " items";
 
     // TODO buffer this and apply in batches.
     NodeHandle update =
         ctx_.node_repository->GetNodeForUpdate(node_update.variation->key,
                                                /*create_if_missing=*/false);
     assert(update);
-    DPRINT << "About to call accumulate: num_visits=" << node_update.num_visits
-           << ", visits_to_undo=" << visits_to_undo;
     // When we rollback a collision, we don't need to apply the node update.
     if (node_update.num_visits != 0) {
       update.ApplyNodeUpdate({
@@ -261,7 +245,6 @@ void BackpropWorker::OneStep() {
           .state = NodeHandle::CertaintyState::kNonTerminal,
       });
     }
-    DPRINT << "Accumulated " << edge_updates.size() << " edge updates.";
     update.UpdateEdges(edge_updates);
     if (node_update.variation->idx_in_parent != kNoIdxInParent) {
       const size_t idx_in_parent = MoveNodeUpdateToParent(&node_update);
@@ -273,7 +256,6 @@ void BackpropWorker::OneStep() {
                .visits_to_undo = visits_to_undo,
                .agg_q = -ComputeQ(node_value.agg_v, node_value.agg_d,
                                   node_value.agg_m)}});
-      DPRINT << "Forwarded to parent " << backprop_heap.back().ToString();
       std::push_heap(backprop_heap.begin(), backprop_heap.end());
     }
   }

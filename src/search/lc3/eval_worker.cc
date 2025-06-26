@@ -1,5 +1,3 @@
-// #define LCZERO_DEBUG_LOGGING
-
 #include "search/lc3/eval_worker.h"
 
 #include <array>
@@ -11,15 +9,12 @@ namespace lc3 {
 
 void EvalWorker::EnqueueIncomingTasks(std::span<EvalItem*> tasks) {
   // TODO absl REQUIRES_MUTEX(queue_mutex_)
-  DPRINT_SCOPE("EnqueueIncomingTasks, size=" + std::to_string(tasks.size()));
   for (EvalItem* task : tasks) {
     const auto& board = task->variation->position.GetBoard();
-    DPRINT_SCOPE("Board: " + board.DebugString());
     task->moves = board.GenerateLegalMoves();
 
     // Handle terminals.
     if (task->moves.empty()) {
-      DPRINT << "Terminal position (no legal moves)";
       task->result_type = EvalItem::ResultType::kTerminal;
       const bool is_under_check = board.IsUnderCheck();
       task->v = is_under_check ? -1.0f : 0.0f;
@@ -31,7 +26,6 @@ void EvalWorker::EnqueueIncomingTasks(std::span<EvalItem*> tasks) {
     if (!board.HasMatingMaterial() ||
         task->variation->position.GetRule50Ply() >= 100 ||
         GetPositionRepetitionCount(task->variation) >= 2) {
-      DPRINT << "Terminal position (draw by various rules)";
       task->result_type = EvalItem::ResultType::kTerminal;
       task->v = 0.0f;
       task->d = 1.0f;
@@ -54,11 +48,9 @@ void EvalWorker::EnqueueIncomingTasks(std::span<EvalItem*> tasks) {
         EvalResultPtr{
             .q = &task->v, .d = &task->d, .m = &task->m, .p = task->p});
     if (addinput_result == BackendComputation::FETCHED_IMMEDIATELY) {
-      DPRINT << "Fetched from cache";
       SendCompletedEvalItem(task);
       continue;
     }
-    DPRINT << "Adding to batch for eval.";
     batched_eval_items_.push_back(task);
   }
 }
@@ -70,8 +62,6 @@ void EvalWorker::Run() {
 void EvalWorker::OneStep() {
   computation_ = backend_->CreateComputation();
   Collect();
-  DPRINT << computation_->UsedBatchSize() << " items to compute";
-  CERR << computation_->UsedBatchSize() << " items to compute";
   if (computation_->UsedBatchSize() > 0) computation_->ComputeBlocking();
   SendCompletedBatchItems();
 }
@@ -79,15 +69,13 @@ void EvalWorker::OneStep() {
 void EvalWorker::Collect() {
   const size_t recommended_batch_size =
       backend_->GetAttributes().recommended_batch_size;
-  DPRINT_SCOPE("EvalWorker::Collect, recommended_batch_size=" +
-               std::to_string(recommended_batch_size));
+
   absl::MutexLock lock(channels_.EvalTasksMutex());
   // TODO replace with unique_ptr[]
   std::vector<EvalItem*> eval_tasks(recommended_batch_size);
 
   // Do one blocking fetch to get initial work.
   {
-    DPRINT << "Waiting blockingly";
     size_t num_nodes = channels_.CollectEvalTasks(
         std::span<EvalItem*>(eval_tasks.data(), recommended_batch_size),
         /*blocking=*/true);
@@ -105,7 +93,6 @@ void EvalWorker::Collect() {
     if (num_nodes == 0) break;
     EnqueueIncomingTasks(std::span(eval_tasks).subspan(0, num_nodes));
   }
-  DPRINT << "Collected " << batched_eval_items_.size() << " items";
 }
 
 void EvalWorker::SendCompletedEvalItem(EvalItem* item) {
