@@ -28,11 +28,14 @@ class SearchSession {
   // void StartSyncronized();
 
  private:
+  bool OkToGather() const { return eval_queue_.SizeApprox() < 1024; }
+
   PositionTree position_tree_;
   Variation head_;
 
   EvalItemReceiver eval_queue_;
   EvalItemReceiver backprop_queue_;
+  GatherRateLimiter gather_rate_limiter_;
 
   Settings settings_;
   std::vector<std::unique_ptr<MctsGatherWorker>> gather_workers_;

@@ -84,11 +84,16 @@ struct EdgeInfos {
 }  // namespace
 
 MctsGatherWorker::MctsGatherWorker(const Context& context,
-                                   GatherWorkerQueues channels)
-    : ctx_(context), queues_(std::move(channels)) {}
+                                   GatherWorkerQueues channels,
+                                   GatherRateLimiter* rate_limiter)
+    : ctx_(context), queues_(std::move(channels)), rate_limiter_(rate_limiter) {}
 
 void MctsGatherWorker::Run() {
-  while (true) GatherDescent(2560);
+  while (true) {
+    rate_limiter_->mutex.LockWhen(rate_limiter_->condition);
+    rate_limiter_->mutex.Unlock();
+    GatherDescent(2560);
+  }
 }
 
 void MctsGatherWorker::GatherDescent(size_t target_batch_size) {

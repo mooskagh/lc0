@@ -14,6 +14,9 @@ SearchSession::SearchSession(NodeRepository* node_repository,
           /*depth=*/0,
           /*idx_in_parent=*/-1),
       head_(position_tree_.root()),
+      gather_rate_limiter_{
+          .condition = {this, &SearchSession::OkToGather},
+      },
       settings_(*options) {
   for (const auto& move : game_state.moves) {
     head_ = head_.make_child(
@@ -31,13 +34,17 @@ SearchSession::SearchSession(NodeRepository* node_repository,
   // TODO Thread pool.
   for (int i = 0; i < settings_.GetNumGatherThreads(); ++i) {
     gather_workers_.emplace_back(std::make_unique<MctsGatherWorker>(
-        context, GatherWorkerQueues{eval_queue_.MakeSender(),
-                                    backprop_queue_.MakeSender()}));
+        context,
+        GatherWorkerQueues{eval_queue_.MakeSender(),
+                           backprop_queue_.MakeSender()},
+        &gather_rate_limiter_));
     threads_.emplace_back(&MctsGatherWorker::Run, gather_workers_.back().get());
   }
   for (int i = 0; i < settings_.GetNumEvalThreads(); ++i) {
     eval_workers_.emplace_back(std::make_unique<EvalWorker>(
-        context, EvalWorkerQueues(&eval_queue_, backprop_queue_.MakeSender()),
+        context,
+        EvalWorkerQueues{&eval_queue_, backprop_queue_.MakeSender(),
+                         &gather_rate_limiter_.mutex},
         backend));
     threads_.emplace_back(&EvalWorker::Run, eval_workers_.back().get());
   }

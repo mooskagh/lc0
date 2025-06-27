@@ -72,6 +72,7 @@ class EvalItemReceiver {
 
   absl::Mutex* GetConsumerMutex() { return &consumer_mutex_; }
   EvalItemSender MakeSender() { return EvalItemSender(&queue_); }
+  size_t SizeApprox() const { return queue_.size_approx(); }
 
  private:
   moodycamel::BlockingConcurrentQueue<EvalItem*> queue_;

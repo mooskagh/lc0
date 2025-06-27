@@ -14,6 +14,7 @@ struct WorkTreeNode;
 struct EvalWorkerQueues {
   EvalItemReceiver* const eval_receiver;
   EvalItemSender backprop_sender;
+  absl::Mutex* const eval_queue_unblocker;
 };
 
 class EvalWorker {

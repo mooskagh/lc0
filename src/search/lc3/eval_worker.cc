@@ -93,6 +93,10 @@ void EvalWorker::Collect() {
     if (num_nodes == 0) break;
     EnqueueIncomingTasks(std::span(eval_tasks).subspan(0, num_nodes));
   }
+
+  queues_.eval_queue_unblocker->Lock();
+  queues_.eval_queue_unblocker->Unlock();
+
 }
 
 void EvalWorker::SendCompletedEvalItem(EvalItem* item) {

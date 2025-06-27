@@ -8,6 +8,11 @@
 namespace lczero {
 namespace lc3 {
 
+struct GatherRateLimiter {
+  absl::Condition condition;
+  absl::Mutex mutex = {};
+};
+
 struct GatherWorkerQueues {
   EvalItemSender eval_sender;
   EvalItemSender backprop_sender;
@@ -15,7 +20,8 @@ struct GatherWorkerQueues {
 
 class MctsGatherWorker {
  public:
-  MctsGatherWorker(const Context& context, GatherWorkerQueues);
+  MctsGatherWorker(const Context& context, GatherWorkerQueues,
+                   GatherRateLimiter*);
 
   void Abort() { TODO(); }
   void Wait() { TODO(); }
@@ -33,6 +39,7 @@ class MctsGatherWorker {
 
   Context const ctx_;
   GatherWorkerQueues queues_;
+  GatherRateLimiter* const rate_limiter_;
 };
 
 }  // namespace lc3
