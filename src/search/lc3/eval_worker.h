@@ -4,7 +4,6 @@
 
 #include "neural/backend.h"
 #include "search/lc3/channels.h"
-#include "search/lc3/context.h"
 
 namespace lczero {
 namespace lc3 {

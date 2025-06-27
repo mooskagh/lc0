@@ -21,14 +21,14 @@ void WatchdogWorker::Run() {
 
 void WatchdogWorker::CheckOnce() {
   NodeHandle node_handle =
-      ctx_.node_repository->GetNodeForUpdate((*ctx_.head)->key,
+      env_.node_repository->GetNodeForUpdate((*env_.head)->key,
                                              /*create_if_missing=*/false);
   if (!node_handle) return;
   const int64_t nodes = node_handle.GetNodeAggregates().n;
   node_handle.Release();
 
   auto pv = BuildPV();
-  const bool head_is_black = (*ctx_.head)->position.IsBlackToMove();
+  const bool head_is_black = (*env_.head)->position.IsBlackToMove();
   for (size_t i = 0; i < pv.size(); ++i) {
     if (head_is_black == (i % 2 == 0)) pv[i].Flip();
   }
@@ -53,7 +53,7 @@ void WatchdogWorker::CheckOnce() {
                         : 0;
     std::vector<ThinkingInfo> infos = {
         {.nodes = static_cast<int64_t>(nodes), .nps = nps, .pv = pv}};
-    ctx_.uci_responder->OutputThinkingInfo(&infos);
+    env_.uci_responder->OutputThinkingInfo(&infos);
     previous_pv_ = std::move(pv);
     last_check_time_ = std::chrono::steady_clock::now();
   }
@@ -69,7 +69,7 @@ std::vector<Move> WatchdogWorker::BuildPV() const {
 
   auto fetch_position = [&](const NodeKey& key) -> HashAndPosition {
     NodeHandle node_handle =
-        ctx_.node_repository->GetNodeForUpdate(key,
+        env_.node_repository->GetNodeForUpdate(key,
                                                /*create_if_missing=*/false);
     if (!node_handle) return HashAndPosition{};
     size_t num_moves = node_handle.FetchMoveCounts().with_visits;
@@ -84,7 +84,7 @@ std::vector<Move> WatchdogWorker::BuildPV() const {
   };
 
   std::optional<HashAndPosition> current_position =
-      fetch_position((*ctx_.head)->key);
+      fetch_position((*env_.head)->key);
 
   while (current_position && !current_position->moves.empty()) {
     std::vector<HashAndPosition> candidates;

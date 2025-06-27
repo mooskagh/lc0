@@ -6,7 +6,6 @@ namespace lc3 {
 SearchSession::SearchSession(NodeRepository* node_repository,
                              const GameState& game_state, Backend* backend,
                              UciResponder* uci_responder,
-
                              const OptionsDict* options)
     : position_tree_(
           /*hash=*/NodeKey{game_state.startpos.Hash()},
@@ -25,12 +24,7 @@ SearchSession::SearchSession(NodeRepository* node_repository,
         /*depth=*/head_->depth + 1,
         /*idx_in_parent=*/kNoIdxInParent);
   }
-  Context context{
-      .node_repository = node_repository,
-      .head = &head_,
-      .eval_item_pool = &eval_item_pool_,
-      .uci_responder = uci_responder,
-  };
+
   // TODO Thread pool.
   for (int i = 0; i < settings_.GetNumGatherThreads(); ++i) {
     gather_workers_.emplace_back(std::make_unique<GatherWorker>(
@@ -60,7 +54,10 @@ SearchSession::SearchSession(NodeRepository* node_repository,
     backprop_threads_.emplace_back(&BackpropWorker::Run,
                                    backprop_workers_.back().get());
   }
-  watchdog_worker_ = std::make_unique<WatchdogWorker>(context);
+  watchdog_worker_ = std::make_unique<WatchdogWorker>(
+      WatchdogWorkerEnvironment{.node_repository = node_repository,
+                                .head = &head_,
+                                .uci_responder = uci_responder});
   watchdog_thread_ = std::thread(&WatchdogWorker::Run, watchdog_worker_.get());
 }
 

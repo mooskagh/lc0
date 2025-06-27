@@ -2,7 +2,6 @@
 
 #include "chess/position.h"
 #include "search/lc3/channels.h"
-#include "search/lc3/context.h"
 #include "utils/exception.h"
 
 namespace lczero {

@@ -1,13 +1,24 @@
-#include "search/lc3/context.h"
-
 #pragma once
+
+#include <chrono>
+#include <vector>
+
+#include "chess/callbacks.h"
+#include "chess/types.h"
+#include "search/lc3/positions.h"
 
 namespace lczero {
 namespace lc3 {
 
+struct WatchdogWorkerEnvironment {
+  NodeRepository* node_repository;
+  Variation* head;
+  UciResponder* uci_responder;
+};
+
 class WatchdogWorker {
  public:
-  WatchdogWorker(const Context& context) : ctx_(context) {}
+  WatchdogWorker(WatchdogWorkerEnvironment env) : env_(std::move(env)) {}
 
   void Run();
 
@@ -15,7 +26,8 @@ class WatchdogWorker {
   void CheckOnce();
   std::vector<Move> BuildPV() const;
 
-  const Context ctx_;
+  WatchdogWorkerEnvironment env_;
+
   std::vector<Move> previous_pv_;
   std::chrono::steady_clock::time_point last_check_time_;
 
