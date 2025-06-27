@@ -20,9 +20,9 @@ const OptionId gNumBackpropThreads{
 }  // namespace
 
 void Settings::Populate(OptionsParser* options) {
-  options->Add<IntOption>(gNumGatherThreads, 1, 128) = 2;
-  options->Add<IntOption>(gNumEvalThreads, 1, 128) = 2;
-  options->Add<IntOption>(gNumBackpropThreads, 1, 128) = 2;
+  options->Add<IntOption>(gNumGatherThreads, 1, 128) = 1;
+  options->Add<IntOption>(gNumEvalThreads, 1, 128) = 1;
+  options->Add<IntOption>(gNumBackpropThreads, 1, 128) = 1;
 }
 
 Settings::Settings(const OptionsDict& options)
