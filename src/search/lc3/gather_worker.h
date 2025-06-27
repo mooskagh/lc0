@@ -8,19 +8,29 @@
 namespace lczero {
 namespace lc3 {
 
+// TODO make a class.
 struct GatherRateLimiter {
   absl::Condition condition;
   absl::Mutex mutex = {};
+
+  void Wait() {
+    mutex.LockWhen(condition);
+    mutex.Unlock();
+  };
 };
 
-struct GatherWorkerQueues {
+struct GatherWorkerEnvironment {
   EvalItemSender eval_sender;
   EvalItemSender backprop_sender;
+  GatherRateLimiter* const rate_limiter;
+  NodeRepository* node_repository;
+  Variation* head;
+  EvalItemPool* eval_item_pool;
 };
 
 class GatherWorker {
  public:
-  GatherWorker(const Context& context, GatherWorkerQueues, GatherRateLimiter*);
+  GatherWorker(GatherWorkerEnvironment env) : env_(std::move(env)) {}
 
   void Abort() { TODO(); }
   void Wait() { TODO(); }
@@ -36,9 +46,7 @@ class GatherWorker {
                               size_t batch_size);
   void EnqueueNodeForCollisionRollback(Variation&& node, size_t batch_size);
 
-  Context const ctx_;
-  GatherWorkerQueues queues_;
-  GatherRateLimiter* const rate_limiter_;
+  GatherWorkerEnvironment env_;
 };
 
 }  // namespace lc3

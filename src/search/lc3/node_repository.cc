@@ -1,4 +1,3 @@
-// #define LCZERO_DEBUG_LOGGING
 #include "search/lc3/node_repository.h"
 
 #include <signal.h>

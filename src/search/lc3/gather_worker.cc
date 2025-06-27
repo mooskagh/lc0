@@ -83,16 +83,9 @@ struct EdgeInfos {
 
 }  // namespace
 
-GatherWorker::GatherWorker(const Context& context, GatherWorkerQueues channels,
-                           GatherRateLimiter* rate_limiter)
-    : ctx_(context),
-      queues_(std::move(channels)),
-      rate_limiter_(rate_limiter) {}
-
 void GatherWorker::Run() {
   while (true) {
-    rate_limiter_->mutex.LockWhen(rate_limiter_->condition);
-    rate_limiter_->mutex.Unlock();
+    env_.rate_limiter->Wait();
     GatherDescent(2560);
   }
 }
@@ -103,7 +96,7 @@ void GatherWorker::GatherDescent(size_t target_batch_size) {
     size_t batch_size;
   };
   std::vector<NodeAndBatch> work_queue(1, NodeAndBatch{
-                                              .node = *ctx_.head,
+                                              .node = *env_.head,
                                               .batch_size = target_batch_size,
                                           });
   std::vector<NodeAndBatch> next_iter_work_queue;
@@ -118,7 +111,7 @@ void GatherWorker::GatherDescent(size_t target_batch_size) {
       for (NodeAndBatch& item : work_queue) {
         Variation& node = item.node;
         NodeHandle update =
-            ctx_.node_repository->GetNodeForUpdate(node->key,
+            env_.node_repository->GetNodeForUpdate(node->key,
                                                    /*create_if_missing=*/true);
         assert(update);
         if (update.IsNew()) {
@@ -171,17 +164,17 @@ void GatherWorker::GatherDescent(size_t target_batch_size) {
 }
 
 void GatherWorker::EnqueueNodeForEval(Variation&& node, size_t batch_size) {
-  EvalItem* task = ctx_.eval_item_pool->allocate(1);
+  EvalItem* task = env_.eval_item_pool->allocate(1);
   ::new (task) EvalItem(
       /*variation=*/std::move(node),
       /*num_visits=*/batch_size);
-  queues_.eval_sender.Enqueue(task);
+  env_.eval_sender.Enqueue(task);
 }
 
 void GatherWorker::EnqueueNodeForBackprop(
     Variation&& node, const NodeHandle::NodeAggregates& aggregates,
     size_t batch_size) {
-  EvalItem* task = ctx_.eval_item_pool->allocate(1);
+  EvalItem* task = env_.eval_item_pool->allocate(1);
   // For now we only do that for terminal nodes, but if needed, we can change
   // result_type below.
   assert(aggregates.IsTerminal());
@@ -192,17 +185,17 @@ void GatherWorker::EnqueueNodeForBackprop(
       /*v=*/aggregates.agg_v,
       /*d=*/aggregates.agg_d,
       /*m=*/aggregates.agg_m);
-  queues_.backprop_sender.Enqueue(task);
+  env_.backprop_sender.Enqueue(task);
 }
 
 void GatherWorker::EnqueueNodeForCollisionRollback(Variation&& node,
                                                    size_t batch_size) {
-  EvalItem* task = ctx_.eval_item_pool->allocate(1);
+  EvalItem* task = env_.eval_item_pool->allocate(1);
   ::new (task) EvalItem(
       /*variation=*/std::move(node),
       /*num_visits=*/batch_size,
       /*result_type=*/EvalItem::ResultType::kCollisionRollback);
-  queues_.backprop_sender.Enqueue(task);
+  env_.backprop_sender.Enqueue(task);
 }
 
 }  // namespace lc3

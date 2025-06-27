@@ -30,21 +30,29 @@ class SearchSession {
  private:
   bool OkToGather() const { return eval_queue_.SizeApprox() < 1024; }
 
+  // Working tree and current head in this tree.
   PositionTree position_tree_;
   Variation head_;
 
+  // Channels.
   EvalItemReceiver eval_queue_;
   EvalItemReceiver backprop_queue_;
   GatherRateLimiter gather_rate_limiter_;
 
+  // Settings.
   Settings settings_;
-  std::vector<std::unique_ptr<GatherWorker>> gather_workers_;
-  std::vector<std::unique_ptr<EvalWorker>> eval_workers_;
-  std::vector<std::unique_ptr<BackpropWorker>> backprop_workers_;
-  std::unique_ptr<WatchdogWorker> watchdog_worker_;
-  EvalItemPool eval_item_pool_;
 
-  std::vector<std::thread> threads_;
+  // Workers and threads.
+  std::vector<std::unique_ptr<GatherWorker>> gather_workers_;
+  std::vector<std::thread> gather_threads_;
+  std::vector<std::unique_ptr<EvalWorker>> eval_workers_;
+  std::vector<std::thread> eval_threads_;
+  std::vector<std::unique_ptr<BackpropWorker>> backprop_workers_;
+  std::vector<std::thread> backprop_threads_;
+  std::unique_ptr<WatchdogWorker> watchdog_worker_;
+  std::thread watchdog_thread_;
+
+  EvalItemPool eval_item_pool_;
 };
 
 }  // namespace lc3

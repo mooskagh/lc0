@@ -34,11 +34,14 @@ SearchSession::SearchSession(NodeRepository* node_repository,
   // TODO Thread pool.
   for (int i = 0; i < settings_.GetNumGatherThreads(); ++i) {
     gather_workers_.emplace_back(std::make_unique<GatherWorker>(
-        context,
-        GatherWorkerQueues{eval_queue_.MakeSender(),
-                           backprop_queue_.MakeSender()},
-        &gather_rate_limiter_));
-    threads_.emplace_back(&GatherWorker::Run, gather_workers_.back().get());
+        GatherWorkerEnvironment{.eval_sender = eval_queue_.MakeSender(),
+                                .backprop_sender = backprop_queue_.MakeSender(),
+                                .rate_limiter = &gather_rate_limiter_,
+                                .node_repository = node_repository,
+                                .head = &head_,
+                                .eval_item_pool = &eval_item_pool_}));
+    gather_threads_.emplace_back(&GatherWorker::Run,
+                                 gather_workers_.back().get());
   }
   for (int i = 0; i < settings_.GetNumEvalThreads(); ++i) {
     eval_workers_.emplace_back(std::make_unique<EvalWorker>(
@@ -46,15 +49,16 @@ SearchSession::SearchSession(NodeRepository* node_repository,
         EvalWorkerQueues{&eval_queue_, backprop_queue_.MakeSender(),
                          &gather_rate_limiter_.mutex},
         backend));
-    threads_.emplace_back(&EvalWorker::Run, eval_workers_.back().get());
+    eval_threads_.emplace_back(&EvalWorker::Run, eval_workers_.back().get());
   }
   for (int i = 0; i < settings_.GetNumBackpropThreads(); ++i) {
     backprop_workers_.emplace_back(
         std::make_unique<BackpropWorker>(context, &backprop_queue_));
-    threads_.emplace_back(&BackpropWorker::Run, backprop_workers_.back().get());
+    backprop_threads_.emplace_back(&BackpropWorker::Run,
+                                   backprop_workers_.back().get());
   }
   watchdog_worker_ = std::make_unique<WatchdogWorker>(context);
-  threads_.emplace_back(&WatchdogWorker::Run, watchdog_worker_.get());
+  watchdog_thread_ = std::thread(&WatchdogWorker::Run, watchdog_worker_.get());
 }
 
 void SearchSession::Abort() { NotImplemented(); }
