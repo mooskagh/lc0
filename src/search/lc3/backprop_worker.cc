@@ -141,7 +141,7 @@ BackpropWorker::ProcessSingleBackpropTask(EvalItem* item) {
   }
 
   NodeHandle node_to_update =
-      ctx_.node_repository->GetNodeForUpdate(item->variation->key,
+      env_.node_repository->GetNodeForUpdate(item->variation->key,
                                              /*create_if_missing=*/false);
   // The node was already created by the gather thread.
   assert(node_to_update);
@@ -173,14 +173,19 @@ BackpropWorker::ProcessSingleBackpropTask(EvalItem* item) {
           is_collision_rollback};
 }
 
+void BackpropWorker::DisposeEvalItem(EvalItem* item) {
+  item->~EvalItem();
+  env_.eval_item_pool->deallocate(item, 1);
+}
+
 std::vector<BackpropWorker::BackPropItem> BackpropWorker::FetchBackpropTasks() {
   std::vector<BackPropItem> backprop_items;
   // Fetch eval results from the queue, update the nodes they reference, and
   // forward the updates to the parent nodes.
-  absl::MutexLock queue_lock(backprop_receiver_->GetConsumerMutex());
+  absl::MutexLock queue_lock(env_.backprop_receiver->GetConsumerMutex());
   std::array<EvalItem*, 1024> buffer;
   // Fetch the first batch blockingly, then try to fetch more non-blockingly.
-  size_t num_items = backprop_receiver_->Collect(buffer, /*block=*/true);
+  size_t num_items = env_.backprop_receiver->Collect(buffer, /*block=*/true);
   bool all_items_collisions = true;
   do {
     for (size_t i = 0; i < num_items; ++i) {
@@ -188,11 +193,12 @@ std::vector<BackpropWorker::BackPropItem> BackpropWorker::FetchBackpropTasks() {
           ProcessSingleBackpropTask(buffer[i]);
       if (backprop_item) backprop_items.push_back(*backprop_item);
       all_items_collisions &= is_collision_rollback;
+      DisposeEvalItem(buffer[i]);
     }
     // Fetch more items if they are available. If all items were collisions, do
     // not process them until we get some non-collision items.
     num_items =
-        backprop_receiver_->Collect(buffer, /*block=*/all_items_collisions);
+        env_.backprop_receiver->Collect(buffer, /*block=*/all_items_collisions);
   } while (num_items > 0);
   return backprop_items;
 }
@@ -232,7 +238,7 @@ void BackpropWorker::OneStep() {
 
     // TODO buffer this and apply in batches.
     NodeHandle update =
-        ctx_.node_repository->GetNodeForUpdate(node_update.variation->key,
+        env_.node_repository->GetNodeForUpdate(node_update.variation->key,
                                                /*create_if_missing=*/false);
     assert(update);
     // When we rollback a collision, we don't need to apply the node update.

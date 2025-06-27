@@ -3,6 +3,7 @@
 #include "search/lc3/positions.h"
 #include "third_party/moodycamel/blockingconcurrentqueue.h"
 #include "third_party/moodycamel/concurrentqueue.h"
+#include "utils/freelist.h"
 
 namespace lczero {
 namespace lc3 {
@@ -41,6 +42,8 @@ struct EvalItem {
   std::vector<Move> moves;
   std::vector<float> p;
 };
+
+using EvalItemPool = FreeListAllocator<EvalItem, 1024>;
 
 struct EvalItemSender {
  public:

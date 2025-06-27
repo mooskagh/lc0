@@ -5,15 +5,19 @@
 #include <vector>
 
 #include "search/lc3/channels.h"
-#include "search/lc3/context.h"
 
 namespace lczero {
 namespace lc3 {
 
+struct BackpropWorkerEnvironment {
+  EvalItemReceiver* const backprop_receiver;
+  NodeRepository* node_repository;
+  EvalItemPool* eval_item_pool;
+};
+
 class BackpropWorker {
  public:
-  BackpropWorker(const Context& context, EvalItemReceiver* backprop_receiver)
-      : ctx_(context), backprop_receiver_(backprop_receiver) {}
+  BackpropWorker(BackpropWorkerEnvironment env) : env_(std::move(env)) {}
 
   void Run();
 
@@ -25,9 +29,9 @@ class BackpropWorker {
   std::pair<std::optional<BackpropWorker::BackPropItem>, bool>
   ProcessSingleBackpropTask(EvalItem* item);
   static BackPropItem EvalItemToBackpropItem(EvalItem* item, size_t num_visits);
+  void DisposeEvalItem(EvalItem* item);
 
-  Context ctx_;
-  EvalItemReceiver* const backprop_receiver_;
+  BackpropWorkerEnvironment env_;
 };
 
 };  // namespace lc3

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cassert>
 #include <cstddef>
 #include <cstdint>
 
@@ -44,10 +45,9 @@ class FreeListAllocator {
   }
 
   void deallocate(T* p, std::size_t n) noexcept {
-    if (n != 1) [[unlikely]] {
-      throw Exception(
-          "FreeListAllocator only supports single object deallocation");
-    }
+    assert(n == 1 &&
+           "FreeListAllocator only supports single object deallocation");
+    (void)n;
 
     Node* node = reinterpret_cast<Node*>(p);
     Push(node);

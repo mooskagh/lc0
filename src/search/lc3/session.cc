@@ -53,8 +53,10 @@ SearchSession::SearchSession(NodeRepository* node_repository,
     eval_threads_.emplace_back(&EvalWorker::Run, eval_workers_.back().get());
   }
   for (int i = 0; i < settings_.GetNumBackpropThreads(); ++i) {
-    backprop_workers_.emplace_back(
-        std::make_unique<BackpropWorker>(context, &backprop_queue_));
+    backprop_workers_.emplace_back(std::make_unique<BackpropWorker>(
+        BackpropWorkerEnvironment{.backprop_receiver = &backprop_queue_,
+                                  .node_repository = node_repository,
+                                  .eval_item_pool = &eval_item_pool_}));
     backprop_threads_.emplace_back(&BackpropWorker::Run,
                                    backprop_workers_.back().get());
   }
