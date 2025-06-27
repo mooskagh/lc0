@@ -33,12 +33,12 @@ SearchSession::SearchSession(NodeRepository* node_repository,
   };
   // TODO Thread pool.
   for (int i = 0; i < settings_.GetNumGatherThreads(); ++i) {
-    gather_workers_.emplace_back(std::make_unique<MctsGatherWorker>(
+    gather_workers_.emplace_back(std::make_unique<GatherWorker>(
         context,
         GatherWorkerQueues{eval_queue_.MakeSender(),
                            backprop_queue_.MakeSender()},
         &gather_rate_limiter_));
-    threads_.emplace_back(&MctsGatherWorker::Run, gather_workers_.back().get());
+    threads_.emplace_back(&GatherWorker::Run, gather_workers_.back().get());
   }
   for (int i = 0; i < settings_.GetNumEvalThreads(); ++i) {
     eval_workers_.emplace_back(std::make_unique<EvalWorker>(

@@ -38,7 +38,7 @@ class SearchSession {
   GatherRateLimiter gather_rate_limiter_;
 
   Settings settings_;
-  std::vector<std::unique_ptr<MctsGatherWorker>> gather_workers_;
+  std::vector<std::unique_ptr<GatherWorker>> gather_workers_;
   std::vector<std::unique_ptr<EvalWorker>> eval_workers_;
   std::vector<std::unique_ptr<BackpropWorker>> backprop_workers_;
   std::unique_ptr<WatchdogWorker> watchdog_worker_;

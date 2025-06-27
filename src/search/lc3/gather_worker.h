@@ -18,10 +18,9 @@ struct GatherWorkerQueues {
   EvalItemSender backprop_sender;
 };
 
-class MctsGatherWorker {
+class GatherWorker {
  public:
-  MctsGatherWorker(const Context& context, GatherWorkerQueues,
-                   GatherRateLimiter*);
+  GatherWorker(const Context& context, GatherWorkerQueues, GatherRateLimiter*);
 
   void Abort() { TODO(); }
   void Wait() { TODO(); }

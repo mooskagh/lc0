@@ -83,12 +83,13 @@ struct EdgeInfos {
 
 }  // namespace
 
-MctsGatherWorker::MctsGatherWorker(const Context& context,
-                                   GatherWorkerQueues channels,
-                                   GatherRateLimiter* rate_limiter)
-    : ctx_(context), queues_(std::move(channels)), rate_limiter_(rate_limiter) {}
+GatherWorker::GatherWorker(const Context& context, GatherWorkerQueues channels,
+                           GatherRateLimiter* rate_limiter)
+    : ctx_(context),
+      queues_(std::move(channels)),
+      rate_limiter_(rate_limiter) {}
 
-void MctsGatherWorker::Run() {
+void GatherWorker::Run() {
   while (true) {
     rate_limiter_->mutex.LockWhen(rate_limiter_->condition);
     rate_limiter_->mutex.Unlock();
@@ -96,7 +97,7 @@ void MctsGatherWorker::Run() {
   }
 }
 
-void MctsGatherWorker::GatherDescent(size_t target_batch_size) {
+void GatherWorker::GatherDescent(size_t target_batch_size) {
   struct NodeAndBatch {
     Variation node;
     size_t batch_size;
@@ -169,7 +170,7 @@ void MctsGatherWorker::GatherDescent(size_t target_batch_size) {
   }
 }
 
-void MctsGatherWorker::EnqueueNodeForEval(Variation&& node, size_t batch_size) {
+void GatherWorker::EnqueueNodeForEval(Variation&& node, size_t batch_size) {
   EvalItem* task = ctx_.eval_item_pool->allocate(1);
   ::new (task) EvalItem(
       /*variation=*/std::move(node),
@@ -177,7 +178,7 @@ void MctsGatherWorker::EnqueueNodeForEval(Variation&& node, size_t batch_size) {
   queues_.eval_sender.Enqueue(task);
 }
 
-void MctsGatherWorker::EnqueueNodeForBackprop(
+void GatherWorker::EnqueueNodeForBackprop(
     Variation&& node, const NodeHandle::NodeAggregates& aggregates,
     size_t batch_size) {
   EvalItem* task = ctx_.eval_item_pool->allocate(1);
@@ -194,8 +195,8 @@ void MctsGatherWorker::EnqueueNodeForBackprop(
   queues_.backprop_sender.Enqueue(task);
 }
 
-void MctsGatherWorker::EnqueueNodeForCollisionRollback(Variation&& node,
-                                                       size_t batch_size) {
+void GatherWorker::EnqueueNodeForCollisionRollback(Variation&& node,
+                                                   size_t batch_size) {
   EvalItem* task = ctx_.eval_item_pool->allocate(1);
   ::new (task) EvalItem(
       /*variation=*/std::move(node),
