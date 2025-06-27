@@ -15,7 +15,6 @@ class UciResponder;
 namespace lc3 {
 
 class NodeRepository;
-class SearchChannels;
 struct EvalItem;
 
 using EvalItemPool = FreeListAllocator<EvalItem, 1024>;

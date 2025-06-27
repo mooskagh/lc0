@@ -5,6 +5,7 @@
 #include <vector>
 
 #include "search/lc3/backprop_worker.h"
+#include "search/lc3/channels.h"
 #include "search/lc3/eval_worker.h"
 #include "search/lc3/gather_worker.h"
 #include "search/lc3/positions.h"
@@ -20,7 +21,7 @@ class SearchSession {
  public:
   SearchSession(NodeRepository* node_repository, const GameState& game_state,
                 Backend* backend, UciResponder* uci_responder,
-                SearchChannels* search_channels, const OptionsDict* options);
+                const OptionsDict* options);
 
   void Abort();
   void Wait();
@@ -29,7 +30,10 @@ class SearchSession {
  private:
   PositionTree position_tree_;
   Variation head_;
-  SearchChannels* search_channels_;
+
+  EvalItemReceiver eval_queue_;
+  EvalItemReceiver backprop_queue_;
+
   Settings settings_;
   std::vector<std::unique_ptr<MctsGatherWorker>> gather_workers_;
   std::vector<std::unique_ptr<EvalWorker>> eval_workers_;

@@ -8,9 +8,14 @@
 namespace lczero {
 namespace lc3 {
 
+struct GatherWorkerQueues {
+  EvalItemSender eval_sender;
+  EvalItemSender backprop_sender;
+};
+
 class MctsGatherWorker {
  public:
-  MctsGatherWorker(const Context& context, GatherWorkerChannels);
+  MctsGatherWorker(const Context& context, GatherWorkerQueues);
 
   void Abort() { TODO(); }
   void Wait() { TODO(); }
@@ -20,15 +25,14 @@ class MctsGatherWorker {
  private:
   void GatherDescent(size_t target_batch_size);
 
-
   void EnqueueNodeForEval(Variation&& node, size_t batch_size);
-  void EnqueueNodeForBackprop(Variation&& node, 
-    const NodeHandle::NodeAggregates& aggregates,
-    size_t batch_size);
-  void EnqueueNodeForCollisionRollback(Variation&& node, size_t batch_size);  
+  void EnqueueNodeForBackprop(Variation&& node,
+                              const NodeHandle::NodeAggregates& aggregates,
+                              size_t batch_size);
+  void EnqueueNodeForCollisionRollback(Variation&& node, size_t batch_size);
 
   Context const ctx_;
-  GatherWorkerChannels channels_;
+  GatherWorkerQueues queues_;
 };
 
 }  // namespace lc3

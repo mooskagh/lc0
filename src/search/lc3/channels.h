@@ -7,6 +7,8 @@
 namespace lczero {
 namespace lc3 {
 
+// TODO rename to NodeEvent or NodeMessage or something like that.
+// TODO Also rename the file.
 struct EvalItem {
   enum class ResultType : uint8_t { kNormal, kTerminal, kCollisionRollback };
 
@@ -40,9 +42,9 @@ struct EvalItem {
   std::vector<float> p;
 };
 
-struct EvalItemSource {
+struct EvalItemSender {
  public:
-  explicit EvalItemSource(moodycamel::BlockingConcurrentQueue<EvalItem*>* queue)
+  explicit EvalItemSender(moodycamel::BlockingConcurrentQueue<EvalItem*>* queue)
       : queue_(queue), producer_token_(*queue) {}
 
   void Enqueue(EvalItem* item) const { queue_->enqueue(producer_token_, item); }
@@ -55,7 +57,7 @@ struct EvalItemSource {
   moodycamel::ProducerToken producer_token_;
 };
 
-class EvalItemSink {
+class EvalItemReceiver {
  public:
   size_t Collect(std::span<EvalItem*> items, bool block)
       REQUIRES(consumer_mutex_) {
@@ -69,48 +71,12 @@ class EvalItemSink {
   }
 
   absl::Mutex* GetConsumerMutex() { return &consumer_mutex_; }
+  EvalItemSender MakeSender() { return EvalItemSender(&queue_); }
 
  private:
   moodycamel::BlockingConcurrentQueue<EvalItem*> queue_;
   moodycamel::ConsumerToken consumer_token_{queue_};
   absl::Mutex consumer_mutex_;
-  friend class SearchChannels;
-};
-
-struct GatherWorkerChannels {
-  EvalItemSource evals;
-  EvalItemSource backprop;
-};
-
-struct EvalWorkerChannels {
-  EvalItemSink* const eval_sink;
-  EvalItemSource backprop;
-};
-
-struct BackpropWorkerChannels {
-  EvalItemSink* const backprop_sink;
-};
-
-class SearchChannels {
- public:
-  GatherWorkerChannels MakeGatherWorkerChannels() {
-    return GatherWorkerChannels{
-        EvalItemSource(&eval_tasks_channel_.queue_),
-        EvalItemSource(&backprop_tasks_channel_.queue_)};
-  }
-
-  EvalWorkerChannels MakeEvalWorkerChannels() {
-    return EvalWorkerChannels(&eval_tasks_channel_,
-                              EvalItemSource(&backprop_tasks_channel_.queue_));
-  }
-
-  BackpropWorkerChannels MakeBackpropWorkerChannels() {
-    return BackpropWorkerChannels(&backprop_tasks_channel_);
-  }
-
- private:
-  EvalItemSink eval_tasks_channel_;
-  EvalItemSink backprop_tasks_channel_;
 };
 
 }  // namespace lc3

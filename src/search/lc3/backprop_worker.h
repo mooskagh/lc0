@@ -12,8 +12,8 @@ namespace lc3 {
 
 class BackpropWorker {
  public:
-  BackpropWorker(const Context& context, BackpropWorkerChannels channels)
-      : ctx_(context), channels_(std::move(channels)) {}
+  BackpropWorker(const Context& context, EvalItemReceiver* backprop_receiver)
+      : ctx_(context), backprop_receiver_(backprop_receiver) {}
 
   void Run();
 
@@ -27,7 +27,7 @@ class BackpropWorker {
   static BackPropItem EvalItemToBackpropItem(EvalItem* item, size_t num_visits);
 
   Context ctx_;
-  BackpropWorkerChannels channels_;
+  EvalItemReceiver* const backprop_receiver_;
 };
 
 };  // namespace lc3

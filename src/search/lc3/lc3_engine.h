@@ -25,7 +25,6 @@ class Lc3Engine : public SearchBase {
   std::unique_ptr<SearchSession> search_;
   NodeRepository node_repository_;
   GameState game_state_;
-  SearchChannels search_channels_;
   const OptionsDict* options_;
 };
 

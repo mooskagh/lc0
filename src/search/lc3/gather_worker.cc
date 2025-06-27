@@ -84,8 +84,8 @@ struct EdgeInfos {
 }  // namespace
 
 MctsGatherWorker::MctsGatherWorker(const Context& context,
-                                   GatherWorkerChannels channels)
-    : ctx_(context), channels_(std::move(channels)) {}
+                                   GatherWorkerQueues channels)
+    : ctx_(context), queues_(std::move(channels)) {}
 
 void MctsGatherWorker::Run() {
   while (true) GatherDescent(2560);
@@ -169,7 +169,7 @@ void MctsGatherWorker::EnqueueNodeForEval(Variation&& node, size_t batch_size) {
   ::new (task) EvalItem(
       /*variation=*/std::move(node),
       /*num_visits=*/batch_size);
-  channels_.evals.Enqueue(task);
+  queues_.eval_sender.Enqueue(task);
 }
 
 void MctsGatherWorker::EnqueueNodeForBackprop(
@@ -186,7 +186,7 @@ void MctsGatherWorker::EnqueueNodeForBackprop(
       /*v=*/aggregates.agg_v,
       /*d=*/aggregates.agg_d,
       /*m=*/aggregates.agg_m);
-  channels_.backprop.Enqueue(task);
+  queues_.backprop_sender.Enqueue(task);
 }
 
 void MctsGatherWorker::EnqueueNodeForCollisionRollback(Variation&& node,
@@ -196,7 +196,7 @@ void MctsGatherWorker::EnqueueNodeForCollisionRollback(Variation&& node,
       /*variation=*/std::move(node),
       /*num_visits=*/batch_size,
       /*result_type=*/EvalItem::ResultType::kCollisionRollback);
-  channels_.backprop.Enqueue(task);
+  queues_.backprop_sender.Enqueue(task);
 }
 
 }  // namespace lc3

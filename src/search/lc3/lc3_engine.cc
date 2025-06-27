@@ -59,8 +59,7 @@ void Lc3Engine::StartSearch(const GoParams& /* go_params */) {
   TODO("Do not ignore go_params");
   EnsureSearchStopped();
   search_ = std::make_unique<SearchSession>(&node_repository_, game_state_,
-                                            backend_, uci_responder_,
-                                            &search_channels_, options_);
+                                            backend_, uci_responder_, options_);
 }
 
 namespace {

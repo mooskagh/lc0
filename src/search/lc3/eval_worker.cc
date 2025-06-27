@@ -70,13 +70,13 @@ void EvalWorker::Collect() {
   const size_t recommended_batch_size =
       backend_->GetAttributes().recommended_batch_size;
 
-  absl::MutexLock lock(channels_.eval_sink->GetConsumerMutex());
+  absl::MutexLock lock(queues_.eval_receiver->GetConsumerMutex());
   // TODO replace with unique_ptr[]
   std::vector<EvalItem*> eval_tasks(recommended_batch_size);
 
   // Do one blocking fetch to get initial work.
   {
-    size_t num_nodes = channels_.eval_sink->Collect(
+    size_t num_nodes = queues_.eval_receiver->Collect(
         std::span<EvalItem*>(eval_tasks.data(), recommended_batch_size),
         /*blocking=*/true);
     EnqueueIncomingTasks(std::span(eval_tasks).subspan(0, num_nodes));
@@ -85,7 +85,7 @@ void EvalWorker::Collect() {
   // Now we have something to compute, but if we still have capacity, check if
   // there's more.
   while (computation_->UsedBatchSize() < recommended_batch_size) {
-    size_t num_nodes = channels_.eval_sink->Collect(
+    size_t num_nodes = queues_.eval_receiver->Collect(
         std::span<EvalItem*>(
             eval_tasks.data(),
             recommended_batch_size - computation_->UsedBatchSize()),
@@ -96,11 +96,11 @@ void EvalWorker::Collect() {
 }
 
 void EvalWorker::SendCompletedEvalItem(EvalItem* item) {
-  channels_.backprop.Enqueue(item);
+  queues_.backprop_sender.Enqueue(item);
 }
 
 void EvalWorker::SendCompletedBatchItems() {
-  channels_.backprop.EnqueueBulk(std::span(batched_eval_items_));
+  queues_.backprop_sender.EnqueueBulk(std::span(batched_eval_items_));
   batched_eval_items_.clear();
 }
 

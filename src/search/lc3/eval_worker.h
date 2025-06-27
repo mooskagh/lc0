@@ -11,11 +11,15 @@ namespace lc3 {
 
 struct WorkTreeNode;
 
+struct EvalWorkerQueues {
+  EvalItemReceiver* const eval_receiver;
+  EvalItemSender backprop_sender;
+};
+
 class EvalWorker {
  public:
-  EvalWorker(const Context& context, EvalWorkerChannels channels,
-             Backend* backend)
-      : ctx_(context), channels_(std::move(channels)), backend_(backend) {}
+  EvalWorker(const Context& context, EvalWorkerQueues queues, Backend* backend)
+      : ctx_(context), queues_(std::move(queues)), backend_(backend) {}
 
   void Run();
 
@@ -28,7 +32,7 @@ class EvalWorker {
   void EnqueueIncomingTasks(std::span<EvalItem*> tasks);
 
   Context ctx_;
-  EvalWorkerChannels channels_;
+  EvalWorkerQueues queues_;
 
   Backend* const backend_;
   std::unique_ptr<BackendComputation> computation_;
