@@ -44,11 +44,12 @@ SearchSession::SearchSession(NodeRepository* node_repository,
                                  gather_workers_.back().get());
   }
   for (int i = 0; i < settings_.GetNumEvalThreads(); ++i) {
-    eval_workers_.emplace_back(std::make_unique<EvalWorker>(
-        context,
-        EvalWorkerQueues{&eval_queue_, backprop_queue_.MakeSender(),
-                         &gather_rate_limiter_.mutex},
-        backend));
+    eval_workers_.emplace_back(
+        std::make_unique<EvalWorker>(EvalWorkerEnvironment{
+            .eval_receiver = &eval_queue_,
+            .backprop_sender = backprop_queue_.MakeSender(),
+            .eval_queue_unblocker = &gather_rate_limiter_.mutex,
+            .backend = backend}));
     eval_threads_.emplace_back(&EvalWorker::Run, eval_workers_.back().get());
   }
   for (int i = 0; i < settings_.GetNumBackpropThreads(); ++i) {

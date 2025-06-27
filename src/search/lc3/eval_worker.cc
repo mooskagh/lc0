@@ -60,7 +60,7 @@ void EvalWorker::Run() {
 }
 
 void EvalWorker::OneStep() {
-  computation_ = backend_->CreateComputation();
+  computation_ = env_.backend->CreateComputation();
   Collect();
   if (computation_->UsedBatchSize() > 0) computation_->ComputeBlocking();
   SendCompletedBatchItems();
@@ -68,15 +68,15 @@ void EvalWorker::OneStep() {
 
 void EvalWorker::Collect() {
   const size_t recommended_batch_size =
-      backend_->GetAttributes().recommended_batch_size;
+      env_.backend->GetAttributes().recommended_batch_size;
 
-  absl::MutexLock lock(queues_.eval_receiver->GetConsumerMutex());
+  absl::MutexLock lock(env_.eval_receiver->GetConsumerMutex());
   // TODO replace with unique_ptr[]
   std::vector<EvalItem*> eval_tasks(recommended_batch_size);
 
   // Do one blocking fetch to get initial work.
   {
-    size_t num_nodes = queues_.eval_receiver->Collect(
+    size_t num_nodes = env_.eval_receiver->Collect(
         std::span<EvalItem*>(eval_tasks.data(), recommended_batch_size),
         /*blocking=*/true);
     EnqueueIncomingTasks(std::span(eval_tasks).subspan(0, num_nodes));
@@ -85,7 +85,7 @@ void EvalWorker::Collect() {
   // Now we have something to compute, but if we still have capacity, check if
   // there's more.
   while (computation_->UsedBatchSize() < recommended_batch_size) {
-    size_t num_nodes = queues_.eval_receiver->Collect(
+    size_t num_nodes = env_.eval_receiver->Collect(
         std::span<EvalItem*>(
             eval_tasks.data(),
             recommended_batch_size - computation_->UsedBatchSize()),
@@ -94,17 +94,16 @@ void EvalWorker::Collect() {
     EnqueueIncomingTasks(std::span(eval_tasks).subspan(0, num_nodes));
   }
 
-  queues_.eval_queue_unblocker->Lock();
-  queues_.eval_queue_unblocker->Unlock();
-
+  env_.eval_queue_unblocker->Lock();
+  env_.eval_queue_unblocker->Unlock();
 }
 
 void EvalWorker::SendCompletedEvalItem(EvalItem* item) {
-  queues_.backprop_sender.Enqueue(item);
+  env_.backprop_sender.Enqueue(item);
 }
 
 void EvalWorker::SendCompletedBatchItems() {
-  queues_.backprop_sender.EnqueueBulk(std::span(batched_eval_items_));
+  env_.backprop_sender.EnqueueBulk(std::span(batched_eval_items_));
   batched_eval_items_.clear();
 }
 
