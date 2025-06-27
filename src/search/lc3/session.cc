@@ -16,8 +16,6 @@ SearchSession::SearchSession(NodeRepository* node_repository,
       head_(position_tree_.root()),
       search_channels_(search_channels),
       settings_(*options) {
-  search_channels_->Resize(settings_.GetNumGatherThreads(),
-                           settings_.GetNumEvalThreads());
   for (const auto& move : game_state.moves) {
     head_ = head_.make_child(
         /*hash=*/NodeKey{HashCat(head_->key.hash, move.raw_data())},
@@ -34,12 +32,12 @@ SearchSession::SearchSession(NodeRepository* node_repository,
   // TODO Thread pool.
   for (int i = 0; i < settings_.GetNumGatherThreads(); ++i) {
     gather_workers_.emplace_back(std::make_unique<MctsGatherWorker>(
-        context, search_channels_->MakeGatherWorkerChannels(i)));
+        context, search_channels_->MakeGatherWorkerChannels()));
     threads_.emplace_back(&MctsGatherWorker::Run, gather_workers_.back().get());
   }
   for (int i = 0; i < settings_.GetNumEvalThreads(); ++i) {
     eval_workers_.emplace_back(std::make_unique<EvalWorker>(
-        context, search_channels_->MakeEvalWorkerChannels(i), backend));
+        context, search_channels_->MakeEvalWorkerChannels(), backend));
     threads_.emplace_back(&EvalWorker::Run, eval_workers_.back().get());
   }
   for (int i = 0; i < settings_.GetNumBackpropThreads(); ++i) {

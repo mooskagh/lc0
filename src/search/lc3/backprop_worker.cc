@@ -177,10 +177,10 @@ std::vector<BackpropWorker::BackPropItem> BackpropWorker::FetchBackpropTasks() {
   std::vector<BackPropItem> backprop_items;
   // Fetch eval results from the queue, update the nodes they reference, and
   // forward the updates to the parent nodes.
-  absl::MutexLock queue_lock(channels_.BackpropTasksMutex());
+  absl::MutexLock queue_lock(channels_.backprop_sink->GetConsumerMutex());
   std::array<EvalItem*, 1024> buffer;
   // Fetch the first batch blockingly, then try to fetch more non-blockingly.
-  size_t num_items = channels_.CollectBackpropTasks(buffer, /*block=*/true);
+  size_t num_items = channels_.backprop_sink->Collect(buffer, /*block=*/true);
   bool all_items_collisions = true;
   do {
     for (size_t i = 0; i < num_items; ++i) {
@@ -191,8 +191,8 @@ std::vector<BackpropWorker::BackPropItem> BackpropWorker::FetchBackpropTasks() {
     }
     // Fetch more items if they are available. If all items were collisions, do
     // not process them until we get some non-collision items.
-    num_items =
-        channels_.CollectBackpropTasks(buffer, /*block=*/all_items_collisions);
+    num_items = channels_.backprop_sink->Collect(
+        buffer, /*block=*/all_items_collisions);
   } while (num_items > 0);
   return backprop_items;
 }

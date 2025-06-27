@@ -169,7 +169,7 @@ void MctsGatherWorker::EnqueueNodeForEval(Variation&& node, size_t batch_size) {
   ::new (task) EvalItem(
       /*variation=*/std::move(node),
       /*num_visits=*/batch_size);
-  channels_.SendForEval(task);
+  channels_.evals.Enqueue(task);
 }
 
 void MctsGatherWorker::EnqueueNodeForBackprop(
@@ -186,7 +186,7 @@ void MctsGatherWorker::EnqueueNodeForBackprop(
       /*v=*/aggregates.agg_v,
       /*d=*/aggregates.agg_d,
       /*m=*/aggregates.agg_m);
-  channels_.SendForBackprop(task);
+  channels_.backprop.Enqueue(task);
 }
 
 void MctsGatherWorker::EnqueueNodeForCollisionRollback(Variation&& node,
@@ -196,7 +196,7 @@ void MctsGatherWorker::EnqueueNodeForCollisionRollback(Variation&& node,
       /*variation=*/std::move(node),
       /*num_visits=*/batch_size,
       /*result_type=*/EvalItem::ResultType::kCollisionRollback);
-  channels_.SendForBackprop(task);
+  channels_.backprop.Enqueue(task);
 }
 
 }  // namespace lc3
