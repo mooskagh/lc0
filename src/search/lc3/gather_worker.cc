@@ -107,63 +107,61 @@ void GatherWorker::GatherDescent(size_t target_batch_size) {
     next_iter_work_queue.clear();
 
     // Fetch nodes from the node_repository.
-    {
-      for (NodeAndBatch& item : work_queue) {
-        Variation& node = item.node;
-        NodeHandle update =
-            env_.node_repository->GetNodeForUpdate(node->key,
-                                                   /*create_if_missing=*/true);
-        assert(update);
-        if (update.IsNew()) {
-          EnqueueNodeForEval(std::move(node), item.batch_size);
-          continue;
-        }
-        NodeHandle::NodeAggregates aggregates = update.GetNodeAggregates();
-        if (aggregates.IsTerminal()) {
-          EnqueueNodeForBackprop(std::move(node), aggregates, item.batch_size);
-          continue;
-        }
-        if (aggregates.n == 0) {
-          EnqueueNodeForCollisionRollback(std::move(node), item.batch_size);
-          continue;
-        }
+    for (NodeAndBatch& item : work_queue) {
+      Variation& node = item.node;
+      NodeHandle update =
+          env_.node_repository->GetNodeForUpdate(node->key,
+                                                 /*create_if_missing=*/true);
+      assert(update);
+      if (update.IsNew()) {
+        EnqueueNodeForEval(std::move(node), item.batch_size);
+        continue;
+      }
+      NodeHandle::NodeAggregates aggregates = update.GetNodeAggregates();
+      if (aggregates.IsTerminal()) {
+        EnqueueNodeForBackprop(std::move(node), aggregates, item.batch_size);
+        continue;
+      }
+      if (aggregates.n == 0) {
+        EnqueueNodeForCollisionRollback(std::move(node), item.batch_size);
+        continue;
+      }
 
-        const NodeHandle::MoveCounts move_counts = update.FetchMoveCounts();
-        const size_t num_moves_to_fetch =
-            std::min(move_counts.total, kExtraFetch + move_counts.with_visits);
+      const NodeHandle::MoveCounts move_counts = update.FetchMoveCounts();
+      const size_t num_moves_to_fetch =
+          std::min(move_counts.total, kExtraFetch + move_counts.with_visits);
 
-        EdgeInfos edge_infos(num_moves_to_fetch);
-        NodeHandle::EdgeDataDestination request{
-            .moves = edge_infos.moves,
-            .p = edge_infos.edge_P,
-            .q = edge_infos.edge_Q,
-            .n = edge_infos.edge_N,
-        };
-        update.FetchEdges(request);
-        std::vector<size_t> edge_visits = DistributeVisits(
-            depth, item.batch_size, aggregates.n, edge_infos.edge_P,
-            edge_infos.edge_Q, edge_infos.edge_N);
-        update.AddEdgeVisits(edge_visits);
-        // Spawn new work items for the children.
-        // TODO no need to hold an `update` lock.
-        for (size_t i = 0; i < num_moves_to_fetch; ++i) {
-          if (edge_visits[i] == 0) continue;  // TODO factor out into variable.
-          const Move& move = edge_infos.moves[i];
-          next_iter_work_queue.push_back(NodeAndBatch{
-              .node = node.make_child(
-                  /*hash=*/NodeKey{HashCat(node->key.hash, move.raw_data())},
-                  /*position=*/Position(node->position, move),
-                  /*depth=*/node->depth + 1,
-                  /*idx_in_parent=*/i),
-              .batch_size = edge_visits[i],
-          });
-        }
+      EdgeInfos edge_infos(num_moves_to_fetch);
+      NodeHandle::EdgeDataDestination request{
+          .moves = edge_infos.moves,
+          .p = edge_infos.edge_P,
+          .q = edge_infos.edge_Q,
+          .n = edge_infos.edge_N,
+      };
+      update.FetchEdges(request);
+      std::vector<size_t> edge_visits = DistributeVisits(
+          depth, item.batch_size, aggregates.n, edge_infos.edge_P,
+          edge_infos.edge_Q, edge_infos.edge_N);
+      update.AddEdgeVisits(edge_visits);
+      // Spawn new work items for the children.
+      // TODO no need to hold an `update` lock.
+      for (size_t i = 0; i < num_moves_to_fetch; ++i) {
+        if (edge_visits[i] == 0) continue;  // TODO factor out into variable.
+        const Move& move = edge_infos.moves[i];
+        next_iter_work_queue.push_back(NodeAndBatch{
+            .node = node.make_child(
+                /*hash=*/NodeKey{HashCat(node->key.hash, move.raw_data())},
+                /*position=*/Position(node->position, move),
+                /*depth=*/node->depth + 1,
+                /*idx_in_parent=*/i),
+            .batch_size = edge_visits[i],
+        });
       }
     }
   }
 }
 
-template<typename... Args>
+template <typename... Args>
 EvalItem* GatherWorker::MakeEvalItem(Args&&... args) {
   EvalItem* task = env_.eval_item_pool->allocate(1);
   ::new (task) EvalItem(std::forward<Args>(args)...);
