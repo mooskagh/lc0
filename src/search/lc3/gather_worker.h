@@ -44,6 +44,8 @@ class GatherWorker {
                               const NodeHandle::NodeAggregates& aggregates,
                               size_t batch_size);
   void EnqueueNodeForCollisionRollback(Variation&& node, size_t batch_size);
+  template <typename... Args>
+  EvalItem* MakeEvalItem(Args&&... args);
 
   GatherWorkerEnvironment env_;
 };

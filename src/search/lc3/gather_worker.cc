@@ -163,9 +163,15 @@ void GatherWorker::GatherDescent(size_t target_batch_size) {
   }
 }
 
-void GatherWorker::EnqueueNodeForEval(Variation&& node, size_t batch_size) {
+template<typename... Args>
+EvalItem* GatherWorker::MakeEvalItem(Args&&... args) {
   EvalItem* task = env_.eval_item_pool->allocate(1);
-  ::new (task) EvalItem(
+  ::new (task) EvalItem(std::forward<Args>(args)...);
+  return task;
+}
+
+void GatherWorker::EnqueueNodeForEval(Variation&& node, size_t batch_size) {
+  EvalItem* task = MakeEvalItem(
       /*variation=*/std::move(node),
       /*num_visits=*/batch_size);
   env_.eval_sender.Enqueue(task);
@@ -174,11 +180,10 @@ void GatherWorker::EnqueueNodeForEval(Variation&& node, size_t batch_size) {
 void GatherWorker::EnqueueNodeForBackprop(
     Variation&& node, const NodeHandle::NodeAggregates& aggregates,
     size_t batch_size) {
-  EvalItem* task = env_.eval_item_pool->allocate(1);
   // For now we only do that for terminal nodes, but if needed, we can change
   // result_type below.
   assert(aggregates.IsTerminal());
-  ::new (task) EvalItem(
+  EvalItem* task = MakeEvalItem(
       /*variation=*/std::move(node),
       /*num_visits=*/batch_size,
       /*result_type=*/EvalItem::ResultType::kTerminal,
@@ -190,8 +195,7 @@ void GatherWorker::EnqueueNodeForBackprop(
 
 void GatherWorker::EnqueueNodeForCollisionRollback(Variation&& node,
                                                    size_t batch_size) {
-  EvalItem* task = env_.eval_item_pool->allocate(1);
-  ::new (task) EvalItem(
+  EvalItem* task = MakeEvalItem(
       /*variation=*/std::move(node),
       /*num_visits=*/batch_size,
       /*result_type=*/EvalItem::ResultType::kCollisionRollback);
