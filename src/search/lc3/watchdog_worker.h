@@ -14,6 +14,9 @@ struct WatchdogWorkerEnvironment {
   NodeRepository* node_repository;
   Variation* head;
   UciResponder* uci_responder;
+
+  std::atomic<bool>* ok_to_respond_bestmove;
+  absl::Notification* can_exit;
 };
 
 class WatchdogWorker {

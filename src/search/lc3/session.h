@@ -4,6 +4,7 @@
 #include <thread>
 #include <vector>
 
+#include "absl/synchronization/notification.h"
 #include "search/lc3/backprop_worker.h"
 #include "search/lc3/channels.h"
 #include "search/lc3/eval_worker.h"
@@ -23,11 +24,13 @@ class SearchSession {
                 Backend* backend, UciResponder* uci_responder,
                 const OptionsDict* options);
 
+  void Stop();
   void Abort();
   void Wait();
   // void StartSyncronized();
 
  private:
+  void DrainPipeline();
   bool OkToGather() const { return eval_queue_.SizeApprox() < 1024; }
 
   // Working tree and current head in this tree.
@@ -51,6 +54,10 @@ class SearchSession {
   std::vector<std::thread> backprop_threads_;
   std::unique_ptr<WatchdogWorker> watchdog_worker_;
   std::thread watchdog_thread_;
+
+  // Worker states
+  absl::Notification watchdog_can_exit_;
+  std::atomic<bool> ok_to_respond_bestmove_{true};
 
   EvalItemPool eval_item_pool_;
 };

@@ -54,14 +54,30 @@ SearchSession::SearchSession(NodeRepository* node_repository,
     backprop_threads_.emplace_back(&BackpropWorker::Run,
                                    backprop_workers_.back().get());
   }
-  watchdog_worker_ = std::make_unique<WatchdogWorker>(
-      WatchdogWorkerEnvironment{.node_repository = node_repository,
-                                .head = &head_,
-                                .uci_responder = uci_responder});
+  watchdog_worker_ = std::make_unique<WatchdogWorker>(WatchdogWorkerEnvironment{
+      .node_repository = node_repository,
+      .head = &head_,
+      .uci_responder = uci_responder,
+      .ok_to_respond_bestmove = &ok_to_respond_bestmove_,
+      .can_exit = &watchdog_can_exit_,
+  });
   watchdog_thread_ = std::thread(&WatchdogWorker::Run, watchdog_worker_.get());
 }
 
-void SearchSession::Abort() { NotImplemented(); }
+void SearchSession::Abort() {
+  ok_to_respond_bestmove_.store(false, std::memory_order_relaxed);
+  DrainPipeline();
+}
+void SearchSession::Stop() { DrainPipeline(); }
+void SearchSession::DrainPipeline() {
+  // First, ensure bestmove is sent.
+  watchdog_can_exit_.Notify();
+  watchdog_thread_.join();
+  // Then, stop all gather workers.
+  // Then, set eval to drain mode, send sentinel, and wait for them to finish.
+  // then, set backprop to drain mode, send sentinel, and wait for them to
+  // finish.
+}
 
 void SearchSession::Wait() { NotImplemented(); }
 

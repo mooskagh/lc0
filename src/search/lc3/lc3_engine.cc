@@ -36,6 +36,10 @@
 namespace lczero {
 namespace lc3 {
 
+void Lc3Engine::StopSearch() {
+  if (search_) search_->Stop();
+}
+
 void Lc3Engine::AbortSearch() {
   if (search_) search_->Abort();
 }

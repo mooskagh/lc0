@@ -9,13 +9,12 @@ namespace lc3 {
 class Lc3Engine : public SearchBase {
  public:
   Lc3Engine(UciResponder* responder, const OptionsDict* options)
-      : SearchBase(responder), 
-      options_(options) {}
+      : SearchBase(responder), options_(options) {}
 
   void SetPosition(const GameState&) override;
   void StartSearch(const GoParams&) override;
   void StartClock() override { TODO("Start clock"); }
-  void StopSearch() override { NotImplemented(); }
+  void StopSearch() override;
   void AbortSearch() override;
   void WaitSearch() override;
 
