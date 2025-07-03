@@ -56,7 +56,7 @@ class SearchSession {
   std::thread watchdog_thread_;
 
   // Worker states
-  absl::Notification watchdog_can_exit_;
+  absl::Notification watchdog_must_exit_;
   std::atomic<bool> ok_to_respond_bestmove_{true};
   std::atomic<bool> gather_can_exit_{false};
   

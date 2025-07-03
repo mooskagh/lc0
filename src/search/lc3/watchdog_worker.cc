@@ -14,18 +14,20 @@ namespace lc3 {
 
 void WatchdogWorker::Run() {
   while (true) {
-    CheckOnce();
-    if (env_.can_exit->WaitForNotificationWithTimeout(absl::Milliseconds(10))) {
-      break;
+    if (CheckOnce()) return;
+    if (env_.must_exit->WaitForNotificationWithTimeout(
+            absl::Milliseconds(10)) &&
+        !env_.ok_to_respond_bestmove->load()) {
+      return;
     }
   }
 }
 
-void WatchdogWorker::CheckOnce() {
+bool WatchdogWorker::CheckOnce() {
   NodeHandle node_handle =
       env_.node_repository->GetNodeForUpdate((*env_.head)->key,
                                              /*create_if_missing=*/false);
-  if (!node_handle) return;
+  if (!node_handle) return false;
   const int64_t nodes = node_handle.GetNodeAggregates().n;
   node_handle.Release();
 
@@ -35,8 +37,13 @@ void WatchdogWorker::CheckOnce() {
     if (head_is_black == (i % 2 == 0)) pv[i].Flip();
   }
 
+  const bool will_respond_bestmove =
+      env_.ok_to_respond_bestmove->load(std::memory_order_relaxed) &&
+      !pv.empty() && env_.must_exit->HasBeenNotified();
   const auto now = std::chrono::steady_clock::now();
-  if (pv != previous_pv_ || last_check_time_ + std::chrono::seconds(5) < now) {
+  if (will_respond_bestmove ||
+      (!pv.empty() && (pv != previous_pv_ ||
+                       last_check_time_ + std::chrono::seconds(5) < now))) {
     if (current_nps_check_time_ + std::chrono::seconds(1) < now) {
       prev_nps_check_time_ = current_nps_check_time_;
       prev_nps_check_nodes_ = current_nps_check_nodes_;
@@ -59,6 +66,13 @@ void WatchdogWorker::CheckOnce() {
     previous_pv_ = std::move(pv);
     last_check_time_ = std::chrono::steady_clock::now();
   }
+  if (will_respond_bestmove) {
+    BestMoveInfo best_move(previous_pv_[0],
+                           previous_pv_.size() > 1 ? previous_pv_[1] : Move{});
+    env_.uci_responder->OutputBestMove(&best_move);
+    return true;
+  }
+  return false;
 }
 
 std::vector<Move> WatchdogWorker::BuildPV() const {

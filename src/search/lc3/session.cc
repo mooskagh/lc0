@@ -60,7 +60,7 @@ SearchSession::SearchSession(NodeRepository* node_repository,
       .head = &head_,
       .uci_responder = uci_responder,
       .ok_to_respond_bestmove = &ok_to_respond_bestmove_,
-      .can_exit = &watchdog_can_exit_,
+      .must_exit = &watchdog_must_exit_,
   });
   watchdog_thread_ = std::thread(&WatchdogWorker::Run, watchdog_worker_.get());
 }
@@ -72,7 +72,7 @@ void SearchSession::Abort() {
 void SearchSession::Stop() { DrainPipeline(); }
 void SearchSession::DrainPipeline() {
   // First, ensure bestmove is sent.
-  watchdog_can_exit_.Notify();
+  watchdog_must_exit_.Notify();
   watchdog_thread_.join();
   // Then, stop all gather workers.
   gather_can_exit_.store(true, std::memory_order_relaxed);

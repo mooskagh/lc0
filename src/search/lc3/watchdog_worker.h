@@ -17,7 +17,7 @@ struct WatchdogWorkerEnvironment {
   UciResponder* uci_responder;
 
   std::atomic<bool>* ok_to_respond_bestmove;
-  absl::Notification* can_exit;
+  absl::Notification* must_exit;
 };
 
 class WatchdogWorker {
@@ -27,7 +27,7 @@ class WatchdogWorker {
   void Run();
 
  private:
-  void CheckOnce();
+  bool CheckOnce();
   std::vector<Move> BuildPV() const;
 
   WatchdogWorkerEnvironment env_;
