@@ -13,7 +13,7 @@ struct WorkTreeNode;
 struct EvalWorkerEnvironment {
   EvalItemReceiver* const eval_receiver;
   EvalItemSender backprop_sender;
-  absl::Mutex* const eval_queue_unblocker;
+  absl::Mutex* const gather_worker_unblocker;
   Backend* const backend;
 };
 
@@ -24,11 +24,11 @@ class EvalWorker {
   void Run();
 
  private:
-  void OneStep();
+  bool OneStep();
   void SendCompletedEvalItem(EvalItem*);
   void SendCompletedBatchItems();
 
-  void Collect();
+  bool Collect();
   void EnqueueIncomingTasks(std::span<EvalItem*> tasks);
 
   EvalWorkerEnvironment env_;

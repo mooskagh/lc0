@@ -25,6 +25,7 @@ struct GatherWorkerEnvironment {
   NodeRepository* node_repository;
   Variation* head;
   EvalItemPool* eval_item_pool;
+  std::atomic<bool>* gather_can_exit;
 };
 
 class GatherWorker {

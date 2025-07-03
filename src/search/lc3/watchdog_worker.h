@@ -3,6 +3,7 @@
 #include <chrono>
 #include <vector>
 
+#include "absl/synchronization/notification.h"
 #include "chess/callbacks.h"
 #include "chess/types.h"
 #include "search/lc3/positions.h"

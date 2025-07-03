@@ -33,7 +33,8 @@ SearchSession::SearchSession(NodeRepository* node_repository,
                                 .rate_limiter = &gather_rate_limiter_,
                                 .node_repository = node_repository,
                                 .head = &head_,
-                                .eval_item_pool = &eval_item_pool_}));
+                                .eval_item_pool = &eval_item_pool_,
+                                .gather_can_exit = &gather_can_exit_}));
     gather_threads_.emplace_back(&GatherWorker::Run,
                                  gather_workers_.back().get());
   }
@@ -42,7 +43,7 @@ SearchSession::SearchSession(NodeRepository* node_repository,
         std::make_unique<EvalWorker>(EvalWorkerEnvironment{
             .eval_receiver = &eval_queue_,
             .backprop_sender = backprop_queue_.MakeSender(),
-            .eval_queue_unblocker = &gather_rate_limiter_.mutex,
+            .gather_worker_unblocker = &gather_rate_limiter_.mutex,
             .backend = backend}));
     eval_threads_.emplace_back(&EvalWorker::Run, eval_workers_.back().get());
   }
@@ -74,9 +75,15 @@ void SearchSession::DrainPipeline() {
   watchdog_can_exit_.Notify();
   watchdog_thread_.join();
   // Then, stop all gather workers.
+  gather_can_exit_.store(true, std::memory_order_relaxed);
+  for (auto& thread : gather_threads_) thread.join();
   // Then, set eval to drain mode, send sentinel, and wait for them to finish.
+  eval_queue_.Drain();
+  for (auto& thread : eval_threads_) thread.join();
   // then, set backprop to drain mode, send sentinel, and wait for them to
   // finish.
+  backprop_queue_.Drain();
+  for (auto& thread : backprop_threads_) thread.join();
 }
 
 void SearchSession::Wait() { NotImplemented(); }

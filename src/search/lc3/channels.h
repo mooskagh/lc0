@@ -64,7 +64,7 @@ class EvalItemReceiver {
  public:
   size_t Collect(std::span<EvalItem*> items, bool block)
       REQUIRES(consumer_mutex_) {
-    if (block) {
+    if (block && !draining_.load(std::memory_order_relaxed)) {
       return queue_.wait_dequeue_bulk(consumer_token_, items.data(),
                                       items.size());
     } else {
@@ -76,11 +76,16 @@ class EvalItemReceiver {
   absl::Mutex* GetConsumerMutex() { return &consumer_mutex_; }
   EvalItemSender MakeSender() { return EvalItemSender(&queue_); }
   size_t SizeApprox() const { return queue_.size_approx(); }
+  void Drain() {
+    draining_.store(true, std::memory_order_relaxed);
+    queue_.enqueue(nullptr);  // Enqueue a sentinel to signal draining.
+  }
 
  private:
   moodycamel::BlockingConcurrentQueue<EvalItem*> queue_;
   moodycamel::ConsumerToken consumer_token_{queue_};
   absl::Mutex consumer_mutex_;
+  std::atomic<bool> draining_{false};
 };
 
 }  // namespace lc3

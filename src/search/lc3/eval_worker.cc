@@ -10,6 +10,7 @@ namespace lc3 {
 void EvalWorker::EnqueueIncomingTasks(std::span<EvalItem*> tasks) {
   // TODO absl REQUIRES_MUTEX(queue_mutex_)
   for (EvalItem* task : tasks) {
+    if (!task) continue; // Skip the sentinel used for draining.
     const auto& board = task->variation->position.GetBoard();
     task->moves = board.GenerateLegalMoves();
 
@@ -55,18 +56,17 @@ void EvalWorker::EnqueueIncomingTasks(std::span<EvalItem*> tasks) {
   }
 }
 
-void EvalWorker::Run() {
-  while (true) OneStep();
-}
+void EvalWorker::Run() { while (OneStep()); }
 
-void EvalWorker::OneStep() {
+bool EvalWorker::OneStep() {
   computation_ = env_.backend->CreateComputation();
-  Collect();
+  if (!Collect()) return false;
   if (computation_->UsedBatchSize() > 0) computation_->ComputeBlocking();
   SendCompletedBatchItems();
+  return true;
 }
 
-void EvalWorker::Collect() {
+bool EvalWorker::Collect() {
   const size_t recommended_batch_size =
       env_.backend->GetAttributes().recommended_batch_size;
 
@@ -79,6 +79,11 @@ void EvalWorker::Collect() {
     size_t num_nodes = env_.eval_receiver->Collect(
         std::span<EvalItem*>(eval_tasks.data(), recommended_batch_size),
         /*blocking=*/true);
+    if (num_nodes == 0) {
+      // Fetched 0 despite blocking, we are in the draining mode and queue is
+      // empty. Return.
+      return false;
+    }
     EnqueueIncomingTasks(std::span(eval_tasks).subspan(0, num_nodes));
   }
 
@@ -94,8 +99,11 @@ void EvalWorker::Collect() {
     EnqueueIncomingTasks(std::span(eval_tasks).subspan(0, num_nodes));
   }
 
-  env_.eval_queue_unblocker->Lock();
-  env_.eval_queue_unblocker->Unlock();
+  // Now that we took some tasks from the queue, the gather worker may want to
+  // continue working, so unblocking it.
+  env_.gather_worker_unblocker->Lock();
+  env_.gather_worker_unblocker->Unlock();
+  return true;
 }
 
 void EvalWorker::SendCompletedEvalItem(EvalItem* item) {

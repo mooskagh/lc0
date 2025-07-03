@@ -84,7 +84,7 @@ struct EdgeInfos {
 }  // namespace
 
 void GatherWorker::Run() {
-  while (true) {
+  while (!env_.gather_can_exit->load(std::memory_order_relaxed)) {
     env_.rate_limiter->Wait();
     GatherDescent(2560);
   }

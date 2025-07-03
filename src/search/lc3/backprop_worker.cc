@@ -178,7 +178,8 @@ void BackpropWorker::DisposeEvalItem(EvalItem* item) {
   env_.eval_item_pool->deallocate(item, 1);
 }
 
-std::vector<BackpropWorker::BackPropItem> BackpropWorker::FetchBackpropTasks() {
+std::optional<std::vector<BackpropWorker::BackPropItem>>
+BackpropWorker ::FetchBackpropTasks() {
   std::vector<BackPropItem> backprop_items;
   // Fetch eval results from the queue, update the nodes they reference, and
   // forward the updates to the parent nodes.
@@ -186,14 +187,17 @@ std::vector<BackpropWorker::BackPropItem> BackpropWorker::FetchBackpropTasks() {
   std::array<EvalItem*, 1024> buffer;
   // Fetch the first batch blockingly, then try to fetch more non-blockingly.
   size_t num_items = env_.backprop_receiver->Collect(buffer, /*block=*/true);
+  if (num_items == 0) return std::nullopt;  // Drained.
   bool all_items_collisions = true;
   do {
     for (size_t i = 0; i < num_items; ++i) {
+      EvalItem* item = buffer[i];
+      if (!item) continue;  // Sentinel item used for draining the queue.
       auto [backprop_item, is_collision_rollback] =
-          ProcessSingleBackpropTask(buffer[i]);
+          ProcessSingleBackpropTask(item);
       if (backprop_item) backprop_items.push_back(*backprop_item);
       all_items_collisions &= is_collision_rollback;
-      DisposeEvalItem(buffer[i]);
+      DisposeEvalItem(item);
     }
     // Fetch more items if they are available. If all items were collisions, do
     // not process them until we get some non-collision items.
@@ -203,12 +207,13 @@ std::vector<BackpropWorker::BackPropItem> BackpropWorker::FetchBackpropTasks() {
   return backprop_items;
 }
 
-void BackpropWorker::Run() {
-  while (true) OneStep();
-}
+void BackpropWorker::Run() { while (OneStep()); }
 
-void BackpropWorker::OneStep() {
-  std::vector<BackPropItem> backprop_heap = FetchBackpropTasks();
+bool BackpropWorker::OneStep() {
+  std::optional<std::vector<BackPropItem>> maybe_backprop_heap =
+      FetchBackpropTasks();
+  if (!maybe_backprop_heap) return false;
+  std::vector<BackPropItem>& backprop_heap = *maybe_backprop_heap;
 
   std::make_heap(backprop_heap.begin(), backprop_heap.end());
   while (!backprop_heap.empty()) {
@@ -265,6 +270,7 @@ void BackpropWorker::OneStep() {
       std::push_heap(backprop_heap.begin(), backprop_heap.end());
     }
   }
+  return true;
 }
 
 }  // namespace lc3

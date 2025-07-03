@@ -22,10 +22,10 @@ class BackpropWorker {
   void Run();
 
  private:
-  void OneStep();
+  bool OneStep();
   struct BackPropItem;
 
-  std::vector<BackPropItem> FetchBackpropTasks();
+  std::optional<std::vector<BackPropItem>> FetchBackpropTasks();
   std::pair<std::optional<BackpropWorker::BackPropItem>, bool>
   ProcessSingleBackpropTask(EvalItem* item);
   static BackPropItem EvalItemToBackpropItem(EvalItem* item, size_t num_visits);

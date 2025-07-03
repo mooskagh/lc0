@@ -58,6 +58,8 @@ class SearchSession {
   // Worker states
   absl::Notification watchdog_can_exit_;
   std::atomic<bool> ok_to_respond_bestmove_{true};
+  std::atomic<bool> gather_can_exit_{false};
+  
 
   EvalItemPool eval_item_pool_;
 };

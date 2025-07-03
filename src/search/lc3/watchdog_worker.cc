@@ -15,7 +15,9 @@ namespace lc3 {
 void WatchdogWorker::Run() {
   while (true) {
     CheckOnce();
-    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    if (env_.can_exit->WaitForNotificationWithTimeout(absl::Milliseconds(10))) {
+      break;
+    }
   }
 }
 
