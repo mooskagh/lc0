@@ -14,15 +14,17 @@
 #include "search/lc3/watchdog_worker.h"
 #include "utils/exception.h"
 #include "utils/freelist.h"
+#include "utils/thread_pool.h"
+#include "utils/worker_pool.h"
 
 namespace lczero {
 namespace lc3 {
 
 class SearchSession {
  public:
-  SearchSession(NodeRepository* node_repository, const GameState& game_state,
-                Backend* backend, UciResponder* uci_responder,
-                const OptionsDict* options);
+  SearchSession(ThreadPool* thread_pool, NodeRepository* node_repository,
+                const GameState& game_state, Backend* backend,
+                UciResponder* uci_responder, const OptionsDict* options);
 
   void Stop();
   void Abort();
@@ -46,20 +48,15 @@ class SearchSession {
   Settings settings_;
 
   // Workers and threads.
-  std::vector<std::unique_ptr<GatherWorker>> gather_workers_;
-  std::vector<std::thread> gather_threads_;
-  std::vector<std::unique_ptr<EvalWorker>> eval_workers_;
-  std::vector<std::thread> eval_threads_;
-  std::vector<std::unique_ptr<BackpropWorker>> backprop_workers_;
-  std::vector<std::thread> backprop_threads_;
-  std::unique_ptr<WatchdogWorker> watchdog_worker_;
-  std::thread watchdog_thread_;
+  WorkerPool<GatherWorker> gather_workers_;
+  WorkerPool<EvalWorker> eval_workers_;
+  WorkerPool<BackpropWorker> backprop_workers_;
+  WorkerPool<WatchdogWorker> watchdog_worker_;
 
   // Worker states
   absl::Notification watchdog_must_exit_;
   std::atomic<bool> ok_to_respond_bestmove_{true};
   std::atomic<bool> gather_can_exit_{false};
-  
 
   EvalItemPool eval_item_pool_;
 };
