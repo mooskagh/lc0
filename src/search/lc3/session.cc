@@ -9,7 +9,7 @@ SearchSession::SearchSession(ThreadPool* thread_pool,
                              UciResponder* uci_responder,
                              const OptionsDict* options)
     : position_tree_(
-          /*hash=*/NodeKey{game_state.startpos.Hash()},
+          /*key=*/NodeKey{game_state.startpos.Hash()},
           /*position=*/game_state.startpos,
           /*depth=*/0,
           /*idx_in_parent=*/-1),
@@ -19,9 +19,10 @@ SearchSession::SearchSession(ThreadPool* thread_pool,
       },
       settings_(*options) {
   for (const auto& move : game_state.moves) {
+    Position move_position = Position(head_->position, move);
     head_ = head_.make_child(
-        /*hash=*/NodeKey{HashCat(head_->key.hash, move.raw_data())},
-        /*position=*/Position(head_->position, move),
+        /*key=*/MakeNodeKey(head_->key, move, move_position),
+        /*position=*/move_position,
         /*depth=*/head_->depth + 1,
         /*idx_in_parent=*/kNoIdxInParent);
   }

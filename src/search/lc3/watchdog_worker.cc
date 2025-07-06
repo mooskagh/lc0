@@ -7,14 +7,14 @@
 #include "chess/callbacks.h"
 #include "chess/position.h"
 #include "search/lc3/debug.h"
-#include "utils/hashcat.h"
 
 namespace lczero {
 namespace lc3 {
 
 // Node, it's number of visits, and legal moves from this node.
 struct WatchdogWorker::HashAndPosition {
-  NodeKey hash;
+  NodeKey key;
+  Position position;  // Unused, but in future may be needed for NodeKey.
   size_t n = 0;
   std::vector<Move> moves = {};
 };
@@ -36,12 +36,14 @@ void WatchdogWorker::Run() {
 }
 
 bool WatchdogWorker::CheckOnce() {
+  const Variation& head = *env_.head;
   NodeHandle node_handle =
-      env_.node_repository->GetNodeForUpdate((*env_.head)->key,
+      env_.node_repository->GetNodeForUpdate(head->key,
                                              /*create_if_missing=*/false);
 
   // Fetch the head position.
-  std::optional<HashAndPosition> position = FetchPosition((*env_.head)->key);
+  std::optional<HashAndPosition> position =
+      FetchPosition(head->key, head->position);
   if (!position) return false;
   const int64_t nodes = position->n;
 
@@ -107,9 +109,9 @@ std::vector<Move> WatchdogWorker::BuildPV(
     // Fetch all children nodes into `candidates`.
     std::vector<std::optional<HashAndPosition>> candidates;
     for (const Move& move : position->moves) {
-      // TODO Important! call a helper function.
-      NodeKey next_hash{HashCat(position->hash.hash, move.raw_data())};
-      candidates.push_back(FetchPosition(next_hash));
+      Position next_position = Position(position->position, move);
+      NodeKey next_hash = MakeNodeKey(position->key, move, next_position);
+      candidates.push_back(FetchPosition(next_hash, next_position));
     }
     // Pick the one with the most visits.
     size_t best_idx =
@@ -131,7 +133,8 @@ std::vector<Move> WatchdogWorker::BuildPV(
 
 // Fetches the position for the given key, temporarily locking the node.
 // Only fetches moves that have any visits.
-auto WatchdogWorker::FetchPosition(const NodeKey& key) const
+auto WatchdogWorker::FetchPosition(const NodeKey& key,
+                                   const Position& position) const
     -> std::optional<HashAndPosition> {
   NodeHandle node_handle =
       env_.node_repository->GetNodeForUpdate(key,
@@ -139,7 +142,8 @@ auto WatchdogWorker::FetchPosition(const NodeKey& key) const
   if (!node_handle) return std::nullopt;
   size_t num_moves = node_handle.FetchMoveCounts().with_visits;
   HashAndPosition current{
-      .hash = key,
+      .key = key,
+      .position = position,
       .n = node_handle.GetNodeAggregates().n,
       .moves = std::vector<Move>(num_moves),
   };

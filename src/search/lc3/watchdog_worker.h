@@ -31,7 +31,8 @@ class WatchdogWorker {
 
   bool CheckOnce();
   std::vector<Move> BuildPV(std::optional<HashAndPosition>) const;
-  std::optional<HashAndPosition> FetchPosition(const NodeKey& key) const;
+  std::optional<HashAndPosition> FetchPosition(
+      const NodeKey& key, const Position& position) const;
 
   WatchdogWorkerEnvironment env_;
   absl::Notification must_exit_;

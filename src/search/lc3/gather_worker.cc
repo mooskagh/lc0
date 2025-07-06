@@ -42,6 +42,7 @@ std::vector<size_t> DistributeVisits(size_t /* depth */,
   std::vector<size_t> result(edge_P.size(), 0);
 
   // parent_n_sqrt × kCpuctConst
+  // TODO Add FPU urgency.
   const float factor = std::sqrt(static_cast<float>(node_n)) * kCpuctConst;
   auto q_plus_u = [&](size_t idx) {
     return edge_Q[idx] +
@@ -153,10 +154,11 @@ void GatherWorker::GatherDescent(size_t target_batch_size) {
       for (size_t i = 0; i < num_moves_to_fetch; ++i) {
         if (edge_visits[i] == 0) continue;  // TODO factor out into variable.
         const Move& move = edge_infos.moves[i];
+        const Position next_position = Position(node->position, move);
         next_iter_work_queue.push_back(NodeAndBatch{
             .node = node.make_child(
-                /*hash=*/NodeKey{HashCat(node->key.hash, move.raw_data())},
-                /*position=*/Position(node->position, move),
+                /*key=*/MakeNodeKey(node->key, move, next_position),
+                /*position=*/next_position,
                 /*depth=*/node->depth + 1,
                 /*idx_in_parent=*/i),
             .batch_size = edge_visits[i],

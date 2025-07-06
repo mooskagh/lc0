@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "chess/position.h"
+#include "search/lc3/positions.h"
 
 namespace lczero {
 namespace lc3 {
@@ -74,8 +75,7 @@ void PrintNodeTree(NodeRepository& node_repository, std::ostream& os,
        << " N:" << edge.n << " --> ";
     Position child_pos(pos, edge.move);
     PrintNodeTree(node_repository, os, child_pos,
-                  NodeKey{HashCat(root.hash, edge.move.raw_data())},
-                  indent + 1);
+                  MakeNodeKey(root, edge.move, child_pos), indent + 1);
   }
 }
 

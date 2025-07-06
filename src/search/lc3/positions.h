@@ -29,6 +29,11 @@ struct VariationNode {
 using PositionTree = Tree<VariationNode>;
 using Variation = Tree<VariationNode>::node_handle;
 
+inline NodeKey MakeNodeKey(const NodeKey& parent_key, Move move,
+                           const Position& /*new_position*/) {
+  return NodeKey{HashCat(parent_key.hash, move.raw_data())};
+}
+
 // TODO Move this function somewhere else.
 [[nodiscard]] inline size_t UnpackPositionsBackwards(
     Variation variation, std::span<Position> positions) {
