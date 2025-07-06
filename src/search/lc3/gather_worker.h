@@ -38,6 +38,8 @@ class GatherWorker {
   struct NodeAndBatch;
 
   void GatherDescent(size_t target_batch_size);
+  std::vector<NodeAndBatch> ProcessDepth(
+      size_t depth, std::vector<NodeAndBatch> work_queue);
 
   void EnqueueNodeForEval(Variation&& node, size_t batch_size);
   void EnqueueNodeForBackprop(Variation&& node,
