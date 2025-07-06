@@ -33,8 +33,7 @@ SearchSession::SearchSession(ThreadPool* thread_pool,
                                 .rate_limiter = &gather_rate_limiter_,
                                 .node_repository = node_repository,
                                 .head = &head_,
-                                .eval_item_pool = &eval_item_pool_,
-                                .gather_can_exit = &gather_can_exit_});
+                                .eval_item_pool = &eval_item_pool_});
   });
   eval_workers_.Start(thread_pool, settings_.GetNumEvalThreads(), [&]() {
     return std::make_unique<EvalWorker>(EvalWorkerEnvironment{
@@ -55,23 +54,28 @@ SearchSession::SearchSession(ThreadPool* thread_pool,
         .node_repository = node_repository,
         .head = &head_,
         .uci_responder = uci_responder,
-        .ok_to_respond_bestmove = &ok_to_respond_bestmove_,
-        .must_exit = &watchdog_must_exit_,
     });
   });
 }
 
 void SearchSession::Abort() {
-  ok_to_respond_bestmove_.store(false, std::memory_order_relaxed);
+  watchdog_worker_.NotifyAll([](WatchdogWorker* worker) {
+    worker->Stop(/* must_respond_bestmove= */ false);
+  });
   DrainPipeline();
 }
-void SearchSession::Stop() { DrainPipeline(); }
+void SearchSession::Stop() {
+  watchdog_worker_.NotifyAll([](WatchdogWorker* worker) {
+    worker->Stop(/* must_respond_bestmove= */ true);
+  });
+  DrainPipeline();
+}
+
 void SearchSession::DrainPipeline() {
-  // First, ensure bestmove is sent.
-  watchdog_must_exit_.Notify();
+  // First, stop the watchdog worker.
   watchdog_worker_.Wait();
   // Then, stop all gather workers.
-  gather_can_exit_.store(true, std::memory_order_relaxed);
+  gather_workers_.NotifyAll([](GatherWorker* worker) { worker->Stop(); });
   gather_workers_.Wait();
   // Then, set eval to drain mode, send sentinel, and wait for them to finish.
   eval_queue_.Drain();

@@ -15,22 +15,24 @@ struct WatchdogWorkerEnvironment {
   NodeRepository* node_repository;
   Variation* head;
   UciResponder* uci_responder;
-
-  std::atomic<bool>* ok_to_respond_bestmove;
-  absl::Notification* must_exit;
 };
 
 class WatchdogWorker {
  public:
   WatchdogWorker(WatchdogWorkerEnvironment env) : env_(std::move(env)) {}
 
+  // Runs in a separate thread.
   void Run();
+
+  void Stop(bool must_respond_bestmove);
 
  private:
   bool CheckOnce();
   std::vector<Move> BuildPV() const;
 
   WatchdogWorkerEnvironment env_;
+  absl::Notification must_exit_;
+  std::atomic<bool> must_respond_bestmove_{false};
 
   std::vector<Move> previous_pv_;
   std::chrono::steady_clock::time_point last_check_time_;

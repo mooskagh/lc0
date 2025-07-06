@@ -25,17 +25,14 @@ struct GatherWorkerEnvironment {
   NodeRepository* node_repository;
   Variation* head;
   EvalItemPool* eval_item_pool;
-  std::atomic<bool>* gather_can_exit;
 };
 
 class GatherWorker {
  public:
   GatherWorker(GatherWorkerEnvironment env) : env_(std::move(env)) {}
 
-  void Abort() { TODO(); }
-  void Wait() { TODO(); }
-
   void Run();
+  void Stop();
 
  private:
   void GatherDescent(size_t target_batch_size);
@@ -49,6 +46,7 @@ class GatherWorker {
   EvalItem* MakeEvalItem(Args&&... args);
 
   GatherWorkerEnvironment env_;
+  std::atomic<bool> stop_requested_{false};
 };
 
 }  // namespace lc3

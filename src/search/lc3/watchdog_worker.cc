@@ -12,12 +12,17 @@
 namespace lczero {
 namespace lc3 {
 
+void WatchdogWorker::Stop(bool must_respond_bestmove) {
+  must_respond_bestmove_.store(must_respond_bestmove,
+                               std::memory_order_relaxed);
+  must_exit_.Notify();
+}
+
 void WatchdogWorker::Run() {
   while (true) {
-    if (CheckOnce()) return;
-    if (env_.must_exit->WaitForNotificationWithTimeout(
-            absl::Milliseconds(10)) &&
-        !env_.ok_to_respond_bestmove->load()) {
+    if (CheckOnce()) return;  // Return if responded bestmove.
+    if (must_exit_.WaitForNotificationWithTimeout(absl::Milliseconds(10)) &&
+        !must_respond_bestmove_.load()) {
       return;
     }
   }
@@ -38,8 +43,7 @@ bool WatchdogWorker::CheckOnce() {
   }
 
   const bool will_respond_bestmove =
-      env_.ok_to_respond_bestmove->load(std::memory_order_relaxed) &&
-      !pv.empty() && env_.must_exit->HasBeenNotified();
+      must_respond_bestmove_.load(std::memory_order_relaxed) && !pv.empty();
   const auto now = std::chrono::steady_clock::now();
   if (will_respond_bestmove ||
       (!pv.empty() && (pv != previous_pv_ ||
@@ -75,14 +79,23 @@ bool WatchdogWorker::CheckOnce() {
   return false;
 }
 
+// The function builds the PV from the current head by picking the most visited
+// child node (not edge).
+// As it's only allowed to hold one node of the NodeRepository at a time, it
+// all the children nodes one by one, then picks the one with the most visits
+// and continues until it reaches a node with no children.
 std::vector<Move> WatchdogWorker::BuildPV() const {
   std::vector<Move> pv;
+
+  // Node, it's number of visits, and legal moves from this node.
   struct HashAndPosition {
     NodeKey hash;
-    std::vector<Move> moves = {};
     size_t n = 0;
+    std::vector<Move> moves = {};
   };
 
+  // Fetches the position for the given key, temporarily locking the node.
+  // Only fetches moves that have any visits.
   auto fetch_position = [&](const NodeKey& key) -> HashAndPosition {
     NodeHandle node_handle =
         env_.node_repository->GetNodeForUpdate(key,
@@ -91,29 +104,33 @@ std::vector<Move> WatchdogWorker::BuildPV() const {
     size_t num_moves = node_handle.FetchMoveCounts().with_visits;
     HashAndPosition current{
         .hash = key,
-        .moves = std::vector<Move>(num_moves),
         .n = node_handle.GetNodeAggregates().n,
+        .moves = std::vector<Move>(num_moves),
     };
     node_handle.FetchEdges(
         NodeHandle::EdgeDataDestination{.moves = current.moves});
     return current;
   };
 
+  // Fetch the head position.
   std::optional<HashAndPosition> current_position =
       fetch_position((*env_.head)->key);
 
   while (current_position && !current_position->moves.empty()) {
+    // Fetch all children nodes into `candidates`.
     std::vector<HashAndPosition> candidates;
     for (const Move& move : current_position->moves) {
       NodeKey next_hash{HashCat(current_position->hash.hash, move.raw_data())};
       candidates.push_back(fetch_position(next_hash));
     }
+    // Pick the one with the most visits.
     size_t best_idx =
         std::max_element(candidates.begin(), candidates.end(),
                          [](const HashAndPosition& a,
                             const HashAndPosition& b) { return a.n < b.n; }) -
         candidates.begin();
     pv.push_back(current_position->moves[best_idx]);
+    // And make it the current position.
     current_position = std::move(candidates[best_idx]);
   }
   return pv;

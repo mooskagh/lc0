@@ -22,7 +22,10 @@ class WorkerPool {
     for (auto& future : futures_) future.wait();
   }
 
-  T* GetWorker(size_t index) { return workers_.at(index).get(); }
+  template <typename F>
+  void NotifyAll(F&& notify_fn) {
+    for (auto& worker : workers_) notify_fn(worker.get());
+  }
 
  private:
   std::vector<std::unique_ptr<T>> workers_;

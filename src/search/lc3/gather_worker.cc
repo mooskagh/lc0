@@ -83,9 +83,14 @@ struct EdgeInfos {
 
 }  // namespace
 
+void GatherWorker::Stop() {
+  stop_requested_.store(true, std::memory_order_relaxed);
+}
+
 void GatherWorker::Run() {
-  while (!env_.gather_can_exit->load(std::memory_order_relaxed)) {
+  while (true) {
     env_.rate_limiter->Wait();
+    if (stop_requested_.load(std::memory_order_relaxed)) break;
     GatherDescent(2560);
   }
 }
