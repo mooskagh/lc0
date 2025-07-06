@@ -29,7 +29,8 @@ struct GatherWorkerEnvironment {
 
 class GatherWorker {
  public:
-  GatherWorker(GatherWorkerEnvironment env) : env_(std::move(env)) {}
+  GatherWorker(GatherWorkerEnvironment env);
+  ~GatherWorker();
 
   void Run();
   void Stop();
@@ -38,8 +39,9 @@ class GatherWorker {
   struct NodeAndBatch;
 
   void GatherDescent(size_t target_batch_size);
-  std::vector<NodeAndBatch> ProcessDepth(
-      size_t depth, std::vector<NodeAndBatch> work_queue);
+  void ProcessNode(size_t depth, NodeAndBatch& item);
+  void ForwardToChildren(NodeHandle& handle, size_t depth, size_t batch_size,
+                         size_t parent_n, Variation& node);
 
   void EnqueueNodeForEval(Variation&& node, size_t batch_size);
   void EnqueueNodeForBackprop(Variation&& node,
@@ -51,6 +53,9 @@ class GatherWorker {
 
   GatherWorkerEnvironment env_;
   std::atomic<bool> stop_requested_{false};
+
+  std::vector<NodeAndBatch> work_queue_;
+  std::vector<NodeAndBatch> next_depth_work_queue_;
 };
 
 }  // namespace lc3
