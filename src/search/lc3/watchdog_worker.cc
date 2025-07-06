@@ -37,10 +37,6 @@ void WatchdogWorker::Run() {
 
 bool WatchdogWorker::CheckOnce() {
   const Variation& head = *env_.head;
-  NodeHandle node_handle =
-      env_.node_repository->GetNodeForUpdate(head->key,
-                                             /*create_if_missing=*/false);
-
   // Fetch the head position.
   std::optional<HashAndPosition> position =
       FetchPosition(head->key, head->position);
