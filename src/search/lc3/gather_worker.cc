@@ -197,17 +197,17 @@ void GatherWorker::ForwardToChildren(NodeHandle& node_handle, size_t depth,
 }
 
 template <typename... Args>
-EvalItem* GatherWorker::MakeEvalItem(Args&&... args) {
-  EvalItem* task = env_.eval_item_pool->allocate(1);
-  ::new (task) EvalItem(std::forward<Args>(args)...);
-  return task;
+NodeEvent* GatherWorker::MakeNodeEvent(Args&&... args) {
+  NodeEvent* event = env_.node_event_pool->allocate(1);
+  ::new (event) NodeEvent(std::forward<Args>(args)...);
+  return event;
 }
 
 void GatherWorker::EnqueueNodeForEval(Variation&& node, size_t batch_size) {
-  EvalItem* task = MakeEvalItem(
+  NodeEvent* event = MakeNodeEvent(
       /*variation=*/std::move(node),
       /*num_visits=*/batch_size);
-  env_.eval_sender.Enqueue(task);
+  env_.eval_sender.Enqueue(event);
 }
 
 void GatherWorker::EnqueueNodeForBackprop(
@@ -216,23 +216,23 @@ void GatherWorker::EnqueueNodeForBackprop(
   // For now we only do that for terminal nodes, but if needed, we can change
   // result_type below.
   assert(aggregates.IsTerminal());
-  EvalItem* task = MakeEvalItem(
+  NodeEvent* event = MakeNodeEvent(
       /*variation=*/std::move(node),
       /*num_visits=*/batch_size,
-      /*result_type=*/EvalItem::ResultType::kTerminal,
+      /*result_type=*/NodeEvent::ResultType::kTerminal,
       /*v=*/aggregates.agg_v,
       /*d=*/aggregates.agg_d,
       /*m=*/aggregates.agg_m);
-  env_.backprop_sender.Enqueue(task);
+  env_.backprop_sender.Enqueue(event);
 }
 
 void GatherWorker::EnqueueNodeForCollisionRollback(Variation&& node,
                                                    size_t batch_size) {
-  EvalItem* task = MakeEvalItem(
+  NodeEvent* event = MakeNodeEvent(
       /*variation=*/std::move(node),
       /*num_visits=*/batch_size,
-      /*result_type=*/EvalItem::ResultType::kCollisionRollback);
-  env_.backprop_sender.Enqueue(task);
+      /*result_type=*/NodeEvent::ResultType::kCollisionRollback);
+  env_.backprop_sender.Enqueue(event);
 }
 GatherWorker::GatherWorker(GatherWorkerEnvironment env)
     : env_(std::move(env)) {}

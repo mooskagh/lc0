@@ -11,8 +11,8 @@ namespace lc3 {
 struct WorkTreeNode;
 
 struct EvalWorkerEnvironment {
-  EvalItemReceiver* const eval_receiver;
-  EvalItemSender backprop_sender;
+  NodeEventReceiver* const eval_receiver;
+  NodeEventSender backprop_sender;
   absl::Mutex* const gather_worker_unblocker;
   Backend* const backend;
 };
@@ -25,16 +25,16 @@ class EvalWorker {
 
  private:
   bool OneStep();
-  void SendCompletedEvalItem(EvalItem*);
+  void SendCompletedNodeEvent(NodeEvent*);
   void SendCompletedBatchItems();
 
   bool Collect();
-  void EnqueueIncomingTasks(std::span<EvalItem*> tasks);
+  void EnqueueIncomingEvents(std::span<NodeEvent*> events);
 
   EvalWorkerEnvironment env_;
 
   std::unique_ptr<BackendComputation> computation_;
-  std::vector<EvalItem*> batched_eval_items_;
+  std::vector<NodeEvent*> batched_node_events_;
 };
 
 }  // namespace lc3

@@ -40,8 +40,8 @@ class SearchSession {
   Variation head_;
 
   // Channels.
-  EvalItemReceiver eval_queue_;
-  EvalItemReceiver backprop_queue_;
+  NodeEventReceiver eval_queue_;
+  NodeEventReceiver backprop_queue_;
   GatherRateLimiter gather_rate_limiter_;
 
   // Settings.
@@ -56,7 +56,7 @@ class SearchSession {
   // Worker states
   std::atomic<bool> gather_can_exit_{false};
 
-  EvalItemPool eval_item_pool_;
+  NodeEventPool node_event_pool_;
 };
 
 }  // namespace lc3

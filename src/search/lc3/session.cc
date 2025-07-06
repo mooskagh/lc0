@@ -34,7 +34,7 @@ SearchSession::SearchSession(ThreadPool* thread_pool,
                                 .rate_limiter = &gather_rate_limiter_,
                                 .node_repository = node_repository,
                                 .head = &head_,
-                                .eval_item_pool = &eval_item_pool_});
+                                .node_event_pool = &node_event_pool_});
   });
   eval_workers_.Start(thread_pool, settings_.GetNumEvalThreads(), [&]() {
     return std::make_unique<EvalWorker>(EvalWorkerEnvironment{
@@ -48,7 +48,7 @@ SearchSession::SearchSession(ThreadPool* thread_pool,
         return std::make_unique<BackpropWorker>(
             BackpropWorkerEnvironment{.backprop_receiver = &backprop_queue_,
                                       .node_repository = node_repository,
-                                      .eval_item_pool = &eval_item_pool_});
+                                      .eval_item_pool = &node_event_pool_});
       });
   watchdog_worker_.Start(thread_pool, 1, [&]() {
     return std::make_unique<WatchdogWorker>(WatchdogWorkerEnvironment{

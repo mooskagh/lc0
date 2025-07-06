@@ -19,12 +19,12 @@ struct GatherRateLimiter {
 };
 
 struct GatherWorkerEnvironment {
-  EvalItemSender eval_sender;
-  EvalItemSender backprop_sender;
+  NodeEventSender eval_sender;
+  NodeEventSender backprop_sender;
   GatherRateLimiter* const rate_limiter;
   NodeRepository* node_repository;
   Variation* head;
-  EvalItemPool* eval_item_pool;
+  NodeEventPool* node_event_pool;
 };
 
 class GatherWorker {
@@ -49,7 +49,7 @@ class GatherWorker {
                               size_t batch_size);
   void EnqueueNodeForCollisionRollback(Variation&& node, size_t batch_size);
   template <typename... Args>
-  EvalItem* MakeEvalItem(Args&&... args);
+  NodeEvent* MakeNodeEvent(Args&&... args);
 
   GatherWorkerEnvironment env_;
   std::atomic<bool> stop_requested_{false};

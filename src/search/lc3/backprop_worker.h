@@ -10,9 +10,9 @@ namespace lczero {
 namespace lc3 {
 
 struct BackpropWorkerEnvironment {
-  EvalItemReceiver* const backprop_receiver;
+  NodeEventReceiver* const backprop_receiver;
   NodeRepository* node_repository;
-  EvalItemPool* eval_item_pool;
+  NodeEventPool* eval_item_pool;
 };
 
 class BackpropWorker {
@@ -27,9 +27,10 @@ class BackpropWorker {
 
   std::optional<std::vector<BackPropItem>> FetchBackpropTasks();
   std::pair<std::optional<BackpropWorker::BackPropItem>, bool>
-  ProcessSingleBackpropTask(EvalItem* item);
-  static BackPropItem EvalItemToBackpropItem(EvalItem* item, size_t num_visits);
-  void DisposeEvalItem(EvalItem* item);
+  ProcessSingleBackpropTask(NodeEvent* event);
+  static BackPropItem NodeEventToBackpropItem(NodeEvent* event,
+                                              size_t num_visits);
+  void DisposeNodeEvent(NodeEvent* event);
 
   BackpropWorkerEnvironment env_;
 };

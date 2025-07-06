@@ -10,19 +10,19 @@ namespace lc3 {
 
 // TODO rename to NodeEvent or NodeMessage or something like that.
 // TODO Also rename the file.
-struct EvalItem {
+struct NodeEvent {
   enum class ResultType : uint8_t { kNormal, kTerminal, kCollisionRollback };
 
-  EvalItem(Variation variation, size_t num_visits)
+  NodeEvent(Variation variation, size_t num_visits)
       : variation(std::move(variation)), num_visits(num_visits) {}
 
-  EvalItem(Variation variation, size_t num_visits, ResultType result_type)
+  NodeEvent(Variation variation, size_t num_visits, ResultType result_type)
       : variation(std::move(variation)),
         num_visits(num_visits),
         result_type(result_type) {}
 
-  EvalItem(Variation variation, size_t num_visits, ResultType result_type,
-           float v, float d, float m)
+  NodeEvent(Variation variation, size_t num_visits, ResultType result_type,
+            float v, float d, float m)
       : variation(std::move(variation)),
         num_visits(num_visits),
         result_type(result_type),
@@ -43,38 +43,41 @@ struct EvalItem {
   std::vector<float> p;
 };
 
-using EvalItemPool = FreeListAllocator<EvalItem, 1024>;
+using NodeEventPool = FreeListAllocator<NodeEvent, 1024>;
 
-struct EvalItemSender {
+struct NodeEventSender {
  public:
-  explicit EvalItemSender(moodycamel::BlockingConcurrentQueue<EvalItem*>* queue)
+  explicit NodeEventSender(
+      moodycamel::BlockingConcurrentQueue<NodeEvent*>* queue)
       : queue_(queue), producer_token_(*queue) {}
 
-  void Enqueue(EvalItem* item) const { queue_->enqueue(producer_token_, item); }
-  void EnqueueBulk(std::span<EvalItem*> items) const {
-    queue_->enqueue_bulk(producer_token_, items.data(), items.size());
+  void Enqueue(NodeEvent* event) const {
+    queue_->enqueue(producer_token_, event);
+  }
+  void EnqueueBulk(std::span<NodeEvent*> events) const {
+    queue_->enqueue_bulk(producer_token_, events.data(), events.size());
   }
 
  private:
-  moodycamel::BlockingConcurrentQueue<EvalItem*>* const queue_;
+  moodycamel::BlockingConcurrentQueue<NodeEvent*>* const queue_;
   moodycamel::ProducerToken producer_token_;
 };
 
-class EvalItemReceiver {
+class NodeEventReceiver {
  public:
-  size_t Collect(std::span<EvalItem*> items, bool block)
+  size_t Collect(std::span<NodeEvent*> events, bool block)
       REQUIRES(consumer_mutex_) {
     if (block && !draining_.load(std::memory_order_relaxed)) {
-      return queue_.wait_dequeue_bulk(consumer_token_, items.data(),
-                                      items.size());
+      return queue_.wait_dequeue_bulk(consumer_token_, events.data(),
+                                      events.size());
     } else {
-      return queue_.try_dequeue_bulk(consumer_token_, items.data(),
-                                     items.size());
+      return queue_.try_dequeue_bulk(consumer_token_, events.data(),
+                                     events.size());
     }
   }
 
   absl::Mutex* GetConsumerMutex() { return &consumer_mutex_; }
-  EvalItemSender MakeSender() { return EvalItemSender(&queue_); }
+  NodeEventSender MakeSender() { return NodeEventSender(&queue_); }
   size_t SizeApprox() const { return queue_.size_approx(); }
   void Drain() {
     draining_.store(true, std::memory_order_relaxed);
@@ -82,7 +85,7 @@ class EvalItemReceiver {
   }
 
  private:
-  moodycamel::BlockingConcurrentQueue<EvalItem*> queue_;
+  moodycamel::BlockingConcurrentQueue<NodeEvent*> queue_;
   moodycamel::ConsumerToken consumer_token_{queue_};
   absl::Mutex consumer_mutex_;
   std::atomic<bool> draining_{false};

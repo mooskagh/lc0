@@ -102,80 +102,80 @@ struct BackpropWorker::BackPropItem {
   }
 };
 
-BackpropWorker::BackPropItem BackpropWorker::EvalItemToBackpropItem(
-    EvalItem* item, size_t num_visits) {
-  assert(item->variation->idx_in_parent != kNoIdxInParent);
-  assert(item->variation.has_parent());
+BackpropWorker::BackPropItem BackpropWorker::NodeEventToBackpropItem(
+    NodeEvent* event, size_t num_visits) {
+  assert(event->variation->idx_in_parent != kNoIdxInParent);
+  assert(event->variation.has_parent());
   return BackPropItem{
       .node_update =
           {
-              .variation = item->variation.parent(),
+              .variation = event->variation.parent(),
               .num_visits = num_visits,
-              .v = -item->v,
-              .d = item->d,
-              .m = item->m - 1,
+              .v = -event->v,
+              .d = event->d,
+              .m = event->m - 1,
           },
       .edge_update =
           {
-              .edge_idx = item->variation->idx_in_parent,
-              .visits_to_undo = item->num_visits - num_visits,
-              .agg_q = -ComputeQ(item->v, item->d, item->m),
+              .edge_idx = event->variation->idx_in_parent,
+              .visits_to_undo = event->num_visits - num_visits,
+              .agg_q = -ComputeQ(event->v, event->d, event->m),
           },
   };
 }
 
 std::pair<std::optional<BackpropWorker::BackPropItem>, bool>
-BackpropWorker::ProcessSingleBackpropTask(EvalItem* item) {
+BackpropWorker::ProcessSingleBackpropTask(NodeEvent* event) {
   // If the node is terminal, we allow all visits to it, otherwise we
   // only apply a single NN eval.
   size_t num_visits_to_apply;
-  switch (item->result_type) {
-    case EvalItem::ResultType::kNormal:
+  switch (event->result_type) {
+    case NodeEvent::ResultType::kNormal:
       num_visits_to_apply = 1;
       break;
-    case EvalItem::ResultType::kTerminal:
-      num_visits_to_apply = item->num_visits;
+    case NodeEvent::ResultType::kTerminal:
+      num_visits_to_apply = event->num_visits;
       break;
-    case EvalItem::ResultType::kCollisionRollback:
+    case NodeEvent::ResultType::kCollisionRollback:
       num_visits_to_apply = 0;
   }
 
   NodeHandle node_to_update =
-      env_.node_repository->GetNodeForUpdate(item->variation->key,
+      env_.node_repository->GetNodeForUpdate(event->variation->key,
                                              /*create_if_missing=*/false);
   // The node was already created by the gather thread.
   assert(node_to_update);
 
-  if (item->result_type == EvalItem::ResultType::kNormal) {
-    SortMovesByPolicy(item->moves, item->p);
-    node_to_update.InitializeEdges(item->moves, item->p);
+  if (event->result_type == NodeEvent::ResultType::kNormal) {
+    SortMovesByPolicy(event->moves, event->p);
+    node_to_update.InitializeEdges(event->moves, event->p);
   }
 
   const bool is_collision_rollback =
-      item->result_type == EvalItem::ResultType::kCollisionRollback;
+      event->result_type == NodeEvent::ResultType::kCollisionRollback;
 
   if (!is_collision_rollback) {
     node_to_update.ApplyNodeUpdate({
         .n = num_visits_to_apply,
-        .agg_v = item->v,
-        .agg_d = item->d,
-        .agg_m = item->m,
-        .state = item->result_type == EvalItem::ResultType::kTerminal
+        .agg_v = event->v,
+        .agg_d = event->d,
+        .agg_m = event->m,
+        .state = event->result_type == NodeEvent::ResultType::kTerminal
                      ? NodeHandle::CertaintyState::kTerminal
                      : NodeHandle::CertaintyState::kNonTerminal,
     });
   }
 
-  if (item->variation->idx_in_parent == kNoIdxInParent) {
+  if (event->variation->idx_in_parent == kNoIdxInParent) {
     return {std::nullopt, is_collision_rollback};
   }
-  return {EvalItemToBackpropItem(item, num_visits_to_apply),
+  return {NodeEventToBackpropItem(event, num_visits_to_apply),
           is_collision_rollback};
 }
 
-void BackpropWorker::DisposeEvalItem(EvalItem* item) {
-  item->~EvalItem();
-  env_.eval_item_pool->deallocate(item, 1);
+void BackpropWorker::DisposeNodeEvent(NodeEvent* event) {
+  event->~NodeEvent();
+  env_.eval_item_pool->deallocate(event, 1);
 }
 
 std::optional<std::vector<BackpropWorker::BackPropItem>>
@@ -184,26 +184,26 @@ BackpropWorker ::FetchBackpropTasks() {
   // Fetch eval results from the queue, update the nodes they reference, and
   // forward the updates to the parent nodes.
   absl::MutexLock queue_lock(env_.backprop_receiver->GetConsumerMutex());
-  std::array<EvalItem*, 1024> buffer;
+  std::array<NodeEvent*, 1024> buffer;
   // Fetch the first batch blockingly, then try to fetch more non-blockingly.
-  size_t num_items = env_.backprop_receiver->Collect(buffer, /*block=*/true);
-  if (num_items == 0) return std::nullopt;  // Drained.
+  size_t num_events = env_.backprop_receiver->Collect(buffer, /*block=*/true);
+  if (num_events == 0) return std::nullopt;  // Drained.
   bool all_items_collisions = true;
   do {
-    for (size_t i = 0; i < num_items; ++i) {
-      EvalItem* item = buffer[i];
-      if (!item) continue;  // Sentinel item used for draining the queue.
+    for (size_t i = 0; i < num_events; ++i) {
+      NodeEvent* event = buffer[i];
+      if (!event) continue;  // Sentinel item used for draining the queue.
       auto [backprop_item, is_collision_rollback] =
-          ProcessSingleBackpropTask(item);
+          ProcessSingleBackpropTask(event);
       if (backprop_item) backprop_items.push_back(*backprop_item);
       all_items_collisions &= is_collision_rollback;
-      DisposeEvalItem(item);
+      DisposeNodeEvent(event);
     }
     // Fetch more items if they are available. If all items were collisions, do
     // not process them until we get some non-collision items.
-    num_items =
+    num_events =
         env_.backprop_receiver->Collect(buffer, /*block=*/all_items_collisions);
-  } while (num_items > 0);
+  } while (num_events > 0);
   return backprop_items;
 }
 

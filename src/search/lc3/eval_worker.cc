@@ -7,52 +7,53 @@
 namespace lczero {
 namespace lc3 {
 
-void EvalWorker::EnqueueIncomingTasks(std::span<EvalItem*> tasks) {
+void EvalWorker::EnqueueIncomingEvents(std::span<NodeEvent*> events) {
   // TODO absl REQUIRES_MUTEX(queue_mutex_)
-  for (EvalItem* task : tasks) {
-    if (!task) continue; // Skip the sentinel used for draining.
-    const auto& board = task->variation->position.GetBoard();
-    task->moves = board.GenerateLegalMoves();
+  for (NodeEvent* event : events) {
+    if (!event) continue;  // Skip the sentinel used for draining.
+    const auto& board = event->variation->position.GetBoard();
+    event->moves = board.GenerateLegalMoves();
 
     // Handle terminals.
-    if (task->moves.empty()) {
-      task->result_type = EvalItem::ResultType::kTerminal;
+    if (event->moves.empty()) {
+      event->result_type = NodeEvent::ResultType::kTerminal;
       const bool is_under_check = board.IsUnderCheck();
-      task->v = is_under_check ? -1.0f : 0.0f;
-      task->d = is_under_check ? 0.0f : 1.0f;
-      task->m = 0.0f;
-      SendCompletedEvalItem(task);
+      event->v = is_under_check ? -1.0f : 0.0f;
+      event->d = is_under_check ? 0.0f : 1.0f;
+      event->m = 0.0f;
+      SendCompletedNodeEvent(event);
       continue;
     }
     if (!board.HasMatingMaterial() ||
-        task->variation->position.GetRule50Ply() >= 100 ||
-        GetPositionRepetitionCount(task->variation) >= 2) {
-      task->result_type = EvalItem::ResultType::kTerminal;
-      task->v = 0.0f;
-      task->d = 1.0f;
-      task->m = 0.0f;
-      task->moves.clear();
-      SendCompletedEvalItem(task);
+        event->variation->position.GetRule50Ply() >= 100 ||
+        GetPositionRepetitionCount(event->variation) >= 2) {
+      event->result_type = NodeEvent::ResultType::kTerminal;
+      event->v = 0.0f;
+      event->d = 1.0f;
+      event->m = 0.0f;
+      event->moves.clear();
+      SendCompletedNodeEvent(event);
       continue;
     }
 
-    task->result_type = EvalItem::ResultType::kNormal;
+    event->result_type = NodeEvent::ResultType::kNormal;
     // Attempt to call the backend.
-    task->p.resize(task->moves.size());
+    event->p.resize(event->moves.size());
     std::array<Position, 8> positions;
-    size_t num_positions = UnpackPositionsBackwards(task->variation, positions);
+    size_t num_positions =
+        UnpackPositionsBackwards(event->variation, positions);
     const auto addinput_result = computation_->AddInput(
         EvalPosition{.pos = std::span<const Position>(
                          positions.begin() + (positions.size() - num_positions),
                          positions.end()),
-                     .legal_moves = task->moves},
+                     .legal_moves = event->moves},
         EvalResultPtr{
-            .q = &task->v, .d = &task->d, .m = &task->m, .p = task->p});
+            .q = &event->v, .d = &event->d, .m = &event->m, .p = event->p});
     if (addinput_result == BackendComputation::FETCHED_IMMEDIATELY) {
-      SendCompletedEvalItem(task);
+      SendCompletedNodeEvent(event);
       continue;
     }
-    batched_eval_items_.push_back(task);
+    batched_node_events_.push_back(event);
   }
 }
 
@@ -72,31 +73,30 @@ bool EvalWorker::Collect() {
 
   absl::MutexLock lock(env_.eval_receiver->GetConsumerMutex());
   // TODO replace with unique_ptr[]
-  std::vector<EvalItem*> eval_tasks(recommended_batch_size);
+  std::vector<NodeEvent*> events(recommended_batch_size);
 
   // Do one blocking fetch to get initial work.
   {
     size_t num_nodes = env_.eval_receiver->Collect(
-        std::span<EvalItem*>(eval_tasks.data(), recommended_batch_size),
+        std::span<NodeEvent*>(events.data(), recommended_batch_size),
         /*blocking=*/true);
     if (num_nodes == 0) {
       // Fetched 0 despite blocking, we are in the draining mode and queue is
       // empty. Return.
       return false;
     }
-    EnqueueIncomingTasks(std::span(eval_tasks).subspan(0, num_nodes));
+    EnqueueIncomingEvents(std::span(events).subspan(0, num_nodes));
   }
 
   // Now we have something to compute, but if we still have capacity, check if
   // there's more.
   while (computation_->UsedBatchSize() < recommended_batch_size) {
     size_t num_nodes = env_.eval_receiver->Collect(
-        std::span<EvalItem*>(
-            eval_tasks.data(),
-            recommended_batch_size - computation_->UsedBatchSize()),
+        std::span<NodeEvent*>(events.data(), recommended_batch_size -
+                                                 computation_->UsedBatchSize()),
         /*blocking=*/false);
     if (num_nodes == 0) break;
-    EnqueueIncomingTasks(std::span(eval_tasks).subspan(0, num_nodes));
+    EnqueueIncomingEvents(std::span(events).subspan(0, num_nodes));
   }
 
   // Now that we took some tasks from the queue, the gather worker may want to
@@ -106,13 +106,13 @@ bool EvalWorker::Collect() {
   return true;
 }
 
-void EvalWorker::SendCompletedEvalItem(EvalItem* item) {
-  env_.backprop_sender.Enqueue(item);
+void EvalWorker::SendCompletedNodeEvent(NodeEvent* event) {
+  env_.backprop_sender.Enqueue(event);
 }
 
 void EvalWorker::SendCompletedBatchItems() {
-  env_.backprop_sender.EnqueueBulk(std::span(batched_eval_items_));
-  batched_eval_items_.clear();
+  env_.backprop_sender.EnqueueBulk(std::span(batched_node_events_));
+  batched_node_events_.clear();
 }
 
 }  // namespace lc3
