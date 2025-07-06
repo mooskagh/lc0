@@ -27,7 +27,13 @@ namespace lczero {
 namespace lc3 {
 namespace {
 
-// TODO move to logic.h
+// TODO move to logic.h or where's the right place.
+// TODO Add FPU urgency.
+// The function distributes a given number of visits to edges.
+// Currently, the following approximation is used:
+// * Compute Q + U for just one visit.
+// * Route `kBatchIterationFraction` of available visits to that edge.
+// * Repeat until all visits are distributed.
 std::vector<size_t> DistributeVisits(size_t /* depth */,
                                      size_t visits_to_distribute, size_t node_n,
                                      std::span<const float> edge_P,
@@ -42,7 +48,6 @@ std::vector<size_t> DistributeVisits(size_t /* depth */,
   std::vector<size_t> result(edge_P.size(), 0);
 
   // parent_n_sqrt × kCpuctConst
-  // TODO Add FPU urgency.
   const float factor = std::sqrt(static_cast<float>(node_n)) * kCpuctConst;
   auto q_plus_u = [&](size_t idx) {
     return edge_Q[idx] +
@@ -69,6 +74,9 @@ std::vector<size_t> DistributeVisits(size_t /* depth */,
   return result;
 }
 
+// Struct to fetch the edge data from the node repository.
+// It's parallel vectors because the node repository has such API and also
+// there's more hope to vectorization.
 struct EdgeInfos {
   EdgeInfos(size_t num_edges)
       : moves(num_edges),
@@ -84,6 +92,11 @@ struct EdgeInfos {
 
 }  // namespace
 
+struct GatherWorker::NodeAndBatch {
+  Variation node;
+  size_t batch_size;
+};
+
 void GatherWorker::Stop() {
   stop_requested_.store(true, std::memory_order_relaxed);
 }
@@ -97,10 +110,6 @@ void GatherWorker::Run() {
 }
 
 void GatherWorker::GatherDescent(size_t target_batch_size) {
-  struct NodeAndBatch {
-    Variation node;
-    size_t batch_size;
-  };
   std::vector<NodeAndBatch> work_queue(1, NodeAndBatch{
                                               .node = *env_.head,
                                               .batch_size = target_batch_size,

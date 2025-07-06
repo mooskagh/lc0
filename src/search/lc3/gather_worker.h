@@ -35,6 +35,8 @@ class GatherWorker {
   void Stop();
 
  private:
+  struct NodeAndBatch;
+
   void GatherDescent(size_t target_batch_size);
 
   void EnqueueNodeForEval(Variation&& node, size_t batch_size);
