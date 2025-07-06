@@ -27,21 +27,24 @@ class WatchdogWorker {
   void Stop(bool must_respond_bestmove);
 
  private:
+  struct HashAndPosition;
+
   bool CheckOnce();
-  std::vector<Move> BuildPV() const;
+  std::vector<Move> BuildPV(std::optional<HashAndPosition>) const;
+  std::optional<HashAndPosition> FetchPosition(const NodeKey& key) const;
 
   WatchdogWorkerEnvironment env_;
   absl::Notification must_exit_;
   std::atomic<bool> must_respond_bestmove_{false};
 
   std::vector<Move> previous_pv_;
-  std::chrono::steady_clock::time_point last_check_time_;
+  using Clock = std::chrono::steady_clock;
+  using TimePoint = Clock::time_point;
+  TimePoint last_info_print_;
 
-  std::chrono::steady_clock::time_point prev_nps_check_time_ =
-      std::chrono::steady_clock::now();
+  TimePoint prev_nps_check_time_ = Clock::now();
   int64_t prev_nps_check_nodes_ = 0;
-  std::chrono::steady_clock::time_point current_nps_check_time_ =
-      std::chrono::steady_clock::now();
+  TimePoint current_nps_check_time_ = Clock::now();
   int64_t current_nps_check_nodes_ = 0;
 };
 
