@@ -7,56 +7,6 @@
 namespace lczero {
 namespace lc3 {
 
-void EvalWorker::EnqueueIncomingEvents(std::span<NodeEvent*> events) {
-  // TODO absl REQUIRES_MUTEX(queue_mutex_)
-  for (NodeEvent* event : events) {
-    if (!event) continue;  // Skip the sentinel used for draining.
-    const auto& board = event->variation->position.GetBoard();
-    event->moves = board.GenerateLegalMoves();
-
-    // Handle terminals.
-    if (event->moves.empty()) {
-      event->result_type = NodeEvent::ResultType::kTerminal;
-      const bool is_under_check = board.IsUnderCheck();
-      event->v = is_under_check ? -1.0f : 0.0f;
-      event->d = is_under_check ? 0.0f : 1.0f;
-      event->m = 0.0f;
-      SendCompletedNodeEvent(event);
-      continue;
-    }
-    if (!board.HasMatingMaterial() ||
-        event->variation->position.GetRule50Ply() >= 100 ||
-        GetPositionRepetitionCount(event->variation) >= 2) {
-      event->result_type = NodeEvent::ResultType::kTerminal;
-      event->v = 0.0f;
-      event->d = 1.0f;
-      event->m = 0.0f;
-      event->moves.clear();
-      SendCompletedNodeEvent(event);
-      continue;
-    }
-
-    event->result_type = NodeEvent::ResultType::kNormal;
-    // Attempt to call the backend.
-    event->p.resize(event->moves.size());
-    std::array<Position, 8> positions;
-    size_t num_positions =
-        UnpackPositionsBackwards(event->variation, positions);
-    const auto addinput_result = computation_->AddInput(
-        EvalPosition{.pos = std::span<const Position>(
-                         positions.begin() + (positions.size() - num_positions),
-                         positions.end()),
-                     .legal_moves = event->moves},
-        EvalResultPtr{
-            .q = &event->v, .d = &event->d, .m = &event->m, .p = event->p});
-    if (addinput_result == BackendComputation::FETCHED_IMMEDIATELY) {
-      SendCompletedNodeEvent(event);
-      continue;
-    }
-    batched_node_events_.push_back(event);
-  }
-}
-
 void EvalWorker::Run() { while (OneStep()); }
 
 bool EvalWorker::OneStep() {
@@ -104,6 +54,62 @@ bool EvalWorker::Collect() {
   env_.gather_worker_unblocker->Lock();
   env_.gather_worker_unblocker->Unlock();
   return true;
+}
+
+void EvalWorker::EnqueueIncomingEvents(std::span<NodeEvent*> events) {
+  // TODO absl REQUIRES_MUTEX(queue_mutex_)
+  for (NodeEvent* event : events) {
+    if (!event) continue;  // Skip the sentinel used for draining.
+    EnqueueIncomingEvent(event);
+  }
+}
+
+void EvalWorker::EnqueueIncomingEvent(NodeEvent* event) {
+  const auto& board = event->variation->position.GetBoard();
+  event->moves = board.GenerateLegalMoves();
+
+  // Handle terminals.
+  if (event->moves.empty()) {
+    // Checkmate or stalemate.
+    const bool is_checkmate = board.IsUnderCheck();
+    event->result_type = NodeEvent::ResultType::kTerminal;
+    event->v = is_checkmate ? -1.0f : 0.0f;
+    event->d = is_checkmate ? 0.0f : 1.0f;
+    event->m = 0.0f;
+    SendCompletedNodeEvent(event);
+    return;
+  }
+  if (!board.HasMatingMaterial() ||
+      event->variation->position.GetRule50Ply() >= 100 ||
+      GetPositionRepetitionCount(event->variation) >= 2) {
+    // Other draw conditions.
+    event->result_type = NodeEvent::ResultType::kTerminal;
+    event->v = 0.0f;
+    event->d = 1.0f;
+    event->m = 0.0f;
+    event->moves.clear();
+    SendCompletedNodeEvent(event);
+    return;
+  }
+
+  // Node is not terminal, prepare for the evaluation.
+  event->result_type = NodeEvent::ResultType::kNormal;
+  event->p.resize(event->moves.size());
+  std::array<Position, 8> positions;
+  size_t num_positions = UnpackPositionsBackwards(event->variation, positions);
+  const auto addinput_result = computation_->AddInput(
+      EvalPosition{.pos = std::span<const Position>(
+                       positions.end() - num_positions, positions.end()),
+                   .legal_moves = event->moves},
+      EvalResultPtr{
+          .q = &event->v, .d = &event->d, .m = &event->m, .p = event->p});
+  if (addinput_result == BackendComputation::FETCHED_IMMEDIATELY) {
+    // The node turned out to be in cache, we can send it immediately.
+    SendCompletedNodeEvent(event);
+    return;
+  }
+  // Add to the NN computation batch.
+  batched_node_events_.push_back(event);
 }
 
 void EvalWorker::SendCompletedNodeEvent(NodeEvent* event) {

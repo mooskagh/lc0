@@ -30,6 +30,7 @@ class EvalWorker {
 
   bool Collect();
   void EnqueueIncomingEvents(std::span<NodeEvent*> events);
+  void EnqueueIncomingEvent(NodeEvent* event);
 
   EvalWorkerEnvironment env_;
 
