@@ -24,12 +24,14 @@ class BackpropWorker {
  private:
   bool OneStep();
   struct BackPropItem;
+  struct CombinedBackPropItem;
 
-  std::optional<std::vector<BackPropItem>> FetchBackpropTasks();
-  std::pair<std::optional<BackpropWorker::BackPropItem>, bool> HandleNodeEvent(
-      NodeEvent* event);
+  std::vector<BackPropItem> FetchBackpropTasks();
+  static CombinedBackPropItem CollectSameVariationUpdates(
+      std::vector<BackPropItem>& backprop_heap);
   static BackPropItem NodeEventToBackpropItem(NodeEvent* event,
                                               size_t num_visits);
+  void UpdateLeafNode(NodeEvent* event, size_t num_visits_to_apply);
   void DisposeNodeEvent(NodeEvent* event);
 
   BackpropWorkerEnvironment env_;
