@@ -64,6 +64,40 @@ void EvalWorker::EnqueueIncomingEvents(std::span<NodeEvent*> events) {
   }
 }
 
+namespace {
+[[nodiscard]] size_t UnpackPositionsBackwards(Variation variation,
+                                              std::span<Position> positions) {
+  auto iter = positions.rbegin();
+  const auto end = positions.rend();
+
+  // TODO iterating to the parent touches ref counters back and forth.
+  // If this shows up in profiles, optimize by going by raw pointers.
+  while (iter != end && variation) {
+    *iter = variation->position;
+    variation = variation.parent();
+    ++iter;
+  }
+
+  return std::distance(positions.rbegin(), iter);
+}
+
+int GetPositionRepetitionCount(Variation variation) {
+  if (variation->position.GetRule50Ply() < 4) return 0;
+  // TODO iterating to the parent touches ref counters back and forth.
+  // If this shows up in profiles, optimize by going by raw pointers.
+  auto skip = [](Variation node, size_t count) {
+    for (; count > 0 && node; --count) node = node.parent();
+    return node;
+  };
+  int num_reps = 0;
+  for (Variation node = skip(variation, 4); node; node = skip(node, 2)) {
+    if (node->position.GetBoard() == variation->position.GetBoard()) ++num_reps;
+    if (node->position.GetRule50Ply() < 2) break;
+  }
+  return num_reps;
+};
+}  // namespace
+
 void EvalWorker::EnqueueIncomingEvent(NodeEvent* event) {
   const auto& board = event->variation->position.GetBoard();
   event->moves = board.GenerateLegalMoves();

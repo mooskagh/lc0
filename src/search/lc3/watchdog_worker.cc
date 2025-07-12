@@ -6,7 +6,6 @@
 
 #include "chess/callbacks.h"
 #include "chess/position.h"
-#include "search/lc3/debug.h"
 
 namespace lczero {
 namespace lc3 {

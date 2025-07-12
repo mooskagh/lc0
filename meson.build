@@ -246,12 +246,10 @@ deps += dependency('threads')
 if get_option('lc3')
   files += [
     'src/search/lc3/backprop_worker.cc',
-    'src/search/lc3/debug.cc',
     'src/search/lc3/eval_worker.cc',
     'src/search/lc3/gather_worker.cc',
     'src/search/lc3/lc3_engine.cc',
     'src/search/lc3/node_repository.cc',
-    'src/search/lc3/positions.cc',
     'src/search/lc3/session.cc',
     'src/search/lc3/settings.cc',
     'src/search/lc3/watchdog_worker.cc',
