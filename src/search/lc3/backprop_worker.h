@@ -26,8 +26,8 @@ class BackpropWorker {
   struct BackPropItem;
 
   std::optional<std::vector<BackPropItem>> FetchBackpropTasks();
-  std::pair<std::optional<BackpropWorker::BackPropItem>, bool>
-  ProcessSingleBackpropTask(NodeEvent* event);
+  std::pair<std::optional<BackpropWorker::BackPropItem>, bool> HandleNodeEvent(
+      NodeEvent* event);
   static BackPropItem NodeEventToBackpropItem(NodeEvent* event,
                                               size_t num_visits);
   void DisposeNodeEvent(NodeEvent* event);
@@ -35,5 +35,5 @@ class BackpropWorker {
   BackpropWorkerEnvironment env_;
 };
 
-};  // namespace lc3
+}  // namespace lc3
 }  // namespace lczero

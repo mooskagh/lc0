@@ -14,24 +14,6 @@ namespace lczero {
 namespace lc3 {
 
 namespace {
-void SortMovesByPolicy(std::span<Move> moves, std::span<float> p) {
-  assert(moves.size() == p.size());
-
-  std::vector<std::pair<float, Move>> p_and_move;
-  p_and_move.reserve(p.size());
-  for (size_t i = 0; i < p.size(); ++i) {
-    p_and_move.emplace_back(p[i], moves[i]);
-  }
-  std::sort(p_and_move.begin(), p_and_move.end(),
-            [](const auto& a, const auto& b) { return a.first > b.first; });
-  for (size_t i = 0; i < p.size(); ++i) {
-    p[i] = p_and_move[i].first;
-    moves[i] = p_and_move[i].second;
-  }
-}
-
-}  // namespace
-
 struct NodeUpdate {
   Variation variation;
   size_t num_visits;
@@ -46,10 +28,67 @@ struct NodeUpdate {
            ", m=" + std::to_string(m) + "}";
   }
 };
+}  // namespace
 
-// TODO move to logic.h
-float ComputeQ(float v, float /* d */, float /* m */) { return v; }
+struct BackpropWorker::BackPropItem {
+  NodeUpdate node_update;
+  NodeHandle::EdgePatch edge_update;
 
+  bool operator<(const BackPropItem& other) const {
+    if (node_update.variation->depth != other.node_update.variation->depth) {
+      return node_update.variation->depth < other.node_update.variation->depth;
+    }
+    return node_update.variation->key < other.node_update.variation->key;
+  }
+
+  std::string ToString() const {
+    return "BackPropItem{variation=" +
+           node_update.variation->position.DebugString() +
+           ", num_visits=" + std::to_string(node_update.num_visits) +
+           ", v=" + std::to_string(node_update.v) +
+           ", d=" + std::to_string(node_update.d) +
+           ", m=" + std::to_string(node_update.m) +
+           ", edge_update.edge_idx=" + std::to_string(edge_update.edge_idx) +
+           ", edge_update.num_visits_to_decrement=" +
+           std::to_string(edge_update.visits_to_undo) +
+           ", edge_update.q=" + std::to_string(edge_update.agg_q) + "}";
+  }
+};
+
+void BackpropWorker::Run() { while (OneStep()); }
+
+// Fetch eval results from the queue, update the nodes they reference, and
+// forward the updates to the parent nodes.
+std::optional<std::vector<BackpropWorker::BackPropItem>>
+BackpropWorker::FetchBackpropTasks() {
+  std::vector<BackPropItem> backprop_items;
+  absl::MutexLock queue_lock(env_.backprop_receiver->GetConsumerMutex());
+  std::array<NodeEvent*, 1024> buffer;
+  // Fetch the first batch blockingly (note we are under mutex).
+  size_t num_events = env_.backprop_receiver->Collect(buffer, /*block=*/true);
+  // If no events despite being blocking, we are in draining mode.
+  if (num_events == 0) return std::nullopt;
+  // If all events we received so far are collisions, do not backprop them until
+  // we get any non-collision items.
+  bool all_events_collisions = true;
+  do {
+    for (size_t i = 0; i < num_events; ++i) {
+      NodeEvent* event = buffer[i];
+      if (!event) continue;  // Skip sentinel item used for draining the queue.
+      auto [backprop_item, is_collision_rollback] = HandleNodeEvent(event);
+      if (backprop_item) backprop_items.push_back(*backprop_item);
+      all_events_collisions &= is_collision_rollback;
+      DisposeNodeEvent(event);
+    }
+    // Fetch more items if they are available. If all items were collisions, do
+    // not process them until we get some non-collision items.
+    num_events = env_.backprop_receiver->Collect(
+        buffer, /*block=*/all_events_collisions);
+  } while (num_events > 0);
+  return backprop_items;
+}
+
+namespace {
 // TODO move to logic.h
 void MergeNodeUpdates(NodeUpdate* dst, const NodeUpdate& src) {
   assert(dst->variation->key == src.variation->key);
@@ -77,137 +116,9 @@ size_t MoveNodeUpdateToParent(NodeUpdate* node_update) {
   return idx_in_parent;
 };
 
-struct BackpropWorker::BackPropItem {
-  NodeUpdate node_update;
-  NodeHandle::EdgePatch edge_update;
-
-  bool operator<(const BackPropItem& other) const {
-    if (node_update.variation->depth != other.node_update.variation->depth) {
-      return node_update.variation->depth < other.node_update.variation->depth;
-    }
-    return node_update.variation->key < other.node_update.variation->key;
-  }
-
-  std::string ToString() const {
-    return "BackPropItem{variation=" +
-           node_update.variation->position.DebugString() +
-           ", num_visits=" + std::to_string(node_update.num_visits) +
-           ", v=" + std::to_string(node_update.v) +
-           ", d=" + std::to_string(node_update.d) +
-           ", m=" + std::to_string(node_update.m) +
-           ", edge_update.edge_idx=" + std::to_string(edge_update.edge_idx) +
-           ", edge_update.num_visits_to_decrement=" +
-           std::to_string(edge_update.visits_to_undo) +
-           ", edge_update.q=" + std::to_string(edge_update.agg_q) + "}";
-  }
-};
-
-BackpropWorker::BackPropItem BackpropWorker::NodeEventToBackpropItem(
-    NodeEvent* event, size_t num_visits) {
-  assert(event->variation->idx_in_parent != kNoIdxInParent);
-  assert(event->variation.has_parent());
-  return BackPropItem{
-      .node_update =
-          {
-              .variation = event->variation.parent(),
-              .num_visits = num_visits,
-              .v = -event->v,
-              .d = event->d,
-              .m = event->m - 1,
-          },
-      .edge_update =
-          {
-              .edge_idx = event->variation->idx_in_parent,
-              .visits_to_undo = event->num_visits - num_visits,
-              .agg_q = -ComputeQ(event->v, event->d, event->m),
-          },
-  };
-}
-
-std::pair<std::optional<BackpropWorker::BackPropItem>, bool>
-BackpropWorker::ProcessSingleBackpropTask(NodeEvent* event) {
-  // If the node is terminal, we allow all visits to it, otherwise we
-  // only apply a single NN eval.
-  size_t num_visits_to_apply;
-  switch (event->result_type) {
-    case NodeEvent::ResultType::kNormal:
-      num_visits_to_apply = 1;
-      break;
-    case NodeEvent::ResultType::kTerminal:
-      num_visits_to_apply = event->num_visits;
-      break;
-    case NodeEvent::ResultType::kCollisionRollback:
-      num_visits_to_apply = 0;
-  }
-
-  NodeHandle node_to_update =
-      env_.node_repository->GetNodeForUpdate(event->variation->key,
-                                             /*create_if_missing=*/false);
-  // The node was already created by the gather thread.
-  assert(node_to_update);
-
-  if (event->result_type == NodeEvent::ResultType::kNormal) {
-    SortMovesByPolicy(event->moves, event->p);
-    node_to_update.InitializeEdges(event->moves, event->p);
-  }
-
-  const bool is_collision_rollback =
-      event->result_type == NodeEvent::ResultType::kCollisionRollback;
-
-  if (!is_collision_rollback) {
-    node_to_update.ApplyNodeUpdate({
-        .n = num_visits_to_apply,
-        .agg_v = event->v,
-        .agg_d = event->d,
-        .agg_m = event->m,
-        .state = event->result_type == NodeEvent::ResultType::kTerminal
-                     ? NodeHandle::CertaintyState::kTerminal
-                     : NodeHandle::CertaintyState::kNonTerminal,
-    });
-  }
-
-  if (event->variation->idx_in_parent == kNoIdxInParent) {
-    return {std::nullopt, is_collision_rollback};
-  }
-  return {NodeEventToBackpropItem(event, num_visits_to_apply),
-          is_collision_rollback};
-}
-
-void BackpropWorker::DisposeNodeEvent(NodeEvent* event) {
-  event->~NodeEvent();
-  env_.eval_item_pool->deallocate(event, 1);
-}
-
-std::optional<std::vector<BackpropWorker::BackPropItem>>
-BackpropWorker ::FetchBackpropTasks() {
-  std::vector<BackPropItem> backprop_items;
-  // Fetch eval results from the queue, update the nodes they reference, and
-  // forward the updates to the parent nodes.
-  absl::MutexLock queue_lock(env_.backprop_receiver->GetConsumerMutex());
-  std::array<NodeEvent*, 1024> buffer;
-  // Fetch the first batch blockingly, then try to fetch more non-blockingly.
-  size_t num_events = env_.backprop_receiver->Collect(buffer, /*block=*/true);
-  if (num_events == 0) return std::nullopt;  // Drained.
-  bool all_items_collisions = true;
-  do {
-    for (size_t i = 0; i < num_events; ++i) {
-      NodeEvent* event = buffer[i];
-      if (!event) continue;  // Sentinel item used for draining the queue.
-      auto [backprop_item, is_collision_rollback] =
-          ProcessSingleBackpropTask(event);
-      if (backprop_item) backprop_items.push_back(*backprop_item);
-      all_items_collisions &= is_collision_rollback;
-      DisposeNodeEvent(event);
-    }
-    // Fetch more items if they are available. If all items were collisions, do
-    // not process them until we get some non-collision items.
-    num_events =
-        env_.backprop_receiver->Collect(buffer, /*block=*/all_items_collisions);
-  } while (num_events > 0);
-  return backprop_items;
-}
-
-void BackpropWorker::Run() { while (OneStep()); }
+// TODO move to logic.h
+float ComputeQ(float v, float /* d */, float /* m */) { return v; }
+}  // namespace
 
 bool BackpropWorker::OneStep() {
   std::optional<std::vector<BackPropItem>> maybe_backprop_heap =
@@ -271,6 +182,101 @@ bool BackpropWorker::OneStep() {
     }
   }
   return true;
+}
+
+namespace {
+void SortMovesByPolicy(std::span<Move> moves, std::span<float> p) {
+  assert(moves.size() == p.size());
+
+  std::vector<std::pair<float, Move>> p_and_move;
+  p_and_move.reserve(p.size());
+  for (size_t i = 0; i < p.size(); ++i) {
+    p_and_move.emplace_back(p[i], moves[i]);
+  }
+  std::sort(p_and_move.begin(), p_and_move.end(),
+            [](const auto& a, const auto& b) { return a.first > b.first; });
+  for (size_t i = 0; i < p.size(); ++i) {
+    p[i] = p_and_move[i].first;
+    moves[i] = p_and_move[i].second;
+  }
+}
+
+}  // namespace
+
+BackpropWorker::BackPropItem BackpropWorker::NodeEventToBackpropItem(
+    NodeEvent* event, size_t num_visits) {
+  assert(event->variation->idx_in_parent != kNoIdxInParent);
+  assert(event->variation.has_parent());
+  return BackPropItem{
+      .node_update =
+          {
+              .variation = event->variation.parent(),
+              .num_visits = num_visits,
+              .v = -event->v,
+              .d = event->d,
+              .m = event->m - 1,
+          },
+      .edge_update =
+          {
+              .edge_idx = event->variation->idx_in_parent,
+              .visits_to_undo = event->num_visits - num_visits,
+              .agg_q = -ComputeQ(event->v, event->d, event->m),
+          },
+  };
+}
+
+std::pair<std::optional<BackpropWorker::BackPropItem>, bool>
+BackpropWorker::HandleNodeEvent(NodeEvent* event) {
+  // If the node is terminal, we allow all visits to it, otherwise we
+  // only apply a single NN eval.
+  size_t num_visits_to_apply;
+  switch (event->result_type) {
+    case NodeEvent::ResultType::kNormal:
+      num_visits_to_apply = 1;
+      break;
+    case NodeEvent::ResultType::kTerminal:
+      num_visits_to_apply = event->num_visits;
+      break;
+    case NodeEvent::ResultType::kCollisionRollback:
+      num_visits_to_apply = 0;
+  }
+
+  NodeHandle node_to_update =
+      env_.node_repository->GetNodeForUpdate(event->variation->key,
+                                             /*create_if_missing=*/false);
+  // The node was already created by the gather thread.
+  assert(node_to_update);
+
+  if (event->result_type == NodeEvent::ResultType::kNormal) {
+    SortMovesByPolicy(event->moves, event->p);
+    node_to_update.InitializeEdges(event->moves, event->p);
+  }
+
+  const bool is_collision_rollback =
+      event->result_type == NodeEvent::ResultType::kCollisionRollback;
+
+  if (!is_collision_rollback) {
+    node_to_update.ApplyNodeUpdate({
+        .n = num_visits_to_apply,
+        .agg_v = event->v,
+        .agg_d = event->d,
+        .agg_m = event->m,
+        .state = event->result_type == NodeEvent::ResultType::kTerminal
+                     ? NodeHandle::CertaintyState::kTerminal
+                     : NodeHandle::CertaintyState::kNonTerminal,
+    });
+  }
+
+  if (event->variation->idx_in_parent == kNoIdxInParent) {
+    return {std::nullopt, is_collision_rollback};
+  }
+  return {NodeEventToBackpropItem(event, num_visits_to_apply),
+          is_collision_rollback};
+}
+
+void BackpropWorker::DisposeNodeEvent(NodeEvent* event) {
+  event->~NodeEvent();
+  env_.eval_item_pool->deallocate(event, 1);
 }
 
 }  // namespace lc3
