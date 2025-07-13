@@ -1,4 +1,4 @@
-#include "search/lc3/eval_worker.h"
+#include "search/lc3/workers/eval_worker.h"
 
 #include <array>
 

@@ -2,15 +2,15 @@
 
 #include <absl/synchronization/mutex.h>
 
-#include "search/lc3/positions.h"
+#include "search/lc3/workers/variation.h"
 #include "third_party/moodycamel/blockingconcurrentqueue.h"
 #include "third_party/moodycamel/concurrentqueue.h"
+#include "utils/exception.h"
 #include "utils/freelist.h"
 
 namespace lczero {
 namespace lc3 {
 
-// TODO rename to NodeEvent or NodeMessage or something like that.
 // TODO Also rename the file.
 struct NodeEvent {
   enum class ResultType : uint8_t { kNormal, kTerminal, kCollisionRollback };

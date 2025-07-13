@@ -166,6 +166,7 @@ void GatherWorker::ForwardToChildren(NodeHandle& node_handle, size_t depth,
   const size_t num_moves_to_fetch =
       std::min(move_counts.total, kExtraFetch + move_counts.with_visits);
 
+<<<<<<< Updated upstream
   EdgeInfos edge_infos(num_moves_to_fetch);
   NodeHandle::EdgeDataDestination request{
       .moves = edge_infos.moves,
@@ -179,7 +180,131 @@ void GatherWorker::ForwardToChildren(NodeHandle& node_handle, size_t depth,
                        edge_infos.edge_Q, edge_infos.edge_N);
   node_handle.AddEdgeVisits(edge_visits);
   node_handle.Release();
+||||||| Stash base
+MctsGatherWorker::MctsGatherWorker(const Context& context,
+                                   size_t gather_task_idx)
+    : gather_task_idx_(gather_task_idx), ctx_(context) {}
 
+void MctsGatherWorker::GatherDescent(size_t target_batch_size) {
+  DPRINT_SCOPE("GatherDescent");
+  DPRINT << "target_batch_size=" << target_batch_size;
+  struct NodeAndBatch {
+    Variation node;
+    size_t batch_size;
+  };
+  std::vector<NodeAndBatch> work_queue(1, NodeAndBatch{
+                                              .node = *ctx_.head,
+                                              .batch_size = target_batch_size,
+                                          });
+  std::vector<NodeAndBatch> next_iter_work_queue;
+=======
+MctsGatherWorker::MctsGatherWorker(const Context& context,
+                                   size_t gather_task_idx)
+    : gather_task_idx_(gather_task_idx), ctx_(context) {}
+
+void MctsGatherWorker::ProcessExistingNode(
+    NodeMutation* update, NodeAndBatch& item, size_t depth,
+    std::vector<NodeAndBatch>* next_queue) {
+  DPRINT_SCOPE("Processing existing node: " + item.node->position.DebugString());
+  
+  if (update->IsTerminal()) {
+    HandleTerminal();
+    return;
+  }
+  if (!update->HasVisits()) {
+    HandleCollision();
+    return;
+  }
+
+  const uint64_t node_n = update->GetN();
+  const size_t num_moves = update->FetchNumMoves();
+  const size_t num_moves_with_visits = update->FetchNumMovesWithVisits();
+  const size_t num_moves_to_fetch =
+      std::min(num_moves, kExtraFetch + num_moves_with_visits);
+
+  EdgeInfos edge_infos(num_moves_to_fetch);
+  NodeMutation::EdgeDataRequest request{
+      .moves = edge_infos.moves,
+      .p = edge_infos.edge_P,
+      .q = edge_infos.edge_Q,
+      .n = edge_infos.edge_N,
+  };
+  update->FetchEdgeData(request);
+  {
+    DPRINT_SCOPE("Fetched moves:");
+    for (size_t i = 0; i < num_moves_to_fetch; ++i) {
+      DPRINT << "idx=" << i
+             << " move=" << edge_infos.moves[i].ToString(true)
+             << " p=" << edge_infos.edge_P[i]
+             << " q=" << edge_infos.edge_Q[i]
+             << " n=" << edge_infos.edge_N[i];
+    }
+  }
+
+  std::vector<size_t> edge_visits = DistributeVisits(
+      depth, item.batch_size, node_n, edge_infos.edge_P, edge_infos.edge_Q,
+      edge_infos.edge_N);
+  update->IncrementEdgeN(edge_visits);
+
+  // Add children to next work queue
+  DPRINT_SCOPE("Spawning children");
+  for (size_t i = 0; i < num_moves_to_fetch; ++i) {
+    if (edge_visits[i] == 0) continue;
+    const Move& move = edge_infos.moves[i];
+    DPRINT << "pos=" << item.node->position.DebugString()
+           << ", move=" << move.ToString(true) << ", resulting="
+           << Position(item.node->position, move).DebugString();
+    next_queue->push_back(NodeAndBatch{
+        .node = item.node.make_child(
+            /*hash=*/NodeHash{HashCat(item.node->hash.hash, move.raw_data())},
+            /*position=*/Position(item.node->position, move),
+            /*depth=*/item.node->depth + 1,
+            /*idx_in_parent=*/i),
+        .batch_size = edge_visits[i],
+    });
+  }
+}
+
+void MctsGatherWorker::HandleNodeCreation(
+    CreationLock& create_lock, std::vector<NodeAndBatch>* create_list) {
+  DPRINT_SCOPE("Creating new nodes. count=" +
+               std::to_string(create_list->size()));
+  
+  std::vector<EvalItem*> eval_items;
+  eval_items.reserve(create_list->size());
+  for (NodeAndBatch& item : *create_list) {
+    DPRINT_SCOPE("Creating node " + item.node->position.DebugString());
+    if (create_lock.Create(item.node->hash)) {
+      EvalItem* task = ctx_.eval_item_pool->allocate(1);
+      ::new (task) EvalItem(
+          /*variation=*/std::move(item.node),
+          /*num_visits=*/item.batch_size);
+      DPRINT << "created eval_item node="
+             << task->variation->position.DebugString()
+             << ", num_visits=" << item.batch_size;
+      eval_items.push_back(task);
+    } else {
+      DPRINT << "Collision";
+      // Two moves result in the same position.
+      HandleCollision();
+    }
+  }
+  DPRINT << "sending eval_items.size()=" << eval_items.size();
+  ctx_.search_channels->SendEvalRequests(gather_task_idx_, eval_items);
+}
+
+void MctsGatherWorker::GatherDescent(size_t target_batch_size) {
+  DPRINT_SCOPE("GatherDescent");
+  DPRINT << "target_batch_size=" << target_batch_size;
+  
+  std::vector<NodeAndBatch> work_queue(1, NodeAndBatch{
+                                              .node = *ctx_.head,
+                                              .batch_size = target_batch_size,
+                                          });
+  std::vector<NodeAndBatch> next_iter_work_queue;
+>>>>>>> Stashed changes
+
+<<<<<<< Updated upstream
   // Spawn new work items for the children.
   for (size_t i = 0; i < num_moves_to_fetch; ++i) {
     if (edge_visits[i] == 0) continue;  // TODO factor out into variable.
@@ -193,6 +318,147 @@ void GatherWorker::ForwardToChildren(NodeHandle& node_handle, size_t depth,
             /*idx_in_parent=*/i),
         .batch_size = edge_visits[i],
     });
+||||||| Stash base
+  for (size_t depth = 0; !work_queue.empty();
+       ++depth, next_iter_work_queue.swap(work_queue)) {
+    DPRINT_SCOPE("depth=" + std::to_string(depth));
+    // Work queue has variations that have to be owned or deleted.
+    next_iter_work_queue.clear();
+
+    std::vector<NodeAndBatch> nodes_to_create;
+    // Fetch nodes from the node_repository.
+    {
+      UpdateLock lock = ctx_.node_repository->GetUpdateLock();
+      for (NodeAndBatch& item : work_queue) {
+        DPRINT_SCOPE("Item " + item.node->position.DebugString());
+        DPRINT << "batch_size=" << item.batch_size;
+        Variation& node = item.node;
+        std::optional<NodeMutation> update = lock.Fetch(node->hash);
+        if (!update) {
+          DPRINT << "Node not found in node_repository, creating new node";
+          nodes_to_create.push_back(std::move(item));
+          continue;
+        }
+        if (update->IsTerminal()) {
+          HandleTerminal();
+          continue;
+        }
+        if (!update->HasVisits()) {
+          HandleCollision();
+          continue;
+        }
+        const uint64_t node_n = update->GetN();
+        const size_t num_moves = update->FetchNumMoves();
+        const size_t num_moves_with_visits = update->FetchNumMovesWithVisits();
+        const size_t num_moves_to_fetch =
+            std::min(num_moves, kExtraFetch + num_moves_with_visits);
+
+        EdgeInfos edge_infos(num_moves_to_fetch);
+        NodeMutation::EdgeDataRequest request{
+            .moves = edge_infos.moves,
+            .p = edge_infos.edge_P,
+            .q = edge_infos.edge_Q,
+            .n = edge_infos.edge_N,
+        };
+        update->FetchEdgeData(request);
+        {
+          DPRINT_SCOPE("Fetched moves:");
+          for (size_t i = 0; i < num_moves_to_fetch; ++i) {
+            DPRINT << "idx=" << i
+                   << " move=" << edge_infos.moves[i].ToString(true)
+                   << " p=" << edge_infos.edge_P[i]
+                   << " q=" << edge_infos.edge_Q[i]
+                   << " n=" << edge_infos.edge_N[i];
+          }
+        }
+        std::vector<size_t> edge_visits =
+            DistributeVisits(depth, item.batch_size, node_n, edge_infos.edge_P,
+                             edge_infos.edge_Q, edge_infos.edge_N);
+        update->IncrementEdgeN(edge_visits);
+        // Spawn new work items for the children.
+        DPRINT_SCOPE("Spawning children");
+        // TODO no need to hold an `update` lock.
+        for (size_t i = 0; i < num_moves_to_fetch; ++i) {
+          if (edge_visits[i] == 0) continue;  // TODO factor out into variable.
+          const Move& move = edge_infos.moves[i];
+          DPRINT << "pos=" << node->position.DebugString()
+                 << ", move=" << move.ToString(true) << ", resulting="
+                 << Position(node->position, move).DebugString();
+          next_iter_work_queue.push_back(NodeAndBatch{
+              .node = node.make_child(
+                  /*hash=*/NodeHash{HashCat(node->hash.hash, move.raw_data())},
+                  /*position=*/Position(node->position, move),
+                  /*depth=*/node->depth + 1,
+                  /*idx_in_parent=*/i),
+              .batch_size = edge_visits[i],
+          });
+        }
+      }
+
+      // Create new nodes for the work items that were not found in the
+      // node_repository.
+      if (!nodes_to_create.empty()) {
+        DPRINT_SCOPE("Creating new nodes. count=" +
+                     std::to_string(nodes_to_create.size()));
+        CreationLock create_lock =
+            CreationLock::FromUpdateLock(std::move(lock));
+        std::vector<EvalItem*> eval_items;
+        eval_items.reserve(nodes_to_create.size());
+        for (NodeAndBatch& item : nodes_to_create) {
+          DPRINT_SCOPE("Creating node " + item.node->position.DebugString());
+          if (create_lock.Create(item.node->hash)) {
+            EvalItem* task = ctx_.eval_item_pool->allocate(1);
+            ::new (task) EvalItem(
+                /*variation=*/std::move(item.node),
+                /*num_visits=*/item.batch_size);
+            DPRINT << "created eval_item node="
+                   << task->variation->position.DebugString()
+                   << ", num_visits=" << item.batch_size;
+            eval_items.push_back(task);
+          } else {
+            DPRINT << "Collision";
+            // Two moves result in the same position.
+            HandleCollision();
+          }
+        }
+        DPRINT << "sending eval_items.size()=" << eval_items.size();
+        ctx_.search_channels->SendEvalRequests(gather_task_idx_, eval_items);
+      }
+    }
+=======
+  for (size_t depth = 0; !work_queue.empty();
+       ++depth, next_iter_work_queue.swap(work_queue)) {
+    DPRINT_SCOPE("depth=" + std::to_string(depth));
+    // Work queue has variations that have to be owned or deleted.
+    next_iter_work_queue.clear();
+
+    std::vector<NodeAndBatch> nodes_to_create;
+    // Fetch nodes from the node_repository.
+    {
+      UpdateLock lock = ctx_.node_repository->GetUpdateLock();
+      for (NodeAndBatch& item : work_queue) {
+        DPRINT_SCOPE("Item " + item.node->position.DebugString());
+        DPRINT << "batch_size=" << item.batch_size;
+        Variation& node = item.node;
+        std::optional<NodeMutation> update = lock.Fetch(node->hash);
+        if (!update) {
+          DPRINT << "Node not found in node_repository, creating new node";
+          nodes_to_create.push_back(std::move(item));
+          continue;
+        }
+        
+        ProcessExistingNode(&*update, item, depth, &next_iter_work_queue);
+      }
+
+      // Create new nodes for the work items that were not found in the
+      // node_repository.
+      if (!nodes_to_create.empty()) {
+        CreationLock create_lock =
+            CreationLock::FromUpdateLock(std::move(lock));
+        HandleNodeCreation(create_lock, &nodes_to_create);
+      }
+    }
+>>>>>>> Stashed changes
   }
 }
 

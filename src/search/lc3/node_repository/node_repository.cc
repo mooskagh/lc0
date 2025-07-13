@@ -1,4 +1,4 @@
-#include "search/lc3/node_repository.h"
+#include "search/lc3/node_repository/node_repository.h"
 
 #include <absl/container/flat_hash_map.h>
 #include <signal.h>

@@ -4,7 +4,8 @@
 #include <optional>
 #include <vector>
 
-#include "search/lc3/channels.h"
+#include "search/lc3/node_repository/node_repository.h"
+#include "search/lc3/workers/node_event_queue.h"
 
 namespace lczero {
 namespace lc3 {

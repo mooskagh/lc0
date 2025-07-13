@@ -1,4 +1,4 @@
-#include "search/lc3/watchdog_worker.h"
+#include "search/lc3/workers/watchdog_worker.h"
 
 #include <algorithm>
 #include <string>
@@ -105,7 +105,8 @@ std::vector<Move> WatchdogWorker::BuildPV(
     std::vector<std::optional<HashAndPosition>> candidates;
     for (const Move& move : position->moves) {
       Position next_position = Position(position->position, move);
-      NodeKey next_hash = MakeNodeKey(position->key, move, next_position);
+      NodeKey next_hash =
+          Policy::MakeNodeKey(position->key, move, next_position);
       candidates.push_back(FetchPosition(next_hash, next_position));
     }
     // Pick the one with the most visits.

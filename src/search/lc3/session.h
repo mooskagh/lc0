@@ -1,17 +1,19 @@
 #pragma once
 
+#include <absl/synchronization/notification.h>
+
 #include <memory>
 #include <thread>
 #include <vector>
 
-#include "absl/synchronization/notification.h"
-#include "search/lc3/backprop_worker.h"
-#include "search/lc3/channels.h"
-#include "search/lc3/eval_worker.h"
-#include "search/lc3/gather_worker.h"
-#include "search/lc3/positions.h"
+#include "search/lc3/node_repository/node_repository.h"
+#include "search/lc3/search_policy/search_policy.h"
 #include "search/lc3/settings.h"
-#include "search/lc3/watchdog_worker.h"
+#include "search/lc3/workers/backprop_worker.h"
+#include "search/lc3/workers/eval_worker.h"
+#include "search/lc3/workers/gather_worker.h"
+#include "search/lc3/workers/node_event_queue.h"
+#include "search/lc3/workers/watchdog_worker.h"
 #include "utils/exception.h"
 #include "utils/freelist.h"
 #include "utils/thread_pool.h"
@@ -32,6 +34,7 @@ class SearchSession {
   // void StartSyncronized();
 
  private:
+  using Policy = SearchPolicy;
   void DrainPipeline();
   bool OkToGather() const { return eval_queue_.SizeApprox() < 1024; }
 

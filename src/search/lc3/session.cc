@@ -21,7 +21,7 @@ SearchSession::SearchSession(ThreadPool* thread_pool,
   for (const auto& move : game_state.moves) {
     Position move_position = Position(head_->position, move);
     head_ = head_.make_child(
-        /*key=*/MakeNodeKey(head_->key, move, move_position),
+        /*key=*/Policy::MakeNodeKey(head_->key, move, move_position),
         /*position=*/move_position,
         /*depth=*/head_->depth + 1,
         /*idx_in_parent=*/kNoIdxInParent);

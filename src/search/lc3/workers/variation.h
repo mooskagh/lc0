@@ -4,7 +4,7 @@
 
 #include "chess/gamestate.h"
 #include "chess/position.h"
-#include "search/lc3/node_repository.h"
+#include "search/lc3/node_repository/node_key.h"
 #include "utils/tree.h"
 
 namespace lczero {
@@ -28,11 +28,6 @@ struct VariationNode {
 
 using PositionTree = Tree<VariationNode>;
 using Variation = Tree<VariationNode>::node_handle;
-
-inline NodeKey MakeNodeKey(const NodeKey& parent_key, Move move,
-                           const Position& /*new_position*/) {
-  return NodeKey{HashCat(parent_key.raw_hash(), move.raw_data())};
-}
 
 }  // namespace lc3
 }  // namespace lczero

@@ -1,7 +1,9 @@
 #pragma once
 
 #include "chess/position.h"
-#include "search/lc3/channels.h"
+#include "search/lc3/node_repository/node_repository.h"
+#include "search/lc3/search_policy/search_policy.h"
+#include "search/lc3/workers/node_event_queue.h"
 #include "utils/exception.h"
 
 namespace lczero {
@@ -36,7 +38,7 @@ class GatherWorker {
   void Stop();
 
  private:
-<<<<<<< Updated upstream
+  using Policy = SearchPolicy;
   struct NodeAndBatch;
 
   void GatherDescent(size_t target_batch_size);
@@ -57,24 +59,6 @@ class GatherWorker {
 
   std::vector<NodeAndBatch> work_queue_;
   std::vector<NodeAndBatch> next_depth_work_queue_;
-||||||| Stash base
-  const size_t gather_task_idx_;
-  Context const ctx_;
-=======
-  struct NodeAndBatch {
-    Variation node;
-    size_t batch_size;
-  };
-
-  // Helper functions
-  void ProcessExistingNode(NodeMutation* update, NodeAndBatch& item, 
-                          size_t depth, std::vector<NodeAndBatch>* next_queue);
-  void HandleNodeCreation(CreationLock& create_lock,
-                         std::vector<NodeAndBatch>* create_list);
-
-  const size_t gather_task_idx_;
-  Context const ctx_;
->>>>>>> Stashed changes
 };
 
 }  // namespace lc3

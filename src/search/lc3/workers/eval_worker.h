@@ -3,7 +3,7 @@
 #include <span>
 
 #include "neural/backend.h"
-#include "search/lc3/channels.h"
+#include "search/lc3/workers/node_event_queue.h"
 
 namespace lczero {
 namespace lc3 {

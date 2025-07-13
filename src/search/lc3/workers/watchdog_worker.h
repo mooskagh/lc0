@@ -6,7 +6,9 @@
 #include "absl/synchronization/notification.h"
 #include "chess/callbacks.h"
 #include "chess/types.h"
-#include "search/lc3/positions.h"
+#include "search/lc3/node_repository/node_repository.h"
+#include "search/lc3/search_policy/search_policy.h"
+#include "search/lc3/workers/variation.h"
 
 namespace lczero {
 namespace lc3 {
@@ -27,12 +29,13 @@ class WatchdogWorker {
   void Stop(bool must_respond_bestmove);
 
  private:
+  using Policy = SearchPolicy;
   struct HashAndPosition;
 
   bool CheckOnce();
   std::vector<Move> BuildPV(std::optional<HashAndPosition>) const;
-  std::optional<HashAndPosition> FetchPosition(
-      const NodeKey& key, const Position& position) const;
+  std::optional<HashAndPosition> FetchPosition(const NodeKey& key,
+                                               const Position& position) const;
 
   WatchdogWorkerEnvironment env_;
   absl::Notification must_exit_;

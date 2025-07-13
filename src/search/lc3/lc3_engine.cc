@@ -27,8 +27,7 @@
 
 #include "search/lc3/lc3_engine.h"
 
-#include "search/lc3/node_repository.h"
-#include "search/lc3/positions.h"
+#include "search/lc3/node_repository/node_repository.h"
 #include "search/lc3/session.h"
 #include "search/lc3/settings.h"
 #include "search/register.h"
