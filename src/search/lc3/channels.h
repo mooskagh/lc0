@@ -1,5 +1,7 @@
 #pragma once
 
+#include <absl/synchronization/mutex.h>
+
 #include "search/lc3/positions.h"
 #include "third_party/moodycamel/blockingconcurrentqueue.h"
 #include "third_party/moodycamel/concurrentqueue.h"

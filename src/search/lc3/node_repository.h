@@ -1,7 +1,5 @@
 #pragma once
 
-#include <absl/container/flat_hash_map.h>
-
 #include <cstdint>
 #include <optional>
 #include <span>
@@ -12,9 +10,20 @@
 namespace lczero {
 namespace lc3 {
 
-struct NodeKey {
-  uint64_t hash;
+class NodeKey {
+ public:
+  explicit NodeKey(uint64_t hash) : hash_(hash) {}
   auto operator<=>(const NodeKey& other) const = default;
+
+  uint64_t raw_hash() const { return hash_; }
+
+  template <typename H>
+  friend H AbslHashValue(H h, const NodeKey& key) {
+    return H::combine(std::move(h), key.hash_);
+  }
+
+ private:
+  uint64_t hash_;
 };
 
 class NodeHandle {

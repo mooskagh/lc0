@@ -31,7 +31,7 @@ using Variation = Tree<VariationNode>::node_handle;
 
 inline NodeKey MakeNodeKey(const NodeKey& parent_key, Move move,
                            const Position& /*new_position*/) {
-  return NodeKey{HashCat(parent_key.hash, move.raw_data())};
+  return NodeKey{HashCat(parent_key.raw_hash(), move.raw_data())};
 }
 
 }  // namespace lc3

@@ -1,5 +1,6 @@
 #include "search/lc3/node_repository.h"
 
+#include <absl/container/flat_hash_map.h>
 #include <signal.h>
 
 namespace lczero {
@@ -10,7 +11,7 @@ constexpr size_t kShardBits = 7;
 constexpr size_t kNumShards = 1 << kShardBits;
 
 size_t GetShardIndex(NodeKey key) {
-  return (key.hash * 11400714819323198485ull) >> (64 - kShardBits);
+  return (key.raw_hash() * 11400714819323198485ull) >> (64 - kShardBits);
 }
 
 struct EdgeData {
@@ -28,7 +29,7 @@ struct NodeHandle::NodeData {
 };
 
 struct NodeRepository::Shard {
-  absl::flat_hash_map<uint64_t, NodeHandle::NodeData> nodes;
+  absl::flat_hash_map<NodeKey, NodeHandle::NodeData> nodes;
   std::mutex mutex;
 };
 
@@ -44,13 +45,12 @@ NodeHandle NodeRepository::GetNodeForUpdate(const NodeKey& key,
                                             bool create_if_missing) {
   Shard& shard = storage_impl_->shards[GetShardIndex(key)];
   std::unique_lock lock(shard.mutex);
-  auto iter = shard.nodes.find(key.hash);
+  auto iter = shard.nodes.find(key);
   if (iter != shard.nodes.end()) {
     return NodeHandle(&iter->second, std::move(lock), false);
   }
   if (!create_if_missing) return NodeHandle();
-  auto [new_iter, success] =
-      shard.nodes.emplace(key.hash, NodeHandle::NodeData{});
+  auto [new_iter, success] = shard.nodes.emplace(key, NodeHandle::NodeData{});
   assert(success);
   return NodeHandle(&new_iter->second, std::move(lock), true);
 }
