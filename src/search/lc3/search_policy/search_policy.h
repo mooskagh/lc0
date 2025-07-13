@@ -1,5 +1,7 @@
 #pragma once
 
+#include <absl/container/fixed_array.h>
+
 #include <cmath>
 
 #include "chess/position.h"
@@ -32,7 +34,7 @@ struct SearchPolicy {
   // * Compute Q + U for just one visit.
   // * Route `kBatchIterationFraction` of available visits to that edge.
   // * Repeat until all visits are distributed.
-  static std::vector<size_t> DistributeVisits(
+  static absl::FixedArray<size_t> DistributeVisits(
       size_t /* depth */, size_t visits_to_distribute, size_t node_n,
       std::span<const float> edge_P, std::span<const float> edge_Q,
       std::span<const uint64_t> edge_N) {
@@ -46,7 +48,7 @@ struct SearchPolicy {
     // If there is only one edge, we just return all visits to it.
     if (edge_P.size() == 1) return {visits_to_distribute};
 
-    std::vector<size_t> result(edge_P.size(), 0);
+    absl::FixedArray<size_t> result(edge_P.size(), 0);
 
     // parent_n_sqrt × kCpuctConst
     const float factor = std::sqrt(static_cast<float>(node_n)) * kCpuctConst;

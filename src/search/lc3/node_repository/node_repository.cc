@@ -128,11 +128,10 @@ void NodeHandle::AddEdgeVisits(std::span<const uint64_t> n_delta) const {
 
 void NodeHandle::UpdateEdges(std::span<const EdgePatch> updates) {
   assert(!updates.empty());
-  size_t max_idx = std::max_element(updates.begin(), updates.end(),
-                                    [](const EdgePatch& a, const EdgePatch& b) {
-                                      return a.edge_idx < b.edge_idx;
-                                    })
-                       ->edge_idx;
+  size_t max_idx =
+      absl::c_max_element(updates, [](const EdgePatch& a, const EdgePatch& b) {
+        return a.edge_idx < b.edge_idx;
+      })->edge_idx;
   if (max_idx >= data_->edges.size()) {
     data_->edges.resize(max_idx + 1);
   }

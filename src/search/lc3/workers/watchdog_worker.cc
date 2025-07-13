@@ -1,5 +1,7 @@
 #include "search/lc3/workers/watchdog_worker.h"
 
+#include <absl/algorithm/container.h>
+
 #include <algorithm>
 #include <string>
 #include <vector>
@@ -109,15 +111,15 @@ std::vector<Move> WatchdogWorker::BuildPV(
           Policy::MakeNodeKey(position->key, move, next_position);
       candidates.push_back(FetchPosition(next_hash, next_position));
     }
-    // Pick the one with the most visits.
+    // Pick the one with the most svisits.
     size_t best_idx =
-        std::max_element(candidates.begin(), candidates.end(),
-                         [](const std::optional<HashAndPosition>& a,
-                            const std::optional<HashAndPosition>& b) {
-                           if (!a) return true;
-                           if (!b) return false;
-                           return a->n < b->n;
-                         }) -
+        absl::c_max_element(candidates,
+                            [](const std::optional<HashAndPosition>& a,
+                               const std::optional<HashAndPosition>& b) {
+                              if (!a) return true;
+                              if (!b) return false;
+                              return a->n < b->n;
+                            }) -
         candidates.begin();
     pv.push_back(position->moves[best_idx]);
 

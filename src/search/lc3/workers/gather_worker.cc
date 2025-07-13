@@ -11,9 +11,6 @@
 #include "search/lc3/workers/node_event_queue.h"
 #include "utils/freelist.h"
 
-// TODO Make it a function and move to logic.h
-constexpr int kExtraFetch = 2;
-
 namespace {
 // TODO Implement proper InlineVector
 template <typename T>
@@ -124,7 +121,7 @@ void GatherWorker::ForwardToChildren(NodeHandle& node_handle, size_t depth,
       .n = edge_infos.edge_N,
   };
   node_handle.FetchEdges(request);
-  std::vector<size_t> edge_visits =
+  absl::FixedArray<size_t> edge_visits =
       Policy::DistributeVisits(depth, batch_size, parent_n, edge_infos.edge_P,
                                edge_infos.edge_Q, edge_infos.edge_N);
   node_handle.AddEdgeVisits(edge_visits);

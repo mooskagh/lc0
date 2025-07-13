@@ -2,6 +2,7 @@
 
 #include "search/lc3/workers/backprop_worker.h"
 
+#include <absl/algorithm/container.h>
 #include <signal.h>
 
 #include <array>
@@ -126,8 +127,8 @@ void SortMovesByPolicy(std::span<Move> moves, std::span<float> p) {
   for (size_t i = 0; i < p.size(); ++i) {
     p_and_move.emplace_back(p[i], moves[i]);
   }
-  std::sort(p_and_move.begin(), p_and_move.end(),
-            [](const auto& a, const auto& b) { return a.first > b.first; });
+  absl::c_sort(p_and_move,
+               [](const auto& a, const auto& b) { return a.first > b.first; });
   for (size_t i = 0; i < p.size(); ++i) {
     p[i] = p_and_move[i].first;
     moves[i] = p_and_move[i].second;
@@ -201,7 +202,7 @@ struct BackpropWorker::CombinedBackPropItem {
 BackpropWorker::CombinedBackPropItem
 BackpropWorker::CollectSameVariationUpdates(
     std::vector<BackPropItem>& backprop_heap) {
-  std::pop_heap(backprop_heap.begin(), backprop_heap.end());
+  absl::c_pop_heap(backprop_heap);
   BackPropItem& backprop_item = backprop_heap.back();
 
   // Extract the first item from the heap.
@@ -225,7 +226,7 @@ BackpropWorker::CollectSameVariationUpdates(
     MergeNodeUpdates(&combined_item.node_update, backprop_item.node_update);
     combined_item.edge_updates.push_back(backprop_item.edge_update);
 
-    std::pop_heap(backprop_heap.begin(), backprop_heap.end());
+    absl::c_pop_heap(backprop_heap);
     backprop_heap.pop_back();
   }
   return combined_item;
@@ -239,7 +240,7 @@ bool BackpropWorker::OneStep() {
   // position. That means that the same position will be fetched sequentially.
   // The updates for the same position come through different edges, so the
   // `edge_update` will be different.
-  std::make_heap(backprop_heap.begin(), backprop_heap.end());
+  absl::c_make_heap(backprop_heap);
   while (!backprop_heap.empty()) {
     // Collect all updates for the same variation.
     auto update = CollectSameVariationUpdates(backprop_heap);
@@ -275,7 +276,7 @@ bool BackpropWorker::OneStep() {
                          .visits_to_undo = update.visits_to_undo,
                          .agg_q = -ComputeQ(node_value.agg_v, node_value.agg_d,
                                             node_value.agg_m)}});
-    std::push_heap(backprop_heap.begin(), backprop_heap.end());
+    absl::c_push_heap(backprop_heap);
   }
   return true;
 }
