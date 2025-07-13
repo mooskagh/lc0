@@ -24,10 +24,10 @@ class NodeHandle {
     std::span<uint64_t> n = {};
   };
 
-  struct EdgePatch {
+  struct EdgeMutation {
     size_t edge_idx;
     size_t visits_to_undo;
-    float agg_q;
+    float agg_q_to_set;
   };
 
   enum class CertaintyState {
@@ -66,7 +66,7 @@ class NodeHandle {
   void InitializeEdges(std::span<const Move> moves, std::span<const float> p);
   void FetchEdges(EdgeDataDestination request) const;
   void AddEdgeVisits(std::span<const uint64_t>) const;
-  void UpdateEdges(std::span<const EdgePatch>);
+  void UpdateEdges(std::span<const EdgeMutation>);
   friend class NodeRepository;
 
  private:

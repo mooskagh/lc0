@@ -3,6 +3,7 @@
 #include "search/lc3/workers/backprop_worker.h"
 
 #include <absl/algorithm/container.h>
+#include <absl/cleanup/cleanup.h>
 #include <absl/container/fixed_array.h>
 #include <signal.h>
 
@@ -34,7 +35,7 @@ struct NodeUpdate {
 
 struct BackpropWorker::BackPropItem {
   NodeUpdate node_update;
-  NodeHandle::EdgePatch edge_update;
+  NodeHandle::EdgeMutation edge_update;
 
   bool operator<(const BackPropItem& other) const {
     if (node_update.variation->depth != other.node_update.variation->depth) {
@@ -53,7 +54,7 @@ struct BackpropWorker::BackPropItem {
            ", edge_update.edge_idx=" + std::to_string(edge_update.edge_idx) +
            ", edge_update.num_visits_to_decrement=" +
            std::to_string(edge_update.visits_to_undo) +
-           ", edge_update.q=" + std::to_string(edge_update.agg_q) + "}";
+           ", edge_update.q=" + std::to_string(edge_update.agg_q_to_set) + "}";
   }
 };
 
@@ -95,6 +96,8 @@ std::vector<BackpropWorker::BackPropItem> BackpropWorker::FetchBackpropTasks() {
     for (size_t i = 0; i < num_events; ++i) {
       NodeEvent* event = buffer[i];
       if (!event) continue;  // Skip sentinel item used for draining the queue.
+      // NodeEvent ends its lifetime here.
+      absl::Cleanup dispose_node_event = [&]() { DisposeNodeEvent(event); };
 
       // Determine how many of total visits we will apply to this node. The rest
       // are rolled back. If it's a terminal node, we apply all visits, if it's
@@ -109,7 +112,6 @@ std::vector<BackpropWorker::BackPropItem> BackpropWorker::FetchBackpropTasks() {
         backprop_items.push_back(
             NodeEventToBackpropItem(event, num_visits_to_apply));
       }
-      DisposeNodeEvent(event);
     }
     // Fetch more items if they are available. If all items were collisions, do
     // not process them until we get some non-collision items.
@@ -194,7 +196,7 @@ float ComputeQ(float v, float /* d */, float /* m */) { return v; }
 
 struct BackpropWorker::CombinedBackPropItem {
   NodeUpdate node_update;
-  absl::InlinedVector<NodeHandle::EdgePatch, 8> edge_updates;
+  absl::InlinedVector<NodeHandle::EdgeMutation, 8> edge_updates;
   size_t visits_to_undo;
 };
 
@@ -271,10 +273,11 @@ bool BackpropWorker::OneStep() {
     NodeHandle::NodeAggregates node_value = node_handle.GetNodeAggregates();
     backprop_heap.push_back(
         {.node_update = update.node_update,
-         .edge_update = {.edge_idx = idx_in_parent,
-                         .visits_to_undo = update.visits_to_undo,
-                         .agg_q = -ComputeQ(node_value.agg_v, node_value.agg_d,
-                                            node_value.agg_m)}});
+         .edge_update = {
+             .edge_idx = idx_in_parent,
+             .visits_to_undo = update.visits_to_undo,
+             .agg_q_to_set = -ComputeQ(node_value.agg_v, node_value.agg_d,
+                                       node_value.agg_m)}});
     absl::c_push_heap(backprop_heap);
   }
   return true;
@@ -297,7 +300,7 @@ BackpropWorker::BackPropItem BackpropWorker::NodeEventToBackpropItem(
           {
               .edge_idx = event->variation->idx_in_parent,
               .visits_to_undo = event->num_visits - num_visits,
-              .agg_q = -ComputeQ(event->v, event->d, event->m),
+              .agg_q_to_set = -ComputeQ(event->v, event->d, event->m),
           },
   };
 }

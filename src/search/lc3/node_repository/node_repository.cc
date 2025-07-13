@@ -126,18 +126,18 @@ void NodeHandle::AddEdgeVisits(std::span<const uint64_t> n_delta) const {
   for (size_t i = 0; i < n_delta.size(); ++i) edges[i].n += n_delta[i];
 }
 
-void NodeHandle::UpdateEdges(std::span<const EdgePatch> updates) {
+void NodeHandle::UpdateEdges(std::span<const EdgeMutation> updates) {
   assert(!updates.empty());
-  size_t max_idx =
-      absl::c_max_element(updates, [](const EdgePatch& a, const EdgePatch& b) {
-        return a.edge_idx < b.edge_idx;
-      })->edge_idx;
+  size_t max_idx = absl::c_max_element(updates, [](const EdgeMutation& a,
+                                                   const EdgeMutation& b) {
+                     return a.edge_idx < b.edge_idx;
+                   })->edge_idx;
   if (max_idx >= data_->edges.size()) {
     data_->edges.resize(max_idx + 1);
   }
-  for (const EdgePatch& update : updates) {
+  for (const EdgeMutation& update : updates) {
     EdgeData& edge = data_->edges[update.edge_idx];
-    edge.q = update.agg_q;
+    edge.q = update.agg_q_to_set;
     edge.n -= update.visits_to_undo;
   }
 }
