@@ -80,7 +80,7 @@ class InstamoveSearch : public SearchBase {
   }
   void StartClock() final {}
 
-  Move bestmove_;
+  Move bestmove_ = Move::Null();
   std::atomic<bool> responded_bestmove_{false};
   std::unique_ptr<Backend> batchsplit_backend_;
   GameState game_state_;

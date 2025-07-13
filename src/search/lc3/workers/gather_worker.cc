@@ -2,6 +2,8 @@
 
 #include "search/lc3/workers/gather_worker.h"
 
+#include <absl/algorithm/container.h>
+
 #include <queue>
 #include <utility>
 
@@ -10,12 +12,6 @@
 #include "search/lc3/node_repository/node_repository.h"
 #include "search/lc3/workers/node_event_queue.h"
 #include "utils/freelist.h"
-
-namespace {
-// TODO Implement proper InlineVector
-template <typename T>
-using InlineVector = std::vector<T>;
-}  // namespace
 
 namespace lczero {
 namespace lc3 {
@@ -99,10 +95,10 @@ struct EdgeInfos {
         edge_Q(num_edges),
         edge_N(num_edges) {}
 
-  InlineVector<Move> moves;
-  InlineVector<float> edge_P;
-  InlineVector<float> edge_Q;
-  InlineVector<uint64_t> edge_N;
+  absl::InlinedVector<Move, 8> moves;
+  absl::InlinedVector<float, 8> edge_P;
+  absl::InlinedVector<float, 8> edge_Q;
+  absl::InlinedVector<uint64_t, 8> edge_N;
 };
 }  // namespace
 

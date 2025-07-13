@@ -206,14 +206,12 @@ class PgnReader {
     } else if (san[0] == 'R') {
       p = 5;
     } else if (san.substr(0, 3) == "O-O") {
-      Move m;
       auto king_board = board.kings() & board.ours();
       Square king_sq(File::FromIdx(GetLowestBit(king_board.as_int())), kRank1);
-      m = Move::WhiteCastling(king_sq.file(),
-                              san.substr(3, 2) == "-O"
-                                  ? board.castlings().our_queenside_rook
-                                  : board.castlings().our_kingside_rook);
-      return m;
+      return Move::WhiteCastling(king_sq.file(),
+                                 san.substr(3, 2) == "-O"
+                                     ? board.castlings().our_queenside_rook
+                                     : board.castlings().our_kingside_rook);
     }
     if (p != 0) idx++;
     // Formats e4 1e5 de5 d1e5 - with optional x's - followed by =Q for

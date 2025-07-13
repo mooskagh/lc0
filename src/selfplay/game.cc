@@ -182,7 +182,7 @@ void SelfPlayGame::Play(int white_threads, int black_threads, bool training,
     nodes_total_ += search_->GetTotalPlayouts();
     if (abort_) break;
 
-    Move best_move;
+    Move best_move = Move::Null();
     bool best_is_terminal;
     const auto best_eval = search_->GetBestEval(&best_move, &best_is_terminal);
     float eval = best_eval.wl;
@@ -230,7 +230,7 @@ void SelfPlayGame::Play(int white_threads, int black_threads, bool training,
 
     auto node = tree_[idx]->GetCurrentHead();
     classic::Eval played_eval = best_eval;
-    Move move;
+    Move move = Move::Null();
     while (true) {
       move = search_->GetBestMove().first;
       uint32_t max_n = 0;
@@ -289,11 +289,10 @@ void SelfPlayGame::Play(int white_threads, int black_threads, bool training,
       std::optional<EvalResult> nneval =
           options_[idx].backend->GetCachedEvaluation(EvalPosition{
               tree_[idx]->GetPositionHistory().GetPositions(), legal_moves});
-      training_data_.Add(tree_[idx]->GetCurrentHead(),
-                         tree_[idx]->GetPositionHistory(), best_eval,
-                         played_eval, best_is_proof, best_move, move,
-                         legal_moves, nneval,
-                         search_->GetParams().GetPolicySoftmaxTemp());
+      training_data_.Add(
+          tree_[idx]->GetCurrentHead(), tree_[idx]->GetPositionHistory(),
+          best_eval, played_eval, best_is_proof, best_move, move, legal_moves,
+          nneval, search_->GetParams().GetPolicySoftmaxTemp());
     }
     // Must reset the search before mutating the tree.
     search_.reset();

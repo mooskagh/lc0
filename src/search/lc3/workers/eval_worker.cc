@@ -1,5 +1,7 @@
 #include "search/lc3/workers/eval_worker.h"
 
+#include <absl/container/fixed_array.h>
+
 #include <array>
 
 #include "absl/synchronization/mutex.h"
@@ -22,8 +24,7 @@ bool EvalWorker::Collect() {
       env_.backend->GetAttributes().recommended_batch_size;
 
   absl::MutexLock lock(env_.eval_receiver->GetConsumerMutex());
-  // TODO replace with unique_ptr[]
-  std::vector<NodeEvent*> events(recommended_batch_size);
+  absl::FixedArray<NodeEvent*, 1024> events(recommended_batch_size);
 
   // Do one blocking fetch to get initial work.
   {

@@ -41,7 +41,7 @@ namespace lczero {
 
 // Is sent when search decides on the best move.
 struct BestMoveInfo {
-  BestMoveInfo(Move bestmove, Move ponder = Move{})
+  BestMoveInfo(Move bestmove, Move ponder = Move::Null())
       : bestmove(bestmove), ponder(ponder) {}
   Move bestmove;
   Move ponder;

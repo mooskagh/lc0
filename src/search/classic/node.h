@@ -400,7 +400,7 @@ class EdgeAndNode {
   // Edge related getters.
   float GetP() const { return edge_->GetP(); }
   Move GetMove(bool flip = false) const {
-    return edge_ ? edge_->GetMove(flip) : Move();
+    return edge_ ? edge_->GetMove(flip) : Move::Null();
   }
 
   // Returns U = numerator * p / N.
