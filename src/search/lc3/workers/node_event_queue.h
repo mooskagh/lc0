@@ -1,5 +1,6 @@
 #pragma once
 
+#include <absl/container/inlined_vector.h>
 #include <absl/synchronization/mutex.h>
 
 #include "search/lc3/workers/variation.h"
@@ -41,8 +42,10 @@ struct NodeEvent {
   float v;
   float d;
   float m;
-  std::vector<Move> moves;
-  std::vector<float> p;
+  // TODO build a distribution of number of legal moves, pick 95th percentile or
+  // so.
+  absl::InlinedVector<Move, 32> moves;
+  absl::InlinedVector<float, 32> p;
 };
 
 using NodeEventPool = FreeListAllocator<NodeEvent, 1024>;

@@ -100,7 +100,8 @@ int GetPositionRepetitionCount(Variation variation) {
 
 void EvalWorker::EnqueueIncomingEvent(NodeEvent* event) {
   const auto& board = event->variation->position.GetBoard();
-  event->moves = board.GenerateLegalMoves();
+  const auto& legal_moves = board.GenerateLegalMoves();
+  event->moves.assign(legal_moves.begin(), legal_moves.end());
 
   // Handle terminals.
   if (event->moves.empty()) {
