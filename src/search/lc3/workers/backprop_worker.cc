@@ -3,6 +3,7 @@
 #include "search/lc3/workers/backprop_worker.h"
 
 #include <absl/algorithm/container.h>
+#include <absl/container/fixed_array.h>
 #include <signal.h>
 
 #include <array>
@@ -122,11 +123,9 @@ namespace {
 // Permutes `moves` and `p` in-place so that `p` is sorted in descending order.
 void SortMovesByPolicy(std::span<Move> moves, std::span<float> p) {
   assert(moves.size() == p.size());
-  std::vector<std::pair<float, Move>> p_and_move;
-  p_and_move.reserve(p.size());
-  for (size_t i = 0; i < p.size(); ++i) {
-    p_and_move.emplace_back(p[i], moves[i]);
-  }
+  absl::FixedArray<std::pair<float, Move>> p_and_move(p.size());
+  for (size_t i = 0; i < p.size(); ++i) p_and_move[i] = {p[i], moves[i]};
+
   absl::c_sort(p_and_move,
                [](const auto& a, const auto& b) { return a.first > b.first; });
   for (size_t i = 0; i < p.size(); ++i) {
@@ -195,7 +194,7 @@ float ComputeQ(float v, float /* d */, float /* m */) { return v; }
 
 struct BackpropWorker::CombinedBackPropItem {
   NodeUpdate node_update;
-  std::vector<NodeHandle::EdgePatch> edge_updates;
+  absl::InlinedVector<NodeHandle::EdgePatch, 8> edge_updates;
   size_t visits_to_undo;
 };
 
