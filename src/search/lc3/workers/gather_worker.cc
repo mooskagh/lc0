@@ -13,8 +13,6 @@
 
 // TODO Make it a function and move to logic.h
 constexpr int kExtraFetch = 2;
-constexpr float kCpuctConst = 1.745f;            // TODO: Make this configurable
-constexpr float kBatchIterationFraction = 0.4f;  // TODO: Make this configurable
 
 namespace {
 // TODO Implement proper InlineVector
@@ -94,53 +92,6 @@ void GatherWorker::ProcessNode(size_t depth, NodeAndBatch& item) {
 
 namespace {
 
-// TODO move to logic.h or where's the right place.
-// TODO Add FPU urgency.
-// The function distributes a given number of visits to edges.
-// Currently, the following approximation is used:
-// * Compute Q + U for just one visit.
-// * Route `kBatchIterationFraction` of available visits to that edge.
-// * Repeat until all visits are distributed.
-std::vector<size_t> DistributeVisits(size_t /* depth */,
-                                     size_t visits_to_distribute, size_t node_n,
-                                     std::span<const float> edge_P,
-                                     std::span<const float> edge_Q,
-                                     std::span<const uint64_t> edge_N) {
-  assert(edge_P.size() > 0);
-  assert(edge_P.size() == edge_Q.size());
-  assert(edge_P.size() == edge_N.size());
-  // If there is only one edge, we just return all visits to it.
-  if (edge_P.size() == 1) return {visits_to_distribute};
-
-  std::vector<size_t> result(edge_P.size(), 0);
-
-  // parent_n_sqrt × kCpuctConst
-  const float factor = std::sqrt(static_cast<float>(node_n)) * kCpuctConst;
-  auto q_plus_u = [&](size_t idx) {
-    return edge_Q[idx] +
-           factor * edge_P[idx] / (1.0f + edge_N[idx] + result[idx]);
-  };
-
-  while (visits_to_distribute > 0) {
-    const size_t visits_this_step = static_cast<size_t>(
-        std::ceil(visits_to_distribute * kBatchIterationFraction));
-
-    float best_score = q_plus_u(0);
-    size_t best_idx = 0;
-    for (size_t i = 1; i < edge_P.size(); ++i) {
-      const float cur_score = q_plus_u(i);
-      if (cur_score > best_score) {
-        best_score = cur_score;
-        best_idx = i;
-      }
-    }
-
-    result[best_idx] += visits_this_step;
-    visits_to_distribute -= visits_this_step;
-  }
-  return result;
-}
-
 // Struct to fetch the edge data from the node repository.
 // It's parallel vectors because the node repository has such API and also
 // there's more hope to vectorization.
@@ -162,8 +113,8 @@ void GatherWorker::ForwardToChildren(NodeHandle& node_handle, size_t depth,
                                      size_t batch_size, size_t parent_n,
                                      Variation& node) {
   const NodeHandle::MoveCounts move_counts = node_handle.FetchMoveCounts();
-  const size_t num_moves_to_fetch =
-      std::min(move_counts.total, kExtraFetch + move_counts.with_visits);
+  const size_t num_moves_to_fetch = Policy::GetNumEdgesToFetch(
+      move_counts.total, move_counts.with_visits, depth, batch_size);
 
   EdgeInfos edge_infos(num_moves_to_fetch);
   NodeHandle::EdgeDataDestination request{
@@ -174,8 +125,8 @@ void GatherWorker::ForwardToChildren(NodeHandle& node_handle, size_t depth,
   };
   node_handle.FetchEdges(request);
   std::vector<size_t> edge_visits =
-      DistributeVisits(depth, batch_size, parent_n, edge_infos.edge_P,
-                       edge_infos.edge_Q, edge_infos.edge_N);
+      Policy::DistributeVisits(depth, batch_size, parent_n, edge_infos.edge_P,
+                               edge_infos.edge_Q, edge_infos.edge_N);
   node_handle.AddEdgeVisits(edge_visits);
   node_handle.Release();
 
