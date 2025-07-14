@@ -8,6 +8,7 @@
 #include "chess/position.h"
 #include "chess/types.h"
 #include "search/lc3/node_repository/node_key.h"
+#include "search/lc3/workers/node_event_queue.h"
 
 namespace lczero {
 namespace lc3 {
@@ -87,7 +88,87 @@ struct SearchPolicy {
   /////////////////////////////////////////////////////////////////////////////
 
   // Computes Q (to use in Q+U) from the node value.
-  static float ComputeQ(float v, float /* d */, float /* m */) { return v; }
+  static float ComputeQ(const NodeHandle::NodeAggregates& node_value) {
+    return node_value.agg_v;
+  }
+
+  // The struct that holds the value that we backpropagate.
+  struct ValueDelta {
+    size_t num_visits;
+    size_t num_visits_to_undo;
+    double v;
+    float d;
+    float m;
+    NodeHandle::CertaintyState certainty_state;
+  };
+  // The struct that holds the edge update that we backpropagate.
+  using EdgeDelta = NodeHandle::EdgeMutation;
+
+  // Converts a NodeEvent that we receive from the NN eval into a ValueDelta
+  // that we propagate.
+  static ValueDelta NodeEventToValueDelta(NodeEvent* event) {
+    const size_t num_visits_to_apply = [&]() -> size_t {
+      // Determine how many of total visits we will apply to this node. The rest
+      // are rolled back. If it's a terminal node, we apply all visits, if it's
+      // a normal node, we apply one, if it's a collision, we apply none.
+      switch (event->result_type) {
+        case NodeEvent::ResultType::kNormal:
+          return 1;  // Apply one visit for a normal node.
+        case NodeEvent::ResultType::kTerminal:
+          return event->num_visits;  // Apply all visits for a terminal node.
+        case NodeEvent::ResultType::kCollisionRollback:
+          return 0;  // Do not apply visits for a collision rollback.
+      }
+      assert(false);  // Unreachable, but avoids compiler warning.
+      return 0;
+    }();
+
+    return {
+        .num_visits = num_visits_to_apply,
+        .num_visits_to_undo = event->num_visits - num_visits_to_apply,
+        .v = event->v,
+        .d = event->d,
+        .m = event->m,
+        .certainty_state =
+            event->result_type == NodeEvent::ResultType::kTerminal
+                ? NodeHandle::CertaintyState::kTerminal
+                : NodeHandle::CertaintyState::kNonTerminal,
+    };
+  }
+
+  // Converts the ValueDelta that we backpropagate into NodeAggregates that we
+  // update our node with.
+  static NodeHandle::NodeAggregates ValueDeltaToNodeAggregates(
+      const ValueDelta& value_delta) {
+    return {
+        .n = value_delta.num_visits,
+        .agg_v = value_delta.v,
+        .agg_d = value_delta.d,
+        .agg_m = value_delta.m,
+        .state = value_delta.certainty_state,
+    };
+  }
+
+  static void MergeNodeUpdates(ValueDelta* dst, const ValueDelta& src) {
+    dst->num_visits_to_undo += src.num_visits_to_undo;
+    if (src.num_visits == 0) return;
+
+    // dst v, d and q are weighted averages of v, d, q, weighted by
+    // num_visits_to_apply.
+    const double total_visits = dst->num_visits + src.num_visits;
+    const double weight = static_cast<double>(src.num_visits) / total_visits;
+    dst->v += (src.v - dst->v) * weight;
+    dst->d += (src.d - dst->d) * weight;
+    dst->m += (src.m - dst->m) * weight;
+    dst->num_visits += src.num_visits;
+  }
+
+  // Transforms the ValueDelta for the parent node.
+  static void MoveNodeUpdateToParent(ValueDelta* value_delta) {
+    value_delta->v = -value_delta->v;  // Negate v for backprop as it's a
+                                       // opponent's perspective.
+    value_delta->m += 1;  // Increment "moves left" for a parent node.
+  }
 };
 
 }  // namespace lc3
