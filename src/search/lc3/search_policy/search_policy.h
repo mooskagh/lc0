@@ -3,6 +3,7 @@
 #include <absl/container/fixed_array.h>
 
 #include <cmath>
+#include <span>
 
 #include "chess/position.h"
 #include "chess/types.h"
@@ -19,6 +20,10 @@ struct SearchPolicy {
                              const Position& /*new_position*/) {
     return NodeKey{HashCat(parent_key.raw_hash(), move.raw_data())};
   }
+
+  /////////////////////////////////////////////////////////////////////////////
+  // Forward pass (gather).
+  /////////////////////////////////////////////////////////////////////////////
 
   // Number of edges we'll consider distributing visits to for the node.
   // It may be slower to fetch all edges, so we limit the number of edges to
@@ -76,6 +81,13 @@ struct SearchPolicy {
     }
     return result;
   }
+
+  /////////////////////////////////////////////////////////////////////////////
+  // Backward pass (backprop/backup).
+  /////////////////////////////////////////////////////////////////////////////
+
+  // Computes Q (to use in Q+U) from the node value.
+  static float ComputeQ(float v, float /* d */, float /* m */) { return v; }
 };
 
 }  // namespace lc3

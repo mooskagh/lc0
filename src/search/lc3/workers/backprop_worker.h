@@ -5,6 +5,7 @@
 #include <vector>
 
 #include "search/lc3/node_repository/node_repository.h"
+#include "search/lc3/search_policy/search_policy.h"
 #include "search/lc3/workers/node_event_queue.h"
 
 namespace lczero {
@@ -23,6 +24,7 @@ class BackpropWorker {
   void Run();
 
  private:
+  using Policy = SearchPolicy;
   bool OneStep();
   struct BackPropItem;
   struct CombinedBackPropItem;

@@ -23,13 +23,6 @@ struct NodeUpdate {
   double v;
   float d;
   float m;
-
-  std::string ToString() const {
-    return "NodeUpdate{variation=" + variation->position.DebugString() +
-           ", num_visits=" + std::to_string(num_visits) +
-           ", v=" + std::to_string(v) + ", d=" + std::to_string(d) +
-           ", m=" + std::to_string(m) + "}";
-  }
 };
 }  // namespace
 
@@ -190,8 +183,6 @@ void MoveNodeUpdateToParent(NodeUpdate* node_update) {
   node_update->m += 1;  // Increment "moves left" for a parent node.
 };
 
-// TODO move to logic.h
-float ComputeQ(float v, float /* d */, float /* m */) { return v; }
 }  // namespace
 
 struct BackpropWorker::CombinedBackPropItem {
@@ -243,7 +234,7 @@ bool BackpropWorker::OneStep() {
   // `edge_update` will be different.
   absl::c_make_heap(backprop_heap);
   while (!backprop_heap.empty()) {
-    // Collect all updates for the same variation.
+    // Collect all updates for the same variation (position).
     auto update = CollectSameVariationUpdates(backprop_heap);
 
     NodeHandle node_handle = env_.node_repository->GetNodeForUpdate(
@@ -276,8 +267,8 @@ bool BackpropWorker::OneStep() {
          .edge_update = {
              .edge_idx = idx_in_parent,
              .visits_to_undo = update.visits_to_undo,
-             .agg_q_to_set = -ComputeQ(node_value.agg_v, node_value.agg_d,
-                                       node_value.agg_m)}});
+             .agg_q_to_set = -Policy::ComputeQ(
+                 node_value.agg_v, node_value.agg_d, node_value.agg_m)}});
     absl::c_push_heap(backprop_heap);
   }
   return true;
@@ -300,7 +291,7 @@ BackpropWorker::BackPropItem BackpropWorker::NodeEventToBackpropItem(
           {
               .edge_idx = event->variation->idx_in_parent,
               .visits_to_undo = event->num_visits - num_visits,
-              .agg_q_to_set = -ComputeQ(event->v, event->d, event->m),
+              .agg_q_to_set = -Policy::ComputeQ(event->v, event->d, event->m),
           },
   };
 }
