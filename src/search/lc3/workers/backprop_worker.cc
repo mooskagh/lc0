@@ -35,7 +35,7 @@ void BackpropWorker::Run() { while (OneStep()); }
 // forward the updates to the parent nodes.
 // Returns an empty vector after the queue is drained.
 std::vector<BackpropWorker::NodeUpdate> BackpropWorker::FetchBackpropTasks() {
-  std::vector<NodeUpdate> backprop_items;
+  std::vector<NodeUpdate> node_updates;
   absl::MutexLock queue_lock(env_.backprop_receiver->GetConsumerMutex());
   std::array<NodeEvent*, 1024> buffer;
   // Fetch the first batch blockingly (note we are under mutex).
@@ -64,20 +64,19 @@ std::vector<BackpropWorker::NodeUpdate> BackpropWorker::FetchBackpropTasks() {
       if (event->variation->idx_in_parent == kNoIdxInParent) continue;
 
       Policy::MoveNodeUpdateToParent(&delta);
-      NodeUpdate node_update = {
+      node_updates.push_back({
           .variation = event->variation,
           .value_delta = delta,
           .edge_updates = {Policy::MakeEdgeDelta(
               event->variation->idx_in_parent, delta, node_value)},
-      };
-      backprop_items.push_back(node_update);
+      });
     }
     // Fetch more items if they are available. If all items were collisions, do
     // not process them until we get some non-collision items.
     num_events = env_.backprop_receiver->Collect(
         buffer, /*block=*/all_events_collisions);
   } while (num_events > 0);
-  return backprop_items;
+  return node_updates;
 }
 
 namespace {
@@ -124,14 +123,13 @@ BackpropWorker::NodeUpdate BackpropWorker::CollectSameVariationUpdates(
   NodeKey cur_hash = combined_item.variation->key;
   while (!backprop_heap.empty() &&
          backprop_heap.front().variation->key == cur_hash) {
-    NodeUpdate& backprop_item = backprop_heap.front();
+    NodeUpdate& update = backprop_heap.front();
 
     // Weighted (by num_visits) average of v, d, m.
-    Policy::MergeNodeUpdates(&combined_item.value_delta,
-                             backprop_item.value_delta);
+    Policy::MergeNodeUpdates(&combined_item.value_delta, update.value_delta);
     combined_item.edge_updates.insert(combined_item.edge_updates.end(),
-                                      backprop_item.edge_updates.begin(),
-                                      backprop_item.edge_updates.end());
+                                      update.edge_updates.begin(),
+                                      update.edge_updates.end());
     absl::c_pop_heap(backprop_heap);
     backprop_heap.pop_back();
   }
