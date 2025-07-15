@@ -34,6 +34,8 @@ class BackpropWorker {
   void UpdateLeafNode(NodeEvent* event,
                       const NodeHandle::NodeAggregates& node_value);
   void DisposeNodeEvent(NodeEvent* event);
+  NodeHandle::NodeAggregates UpdateNodeInRepository(
+  const NodeUpdate& update);
 
   BackpropWorkerEnvironment env_;
 };

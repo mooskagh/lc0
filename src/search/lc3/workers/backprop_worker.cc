@@ -136,6 +136,21 @@ BackpropWorker::NodeUpdate BackpropWorker::CollectSameVariationUpdates(
   return combined_item;
 }
 
+NodeHandle::NodeAggregates BackpropWorker::UpdateNodeInRepository(
+    const NodeUpdate& update) {
+  NodeHandle node_handle =
+      env_.node_repository->GetNodeForUpdate(update.variation->key,
+                                             /*create_if_missing=*/false);
+  assert(node_handle);
+  // During collision rollback num_visits is 0, and ApplyNodeUpdate does
+  // nothing.
+  node_handle.ApplyNodeUpdate(
+      Policy::ValueDeltaToNodeAggregates(update.value_delta));
+  // Undo per-edge number of visits, and cache child node value.
+  node_handle.UpdateEdges(update.edge_updates);
+  return node_handle.GetNodeAggregates();
+}
+
 bool BackpropWorker::OneStep() {
   std::vector<NodeUpdate> backprop_heap = FetchBackpropTasks();
   if (backprop_heap.empty()) return false;  // Drained.
@@ -147,34 +162,20 @@ bool BackpropWorker::OneStep() {
   absl::c_make_heap(backprop_heap);
   while (!backprop_heap.empty()) {
     // Collect all updates for the same variation (position).
-    auto update = CollectSameVariationUpdates(backprop_heap);
-
-    NodeHandle node_handle =
-        env_.node_repository->GetNodeForUpdate(update.variation->key,
-                                               /*create_if_missing=*/false);
-    assert(node_handle);
-    // During collision rollback num_visits is 0, and ApplyNodeUpdate does
-    // nothing.
-    node_handle.ApplyNodeUpdate(
-        Policy::ValueDeltaToNodeAggregates(update.value_delta));
-    // Undo per-edge number of visits, and cache child node value.
-    node_handle.UpdateEdges(update.edge_updates);
-
+    NodeUpdate update = CollectSameVariationUpdates(backprop_heap);
+    const NodeHandle::NodeAggregates updated_node_value =
+        UpdateNodeInRepository(update);
     // If the node is root, we do not backprop it.
     const size_t idx_in_parent = update.variation->idx_in_parent;
     if (idx_in_parent == kNoIdxInParent) continue;
-
-    NodeHandle::NodeAggregates node_value = node_handle.GetNodeAggregates();
-    // TODO factor out update into a separate function.
-    node_handle.Release();
 
     Policy::MoveNodeUpdateToParent(&update.value_delta);
     assert(update.variation.has_parent());
     update.variation = update.variation.parent();  // Move to parent variation.
     // Modify the value that we backpropagate for the parent node (i.e. flip
     // WDL, add 1 to moves left, etc.).
-    update.edge_updates = {
-        Policy::MakeEdgeDelta(idx_in_parent, update.value_delta, node_value)};
+    update.edge_updates = {Policy::MakeEdgeDelta(
+        idx_in_parent, update.value_delta, updated_node_value)};
     backprop_heap.push_back(std::move(update));
     absl::c_push_heap(backprop_heap);
   }
