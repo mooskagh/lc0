@@ -51,14 +51,15 @@ std::vector<BackpropWorker::NodeUpdate> BackpropWorker::FetchBackpropTasks() {
       if (!event) continue;  // Skip sentinel item used for draining the queue.
       // NodeEvent ends its lifetime here.
       absl::Cleanup dispose_node_event = [&]() { DisposeNodeEvent(event); };
-      all_events_collisions &=
-          (event->result_type == NodeEvent::ResultType::kCollisionRollback);
+      const bool is_collision =
+          event->result_type == NodeEvent::ResultType::kCollisionRollback;
+      all_events_collisions &= is_collision;
 
       // Update the node in the repository (set value, populate edges).
       Policy::ValueDelta delta = Policy::NodeEventToValueDelta(event);
       NodeHandle::NodeAggregates node_value =
           Policy::ValueDeltaToNodeAggregates(delta);
-      UpdateLeafNode(event, node_value);
+      if (!is_collision) UpdateLeafNode(event, node_value);
 
       // If the node is already root, we do not backprop it.
       if (event->variation->idx_in_parent == kNoIdxInParent) continue;
@@ -109,7 +110,7 @@ void BackpropWorker::UpdateLeafNode(
     SortMovesByPolicy(event->moves, event->p);
     node_to_update.InitializeEdges(event->moves, event->p);
   }
-  node_to_update.ApplyNodeUpdate(node_value);
+  node_to_update.SetNodeAggregates(node_value);
 }
 
 BackpropWorker::NodeUpdate BackpropWorker::CollectSameVariationUpdates(
@@ -142,12 +143,12 @@ NodeHandle::NodeAggregates BackpropWorker::UpdateNodeInRepository(
       env_.node_repository->GetNodeForUpdate(update.variation->key,
                                              /*create_if_missing=*/false);
   assert(node_handle);
-  // During collision rollback num_visits is 0, and ApplyNodeUpdate does
-  // nothing.
-  node_handle.ApplyNodeUpdate(
-      Policy::ValueDeltaToNodeAggregates(update.value_delta));
   // Undo per-edge number of visits, and cache child node value.
   node_handle.UpdateEdges(update.edge_updates);
+  NodeHandle::NodeAggregates node_aggregates = node_handle.GetNodeAggregates();
+  if (Policy::UpdateNodeAggregate(&node_aggregates, update.value_delta)) {
+    node_handle.SetNodeAggregates(node_aggregates);
+  }
   return node_handle.GetNodeAggregates();
 }
 

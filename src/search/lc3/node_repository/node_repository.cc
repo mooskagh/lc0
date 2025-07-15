@@ -61,18 +61,8 @@ void NodeHandle::Release() {
   data_ = nullptr;
 }
 
-void NodeHandle::ApplyNodeUpdate(NodeAggregates new_data) {
-  if (new_data.n <= 0) return;
-
-  // Calculate the weight for the new data
-  float weight = static_cast<float>(new_data.n) / (data_->value.n + new_data.n);
-
-  data_->value.n += new_data.n;
-  data_->value.agg_v += weight * (new_data.agg_v - data_->value.agg_v);
-  data_->value.agg_d += weight * (new_data.agg_d - data_->value.agg_d);
-  data_->value.agg_m += weight * (new_data.agg_m - data_->value.agg_m);
-  // TODO probably with certainty propagation we'll need something smarter here.
-  data_->value.state = new_data.state;
+void NodeHandle::SetNodeAggregates(const NodeAggregates& new_data) {
+  data_->value = new_data;
 }
 
 NodeHandle::NodeAggregates NodeHandle::GetNodeAggregates() const {

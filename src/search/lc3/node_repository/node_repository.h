@@ -13,6 +13,7 @@ namespace lc3 {
 
 class NodeHandle {
  public:
+  // Struct that is used to fetch edge data from repository.
   // All fields are out parameters. FetchEdgeData fills these spans with data
   // from the node's internal arrays. The moves, p, q, and n arrays are parallel
   // with the same index representing the same move across all arrays.
@@ -24,6 +25,9 @@ class NodeHandle {
     std::span<uint64_t> n = {};
   };
 
+  // Struct that is used to update edges (or a given node) in the repository.
+  // `visits_to_undo` is subtracted from the edge's visits count.
+  // `agg_q_to_set` is the new Q value to set for the edge.
   struct EdgeMutation {
     size_t edge_idx;
     size_t visits_to_undo;
@@ -58,7 +62,7 @@ class NodeHandle {
   void Release();
 
   // Node aggregates.
-  void ApplyNodeUpdate(NodeAggregates);
+  void SetNodeAggregates(const NodeAggregates& new_data);
   NodeAggregates GetNodeAggregates() const;
 
   // Edges.

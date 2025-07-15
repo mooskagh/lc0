@@ -171,15 +171,33 @@ struct SearchPolicy {
                                  const ValueDelta& value_delta,
                                  const NodeHandle::NodeAggregates& node_value) {
     // Computes Q (to use in Q+U) from the node value.
-    auto compute_q = [](const NodeHandle::NodeAggregates& node_value) -> float{
+    auto compute_q = [](const NodeHandle::NodeAggregates& node_value) -> float {
       // The value is for the parent node, so we negate it.
       return -node_value.agg_v;
     };
     return {
-      .edge_idx = idx_in_parent,
-      .visits_to_undo = value_delta.num_visits_to_undo,
-      .agg_q_to_set = compute_q(node_value),
+        .edge_idx = idx_in_parent,
+        .visits_to_undo = value_delta.num_visits_to_undo,
+        .agg_q_to_set = compute_q(node_value),
     };
+  }
+
+  static bool UpdateNodeAggregate(NodeHandle::NodeAggregates* dst,
+                                  const ValueDelta& src) {
+    if (src.num_visits <= 0) return false;
+
+    // Calculate the weight for the new data
+    float weight =
+        static_cast<float>(src.num_visits) / (dst->n + src.num_visits);
+
+    dst->n += src.num_visits;
+    dst->agg_v += weight * (src.v - dst->agg_v);
+    dst->agg_d += weight * (src.d - dst->agg_d);
+    dst->agg_m += weight * (src.m - dst->agg_m);
+    // TODO probably with certainty propagation we'll need something smarter
+    // here.
+    dst->state = src.certainty_state;
+    return true;
   }
 };
 
