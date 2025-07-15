@@ -39,6 +39,7 @@ class NodeHandle {
     kTerminal,     // The node is terminal.
   };
 
+  // Values that the repository stores about a node (not edges).
   struct NodeAggregates {
     size_t n;
     double agg_v;
