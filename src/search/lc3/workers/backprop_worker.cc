@@ -67,11 +67,8 @@ std::vector<BackpropWorker::BackPropItem> BackpropWorker::FetchBackpropTasks() {
       NodeUpdate node_update = {
           .variation = event->variation,
           .value_delta = delta,
-          .edge_updates = {Policy::EdgeDelta{
-              .edge_idx = event->variation->idx_in_parent,
-              .visits_to_undo = delta.num_visits_to_undo,
-              .agg_q_to_set = -Policy::ComputeQ(node_value),
-          }},
+          .edge_updates = {Policy::MakeEdgeDelta(
+              event->variation->idx_in_parent, delta, node_value)},
       };
       backprop_items.push_back(node_update);
     }
@@ -180,11 +177,7 @@ bool BackpropWorker::OneStep() {
     // Modify the value that we backpropagate for the parent node (i.e. flip
     // WDL, add 1 to moves left, etc.).
     update.edge_updates = {
-        NodeHandle::EdgeMutation{
-            .edge_idx = idx_in_parent,
-            .visits_to_undo = update.value_delta.num_visits_to_undo,
-            .agg_q_to_set = -Policy::ComputeQ(node_value),
-        }};
+        Policy::MakeEdgeDelta(idx_in_parent, update.value_delta, node_value)};
     backprop_heap.push_back(std::move(update));
     absl::c_push_heap(backprop_heap);
   }

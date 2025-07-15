@@ -87,11 +87,6 @@ struct SearchPolicy {
   // Backward pass (backprop/backup).
   /////////////////////////////////////////////////////////////////////////////
 
-  // Computes Q (to use in Q+U) from the node value.
-  static float ComputeQ(const NodeHandle::NodeAggregates& node_value) {
-    return node_value.agg_v;
-  }
-
   // The struct that holds the value that we backpropagate.
   struct ValueDelta {
     size_t num_visits;
@@ -168,6 +163,23 @@ struct SearchPolicy {
     value_delta->v = -value_delta->v;  // Negate v for backprop as it's a
                                        // opponent's perspective.
     value_delta->m += 1;  // Increment "moves left" for a parent node.
+  }
+
+  // value_delta is the value that we backpropagate.
+  // node_value is updated node value after value_delta was just applied.
+  static EdgeDelta MakeEdgeDelta(size_t idx_in_parent,
+                                 const ValueDelta& value_delta,
+                                 const NodeHandle::NodeAggregates& node_value) {
+    // Computes Q (to use in Q+U) from the node value.
+    auto compute_q = [](const NodeHandle::NodeAggregates& node_value) -> float{
+      // The value is for the parent node, so we negate it.
+      return -node_value.agg_v;
+    };
+    return {
+      .edge_idx = idx_in_parent,
+      .visits_to_undo = value_delta.num_visits_to_undo,
+      .agg_q_to_set = compute_q(node_value),
+    };
   }
 };
 
