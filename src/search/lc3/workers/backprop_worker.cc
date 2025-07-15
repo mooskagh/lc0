@@ -34,8 +34,8 @@ void BackpropWorker::Run() { while (OneStep()); }
 // Fetch eval results from the queue, update the nodes they reference, and
 // forward the updates to the parent nodes.
 // Returns an empty vector after the queue is drained.
-std::vector<BackpropWorker::BackPropItem> BackpropWorker::FetchBackpropTasks() {
-  std::vector<BackPropItem> backprop_items;
+std::vector<BackpropWorker::NodeUpdate> BackpropWorker::FetchBackpropTasks() {
+  std::vector<NodeUpdate> backprop_items;
   absl::MutexLock queue_lock(env_.backprop_receiver->GetConsumerMutex());
   std::array<NodeEvent*, 1024> buffer;
   // Fetch the first batch blockingly (note we are under mutex).
@@ -113,19 +113,18 @@ void BackpropWorker::UpdateLeafNode(
   node_to_update.ApplyNodeUpdate(node_value);
 }
 
-BackpropWorker::CombinedBackPropItem
-BackpropWorker::CollectSameVariationUpdates(
-    std::vector<BackPropItem>& backprop_heap) {
+BackpropWorker::NodeUpdate BackpropWorker::CollectSameVariationUpdates(
+    std::vector<NodeUpdate>& backprop_heap) {
   absl::c_pop_heap(backprop_heap);
   // Extract the first item from the heap.
-  BackPropItem combined_item = std::move(backprop_heap.back());
+  NodeUpdate combined_item = std::move(backprop_heap.back());
   backprop_heap.pop_back();
 
   // Now combine the updates for the same variation coming from different edges.
   NodeKey cur_hash = combined_item.variation->key;
   while (!backprop_heap.empty() &&
          backprop_heap.front().variation->key == cur_hash) {
-    BackPropItem& backprop_item = backprop_heap.front();
+    NodeUpdate& backprop_item = backprop_heap.front();
 
     // Weighted (by num_visits) average of v, d, m.
     Policy::MergeNodeUpdates(&combined_item.value_delta,
@@ -140,7 +139,7 @@ BackpropWorker::CollectSameVariationUpdates(
 }
 
 bool BackpropWorker::OneStep() {
-  std::vector<BackPropItem> backprop_heap = FetchBackpropTasks();
+  std::vector<NodeUpdate> backprop_heap = FetchBackpropTasks();
   if (backprop_heap.empty()) return false;  // Drained.
 
   // `backprop_heap` is a queue of nodes to backpropagate, sorted by depth and

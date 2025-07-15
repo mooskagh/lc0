@@ -27,12 +27,10 @@ class BackpropWorker {
   using Policy = SearchPolicy;
   bool OneStep();
   struct NodeUpdate;
-  using BackPropItem = NodeUpdate;
-  using CombinedBackPropItem = NodeUpdate;
 
-  std::vector<BackPropItem> FetchBackpropTasks();
-  static CombinedBackPropItem CollectSameVariationUpdates(
-      std::vector<BackPropItem>& backprop_heap);
+  std::vector<NodeUpdate> FetchBackpropTasks();
+  static NodeUpdate CollectSameVariationUpdates(
+      std::vector<NodeUpdate>& backprop_heap);
   void UpdateLeafNode(NodeEvent* event,
                       const NodeHandle::NodeAggregates& node_value);
   void DisposeNodeEvent(NodeEvent* event);
