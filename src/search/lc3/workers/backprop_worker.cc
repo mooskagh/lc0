@@ -34,14 +34,15 @@ void BackpropWorker::Run() { while (OneStep()); }
 // Fetch eval results from the queue, update the nodes they reference, and
 // forward the updates to the parent nodes.
 // Returns an empty vector after the queue is drained.
-std::vector<BackpropWorker::NodeUpdate> BackpropWorker::FetchBackpropTasks() {
-  std::vector<NodeUpdate> node_updates;
+std::optional<std::vector<BackpropWorker::NodeUpdate>>
+BackpropWorker::FetchBackpropTasks() {
+  auto node_updates = std::make_optional<std::vector<NodeUpdate>>();
   absl::MutexLock queue_lock(env_.backprop_receiver->GetConsumerMutex());
   std::array<NodeEvent*, 1024> buffer;
   // Fetch the first batch blockingly (note we are under mutex).
   size_t num_events = env_.backprop_receiver->Collect(buffer, /*block=*/true);
   // If no events despite being blocking, we are in draining mode.
-  if (num_events == 0) return {};
+  if (num_events == 0) return std::nullopt;
   // If all events we received so far are collisions, do not backprop them until
   // we get any non-collision items.
   bool all_events_collisions = true;
@@ -65,7 +66,7 @@ std::vector<BackpropWorker::NodeUpdate> BackpropWorker::FetchBackpropTasks() {
       if (event->variation->idx_in_parent == kNoIdxInParent) continue;
 
       Policy::MoveNodeUpdateToParent(&delta);
-      node_updates.push_back({
+      node_updates->push_back({
           .variation = event->variation,
           .value_delta = delta,
           .edge_updates = {Policy::MakeEdgeDelta(
@@ -153,8 +154,9 @@ NodeHandle::NodeAggregates BackpropWorker::UpdateNodeInRepository(
 }
 
 bool BackpropWorker::OneStep() {
-  std::vector<NodeUpdate> backprop_heap = FetchBackpropTasks();
-  if (backprop_heap.empty()) return false;  // Drained.
+  auto maybe_backprop_heap = FetchBackpropTasks();
+  if (!maybe_backprop_heap) return false;  // Drained.
+  std::vector<NodeUpdate>& backprop_heap = *maybe_backprop_heap;
 
   // `backprop_heap` is a queue of nodes to backpropagate, sorted by depth and
   // position. That means that the same position will be fetched sequentially.

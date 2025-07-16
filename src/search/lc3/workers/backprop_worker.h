@@ -28,7 +28,7 @@ class BackpropWorker {
   bool OneStep();
   struct NodeUpdate;
 
-  std::vector<NodeUpdate> FetchBackpropTasks();
+  std::optional<std::vector<NodeUpdate>> FetchBackpropTasks();
   static NodeUpdate CollectSameVariationUpdates(
       std::vector<NodeUpdate>& backprop_heap);
   void UpdateLeafNode(NodeEvent* event,
