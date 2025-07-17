@@ -122,9 +122,9 @@ void NodeHandle::UpdateEdges(std::span<const EdgeMutation> updates) {
                                                    const EdgeMutation& b) {
                      return a.edge_idx < b.edge_idx;
                    })->edge_idx;
-  if (max_idx >= data_->edges.size()) {
-    data_->edges.resize(max_idx + 1);
-  }
+  assert(max_idx < data_->moves.size());
+  assert(max_idx < data_->p.size());
+  if (max_idx >= data_->edges.size()) data_->edges.resize(max_idx + 1);
   for (const EdgeMutation& update : updates) {
     EdgeData& edge = data_->edges[update.edge_idx];
     edge.q = update.agg_q_to_set;

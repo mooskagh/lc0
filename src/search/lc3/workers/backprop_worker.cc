@@ -66,8 +66,9 @@ BackpropWorker::FetchBackpropTasks() {
       if (event->variation->idx_in_parent == kNoIdxInParent) continue;
 
       Policy::MoveNodeUpdateToParent(&delta);
+      assert (event->variation.has_parent());
       node_updates->push_back({
-          .variation = event->variation,
+          .variation = event->variation.parent(),
           .value_delta = delta,
           .edge_updates = {Policy::MakeEdgeDelta(
               event->variation->idx_in_parent, delta, node_value)},
