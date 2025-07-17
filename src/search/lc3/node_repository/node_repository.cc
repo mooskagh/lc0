@@ -62,6 +62,7 @@ void NodeHandle::Release() {
 }
 
 void NodeHandle::SetNodeAggregates(const NodeAggregates& new_data) {
+  assert(new_data.n >= data_->value.n);
   data_->value = new_data;
 }
 
