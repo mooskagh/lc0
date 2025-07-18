@@ -31,11 +31,10 @@ class BackpropWorker {
   std::optional<std::vector<NodeUpdate>> FetchBackpropTasks();
   static NodeUpdate CollectSameVariationUpdates(
       std::vector<NodeUpdate>& backprop_heap);
-  void UpdateLeafNode(NodeEvent* event,
-                      const NodeHandle::NodeAggregates& node_value);
+  NodeHandle::NodeAggregates UpdateLeafNode(NodeEvent* event,
+                                            const Policy::ValueDelta& delta);
   void DisposeNodeEvent(NodeEvent* event);
-  NodeHandle::NodeAggregates UpdateNodeInRepository(
-  const NodeUpdate& update);
+  NodeHandle::NodeAggregates UpdateNodeInRepository(const NodeUpdate& update);
 
   BackpropWorkerEnvironment env_;
 };

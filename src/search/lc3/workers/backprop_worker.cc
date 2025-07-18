@@ -58,20 +58,21 @@ BackpropWorker::FetchBackpropTasks() {
 
       // Update the node in the repository (set value, populate edges).
       Policy::ValueDelta delta = Policy::NodeEventToValueDelta(event);
-      NodeHandle::NodeAggregates node_value =
-          Policy::ValueDeltaToNodeAggregates(delta);
-      if (!is_collision) UpdateLeafNode(event, node_value);
+      std::optional<NodeHandle::NodeAggregates> node_value;
+
+      if (!is_collision) node_value = UpdateLeafNode(event, delta);
 
       // If the node is already root, we do not backprop it.
       if (event->variation->idx_in_parent == kNoIdxInParent) continue;
 
       Policy::MoveNodeUpdateToParent(&delta);
-      assert (event->variation.has_parent());
+      assert(event->variation.has_parent());
       node_updates->push_back({
           .variation = event->variation.parent(),
           .value_delta = delta,
           .edge_updates = {Policy::MakeEdgeDelta(
-              event->variation->idx_in_parent, delta, node_value)},
+              event->variation->idx_in_parent, delta,
+              node_value ? &*node_value : nullptr)},
       });
     }
     // Fetch more items if they are available. If all items were collisions, do
@@ -98,8 +99,10 @@ void SortMovesByPolicy(std::span<Move> moves, std::span<float> p) {
 }
 }  // namespace
 
-void BackpropWorker::UpdateLeafNode(
-    NodeEvent* event, const NodeHandle::NodeAggregates& node_value) {
+NodeHandle::NodeAggregates BackpropWorker::UpdateLeafNode(
+    NodeEvent* event, const Policy::ValueDelta& delta) {
+  NodeHandle::NodeAggregates node_value =
+      Policy::ValueDeltaToNodeAggregates(delta);
   // For the "leaf" node, in addition to initializing values like for the rest
   // of backprop, we'll need to initialize edges.
   NodeHandle node_to_update =
@@ -111,8 +114,16 @@ void BackpropWorker::UpdateLeafNode(
   if (event->result_type == NodeEvent::ResultType::kNormal) {
     SortMovesByPolicy(event->moves, event->p);
     node_to_update.InitializeEdges(event->moves, event->p);
+    node_to_update.SetNodeAggregates(node_value);
+    return node_value;
+  } else {
+    assert(event->result_type == NodeEvent::ResultType::kTerminal);
+    NodeHandle::NodeAggregates current_value =
+        node_to_update.GetNodeAggregates();
+    Policy::UpdateNodeAggregate(&current_value, delta);
+    node_to_update.SetNodeAggregates(current_value);
+    return current_value;
   }
-  node_to_update.SetNodeAggregates(node_value);
 }
 
 BackpropWorker::NodeUpdate BackpropWorker::CollectSameVariationUpdates(
@@ -179,7 +190,7 @@ bool BackpropWorker::OneStep() {
     // Modify the value that we backpropagate for the parent node (i.e. flip
     // WDL, add 1 to moves left, etc.).
     update.edge_updates = {Policy::MakeEdgeDelta(
-        idx_in_parent, update.value_delta, updated_node_value)};
+        idx_in_parent, update.value_delta, &updated_node_value)};
     backprop_heap.push_back(std::move(update));
     absl::c_push_heap(backprop_heap);
   }

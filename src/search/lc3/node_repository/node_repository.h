@@ -26,12 +26,12 @@ class NodeHandle {
   };
 
   // Struct that is used to update edges (or a given node) in the repository.
-  // `visits_to_undo` is subtracted from the edge's visits count.
-  // `agg_q_to_set` is the new Q value to set for the edge.
+  // `visits_delta` is added to the edge's visits count (can be negative).
+  // `agg_q` is the new Q value to set for the edge (if set).
   struct EdgeMutation {
     size_t edge_idx;
-    size_t visits_to_undo;
-    float agg_q_to_set;
+    int64_t visits_delta;
+    std::optional<float> agg_q;
   };
 
   enum class CertaintyState {
@@ -70,8 +70,9 @@ class NodeHandle {
   MoveCounts FetchMoveCounts() const;
   void InitializeEdges(std::span<const Move> moves, std::span<const float> p);
   void FetchEdges(EdgeDataDestination request) const;
-  void AddEdgeVisits(std::span<const uint64_t>) const;
   void UpdateEdges(std::span<const EdgeMutation>);
+  // A special case of the function above that only increments the visits.
+  void AddEdgeVisits(std::span<const uint64_t>) const;
   friend class NodeRepository;
 
  private:

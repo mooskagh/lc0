@@ -133,6 +133,8 @@ struct SearchPolicy {
 
   // Converts the ValueDelta that we backpropagate into NodeAggregates that we
   // update our node with.
+  // TODO It's cleaner to create an empty NodeAggregates and then
+  // UpdateNodeAggregate.
   static NodeHandle::NodeAggregates ValueDeltaToNodeAggregates(
       const ValueDelta& value_delta) {
     return {
@@ -166,10 +168,11 @@ struct SearchPolicy {
   }
 
   // value_delta is the value that we backpropagate.
-  // node_value is updated node value after value_delta was just applied.
+  // node_value, if provided, is updated node value after value_delta was just
+  // applied.
   static EdgeDelta MakeEdgeDelta(size_t idx_in_parent,
                                  const ValueDelta& value_delta,
-                                 const NodeHandle::NodeAggregates& node_value) {
+                                 const NodeHandle::NodeAggregates* node_value) {
     // Computes Q (to use in Q+U) from the node value.
     auto compute_q = [](const NodeHandle::NodeAggregates& node_value) -> float {
       // The value is for the parent node, so we negate it.
@@ -177,8 +180,9 @@ struct SearchPolicy {
     };
     return {
         .edge_idx = idx_in_parent,
-        .visits_to_undo = value_delta.num_visits_to_undo,
-        .agg_q_to_set = compute_q(node_value),
+        .visits_delta = static_cast<int64_t>(-value_delta.num_visits_to_undo),
+        .agg_q = node_value ? std::optional<float>{compute_q(*node_value)}
+                            : std::nullopt,
     };
   }
 

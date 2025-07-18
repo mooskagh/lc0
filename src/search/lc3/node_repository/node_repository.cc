@@ -15,7 +15,7 @@ size_t GetShardIndex(NodeKey key) {
 }
 
 struct EdgeData {
-  float q = 0.0f;
+  float q = -1.0f;
   uint64_t n = 0;
 };
 
@@ -128,8 +128,8 @@ void NodeHandle::UpdateEdges(std::span<const EdgeMutation> updates) {
   if (max_idx >= data_->edges.size()) data_->edges.resize(max_idx + 1);
   for (const EdgeMutation& update : updates) {
     EdgeData& edge = data_->edges[update.edge_idx];
-    edge.q = update.agg_q_to_set;
-    edge.n -= update.visits_to_undo;
+    if (update.agg_q) edge.q = *update.agg_q;
+    edge.n += update.visits_delta;
   }
 }
 
