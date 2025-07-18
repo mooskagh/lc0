@@ -131,21 +131,6 @@ struct SearchPolicy {
     };
   }
 
-  // Converts the ValueDelta that we backpropagate into NodeAggregates that we
-  // update our node with.
-  // TODO It's cleaner to create an empty NodeAggregates and then
-  // UpdateNodeAggregate.
-  static NodeHandle::NodeAggregates ValueDeltaToNodeAggregates(
-      const ValueDelta& value_delta) {
-    return {
-        .n = value_delta.num_visits,
-        .agg_v = value_delta.v,
-        .agg_d = value_delta.d,
-        .agg_m = value_delta.m,
-        .state = value_delta.certainty_state,
-    };
-  }
-
   static void MergeNodeUpdates(ValueDelta* dst, const ValueDelta& src) {
     dst->num_visits_to_undo += src.num_visits_to_undo;
     if (src.num_visits == 0) return;

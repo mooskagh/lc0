@@ -101,29 +101,33 @@ void SortMovesByPolicy(std::span<Move> moves, std::span<float> p) {
 
 NodeHandle::NodeAggregates BackpropWorker::UpdateLeafNode(
     NodeEvent* event, const Policy::ValueDelta& delta) {
-  NodeHandle::NodeAggregates node_value =
-      Policy::ValueDeltaToNodeAggregates(delta);
   // For the "leaf" node, in addition to initializing values like for the rest
   // of backprop, we'll need to initialize edges.
   NodeHandle node_to_update =
       env_.node_repository->GetNodeForUpdate(event->variation->key,
                                              /*create_if_missing=*/false);
   assert(node_to_update);  // Gather thread already created the node.
+  // We don't update leaf node for collisions.
+  assert(event->result_type == NodeEvent::ResultType::kNormal ||
+         event->result_type == NodeEvent::ResultType::kTerminal);
 
-  // Terminal nodes have no edges, collisions already have edges initialized.
-  if (event->result_type == NodeEvent::ResultType::kNormal) {
+  const bool is_terminal =
+      event->result_type == NodeEvent::ResultType::kTerminal;
+
+  // Terminal node may have some visits already. Normal leaf node is always
+  // empty, so no need to fetch anything;
+  NodeHandle::NodeAggregates node_value;
+  if (is_terminal) node_value = node_to_update.GetNodeAggregates();
+
+  // Terminal nodes have no edges.
+  if (!is_terminal) {
     SortMovesByPolicy(event->moves, event->p);
     node_to_update.InitializeEdges(event->moves, event->p);
-    node_to_update.SetNodeAggregates(node_value);
-    return node_value;
-  } else {
-    assert(event->result_type == NodeEvent::ResultType::kTerminal);
-    NodeHandle::NodeAggregates current_value =
-        node_to_update.GetNodeAggregates();
-    Policy::UpdateNodeAggregate(&current_value, delta);
-    node_to_update.SetNodeAggregates(current_value);
-    return current_value;
   }
+
+  Policy::UpdateNodeAggregate(&node_value, delta);
+  node_to_update.SetNodeAggregates(node_value);
+  return node_value;
 }
 
 BackpropWorker::NodeUpdate BackpropWorker::CollectSameVariationUpdates(
