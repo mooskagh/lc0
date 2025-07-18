@@ -76,6 +76,7 @@ NodeHandle::MoveCounts NodeHandle::FetchMoveCounts() const {
 
 void NodeHandle::InitializeEdges(std::span<const Move> moves,
                                  std::span<const float> p) {
+  assert(moves.size() < 256);
   if (moves.size() != p.size()) {
     throw Exception("Moves and probabilities arrays must have the same size");
   }
