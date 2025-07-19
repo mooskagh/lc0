@@ -63,20 +63,22 @@ void SearchSession::Abort() {
   watchdog_worker_.NotifyAll([](WatchdogWorker* worker) {
     worker->Stop(/* must_respond_bestmove= */ false);
   });
-  DrainPipeline();
+  // Stop all gather workers.
+  gather_workers_.NotifyAll([](GatherWorker* worker) { worker->Stop(); });
 }
+
 void SearchSession::Stop() {
   watchdog_worker_.NotifyAll([](WatchdogWorker* worker) {
     worker->Stop(/* must_respond_bestmove= */ true);
   });
-  DrainPipeline();
-}
-
-void SearchSession::DrainPipeline() {
-  // First, stop the watchdog worker.
+  // Wait for the watchdog worker to respond best move.
   watchdog_worker_.Wait();
   // Then, stop all gather workers.
   gather_workers_.NotifyAll([](GatherWorker* worker) { worker->Stop(); });
+}
+
+void SearchSession::DrainPipeline() {
+  // Wait for gather workers to stop.
   gather_workers_.Wait();
   // Then, set eval to drain mode, send sentinel, and wait for them to finish.
   eval_queue_.Drain();
@@ -85,9 +87,12 @@ void SearchSession::DrainPipeline() {
   // finish.
   backprop_queue_.Drain();
   backprop_workers_.Wait();
+
+  // If watchdog worker still happens to be alive, wait for it to finish.
+  watchdog_worker_.Wait();
 }
 
-void SearchSession::Wait() { NotImplemented(); }
+void SearchSession::Wait() { DrainPipeline(); }
 
 }  // namespace lc3
 }  // namespace lczero
