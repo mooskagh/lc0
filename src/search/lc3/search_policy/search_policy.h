@@ -150,6 +150,8 @@ struct SearchPolicy {
     value_delta->v = -value_delta->v;  // Negate v for backprop as it's a
                                        // opponent's perspective.
     value_delta->m += 1;  // Increment "moves left" for a parent node.
+    // Parent node is always non-terminal, otherwise it wouldn't have a child.
+    value_delta->certainty_state = NodeHandle::CertaintyState::kNonTerminal;
   }
 
   // value_delta is the value that we backpropagate.
@@ -165,7 +167,7 @@ struct SearchPolicy {
     };
     return {
         .edge_idx = idx_in_parent,
-        .visits_delta = static_cast<int64_t>(-value_delta.num_visits_to_undo),
+        .visits_delta = -static_cast<int64_t>(value_delta.num_visits_to_undo),
         .agg_q = node_value ? std::optional<float>{compute_q(*node_value)}
                             : std::nullopt,
     };
