@@ -23,14 +23,22 @@ struct WatchdogWorker::HashAndPosition {
 void WatchdogWorker::Stop(bool must_respond_bestmove) {
   must_respond_bestmove_.store(must_respond_bestmove,
                                std::memory_order_relaxed);
-  must_exit_.Notify();
+  absl::MutexLock lock(&must_exit_mutex_);
+  must_exit_ = true;
 }
 
 void WatchdogWorker::Run() {
   while (true) {
     if (CheckOnce()) return;  // Return if responded bestmove.
-    if (must_exit_.WaitForNotificationWithTimeout(absl::Milliseconds(10)) &&
-        !must_respond_bestmove_.load()) {
+
+    auto wait_for_exit_with_timeout = [&]() -> bool {
+      absl::MutexLock lock(&must_exit_mutex_);
+      return must_exit_mutex_.AwaitWithTimeout(
+          absl::Condition(this, &WatchdogWorker::MustExit),
+          absl::Milliseconds(10));
+    };
+
+    if (wait_for_exit_with_timeout() && !must_respond_bestmove_.load()) {
       return;
     }
   }

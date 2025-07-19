@@ -36,9 +36,13 @@ class WatchdogWorker {
   std::vector<Move> BuildPV(std::optional<HashAndPosition>) const;
   std::optional<HashAndPosition> FetchPosition(const NodeKey& key,
                                                const Position& position) const;
+  bool MustExit() const ABSL_EXCLUSIVE_LOCKS_REQUIRED(must_exit_mutex_) {
+    return must_exit_;
+  }
 
   WatchdogWorkerEnvironment env_;
-  absl::Notification must_exit_;
+  absl::Mutex must_exit_mutex_;
+  bool must_exit_{false} ABSL_GUARDED_BY(must_exit_mutex_);
   std::atomic<bool> must_respond_bestmove_{false};
 
   std::vector<Move> previous_pv_;
