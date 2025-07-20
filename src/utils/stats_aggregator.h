@@ -81,17 +81,28 @@ class ExponentialAggregator {
 
   constexpr static int kBaseTimePeriod = k16Milliseconds;
 
+  // Merges the passed metric into the live bucket, and clears it.
   template <typename T>
   void UpdateLiveStats(T&& stat);
 
+  // Returns the latest completed stats for the given time period and time in
+  // seconds since that period finished last time. If include_live_time is
+  // false, it excludes the time since the last tick.
   std::pair<Metric, float> GetCompletedStatsAndAgeSeconds(
-      TimePeriod period) const;
+      TimePeriod period, bool include_live_time = false) const;
 
-  std::pair<Metric, float> GetLiveStatsOfAtLeast(float seconds) const;
+  // Returns the live stats that have been collected for at least `seconds`
+  // seconds. Returns the stats and the time in seconds since the beginning of
+  // the covered period. If `include_live_stats` is false, it excludes the time
+  // since the last tick.
+  std::pair<Metric, float> GetLiveStatsOfAtLeast(
+      float seconds, bool include_live_stats = true) const;
 
   // Flushes the current live bucket into the exponential stats.
   // Must be called every kBaseTimePeriod seconds.
-  void Tick();
+  // Returns the largest time period that was updated by this tick (all smaller
+  // periods are also updated).
+  TimePeriod Tick();
 
  private:
   static constexpr float kPeriodSeconds = std::pow(2.0f, kBaseTimePeriod);
@@ -170,14 +181,15 @@ void ExponentialAggregator<Metric>::UpdateLiveStats(T&& stat) {
 template <typename Metric>
 std::pair<Metric, float>
 ExponentialAggregator<Metric>::GetCompletedStatsAndAgeSeconds(
-    TimePeriod period) const {
+    TimePeriod period, bool include_live_time) const {
   absl::MutexLock lock(&mutex_);
   const size_t index = period - kBaseTimePeriod;
   const float seconds_since_update =
-      kPeriodSeconds * (tick_count_ % (1ULL << index)) +
-      std::chrono::duration<float>(std::chrono::steady_clock::now() -
-                                   last_tick_time_)
-          .count();
+      kPeriodSeconds * (tick_count_ % (1ULL << index)) + include_live_time
+          ? (std::chrono::duration<float>(std::chrono::steady_clock::now() -
+                                          last_tick_time_)
+                 .count())
+          : 0.0f;
   if (index >= completed_buckets_.size()) {
     return {StatsGroup(), seconds_since_update};
   }
@@ -186,17 +198,21 @@ ExponentialAggregator<Metric>::GetCompletedStatsAndAgeSeconds(
 
 template <typename Metric>
 std::pair<Metric, float> ExponentialAggregator<Metric>::GetLiveStatsOfAtLeast(
-    float seconds) const {
+    float seconds, bool include_live_stats) const {
   absl::MutexLock lock(&live_mutex_);
-  const float seconds_since_update =
-      std::chrono::duration<float>(std::chrono::steady_clock::now() -
-                                   last_tick_time_)
-          .count();
-  seconds -= seconds_since_update;
+  float seconds_since_update = 0.0f;
+  StatsGroup result;
+  if (include_live_stats) {
+    seconds_since_update =
+        std::chrono::duration<float>(std::chrono::steady_clock::now() -
+                                     last_tick_time_)
+            .count();
+    seconds -= seconds_since_update;
+    result.MergeFrom(live_bucket_);
+  }
   size_t num_buckets = std::ceil(std::log2(seconds) - kBaseTimePeriod);
   uint64_t mask =
       (1ULL << num_buckets) + (tick_count_ & ((1ULL << num_buckets) - 1));
-  StatsGroup result = live_bucket_;
   while (mask) {
     size_t idx = std::countr_zero(mask);
     mask &= ~(1ULL << idx);
@@ -207,7 +223,7 @@ std::pair<Metric, float> ExponentialAggregator<Metric>::GetLiveStatsOfAtLeast(
 }
 
 template <typename Metric>
-void ExponentialAggregator<Metric>::Tick() {
+auto ExponentialAggregator<Metric>::Tick() -> TimePeriod {
   Metric carry;
   {
     absl::MutexLock live_lock(&live_mutex_);
@@ -220,7 +236,9 @@ void ExponentialAggregator<Metric>::Tick() {
 
   for (size_t i = 0;; ++i) {
     const uint64_t interval_size = 1ULL << i;
-    if ((tick_count_ % interval_size) != 0) break;
+    if ((tick_count_ % interval_size) != 0) {
+      return static_cast<TimePeriod>(i + kBaseTimePeriod);
+    }
     while (i >= buckets_.size()) buckets_.emplace_back();
     // We merge new into old, so it's important to swap the carry first.
     std::swap(carry, buckets_[i]);
