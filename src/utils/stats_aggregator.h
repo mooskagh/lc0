@@ -1,10 +1,14 @@
 #pragma once
 
 #include <absl/strings/str_cat.h>
+#include <absl/synchronization/mutex.h>
 
+#include <chrono>
+#include <cmath>
 #include <string>
 #include <tuple>
 #include <type_traits>
+#include <vector>
 
 namespace lczero {
 
@@ -110,11 +114,11 @@ class ExponentialAggregator {
   size_t tick_count_ ABSL_GUARDED_BY(mutex_);
 
   // Buckets for each time period, starting from kBaseTimePeriod.
-  std::vector<StatsGroup> buckets_{1} ABSL_GUARDED_BY(mutex_);
+  std::vector<Metric> buckets_{1} ABSL_GUARDED_BY(mutex_);
   std::chrono::steady_clock::time_point last_tick_time_ ABSL_GUARDED_BY(mutex_);
 
-  absl::Mutex live_mutex_;
-  StatsGroup live_bucket_ ABSL_GUARDED_BY(live_mutex_);
+  mutable absl::Mutex live_mutex_;
+  Metric live_bucket_ ABSL_GUARDED_BY(live_mutex_);
 };
 
 template <typename... StatRecords>
@@ -190,10 +194,8 @@ ExponentialAggregator<Metric>::GetCompletedStatsAndAgeSeconds(
                                           last_tick_time_)
                  .count())
           : 0.0f;
-  if (index >= completed_buckets_.size()) {
-    return {StatsGroup(), seconds_since_update};
-  }
-  return {completed_buckets_[index], seconds_since_update};
+  if (index >= buckets_.size()) return {Metric(), seconds_since_update};
+  return {buckets_[index], seconds_since_update};
 }
 
 template <typename Metric>
@@ -201,7 +203,7 @@ std::pair<Metric, float> ExponentialAggregator<Metric>::GetLiveStatsOfAtLeast(
     float seconds, bool include_live_stats) const {
   absl::MutexLock lock(&live_mutex_);
   float seconds_since_update = 0.0f;
-  StatsGroup result;
+  Metric result;
   if (include_live_stats) {
     seconds_since_update =
         std::chrono::duration<float>(std::chrono::steady_clock::now() -

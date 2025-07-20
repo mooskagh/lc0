@@ -849,6 +849,14 @@ if get_option('gtest')
     include_directories: includes, link_with: lc0_lib, dependencies: gtest
   ), args: '--gtest_output=xml:optionsparser.xml', timeout: 90)
 
+  test('StatsAggregatorTest',
+    executable('stats_aggregator_test', 'src/utils/stats_aggregator_test.cc',
+    include_directories: includes, link_with: lc0_lib, 
+    dependencies: [gtest,
+      absl.get_variable('absl_strings_dep'),
+      absl.get_variable('absl_synchronization_dep')]
+  ), args: '--gtest_output=xml:stats_aggregator.xml', timeout: 90)
+
   test('SyzygyTest',
     executable('syzygy_test', 'src/syzygy/syzygy_test.cc',
     include_directories: includes, link_with: lc0_lib, dependencies: gtest
