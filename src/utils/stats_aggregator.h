@@ -85,6 +85,9 @@ class ExponentialAggregator {
 
   constexpr static int kBaseTimePeriod = k16Milliseconds;
 
+  // Resets the aggregator, clearing all buckets and live stats.
+  void Reset();
+
   // Merges the passed metric into the live bucket, and clears it.
   template <typename T>
   void UpdateLiveStats(T&& stat);
@@ -114,7 +117,7 @@ class ExponentialAggregator {
   size_t tick_count_ ABSL_GUARDED_BY(mutex_);
 
   // Buckets for each time period, starting from kBaseTimePeriod.
-  std::vector<Metric> buckets_{1} ABSL_GUARDED_BY(mutex_);
+  std::vector<Metric> buckets_ ABSL_GUARDED_BY(mutex_);
   std::chrono::steady_clock::time_point last_tick_time_ ABSL_GUARDED_BY(mutex_);
 
   mutable absl::Mutex live_mutex_;
@@ -172,6 +175,20 @@ std::string MetricGroup<StatRecords...>::ToString() const {
       }(std::get<StatRecords>(stats_)),
       ...);
   return result;
+}
+
+template <typename Metric>
+void ExponentialAggregator<Metric>::Reset() {
+  {
+    absl::MutexLock lock(&mutex_);
+    tick_count_ = 0;
+    buckets_.clear();
+    last_tick_time_ = std::chrono::steady_clock::now();
+  }
+  {
+    absl::MutexLock live_lock(&live_mutex_);
+    live_bucket_.Reset();
+  }
 }
 
 template <typename Metric>

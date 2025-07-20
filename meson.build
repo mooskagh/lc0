@@ -248,6 +248,7 @@ deps += dependency('threads')
 if get_option('lc3')
   files += [
     'src/search/lc3/lc3_engine.cc',
+    'src/search/lc3/metrics/game_stats.cc',
     'src/search/lc3/node_repository/node_repository.cc',
     'src/search/lc3/session.cc',
     'src/search/lc3/settings.cc',
@@ -853,8 +854,8 @@ if get_option('gtest')
     executable('stats_aggregator_test', 'src/utils/stats_aggregator_test.cc',
     include_directories: includes, link_with: lc0_lib, 
     dependencies: [gtest,
-      absl.get_variable('absl_strings_dep'),
-      absl.get_variable('absl_synchronization_dep')]
+      absl.get_variable('absl_strings_dep').as_system(),
+      absl.get_variable('absl_synchronization_dep').as_system()]
   ), args: '--gtest_output=xml:stats_aggregator.xml', timeout: 90)
 
   test('SyzygyTest',

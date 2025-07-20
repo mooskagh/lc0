@@ -1,5 +1,6 @@
 #pragma once
 
+#include "search/lc3/metrics/game_stats.h"
 #include "search/lc3/session.h"
 #include "search/search.h"
 
@@ -17,6 +18,7 @@ class Lc3Engine : public SearchBase {
   void StopSearch() override;
   void AbortSearch() override;
   void WaitSearch() override;
+  void NewGame() override;
 
  private:
   void EnsureSearchStopped();
@@ -26,6 +28,7 @@ class Lc3Engine : public SearchBase {
   GameState game_state_;
   ThreadPool thread_pool_{ThreadPoolOptions{.grow_automatically = true}};
   const OptionsDict* options_;
+  GameStats game_stats_;
 };
 
 }  // namespace lc3

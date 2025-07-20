@@ -56,7 +56,10 @@ void Lc3Engine::SetPosition(const GameState& game_state) {
   EnsureSearchStopped();
   TODO("GC the node_repository_");
   game_state_ = game_state;
+  TODO("Also detect whetehr it's a new game");
 }
+
+void Lc3Engine::NewGame() { game_stats_.NewGame(); }
 
 void Lc3Engine::StartSearch(const GoParams& /* go_params */) {
   TODO("Do not ignore go_params");
