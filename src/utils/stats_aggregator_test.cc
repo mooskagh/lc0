@@ -1,24 +1,9 @@
-/*
-  This file is part of Leela Chess Zero.
-  Copyright (C) 2024 The LCZero Authors
-
-  Leela Chess is free software: you can redistribute it and/or modify
-  it under the terms of the GNU General Public License as published by
-  the Free Software Foundation, either version 3 of the License, or
-  (at your option) any later version.
-
-  Leela Chess is distributed in the hope that it will be useful,
-  but WITHOUT ANY WARRANTY; without even the implied warranty of
-  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-  GNU General Public License for more details.
-
-  You should have received a copy of the GNU General Public License
-  along with Leela Chess.  If not, see <http://www.gnu.org/licenses/>.
-*/
-
 #include "utils/stats_aggregator.h"
+
 #include <gtest/gtest.h>
+
 #include <chrono>
+#include <memory>
 #include <thread>
 
 namespace lczero {
@@ -30,11 +15,11 @@ class CounterMetric {
   CounterMetric(int count) : count_(count) {}
 
   void Reset() { count_ = 0; }
-  
+
   void MergeFrom(const CounterMetric& other) { count_ += other.count_; }
-  
+
   std::string_view name() const { return "counter"; }
-  
+
   std::string ToString() const { return std::to_string(count_); }
 
   int count() const { return count_; }
@@ -53,14 +38,14 @@ class AverageMetric {
     sum_ = 0;
     count_ = 0;
   }
-  
+
   void MergeFrom(const AverageMetric& other) {
     sum_ += other.sum_;
     count_ += other.count_;
   }
-  
+
   std::string_view name() const { return "average"; }
-  
+
   std::string ToString() const {
     if (count_ == 0) return "0";
     return std::to_string(sum_ / count_);
@@ -89,7 +74,7 @@ class MaxMetric {
     max_value_ = 0;
     has_value_ = false;
   }
-  
+
   void MergeFrom(const MaxMetric& other) {
     if (other.has_value_) {
       if (!has_value_ || other.max_value_ > max_value_) {
@@ -98,7 +83,7 @@ class MaxMetric {
       }
     }
   }
-  
+
   std::string ToString() const {
     return has_value_ ? std::to_string(max_value_) : "no_value";
   }
@@ -155,7 +140,7 @@ TEST_F(MetricGroupTest, Reset) {
 
   // Reset and verify everything is back to initial state
   group_.Reset();
-  
+
   EXPECT_EQ(group_.Get<CounterMetric>().count(), 0);
   EXPECT_EQ(group_.Get<AverageMetric>().count(), 0);
   EXPECT_FALSE(group_.Get<MaxMetric>().has_value());
@@ -177,9 +162,9 @@ TEST_F(MetricGroupTest, MergeFromGroup) {
   group_.MergeFrom(other);
 
   // Verify results
-  EXPECT_EQ(group_.Get<CounterMetric>().count(), 30); // 20 + 10
-  EXPECT_EQ(group_.Get<AverageMetric>().average(), 10.0); // (15 + 5) / 2
-  EXPECT_EQ(group_.Get<MaxMetric>().max_value(), 50.0); // max(30, 50)
+  EXPECT_EQ(group_.Get<CounterMetric>().count(), 30);      // 20 + 10
+  EXPECT_EQ(group_.Get<AverageMetric>().average(), 10.0);  // (15 + 5) / 2
+  EXPECT_EQ(group_.Get<MaxMetric>().max_value(), 50.0);    // max(30, 50)
 }
 
 TEST_F(MetricGroupTest, MergeFromSingleMetric) {
@@ -193,7 +178,7 @@ TEST_F(MetricGroupTest, MergeFromSingleMetric) {
   group_.MergeFrom(counter);
 
   // Verify result
-  EXPECT_EQ(group_.Get<CounterMetric>().count(), 35); // 20 + 15
+  EXPECT_EQ(group_.Get<CounterMetric>().count(), 35);  // 20 + 15
 }
 
 TEST_F(MetricGroupTest, ToString) {
@@ -204,12 +189,12 @@ TEST_F(MetricGroupTest, ToString) {
   group_.GetMutable<MaxMetric>()->set_value(100.0);
 
   std::string result = group_.ToString();
-  
+
   // Should contain all metric names and values
   EXPECT_NE(result.find("counter"), std::string::npos);
   EXPECT_NE(result.find("42"), std::string::npos);
   EXPECT_NE(result.find("average"), std::string::npos);
-  EXPECT_NE(result.find("15"), std::string::npos); // (10+20)/2
+  EXPECT_NE(result.find("15"), std::string::npos);  // (10+20)/2
   EXPECT_NE(result.find("100"), std::string::npos);
 }
 
@@ -217,7 +202,13 @@ TEST_F(MetricGroupTest, ToString) {
 class ExponentialAggregatorTest : public ::testing::Test {
  protected:
   using TestMetric = MetricGroup<CounterMetric, AverageMetric>;
-  ExponentialAggregator<TestMetric> aggregator_;
+
+  void SetUp() override {
+    // Create a fresh aggregator for each test to avoid state contamination
+    aggregator_ = std::make_unique<ExponentialAggregator<TestMetric>>();
+  }
+
+  std::unique_ptr<ExponentialAggregator<TestMetric>> aggregator_;
 };
 
 TEST_F(ExponentialAggregatorTest, UpdateLiveStats) {
@@ -226,14 +217,14 @@ TEST_F(ExponentialAggregatorTest, UpdateLiveStats) {
   metric.GetMutable<AverageMetric>()->add_sample(5.0);
 
   // Update live stats
-  aggregator_.UpdateLiveStats(std::move(metric));
+  aggregator_->UpdateLiveStats(std::move(metric));
 
   // The original metric should be reset after move
   EXPECT_EQ(metric.Get<CounterMetric>().count(), 0);
   EXPECT_EQ(metric.Get<AverageMetric>().count(), 0);
 
   // Get live stats to verify they were updated
-  auto [live_stats, age] = aggregator_.GetLiveStatsOfAtLeast(0.0f, true);
+  auto [live_stats, age] = aggregator_->GetLiveStatsOfAtLeast(0.0f, true);
   EXPECT_EQ(live_stats.Get<CounterMetric>().count(), 10);
   EXPECT_EQ(live_stats.Get<AverageMetric>().average(), 5.0);
 }
@@ -244,29 +235,29 @@ TEST_F(ExponentialAggregatorTest, MultipleUpdatesLiveStats) {
     TestMetric metric;
     metric.GetMutable<CounterMetric>()->set_count(i);
     metric.GetMutable<AverageMetric>()->add_sample(i * 2.0);
-    aggregator_.UpdateLiveStats(std::move(metric));
+    aggregator_->UpdateLiveStats(std::move(metric));
   }
 
   // Get live stats
-  auto [live_stats, age] = aggregator_.GetLiveStatsOfAtLeast(0.0f, true);
-  EXPECT_EQ(live_stats.Get<CounterMetric>().count(), 15); // 1+2+3+4+5
-  EXPECT_EQ(live_stats.Get<AverageMetric>().average(), 6.0); // (2+4+6+8+10)/5
+  auto [live_stats, age] = aggregator_->GetLiveStatsOfAtLeast(0.0f, true);
+  EXPECT_EQ(live_stats.Get<CounterMetric>().count(), 15);     // 1+2+3+4+5
+  EXPECT_EQ(live_stats.Get<AverageMetric>().average(), 6.0);  // (2+4+6+8+10)/5
 }
 
 TEST_F(ExponentialAggregatorTest, Tick) {
   // Add some live stats
   TestMetric metric;
   metric.GetMutable<CounterMetric>()->set_count(10);
-  aggregator_.UpdateLiveStats(std::move(metric));
+  aggregator_->UpdateLiveStats(std::move(metric));
 
   // Tick to move live stats to buckets
-  auto period = aggregator_.Tick();
-  
+  auto period = aggregator_->Tick();
+
   // Should return the base time period
   EXPECT_EQ(period, ExponentialAggregator<TestMetric>::k16Milliseconds);
 
   // Live stats should be empty after tick
-  auto [live_stats, age] = aggregator_.GetLiveStatsOfAtLeast(0.0f, true);
+  auto [live_stats, age] = aggregator_->GetLiveStatsOfAtLeast(0.0f, true);
   EXPECT_EQ(live_stats.Get<CounterMetric>().count(), 0);
 }
 
@@ -275,10 +266,10 @@ TEST_F(ExponentialAggregatorTest, MultipleTicks) {
   for (int i = 0; i < 8; ++i) {
     TestMetric metric;
     metric.GetMutable<CounterMetric>()->set_count(1);
-    aggregator_.UpdateLiveStats(std::move(metric));
-    
-    auto period = aggregator_.Tick();
-    
+    aggregator_->UpdateLiveStats(std::move(metric));
+
+    auto period = aggregator_->Tick();
+
     // First few ticks should return base period
     if (i == 0) {
       EXPECT_EQ(period, ExponentialAggregator<TestMetric>::k16Milliseconds);
@@ -290,13 +281,13 @@ TEST_F(ExponentialAggregatorTest, GetCompletedStats) {
   // Add some stats and tick to create completed buckets
   TestMetric metric;
   metric.GetMutable<CounterMetric>()->set_count(5);
-  aggregator_.UpdateLiveStats(std::move(metric));
-  aggregator_.Tick();
+  aggregator_->UpdateLiveStats(std::move(metric));
+  aggregator_->Tick();
 
   // Get completed stats for base period
-  auto [stats, age] = aggregator_.GetCompletedStatsAndAgeSeconds(
+  auto [stats, age] = aggregator_->GetCompletedStatsAndAgeSeconds(
       ExponentialAggregator<TestMetric>::k16Milliseconds, false);
-  
+
   // Age should be non-negative
   EXPECT_GE(age, 0.0f);
 }
@@ -306,17 +297,18 @@ TEST_F(ExponentialAggregatorTest, GetLiveStatsOfAtLeast) {
   TestMetric metric;
   metric.GetMutable<CounterMetric>()->set_count(10);
   metric.GetMutable<AverageMetric>()->add_sample(20.0);
-  aggregator_.UpdateLiveStats(std::move(metric));
+  aggregator_->UpdateLiveStats(std::move(metric));
 
   // Get live stats requiring at least 0 seconds (should include current)
-  auto [stats, age] = aggregator_.GetLiveStatsOfAtLeast(0.0f, true);
-  
+  auto [stats, age] = aggregator_->GetLiveStatsOfAtLeast(0.0f, true);
+
   EXPECT_EQ(stats.Get<CounterMetric>().count(), 10);
   EXPECT_EQ(stats.Get<AverageMetric>().average(), 20.0);
   EXPECT_GE(age, 0.0f);
 
   // Get live stats requiring more time than available (should be empty)
-  auto [empty_stats, empty_age] = aggregator_.GetLiveStatsOfAtLeast(1000.0f, false);
+  auto [empty_stats, empty_age] =
+      aggregator_->GetLiveStatsOfAtLeast(1000.0f, false);
   EXPECT_EQ(empty_stats.Get<CounterMetric>().count(), 0);
 }
 
@@ -324,7 +316,7 @@ TEST_F(ExponentialAggregatorTest, GetLiveStatsOfAtLeast) {
 TEST(ExponentialAggregatorTimePeriodTest, TimePeriodValues) {
   // Test that time periods have expected relative values
   using TimePeriod = ExponentialAggregator<CounterMetric>::TimePeriod;
-  
+
   EXPECT_EQ(static_cast<int>(TimePeriod::k16Milliseconds), -6);
   EXPECT_EQ(static_cast<int>(TimePeriod::k31Milliseconds), -5);
   EXPECT_EQ(static_cast<int>(TimePeriod::k1Second), 0);
@@ -338,7 +330,7 @@ class StatsAggregatorEdgeCasesTest : public ::testing::Test {};
 
 TEST_F(StatsAggregatorEdgeCasesTest, EmptyMetricGroup) {
   MetricGroup<> empty_group;
-  
+
   // Should not crash
   empty_group.Reset();
   empty_group.MergeFrom(MetricGroup<>{});
@@ -355,10 +347,10 @@ TEST_F(StatsAggregatorEdgeCasesTest, MetricWithoutToString) {
   };
 
   MetricGroup<SimpleMetric> group;
-  
+
   // Should not crash even without ToString method
   std::string str = group.ToString();
-  EXPECT_TRUE(str.empty()); // No ToString method, so empty string
+  EXPECT_TRUE(str.empty());  // No ToString method, so empty string
 }
 
 TEST_F(StatsAggregatorEdgeCasesTest, MetricWithoutName) {
@@ -371,7 +363,7 @@ TEST_F(StatsAggregatorEdgeCasesTest, MetricWithoutName) {
   };
 
   MetricGroup<UnnamedMetric> group;
-  
+
   // Should work without name method
   std::string str = group.ToString();
   EXPECT_NE(str.find("42"), std::string::npos);
@@ -387,9 +379,9 @@ TEST_F(StatsAggregatorEdgeCasesTest, IntegrationTest) {
     TestGroup metric;
     metric.GetMutable<CounterMetric>()->set_count(i + 1);
     metric.GetMutable<AverageMetric>()->add_sample((i + 1) * 10.0);
-    
+
     aggregator.UpdateLiveStats(std::move(metric));
-    
+
     if (i % 3 == 2) {  // Tick every 3 updates
       aggregator.Tick();
     }
@@ -397,7 +389,7 @@ TEST_F(StatsAggregatorEdgeCasesTest, IntegrationTest) {
 
   // Get final live stats
   auto [live_stats, age] = aggregator.GetLiveStatsOfAtLeast(0.0f, true);
-  
+
   // Should have accumulated some stats
   EXPECT_GT(live_stats.Get<CounterMetric>().count(), 0);
   EXPECT_GT(live_stats.Get<AverageMetric>().count(), 0);
