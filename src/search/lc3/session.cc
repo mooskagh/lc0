@@ -57,7 +57,7 @@ SearchSession::SearchSession(ThreadPool* thread_pool,
         .node_repository = node_repository,
         .head = &head_,
         .uci_responder = uci_responder,
-        .game_stats = game_stats_,
+        .stats = game_stats_,
     });
   });
 }

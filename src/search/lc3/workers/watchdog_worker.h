@@ -19,7 +19,7 @@ struct WatchdogWorkerEnvironment {
   NodeRepository* node_repository;
   Variation* head;
   UciResponder* uci_responder;
-  GameStats* game_stats;
+  GameStats* stats;
 };
 
 class WatchdogWorker {

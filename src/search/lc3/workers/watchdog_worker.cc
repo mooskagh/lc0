@@ -30,8 +30,8 @@ void WatchdogWorker::Stop(bool must_respond_bestmove) {
 }
 
 void WatchdogWorker::Run() {
-  const auto kTickDuration = std::chrono::microseconds(
-      env_.game_stats->live().GetResolutionMicroseconds());
+  const auto kTickDuration =
+      std::chrono::microseconds(env_.stats->live().GetResolutionMicroseconds());
   auto iteration_start = Clock::now();
 
   while (true) {
@@ -58,7 +58,7 @@ void WatchdogWorker::Run() {
       return;
     }
 
-    env_.game_stats->live().Tick();
+    env_.stats->live().Tick();
   }
 }
 
