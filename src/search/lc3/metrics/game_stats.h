@@ -12,6 +12,7 @@ namespace lc3 {
 class GameStats {
  public:
   void NewGame();
+  void NewSearchSession();
 
  private:
   struct MoveStats {
@@ -20,8 +21,8 @@ class GameStats {
   };
 
   ExponentialAggregator<SearchMetrics> live_stats_;
-  // Stats at the end of previous moves.
-  std::vector<MoveStats> previous_move_stats_;
+  // Stats at the end of previous search sessions.
+  std::vector<MoveStats> previous_search_session_stats_;
 };
 
 }  // namespace lc3

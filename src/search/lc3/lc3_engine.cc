@@ -64,9 +64,9 @@ void Lc3Engine::NewGame() { game_stats_.NewGame(); }
 void Lc3Engine::StartSearch(const GoParams& /* go_params */) {
   TODO("Do not ignore go_params");
   EnsureSearchStopped();
-  search_ = std::make_unique<SearchSession>(&thread_pool_, &node_repository_,
-                                            game_state_, backend_,
-                                            uci_responder_, options_);
+  search_ = std::make_unique<SearchSession>(
+      &thread_pool_, &node_repository_, game_state_, backend_, uci_responder_,
+      options_, &game_stats_);
 }
 
 namespace {

@@ -4,9 +4,11 @@ namespace lczero {
 namespace lc3 {
 
 void GameStats::NewGame() {
-  previous_move_stats_.clear();
+  previous_search_session_stats_.clear();
   live_stats_.Reset();
 }
+
+void GameStats::NewSearchSession() { live_stats_.Reset(); }
 
 }  // namespace lc3
 }  // namespace lczero

@@ -7,7 +7,7 @@ SearchSession::SearchSession(ThreadPool* thread_pool,
                              NodeRepository* node_repository,
                              const GameState& game_state, Backend* backend,
                              UciResponder* uci_responder,
-                             const OptionsDict* options)
+                             const OptionsDict* options, GameStats* game_stats)
     : position_tree_(
           /*key=*/NodeKey{game_state.startpos.Hash()},
           /*position=*/game_state.startpos,
@@ -17,7 +17,8 @@ SearchSession::SearchSession(ThreadPool* thread_pool,
       gather_rate_limiter_{
           .condition = {this, &SearchSession::OkToGather},
       },
-      settings_(*options) {
+      settings_(*options),
+      game_stats_(game_stats) {
   for (const auto& move : game_state.moves) {
     Position move_position = Position(head_->position, move);
     head_ = head_.make_child(
@@ -27,6 +28,7 @@ SearchSession::SearchSession(ThreadPool* thread_pool,
         /*idx_in_parent=*/kNoIdxInParent);
   }
 
+  game_stats_->NewSearchSession();
   gather_workers_.Start(thread_pool, settings_.GetNumGatherThreads(), [&]() {
     return std::make_unique<GatherWorker>(
         GatherWorkerEnvironment{.eval_sender = eval_queue_.MakeSender(),
@@ -55,6 +57,7 @@ SearchSession::SearchSession(ThreadPool* thread_pool,
         .node_repository = node_repository,
         .head = &head_,
         .uci_responder = uci_responder,
+        .game_stats = game_stats_,
     });
   });
 }

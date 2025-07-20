@@ -6,6 +6,7 @@
 #include <thread>
 #include <vector>
 
+#include "search/lc3/metrics/game_stats.h"
 #include "search/lc3/node_repository/node_repository.h"
 #include "search/lc3/search_policy/search_policy.h"
 #include "search/lc3/settings.h"
@@ -26,7 +27,8 @@ class SearchSession {
  public:
   SearchSession(ThreadPool* thread_pool, NodeRepository* node_repository,
                 const GameState& game_state, Backend* backend,
-                UciResponder* uci_responder, const OptionsDict* options);
+                UciResponder* uci_responder, const OptionsDict* options,
+                GameStats* game_stats);
 
   void Stop();
   void Abort();
@@ -60,6 +62,9 @@ class SearchSession {
   std::atomic<bool> gather_can_exit_{false};
 
   NodeEventPool node_event_pool_;
+
+  // Game stats.
+  GameStats* game_stats_;
 };
 
 }  // namespace lc3

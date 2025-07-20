@@ -13,10 +13,13 @@
 namespace lczero {
 namespace lc3 {
 
+class GameStats;
+
 struct WatchdogWorkerEnvironment {
   NodeRepository* node_repository;
   Variation* head;
   UciResponder* uci_responder;
+  GameStats* game_stats;
 };
 
 class WatchdogWorker {
