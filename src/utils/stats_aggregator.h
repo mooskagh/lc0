@@ -212,13 +212,14 @@ std::pair<Metric, float> ExponentialAggregator<Metric>::GetLiveStatsOfAtLeast(
     seconds -= seconds_since_update;
     result.MergeFrom(live_bucket_);
   }
+  if (seconds <= 0.0f) return {result, seconds_since_update};
   size_t num_buckets = std::ceil(std::log2(seconds) - kBaseTimePeriod);
   uint64_t mask =
       (1ULL << num_buckets) + (tick_count_ & ((1ULL << num_buckets) - 1));
   while (mask) {
     size_t idx = std::countr_zero(mask);
     mask &= ~(1ULL << idx);
-    result.MergeFrom(buckets_[idx]);
+    if (idx < buckets_.size()) result.MergeFrom(buckets_[idx]);
     seconds_since_update += kPeriodSeconds * (1ULL << idx);
   }
   return {result, seconds_since_update};
@@ -239,7 +240,7 @@ auto ExponentialAggregator<Metric>::Tick() -> TimePeriod {
   for (size_t i = 0;; ++i) {
     const uint64_t interval_size = 1ULL << i;
     if ((tick_count_ % interval_size) != 0) {
-      return static_cast<TimePeriod>(i + kBaseTimePeriod);
+      return static_cast<TimePeriod>((i - 1) + kBaseTimePeriod);
     }
     while (i >= buckets_.size()) buckets_.emplace_back();
     // We merge new into old, so it's important to swap the carry first.
