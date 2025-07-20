@@ -270,9 +270,31 @@ TEST_F(ExponentialAggregatorTest, MultipleTicks) {
 
     auto period = aggregator_->Tick();
 
-    // First few ticks should return base period
-    if (i == 0) {
-      EXPECT_EQ(period, ExponentialAggregator<TestMetric>::k16Milliseconds);
+    switch (i) {
+      case 0:
+        EXPECT_EQ(period, ExponentialAggregator<TestMetric>::k16Milliseconds);
+        break;
+      case 1:
+        EXPECT_EQ(period, ExponentialAggregator<TestMetric>::k31Milliseconds);
+        break;
+      case 2:
+        EXPECT_EQ(period, ExponentialAggregator<TestMetric>::k16Milliseconds);
+        break;
+      case 3:
+        EXPECT_EQ(period, ExponentialAggregator<TestMetric>::k63Milliseconds);
+        break;
+      case 4:
+        EXPECT_EQ(period, ExponentialAggregator<TestMetric>::k16Milliseconds);
+        break;
+      case 5:
+        EXPECT_EQ(period, ExponentialAggregator<TestMetric>::k31Milliseconds);
+        break;
+      case 6:
+        EXPECT_EQ(period, ExponentialAggregator<TestMetric>::k16Milliseconds);
+        break;
+      case 7:
+        EXPECT_EQ(period, ExponentialAggregator<TestMetric>::k125Milliseconds);
+        break;
     }
   }
 }
