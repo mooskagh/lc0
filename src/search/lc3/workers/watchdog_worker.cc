@@ -3,11 +3,13 @@
 #include <absl/algorithm/container.h>
 
 #include <algorithm>
+#include <iostream>
 #include <string>
 #include <vector>
 
 #include "chess/callbacks.h"
 #include "chess/position.h"
+#include "src/search/lc3/metrics/game_stats.h"
 
 namespace lczero {
 namespace lc3 {
@@ -28,19 +30,35 @@ void WatchdogWorker::Stop(bool must_respond_bestmove) {
 }
 
 void WatchdogWorker::Run() {
+  const auto kTickDuration = std::chrono::microseconds(
+      env_.game_stats->live().GetResolutionMicroseconds());
+  auto iteration_start = Clock::now();
+
   while (true) {
     if (CheckOnce()) return;  // Return if responded bestmove.
 
     auto wait_for_exit_with_timeout = [&]() -> bool {
       absl::MutexLock lock(&must_exit_mutex_);
-      return must_exit_mutex_.AwaitWithTimeout(
+      const auto elapsed = Clock::now() - iteration_start;
+      const auto remaining = kTickDuration - elapsed;
+      if (remaining <= std::chrono::milliseconds::zero()) {
+        CERR << "Warning: WatchdogWorker iteration took longer than "
+                "one tick, bankrupting timing";
+        iteration_start = Clock::now();
+        return must_exit_;
+      }
+      const bool result = must_exit_mutex_.AwaitWithTimeout(
           absl::Condition(this, &WatchdogWorker::MustExit),
-          absl::Milliseconds(10));
+          absl::FromChrono(remaining));
+      iteration_start += kTickDuration;
+      return result;
     };
 
     if (wait_for_exit_with_timeout() && !must_respond_bestmove_.load()) {
       return;
     }
+
+    env_.game_stats->live().Tick();
   }
 }
 

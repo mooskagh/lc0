@@ -14,6 +14,8 @@ class GameStats {
   void NewGame();
   void NewSearchSession();
 
+  ExponentialAggregator<SearchMetrics>& live() { return live_stats_; }
+
  private:
   struct MoveStats {
     SearchMetrics metrics;

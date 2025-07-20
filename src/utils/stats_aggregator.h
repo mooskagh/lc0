@@ -111,6 +111,10 @@ class ExponentialAggregator {
   // periods are also updated).
   TimePeriod Tick();
 
+  constexpr uint64_t GetResolutionMicroseconds() const {
+    return static_cast<uint64_t>(kPeriodSeconds * 1'000'000);
+  }
+
  private:
   static constexpr float kPeriodSeconds = std::pow(2.0f, kBaseTimePeriod);
   mutable absl::Mutex mutex_;
