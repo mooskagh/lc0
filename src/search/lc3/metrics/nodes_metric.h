@@ -16,6 +16,8 @@ struct GatherNodesMetrics {
   size_t num_gather_depth_iterations = 0;
   // Number of visits spawned from the root node.
   size_t num_visits_spawned = 0;
+
+  size_t num_nodes_touched = 0;
   // Number of nodes that were routed as collision.
   size_t num_collision_events = 0;
   // Number of visits (may be many per node) that were routed as collision.
@@ -34,6 +36,7 @@ struct GatherNodesMetrics {
     num_gather_iterations += other.num_gather_iterations;
     num_gather_depth_iterations += other.num_gather_depth_iterations;
     num_visits_spawned += other.num_visits_spawned;
+    num_nodes_touched += other.num_nodes_touched;    
     num_collision_events += other.num_collision_events;
     num_collision_visits += other.num_collision_visits;
     num_known_terminal_nodes += other.num_known_terminal_nodes;
@@ -46,16 +49,26 @@ struct GatherNodesMetrics {
   std::string ToString() const {
     return absl::StrFormat(
         "num_gather_iterations: %zu, num_gather_depth_iterations: %zu, "
-        "num_visits_spawned: %zu, num_collision_events: %zu, "
-        "num_collision_visits: %zu, num_known_terminal_nodes: %zu, "
-        "num_known_terminal_visits: %zu, num_nodes_sent_for_eval: %zu, "
-        "num_visits_sent_for_eval: %zu",
+        "num_visits_spawned: %zu, num_nodes_touched: %zu, "
+        "num_collision_events: %zu, num_collision_visits: %zu, "
+        "num_known_terminal_nodes: %zu, num_known_terminal_visits: %zu, "
+        "num_nodes_sent_for_eval: %zu, num_visits_sent_for_eval: %zu",
         num_gather_iterations, num_gather_depth_iterations, num_visits_spawned,
-        num_collision_events, num_collision_visits, num_known_terminal_nodes,
-        num_known_terminal_visits, num_nodes_sent_for_eval,
-        num_visits_sent_for_eval);
+        num_nodes_touched, num_collision_events, num_collision_visits,
+        num_known_terminal_nodes, num_known_terminal_visits,
+        num_nodes_sent_for_eval, num_visits_sent_for_eval);
   }
 };
+
+// struct EvalNodesMetrics {
+//   // Filled by the EvalWorker.
+//   size_t num_cache_hit_nodes = 0;
+//   size_t num_discovered_terminal_nodes = 0;
+//   size_t num_nn_evaluation_nodes = 0;
+        // num_known_terminal_visits, num_nodes_sent_for_eval,
+        // num_visits_sent_for_eval);
+//   }
+// };
 
 // struct EvalNodesMetrics {
 //   // Filled by the EvalWorker.

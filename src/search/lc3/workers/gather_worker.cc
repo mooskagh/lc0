@@ -50,6 +50,8 @@ void GatherWorker::GatherDescent(size_t target_batch_size) {
   // Propagate the work wave through the depth of the tree.
   for (size_t depth = 0; !work_queue_.empty(); ++depth) {
     next_depth_work_queue_.clear();
+    ++nodes_metrics_.num_gather_depth_iterations;
+    nodes_metrics_.num_nodes_touched += work_queue_.size();
     for (NodeAndBatch& item : work_queue_) ProcessNode(depth, item);
     next_depth_work_queue_.swap(work_queue_);
     env_.stats->Feed(std::move(nodes_metrics_));
