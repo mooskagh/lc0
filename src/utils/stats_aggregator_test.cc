@@ -254,7 +254,7 @@ TEST_F(ExponentialAggregatorTest, Tick) {
   auto period = aggregator_->Tick();
 
   // Should return the base time period
-  EXPECT_EQ(period, ExponentialAggregator<TestMetric>::k16Milliseconds);
+  EXPECT_EQ(period, TimePeriod::k16Milliseconds);
 
   // Live stats should be empty after tick
   auto [live_stats, age] = aggregator_->GetLiveStatsOfAtLeast(0.0f, true);
@@ -272,28 +272,28 @@ TEST_F(ExponentialAggregatorTest, MultipleTicks) {
 
     switch (i) {
       case 0:
-        EXPECT_EQ(period, ExponentialAggregator<TestMetric>::k16Milliseconds);
+        EXPECT_EQ(period, TimePeriod::k16Milliseconds);
         break;
       case 1:
-        EXPECT_EQ(period, ExponentialAggregator<TestMetric>::k31Milliseconds);
+        EXPECT_EQ(period, TimePeriod::k31Milliseconds);
         break;
       case 2:
-        EXPECT_EQ(period, ExponentialAggregator<TestMetric>::k16Milliseconds);
+        EXPECT_EQ(period, TimePeriod::k16Milliseconds);
         break;
       case 3:
-        EXPECT_EQ(period, ExponentialAggregator<TestMetric>::k63Milliseconds);
+        EXPECT_EQ(period, TimePeriod::k63Milliseconds);
         break;
       case 4:
-        EXPECT_EQ(period, ExponentialAggregator<TestMetric>::k16Milliseconds);
+        EXPECT_EQ(period, TimePeriod::k16Milliseconds);
         break;
       case 5:
-        EXPECT_EQ(period, ExponentialAggregator<TestMetric>::k31Milliseconds);
+        EXPECT_EQ(period, TimePeriod::k31Milliseconds);
         break;
       case 6:
-        EXPECT_EQ(period, ExponentialAggregator<TestMetric>::k16Milliseconds);
+        EXPECT_EQ(period, TimePeriod::k16Milliseconds);
         break;
       case 7:
-        EXPECT_EQ(period, ExponentialAggregator<TestMetric>::k125Milliseconds);
+        EXPECT_EQ(period, TimePeriod::k125Milliseconds);
         break;
     }
   }
@@ -308,7 +308,7 @@ TEST_F(ExponentialAggregatorTest, GetCompletedStats) {
 
   // Get completed stats for base period
   auto [stats, age] = aggregator_->GetCompletedStatsAndAgeSeconds(
-      ExponentialAggregator<TestMetric>::k16Milliseconds, false);
+      TimePeriod::k16Milliseconds, false);
 
   // Age should be non-negative
   EXPECT_GE(age, 0.0f);
@@ -337,8 +337,6 @@ TEST_F(ExponentialAggregatorTest, GetLiveStatsOfAtLeast) {
 // Test TimePeriod enum values
 TEST(ExponentialAggregatorTimePeriodTest, TimePeriodValues) {
   // Test that time periods have expected relative values
-  using TimePeriod = ExponentialAggregator<CounterMetric>::TimePeriod;
-
   EXPECT_EQ(static_cast<int>(TimePeriod::k16Milliseconds), -6);
   EXPECT_EQ(static_cast<int>(TimePeriod::k31Milliseconds), -5);
   EXPECT_EQ(static_cast<int>(TimePeriod::k1Second), 0);

@@ -55,35 +55,35 @@ class MetricGroup {
   std::tuple<StatRecords...> stats_;
 };
 
+enum class TimePeriod {
+  k16Milliseconds = -6,
+  k31Milliseconds,
+  k63Milliseconds,
+  k125Milliseconds,
+  k250Milliseconds,
+  k500Milliseconds,
+  k1Second = 0,
+  k2Seconds,
+  k4Seconds,
+  k8Seconds,
+  k16Seconds,
+  k32Seconds,
+  k1Minute,
+  k2Minutes,
+  k4Minutes,
+  k9Minutes,
+  k17Minutes,
+  k36Minutes,
+  k1Hour,
+  k2Hours,
+  k5Hours,
+  k9Hours,
+};
+
 template <typename Metric>
 class ExponentialAggregator {
  public:
-  enum TimePeriod {
-    k16Milliseconds = -6,
-    k31Milliseconds,
-    k63Milliseconds,
-    k125Milliseconds,
-    k250Milliseconds,
-    k500Milliseconds,
-    k1Second = 0,
-    k2Seconds,
-    k4Seconds,
-    k8Seconds,
-    k16Seconds,
-    k32Seconds,
-    k1Minute,
-    k2Minutes,
-    k4Minutes,
-    k9Minutes,
-    k17Minutes,
-    k36Minutes,
-    k1Hour,
-    k2Hours,
-    k5Hours,
-    k9Hours,
-  };
-
-  constexpr static int kBaseTimePeriod = k16Milliseconds;
+  constexpr static TimePeriod kBaseTimePeriod = TimePeriod::k16Milliseconds;
 
   // Resets the aggregator, clearing all buckets and live stats.
   void Reset();
@@ -116,7 +116,8 @@ class ExponentialAggregator {
   }
 
  private:
-  static constexpr float kPeriodSeconds = std::pow(2.0f, kBaseTimePeriod);
+  static constexpr float kPeriodSeconds =
+      std::pow(2.0f, static_cast<int>(kBaseTimePeriod));
   mutable absl::Mutex mutex_;
   size_t tick_count_ ABSL_GUARDED_BY(mutex_);
 
@@ -208,7 +209,8 @@ std::pair<Metric, float>
 ExponentialAggregator<Metric>::GetCompletedStatsAndAgeSeconds(
     TimePeriod period, bool include_live_time) const {
   absl::MutexLock lock(&mutex_);
-  const size_t index = period - kBaseTimePeriod;
+  const size_t index =
+      static_cast<int>(period) - static_cast<int>(kBaseTimePeriod);
   const float seconds_since_update =
       kPeriodSeconds * (tick_count_ % (1ULL << index)) + include_live_time
           ? (std::chrono::duration<float>(std::chrono::steady_clock::now() -
@@ -234,7 +236,8 @@ std::pair<Metric, float> ExponentialAggregator<Metric>::GetLiveStatsOfAtLeast(
     result.MergeFrom(live_bucket_);
   }
   if (seconds <= 0.0f) return {result, seconds_since_update};
-  size_t num_buckets = std::ceil(std::log2(seconds) - kBaseTimePeriod);
+  size_t num_buckets =
+      std::ceil(std::log2(seconds) - static_cast<int>(kBaseTimePeriod));
   uint64_t mask =
       (1ULL << num_buckets) + (tick_count_ & ((1ULL << num_buckets) - 1));
   while (mask) {
@@ -261,7 +264,8 @@ auto ExponentialAggregator<Metric>::Tick() -> TimePeriod {
   for (size_t i = 0;; ++i) {
     const uint64_t interval_size = 1ULL << i;
     if ((tick_count_ % interval_size) != 0) {
-      return static_cast<TimePeriod>((i - 1) + kBaseTimePeriod);
+      return static_cast<TimePeriod>((i - 1) +
+                                     static_cast<int>(kBaseTimePeriod));
     }
     while (i >= buckets_.size()) buckets_.emplace_back();
     // We merge new into old, so it's important to swap the carry first.

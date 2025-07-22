@@ -58,7 +58,11 @@ void WatchdogWorker::Run() {
       return;
     }
 
-    env_.stats->live().Tick();
+    if (env_.stats->live().Tick() == TimePeriod::k1Second) {
+      CERR << env_.stats->live()
+                  .GetCompletedStatsAndAgeSeconds(TimePeriod::k1Second)
+                  .first.ToString();
+    }
   }
 }
 

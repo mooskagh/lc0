@@ -1,5 +1,7 @@
 #pragma once
 
+#include <absl/strings/str_format.h>
+
 #include <cstddef>
 #include <cstring>
 
@@ -38,6 +40,20 @@ struct GatherNodesMetrics {
     num_known_terminal_visits += other.num_known_terminal_visits;
     num_nodes_sent_for_eval += other.num_nodes_sent_for_eval;
     num_visits_sent_for_eval += other.num_visits_sent_for_eval;
+  }
+
+  std::string_view name() const { return "gather_nodes"; }
+  std::string ToString() const {
+    return absl::StrFormat(
+        "num_gather_iterations: %zu, num_gather_depth_iterations: %zu, "
+        "num_visits_spawned: %zu, num_collision_events: %zu, "
+        "num_collision_visits: %zu, num_known_terminal_nodes: %zu, "
+        "num_known_terminal_visits: %zu, num_nodes_sent_for_eval: %zu, "
+        "num_visits_sent_for_eval: %zu",
+        num_gather_iterations, num_gather_depth_iterations, num_visits_spawned,
+        num_collision_events, num_collision_visits, num_known_terminal_nodes,
+        num_known_terminal_visits, num_nodes_sent_for_eval,
+        num_visits_sent_for_eval);
   }
 };
 
