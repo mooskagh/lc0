@@ -9,6 +9,8 @@
 
 #include "absl/cleanup/cleanup.h"
 #include "chess/gamestate.h"
+#include "search/lc3/metrics/game_stats.h"
+#include "search/lc3/metrics/nodes_metric.h"
 #include "search/lc3/node_repository/node_repository.h"
 #include "search/lc3/workers/node_event_queue.h"
 #include "utils/freelist.h"
@@ -42,11 +44,15 @@ void GatherWorker::GatherDescent(size_t target_batch_size) {
       .batch_size = target_batch_size,
   });
 
+  ++nodes_metrics_.num_gather_iterations;
+  nodes_metrics_.num_visits_spawned += target_batch_size;
+
   // Propagate the work wave through the depth of the tree.
   for (size_t depth = 0; !work_queue_.empty(); ++depth) {
     next_depth_work_queue_.clear();
     for (NodeAndBatch& item : work_queue_) ProcessNode(depth, item);
     next_depth_work_queue_.swap(work_queue_);
+    env_.stats->Feed(std::move(nodes_metrics_));
   }
 }
 

@@ -36,7 +36,8 @@ SearchSession::SearchSession(ThreadPool* thread_pool,
                                 .rate_limiter = &gather_rate_limiter_,
                                 .node_repository = node_repository,
                                 .head = &head_,
-                                .node_event_pool = &node_event_pool_});
+                                .node_event_pool = &node_event_pool_,
+                                .stats = game_stats_});
   });
   eval_workers_.Start(thread_pool, settings_.GetNumEvalThreads(), [&]() {
     return std::make_unique<EvalWorker>(EvalWorkerEnvironment{

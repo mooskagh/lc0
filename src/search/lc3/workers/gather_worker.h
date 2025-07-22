@@ -1,6 +1,7 @@
 #pragma once
 
 #include "chess/position.h"
+#include "search/lc3/metrics/nodes_metric.h"
 #include "search/lc3/node_repository/node_repository.h"
 #include "search/lc3/search_policy/search_policy.h"
 #include "search/lc3/workers/node_event_queue.h"
@@ -8,6 +9,8 @@
 
 namespace lczero {
 namespace lc3 {
+
+class GameStats;
 
 // TODO make a class.
 struct GatherRateLimiter {
@@ -27,6 +30,7 @@ struct GatherWorkerEnvironment {
   NodeRepository* node_repository;
   Variation* head;
   NodeEventPool* node_event_pool;
+  GameStats* stats;
 };
 
 class GatherWorker {
@@ -59,6 +63,7 @@ class GatherWorker {
 
   std::vector<NodeAndBatch> work_queue_;
   std::vector<NodeAndBatch> next_depth_work_queue_;
+  GatherNodesMetrics nodes_metrics_;
 };
 
 }  // namespace lc3

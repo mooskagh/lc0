@@ -16,6 +16,11 @@ class GameStats {
 
   ExponentialAggregator<SearchMetrics>& live() { return live_stats_; }
 
+  template <typename T>
+  void Feed(T&& stat) {
+    live_stats_.UpdateLiveStats(std::forward<T>(stat));
+  }
+
  private:
   struct MoveStats {
     SearchMetrics metrics;
