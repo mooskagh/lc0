@@ -1,10 +1,11 @@
-#include "utils/stats_aggregator.h"
-
 #include <gtest/gtest.h>
 
 #include <chrono>
 #include <memory>
 #include <thread>
+
+#include "utils/stats/exponential_aggregator.h"
+#include "utils/stats/metric_group.h"
 
 namespace lczero {
 
