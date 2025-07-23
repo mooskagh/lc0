@@ -46,32 +46,32 @@ class ExponentialAggregator {
   using Duration = std::chrono::nanoseconds;
   using Clock = std::chrono::steady_clock;
 
-  // Resets the aggregator, clearing all buckets and live metrics.
+  // Resets the aggregator, clearing all buckets and pending metrics.
   void Reset(Clock::time_point now = Clock::now());
 
-  // Merges the passed metric into the live bucket, and clears it.
+  // Merges the passed metric into the pending bucket, and clears it.
   template <typename T>
-  void UpdateLiveMetrics(T&& metric);
+  void RecordMetrics(T&& metric);
 
   // Returns the latest completed metrics for the given time period and duration
   // since that period finished last time. If now is nullopt, it
   // excludes the time since the last metrics flush.
-  std::pair<Metric, Duration> GetCompletedMetricsAndAge(
+  std::pair<Metric, Duration> GetBucketMetrics(
       TimePeriod period,
       std::optional<Clock::time_point> now = std::nullopt) const;
 
-  // Returns the live metrics that have been collected for at least the
+  // Returns the current metrics that have been collected for at least the
   // specified duration. Returns the metrics and the duration since the
   // beginning of the covered period. If `now` is nullopt, it excludes metrics
   // and the time since the last metrics flush.
-  std::pair<Metric, Duration> GetLiveMetricsAtLeast(
+  std::pair<Metric, Duration> GetAggregateEndingNow(
       Duration duration,
       std::optional<Clock::time_point> now = Clock::now()) const;
 
-  // Flushes the current live bucket into the exponential metrics and advances
-  // time by the elapsed duration, potentially processing multiple ticks.
-  // Returns the largest time period that was updated by this advance (all
-  // smaller periods are also updated).
+  // Flushes the current pending bucket into the exponential metrics and
+  // advances time by the elapsed duration, potentially processing multiple
+  // ticks. Returns the largest time period that was updated by this advance
+  // (all smaller periods are also updated).
   TimePeriod Advance(Clock::time_point now = Clock::now());
 
   constexpr Duration GetResolution() const { return kPeriodDuration; }
@@ -88,8 +88,8 @@ class ExponentialAggregator {
   std::vector<Metric> buckets_ ABSL_GUARDED_BY(mutex_);
   Clock::time_point last_tick_time_ ABSL_GUARDED_BY(mutex_);
 
-  mutable absl::Mutex live_mutex_ ABSL_ACQUIRED_AFTER(mutex_);
-  Metric live_bucket_ ABSL_GUARDED_BY(live_mutex_);
+  mutable absl::Mutex pending_bucket_mutex_ ABSL_ACQUIRED_AFTER(mutex_);
+  Metric pending_bucket_ ABSL_GUARDED_BY(pending_bucket_mutex_);
 };
 
 template <typename Metric>
@@ -100,20 +100,20 @@ void ExponentialAggregator<Metric>::Reset(
   buckets_.clear();
   last_tick_time_ = now;
 
-  absl::MutexLock live_lock(&live_mutex_);
-  live_bucket_.Reset();
+  absl::MutexLock pending_bucket_lock(&pending_bucket_mutex_);
+  pending_bucket_.Reset();
 }
 
 template <typename Metric>
 template <typename T>
-void ExponentialAggregator<Metric>::UpdateLiveMetrics(T&& metric) {
-  absl::MutexLock lock(&live_mutex_);
-  live_bucket_.MergeFrom(std::forward<T>(metric));
+void ExponentialAggregator<Metric>::RecordMetrics(T&& metric) {
+  absl::MutexLock lock(&pending_bucket_mutex_);
+  pending_bucket_.MergeFrom(std::forward<T>(metric));
   metric.Reset();
 }
 
 template <typename Metric>
-auto ExponentialAggregator<Metric>::GetCompletedMetricsAndAge(
+auto ExponentialAggregator<Metric>::GetBucketMetrics(
     TimePeriod period, std::optional<Clock::time_point> now) const
     -> std::pair<Metric, Duration> {
   absl::MutexLock lock(&mutex_);
@@ -128,7 +128,7 @@ auto ExponentialAggregator<Metric>::GetCompletedMetricsAndAge(
 }
 
 template <typename Metric>
-auto ExponentialAggregator<Metric>::GetLiveMetricsAtLeast(
+auto ExponentialAggregator<Metric>::GetAggregateEndingNow(
     Duration duration, std::optional<Clock::time_point> now) const
     -> std::pair<Metric, Duration> {
   Duration result_duration = Duration::zero();
@@ -159,8 +159,8 @@ auto ExponentialAggregator<Metric>::GetLiveMetricsAtLeast(
   }
 
   if (now.has_value()) {
-    absl::MutexLock live_lock(&live_mutex_);
-    result.MergeFrom(live_bucket_);
+    absl::MutexLock lock(&pending_bucket_mutex_);
+    result.MergeFrom(pending_bucket_);
   }
 
   return {result, result_duration};
@@ -176,9 +176,9 @@ auto ExponentialAggregator<Metric>::Advance(Clock::time_point now)
 
   Metric live_carry;
   {
-    absl::MutexLock live_lock(&live_mutex_);
-    live_carry = std::move(live_bucket_);
-    live_bucket_.Reset();
+    absl::MutexLock pending_bucket_lock(&pending_bucket_mutex_);
+    live_carry = std::move(pending_bucket_);
+    pending_bucket_.Reset();
   }
 
   const size_t initial_tick_count = tick_count_;

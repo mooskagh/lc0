@@ -61,7 +61,7 @@ void WatchdogWorker::Run() {
     if (env_.stats->live().Advance() == TimePeriod::k1Second) {
       CERR << MetricToString(
           env_.stats->live()
-              .GetCompletedMetricsAndAge(TimePeriod::k1Second)
+              .GetBucketMetrics(TimePeriod::k1Second)
               .first);
     }
   }

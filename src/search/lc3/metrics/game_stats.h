@@ -18,7 +18,7 @@ class GameStats {
 
   template <typename T>
   void Feed(T&& stat) {
-    live_stats_.UpdateLiveMetrics(std::forward<T>(stat));
+    live_stats_.RecordMetrics(std::forward<T>(stat));
   }
 
  private:
