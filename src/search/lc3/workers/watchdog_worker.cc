@@ -31,8 +31,7 @@ void WatchdogWorker::Stop(bool must_respond_bestmove) {
 }
 
 void WatchdogWorker::Run() {
-  const auto kTickDuration =
-      std::chrono::microseconds(env_.stats->live().GetResolutionMicroseconds());
+  const auto kTickDuration = env_.stats->live().GetResolution();
   auto iteration_start = Clock::now();
 
   while (true) {
@@ -59,10 +58,10 @@ void WatchdogWorker::Run() {
       return;
     }
 
-    if (env_.stats->live().Tick() == TimePeriod::k1Second) {
+    if (env_.stats->live().Advance() == TimePeriod::k1Second) {
       CERR << MetricToString(
           env_.stats->live()
-              .GetCompletedStatsAndAgeSeconds(TimePeriod::k1Second)
+              .GetCompletedMetricsAndAge(TimePeriod::k1Second)
               .first);
     }
   }
