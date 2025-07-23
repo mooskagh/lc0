@@ -1,7 +1,7 @@
 #pragma once
 
 #include "src/search/lc3/metrics/nodes_metric.h"
-#include "src/utils/stats/metric_group.h"
+#include "src/utils/metrics/group.h"
 
 namespace lczero {
 namespace lc3 {

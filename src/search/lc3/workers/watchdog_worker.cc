@@ -10,6 +10,7 @@
 #include "chess/callbacks.h"
 #include "chess/position.h"
 #include "src/search/lc3/metrics/game_stats.h"
+#include "src/utils/metrics/printer.h"
 
 namespace lczero {
 namespace lc3 {
@@ -59,9 +60,10 @@ void WatchdogWorker::Run() {
     }
 
     if (env_.stats->live().Tick() == TimePeriod::k1Second) {
-      CERR << env_.stats->live()
-                  .GetCompletedStatsAndAgeSeconds(TimePeriod::k1Second)
-                  .first.ToString();
+      CERR << MetricToString(
+          env_.stats->live()
+              .GetCompletedStatsAndAgeSeconds(TimePeriod::k1Second)
+              .first);
     }
   }
 }

@@ -5,6 +5,8 @@
 #include <cstddef>
 #include <cstring>
 
+#include "utils/metrics/printer.h"
+
 namespace lczero {
 namespace lc3 {
 
@@ -36,7 +38,7 @@ struct GatherNodesMetrics {
     num_gather_iterations += other.num_gather_iterations;
     num_gather_depth_iterations += other.num_gather_depth_iterations;
     num_visits_spawned += other.num_visits_spawned;
-    num_nodes_touched += other.num_nodes_touched;    
+    num_nodes_touched += other.num_nodes_touched;
     num_collision_events += other.num_collision_events;
     num_collision_visits += other.num_collision_visits;
     num_known_terminal_nodes += other.num_known_terminal_nodes;
@@ -45,18 +47,19 @@ struct GatherNodesMetrics {
     num_visits_sent_for_eval += other.num_visits_sent_for_eval;
   }
 
-  std::string_view name() const { return "gather_nodes"; }
-  std::string ToString() const {
-    return absl::StrFormat(
-        "num_gather_iterations: %zu, num_gather_depth_iterations: %zu, "
-        "num_visits_spawned: %zu, num_nodes_touched: %zu, "
-        "num_collision_events: %zu, num_collision_visits: %zu, "
-        "num_known_terminal_nodes: %zu, num_known_terminal_visits: %zu, "
-        "num_nodes_sent_for_eval: %zu, num_visits_sent_for_eval: %zu",
-        num_gather_iterations, num_gather_depth_iterations, num_visits_spawned,
-        num_nodes_touched, num_collision_events, num_collision_visits,
-        num_known_terminal_nodes, num_known_terminal_visits,
-        num_nodes_sent_for_eval, num_visits_sent_for_eval);
+  void Print(MetricPrinter& printer) const {
+    printer.StartGroup("GatherNodesMetrics");
+    printer.Print("num_gather_iterations", num_gather_iterations);
+    printer.Print("num_gather_depth_iterations", num_gather_depth_iterations);
+    printer.Print("num_visits_spawned", num_visits_spawned);
+    printer.Print("num_nodes_touched", num_nodes_touched);
+    printer.Print("num_collision_events", num_collision_events);
+    printer.Print("num_collision_visits", num_collision_visits);
+    printer.Print("num_known_terminal_nodes", num_known_terminal_nodes);
+    printer.Print("num_known_terminal_visits", num_known_terminal_visits);
+    printer.Print("num_nodes_sent_for_eval", num_nodes_sent_for_eval);
+    printer.Print("num_visits_sent_for_eval", num_visits_sent_for_eval);
+    printer.EndGroup();
   }
 };
 
@@ -65,8 +68,8 @@ struct GatherNodesMetrics {
 //   size_t num_cache_hit_nodes = 0;
 //   size_t num_discovered_terminal_nodes = 0;
 //   size_t num_nn_evaluation_nodes = 0;
-        // num_known_terminal_visits, num_nodes_sent_for_eval,
-        // num_visits_sent_for_eval);
+// num_known_terminal_visits, num_nodes_sent_for_eval,
+// num_visits_sent_for_eval);
 //   }
 // };
 

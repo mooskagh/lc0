@@ -2,6 +2,8 @@
 
 #include <absl/strings/str_cat.h>
 
+#include "utils/metrics/printer.h"
+
 namespace lczero {
 
 // Metric is a struct that implements the following interface:
@@ -40,8 +42,8 @@ class MetricGroup {
   template <typename T>
   T* GetMutable();
 
-  // Returns a string representation of the group.
-  std::string ToString() const;
+  // Calls MetricPrinter for each stat in the group.
+  void Print(MetricPrinter& printer) const;
 
  private:
   std::tuple<StatRecords...> stats_;
@@ -84,20 +86,14 @@ T* MetricGroup<StatRecords...>::GetMutable() {
 }
 
 template <typename... StatRecords>
-std::string MetricGroup<StatRecords...>::ToString() const {
-  std::string result;
+void MetricGroup<StatRecords...>::Print(MetricPrinter& printer) const {
   (
       [&](const auto& stat) {
-        if constexpr (requires { stat.ToString(); }) {
-          if (!result.empty()) absl::StrAppend(&result, "\n");
-          if constexpr (requires { stat.name(); }) {
-            absl::StrAppend(&result, stat.name(), ": ");
-          }
-          absl::StrAppend(&result, "{", stat.ToString(), "}");
+        if constexpr (requires { stat.Print(printer); }) {
+          stat.Print(printer);
         }
       }(std::get<StatRecords>(stats_)),
       ...);
-  return result;
 }
 
 }  // namespace lczero

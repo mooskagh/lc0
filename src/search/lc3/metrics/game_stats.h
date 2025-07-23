@@ -3,7 +3,7 @@
 #include <vector>
 
 #include "search/lc3/metrics/search_metrics.h"
-#include "src/utils/stats/exponential_aggregator.h"
+#include "src/utils/metrics/exponential_aggregator.h"
 
 namespace lczero {
 namespace lc3 {
