@@ -4,8 +4,9 @@
 #include <memory>
 #include <thread>
 
-#include "utils/stats/exponential_aggregator.h"
-#include "utils/stats/metric_group.h"
+#include "utils/metrics/exponential_aggregator.h"
+#include "utils/metrics/group.h"
+#include "utils/metrics/printer.h"
 
 namespace lczero {
 
@@ -19,9 +20,11 @@ class CounterMetric {
 
   void MergeFrom(const CounterMetric& other) { count_ += other.count_; }
 
-  std::string_view name() const { return "counter"; }
-
-  std::string ToString() const { return std::to_string(count_); }
+  void Print(MetricPrinter& printer) const {
+    printer.StartGroup("CounterMetric");
+    printer.Print("count", static_cast<size_t>(count_));
+    printer.EndGroup();
+  }
 
   int count() const { return count_; }
   void set_count(int count) { count_ = count; }
@@ -45,11 +48,14 @@ class AverageMetric {
     count_ += other.count_;
   }
 
-  std::string_view name() const { return "average"; }
-
-  std::string ToString() const {
-    if (count_ == 0) return "0";
-    return std::to_string(sum_ / count_);
+  void Print(MetricPrinter& printer) const {
+    printer.StartGroup("AverageMetric");
+    printer.Print("sum", std::to_string(sum_));
+    printer.Print("count", static_cast<size_t>(count_));
+    if (count_ > 0) {
+      printer.Print("average", std::to_string(sum_ / count_));
+    }
+    printer.EndGroup();
   }
 
   double average() const { return count_ > 0 ? sum_ / count_ : 0.0; }
@@ -85,8 +91,15 @@ class MaxMetric {
     }
   }
 
-  std::string ToString() const {
-    return has_value_ ? std::to_string(max_value_) : "no_value";
+  void Print(MetricPrinter& printer) const {
+    printer.StartGroup("MaxMetric");
+    if (has_value_) {
+      printer.Print("max_value", std::to_string(max_value_));
+      printer.Print("has_value", static_cast<size_t>(1));
+    } else {
+      printer.Print("has_value", static_cast<size_t>(0));
+    }
+    printer.EndGroup();
   }
 
   double max_value() const { return max_value_; }
@@ -182,21 +195,82 @@ TEST_F(MetricGroupTest, MergeFromSingleMetric) {
   EXPECT_EQ(group_.Get<CounterMetric>().count(), 35);  // 20 + 15
 }
 
-TEST_F(MetricGroupTest, ToString) {
+TEST_F(MetricGroupTest, Print) {
   // Set up data
   group_.GetMutable<CounterMetric>()->set_count(42);
   group_.GetMutable<AverageMetric>()->add_sample(10.0);
   group_.GetMutable<AverageMetric>()->add_sample(20.0);
   group_.GetMutable<MaxMetric>()->set_value(100.0);
 
-  std::string result = group_.ToString();
+  std::string result = MetricToString(group_);
 
   // Should contain all metric names and values
-  EXPECT_NE(result.find("counter"), std::string::npos);
-  EXPECT_NE(result.find("42"), std::string::npos);
-  EXPECT_NE(result.find("average"), std::string::npos);
-  EXPECT_NE(result.find("15"), std::string::npos);  // (10+20)/2
-  EXPECT_NE(result.find("100"), std::string::npos);
+  EXPECT_NE(result.find("CounterMetric"), std::string::npos);
+  EXPECT_NE(result.find("count=42"), std::string::npos);
+  EXPECT_NE(result.find("AverageMetric"), std::string::npos);
+  EXPECT_NE(result.find("average=15"), std::string::npos);  // (10+20)/2
+  EXPECT_NE(result.find("MaxMetric"), std::string::npos);
+  EXPECT_NE(result.find("max_value=100"), std::string::npos);
+}
+
+// Test MetricToString functionality
+class MetricPrinterTest : public ::testing::Test {};
+
+TEST_F(MetricPrinterTest, StringMetricPrinter) {
+  std::string output;
+  StringMetricPrinter printer(&output);
+
+  printer.StartGroup("test_group");
+  printer.Print("metric1", std::string("value1"));
+  printer.Print("metric2", std::string("42"));
+  printer.EndGroup();
+
+  EXPECT_EQ(output, "test_group={metric1=value1, metric2=42}");
+}
+
+TEST_F(MetricPrinterTest, MultipleGroups) {
+  std::string output;
+  StringMetricPrinter printer(&output);
+
+  printer.StartGroup("group1");
+  printer.Print("metric1", std::string("value1"));
+  printer.EndGroup();
+
+  printer.StartGroup("group2");
+  printer.Print("metric2", std::string("value2"));
+  printer.EndGroup();
+
+  EXPECT_EQ(output, "group1={metric1=value1}, group2={metric2=value2}");
+}
+
+TEST_F(MetricPrinterTest, EmptyGroup) {
+  std::string output;
+  StringMetricPrinter printer(&output);
+
+  printer.StartGroup("empty_group");
+  printer.EndGroup();
+
+  EXPECT_EQ(output, "empty_group={}");
+}
+
+TEST_F(MetricPrinterTest, SizeTOverload) {
+  std::string output;
+  StringMetricPrinter string_printer(&output);
+  MetricPrinter& printer = string_printer;  // Use base class interface
+
+  printer.StartGroup("test_group");
+  printer.Print("count", static_cast<size_t>(123));
+  printer.EndGroup();
+
+  EXPECT_EQ(output, "test_group={count=123}");
+}
+
+TEST_F(MetricPrinterTest, MetricToStringFunction) {
+  CounterMetric counter(123);
+  std::string result = MetricToString(counter);
+
+  EXPECT_NE(result.find("CounterMetric"), std::string::npos);
+  EXPECT_NE(result.find("123"), std::string::npos);
 }
 
 // Test ExponentialAggregator functionality
@@ -355,11 +429,11 @@ TEST_F(StatsAggregatorEdgeCasesTest, EmptyMetricGroup) {
   // Should not crash
   empty_group.Reset();
   empty_group.MergeFrom(MetricGroup<>{});
-  std::string str = empty_group.ToString();
+  std::string str = MetricToString(empty_group);
   EXPECT_TRUE(str.empty());
 }
 
-TEST_F(StatsAggregatorEdgeCasesTest, MetricWithoutToString) {
+TEST_F(StatsAggregatorEdgeCasesTest, MetricWithoutPrint) {
   class SimpleMetric {
    public:
     void Reset() { value_ = 0; }
@@ -369,9 +443,9 @@ TEST_F(StatsAggregatorEdgeCasesTest, MetricWithoutToString) {
 
   MetricGroup<SimpleMetric> group;
 
-  // Should not crash even without ToString method
-  std::string str = group.ToString();
-  EXPECT_TRUE(str.empty());  // No ToString method, so empty string
+  // Should not crash even without Print method
+  std::string str = MetricToString(group);
+  EXPECT_TRUE(str.empty());  // No Print method, so empty string
 }
 
 TEST_F(StatsAggregatorEdgeCasesTest, MetricWithoutName) {
@@ -379,14 +453,16 @@ TEST_F(StatsAggregatorEdgeCasesTest, MetricWithoutName) {
    public:
     void Reset() { value_ = 0; }
     void MergeFrom(const UnnamedMetric& other) { value_ += other.value_; }
-    std::string ToString() const { return std::to_string(value_); }
+    void Print(MetricPrinter& printer) const {
+      printer.Print("unnamed", std::to_string(value_));
+    }
     int value_ = 42;
   };
 
   MetricGroup<UnnamedMetric> group;
 
   // Should work without name method
-  std::string str = group.ToString();
+  std::string str = MetricToString(group);
   EXPECT_NE(str.find("42"), std::string::npos);
 }
 

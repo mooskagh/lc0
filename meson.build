@@ -851,7 +851,7 @@ if get_option('gtest')
   ), args: '--gtest_output=xml:optionsparser.xml', timeout: 90)
 
   test('StatsAggregatorTest',
-    executable('stats_test', 'src/utils/stats/stats_test.cc',
+    executable('stats_test', 'src/utils/metrics/stats_test.cc',
     include_directories: includes, link_with: lc0_lib, 
     dependencies: [gtest,
       absl.get_variable('absl_strings_dep').as_system(),
