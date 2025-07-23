@@ -170,7 +170,7 @@ template <typename Metric>
 auto ExponentialAggregator<Metric>::Advance(Clock::time_point now)
     -> TimePeriod {
   absl::MutexLock lock(&mutex_);
-  int num_ticks = (now - last_tick_time_) / kPeriodDuration;
+  const int num_ticks = (now - last_tick_time_) / kPeriodDuration;
   if (num_ticks <= 0) return TimePeriod::kEmpty;
   last_tick_time_ += num_ticks * kPeriodDuration;
 
@@ -181,31 +181,29 @@ auto ExponentialAggregator<Metric>::Advance(Clock::time_point now)
     live_bucket_.Reset();
   }
 
-  auto one_tick = [&](Metric& carry) -> TimePeriod {
+  const size_t initial_tick_count = tick_count_;
+
+  auto one_tick = [&](Metric& carry) {
     ++tick_count_;
-    --num_ticks;
 
     for (size_t i = 0;; ++i) {
       const uint64_t interval_size = 1ULL << i;
-      if ((tick_count_ % interval_size) != 0) {
-        return static_cast<TimePeriod>((i - 1) +
-                                       static_cast<int>(kBaseTimePeriod));
-      }
+      if ((tick_count_ % interval_size) != 0) break;
       while (i >= buckets_.size()) buckets_.emplace_back();
       // We merge new into old, so it's important to swap the carry first.
       std::swap(carry, buckets_[i]);
       carry.MergeFrom(buckets_[i]);
     }
   };
-  one_tick(live_carry);
 
-  while (num_ticks > 0) {
+  one_tick(live_carry);
+  for (int i = 1; i < num_ticks; ++i) {
     Metric empty_carry;
     one_tick(empty_carry);
   }
 
   return static_cast<TimePeriod>(
-      std::bit_width((tick_count_ ^ (tick_count_ - num_ticks)) - 1) +
+      std::bit_width(initial_tick_count ^ tick_count_) - 1 +
       static_cast<int>(kBaseTimePeriod));
 }
 
