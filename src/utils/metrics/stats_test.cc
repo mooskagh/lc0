@@ -2,6 +2,7 @@
 
 #include <chrono>
 #include <memory>
+#include <optional>
 #include <thread>
 
 #include "utils/metrics/exponential_aggregator.h"
@@ -114,6 +115,40 @@ class MaxMetric {
  private:
   double max_value_;
   bool has_value_;
+};
+
+// Optional value metric that demonstrates overshadowing behavior
+class OptionalValueMetric {
+ public:
+  OptionalValueMetric() : value_(std::nullopt) {}
+  OptionalValueMetric(double value) : value_(value) {}
+
+  void Reset() { value_ = std::nullopt; }
+
+  void MergeFrom(const OptionalValueMetric& other) {
+    // Only copy the value if the other metric has one (overshadowing behavior)
+    if (other.value_.has_value()) {
+      value_ = other.value_;
+    }
+  }
+
+  void Print(MetricPrinter& printer) const {
+    printer.StartGroup("OptionalValueMetric");
+    if (value_.has_value()) {
+      printer.Print("value", std::to_string(value_.value()));
+      printer.Print("has_value", static_cast<size_t>(1));
+    } else {
+      printer.Print("has_value", static_cast<size_t>(0));
+    }
+    printer.EndGroup();
+  }
+
+  std::optional<double> value() const { return value_; }
+  bool has_value() const { return value_.has_value(); }
+  void set_value(double value) { value_ = value; }
+
+ private:
+  std::optional<double> value_;
 };
 
 // Test MetricGroup functionality
@@ -656,6 +691,208 @@ TEST_F(ExponentialAggregatorTest,
 
   // Should contain metrics from all ticks, but not live data.
   EXPECT_EQ(metrics.Get<CounterMetric>().count(), 1 + 2 + 3);
+}
+
+// Test overshadowing behavior for optional value metrics
+class ExponentialAggregatorOvershadowTest : public ::testing::Test {
+ protected:
+  using TestMetric = MetricGroup<OptionalValueMetric>;
+  using TestAggregator = ExponentialAggregator<TestMetric>;
+
+  void SetUp() override {
+    aggregator_ = std::make_unique<TestAggregator>();
+    start_time_ = TestAggregator::Clock::now();
+    aggregator_->Reset(start_time_);
+  }
+
+  std::unique_ptr<TestAggregator> aggregator_;
+  TestAggregator::Clock::time_point start_time_;
+};
+
+TEST_F(ExponentialAggregatorOvershadowTest, LiveOvershadowsCompletedBuckets) {
+  // Set up completed bucket with a value
+  TestMetric metric1;
+  metric1.GetMutable<OptionalValueMetric>()->set_value(10.0);
+  aggregator_->UpdateLiveMetrics(std::move(metric1));
+
+  // Advance to create a completed bucket
+  auto tick_time = start_time_ + aggregator_->GetResolution();
+  aggregator_->Advance(tick_time);
+
+  // Add live metric with different value (should overshadow)
+  TestMetric metric2;
+  metric2.GetMutable<OptionalValueMetric>()->set_value(20.0);
+  aggregator_->UpdateLiveMetrics(std::move(metric2));
+
+  // Get metrics that include both completed and live
+  auto current_time = tick_time + aggregator_->GetResolution() / 2;
+  auto [metrics, age] = aggregator_->GetLiveMetricsAtLeast(
+      aggregator_->GetResolution(), current_time);
+
+  // Live metric should overshadow the completed bucket value
+  EXPECT_TRUE(metrics.Get<OptionalValueMetric>().has_value());
+  EXPECT_EQ(metrics.Get<OptionalValueMetric>().value().value(), 20.0);
+}
+
+TEST_F(ExponentialAggregatorOvershadowTest,
+       SmallerBucketsOvershadowLargerBuckets) {
+  // Create multiple ticks with different values, where later (smaller) buckets
+  // should overshadow earlier (larger) buckets
+
+  // Tick 1: Set value to 100.0
+  TestMetric metric1;
+  metric1.GetMutable<OptionalValueMetric>()->set_value(100.0);
+  aggregator_->UpdateLiveMetrics(std::move(metric1));
+  auto tick_time1 = start_time_ + aggregator_->GetResolution();
+  aggregator_->Advance(tick_time1);
+
+  // Tick 2: Set value to 200.0 (this will go into k31Milliseconds bucket)
+  TestMetric metric2;
+  metric2.GetMutable<OptionalValueMetric>()->set_value(200.0);
+  aggregator_->UpdateLiveMetrics(std::move(metric2));
+  auto tick_time2 = tick_time1 + aggregator_->GetResolution();
+  aggregator_->Advance(tick_time2);
+
+  // Tick 3: No value (empty bucket)
+  TestMetric metric3;
+  aggregator_->UpdateLiveMetrics(std::move(metric3));
+  auto tick_time3 = tick_time2 + aggregator_->GetResolution();
+  aggregator_->Advance(tick_time3);
+
+  // Tick 4: Set value to 300.0 (this will update k63Milliseconds bucket)
+  TestMetric metric4;
+  metric4.GetMutable<OptionalValueMetric>()->set_value(300.0);
+  aggregator_->UpdateLiveMetrics(std::move(metric4));
+  auto tick_time4 = tick_time3 + aggregator_->GetResolution();
+  aggregator_->Advance(tick_time4);
+
+  // Request metrics for k63Milliseconds period
+  auto [metrics_4ticks, age_4ticks] =
+      aggregator_->GetCompletedMetricsAndAge(TimePeriod::k63Milliseconds);
+
+  // The k63Milliseconds bucket should contain the value from tick 4 (300.0)
+  // which overshadows the earlier values
+  EXPECT_TRUE(metrics_4ticks.Get<OptionalValueMetric>().has_value());
+  EXPECT_EQ(metrics_4ticks.Get<OptionalValueMetric>().value().value(), 300.0);
+
+  // Request metrics for k31Milliseconds period
+  auto [metrics_2ticks, age_2ticks] =
+      aggregator_->GetCompletedMetricsAndAge(TimePeriod::k31Milliseconds);
+
+  // The k31Milliseconds bucket should retain the value from tick 2 (200.0)
+  // because an empty tick (tick 3) does not overshadow a non-empty one.
+  EXPECT_TRUE(metrics_2ticks.Get<OptionalValueMetric>().has_value());
+  EXPECT_EQ(metrics_2ticks.Get<OptionalValueMetric>().value().value(), 300.0);
+}
+
+TEST_F(ExponentialAggregatorOvershadowTest,
+       EmptyBucketOvershadowsNonEmptyBucket) {
+  // Test that an empty bucket (no value) overshadows a non-empty bucket
+
+  // Tick 1: Set value to 42.0
+  TestMetric metric1;
+  metric1.GetMutable<OptionalValueMetric>()->set_value(42.0);
+  aggregator_->UpdateLiveMetrics(std::move(metric1));
+  auto tick_time1 = start_time_ + aggregator_->GetResolution();
+  aggregator_->Advance(tick_time1);
+
+  // Tick 2: Empty metric (no value set)
+  TestMetric metric2;  // Default constructed, no value
+  aggregator_->UpdateLiveMetrics(std::move(metric2));
+  auto tick_time2 = tick_time1 + aggregator_->GetResolution();
+  aggregator_->Advance(tick_time2);
+
+  // Request metrics for k31Milliseconds period (covers both ticks)
+  auto [metrics, age] =
+      aggregator_->GetCompletedMetricsAndAge(TimePeriod::k31Milliseconds);
+
+  // The result should retain the value from tick 1 (42.0) because the empty
+  // bucket from tick 2 does not overshadow a non-empty one.
+  EXPECT_TRUE(metrics.Get<OptionalValueMetric>().has_value());
+  EXPECT_EQ(metrics.Get<OptionalValueMetric>().value().value(), 42.0);
+}
+
+TEST_F(ExponentialAggregatorOvershadowTest,
+       LiveEmptyOvershadowsCompletedNonEmpty) {
+  // Test that live empty metric overshadows completed non-empty buckets
+
+  // Set up completed bucket with a value
+  TestMetric metric1;
+  metric1.GetMutable<OptionalValueMetric>()->set_value(99.0);
+  aggregator_->UpdateLiveMetrics(std::move(metric1));
+
+  // Advance to create a completed bucket
+  auto tick_time = start_time_ + aggregator_->GetResolution();
+  aggregator_->Advance(tick_time);
+
+  // Add empty live metric (no value set)
+  TestMetric metric2;  // Default constructed, no value
+  aggregator_->UpdateLiveMetrics(std::move(metric2));
+
+  // Get metrics that include both completed and live
+  auto current_time = tick_time + aggregator_->GetResolution() / 2;
+  auto [metrics, age] = aggregator_->GetLiveMetricsAtLeast(
+      aggregator_->GetResolution(), current_time);
+
+  // Live empty metric should NOT overshadow the completed bucket value
+  EXPECT_TRUE(metrics.Get<OptionalValueMetric>().has_value());
+  EXPECT_EQ(metrics.Get<OptionalValueMetric>().value().value(), 99.0);
+}
+
+TEST_F(ExponentialAggregatorOvershadowTest,
+       GetLiveMetricsAtLeast_OvershadowingOrder) {
+  // Test the order of overshadowing when getting live metrics across multiple
+  // buckets
+
+  // Tick 1: Value 1.0 -> goes to k16Milliseconds bucket
+  TestMetric metric1;
+  metric1.GetMutable<OptionalValueMetric>()->set_value(1.0);
+  aggregator_->UpdateLiveMetrics(std::move(metric1));
+  auto tick_time1 = start_time_ + aggregator_->GetResolution();
+  aggregator_->Advance(tick_time1);
+
+  // Tick 2: Empty -> merges into k31Milliseconds bucket
+  TestMetric metric2;
+  aggregator_->UpdateLiveMetrics(std::move(metric2));
+  auto tick_time2 = tick_time1 + aggregator_->GetResolution();
+  aggregator_->Advance(tick_time2);
+
+  // Tick 3: Value 3.0 -> goes to k16Milliseconds bucket
+  TestMetric metric3;
+  metric3.GetMutable<OptionalValueMetric>()->set_value(3.0);
+  aggregator_->UpdateLiveMetrics(std::move(metric3));
+  auto tick_time3 = tick_time2 + aggregator_->GetResolution();
+  aggregator_->Advance(tick_time3);
+
+  // Tick 4: Empty -> merges into k63Milliseconds bucket (and overshadows
+  // everything)
+  TestMetric metric4;
+  aggregator_->UpdateLiveMetrics(std::move(metric4));
+  auto tick_time4 = tick_time3 + aggregator_->GetResolution();
+  aggregator_->Advance(tick_time4);
+
+  // Add live metric with value
+  TestMetric live_metric;
+  live_metric.GetMutable<OptionalValueMetric>()->set_value(999.0);
+  aggregator_->UpdateLiveMetrics(std::move(live_metric));
+
+  // Get metrics for duration that spans all ticks plus live
+  auto current_time = tick_time4 + aggregator_->GetResolution() / 2;
+  auto [metrics, age] = aggregator_->GetLiveMetricsAtLeast(
+      aggregator_->GetResolution() * 4, current_time);
+
+  // Live metric should overshadow all buckets
+  EXPECT_TRUE(metrics.Get<OptionalValueMetric>().has_value());
+  EXPECT_EQ(metrics.Get<OptionalValueMetric>().value().value(), 999.0);
+
+  // Test without live metrics (should get empty due to tick 4 overshadowing)
+  auto [metrics_no_live, age_no_live] = aggregator_->GetLiveMetricsAtLeast(
+      aggregator_->GetResolution() * 4, std::nullopt);
+
+  // Should retain the last non-empty value (3.0) because empty ticks do not
+  // overshadow previous non-empty values.
+  EXPECT_TRUE(metrics_no_live.Get<OptionalValueMetric>().has_value());
+  EXPECT_EQ(metrics_no_live.Get<OptionalValueMetric>().value().value(), 3.0);
 }
 
 // Test TimePeriod enum values
