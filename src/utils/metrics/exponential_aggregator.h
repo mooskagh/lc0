@@ -5,6 +5,7 @@
 
 #include <chrono>
 #include <cmath>
+#include <optional>
 #include <string>
 #include <tuple>
 #include <type_traits>
@@ -43,30 +44,34 @@ class ExponentialAggregator {
   constexpr static TimePeriod kBaseTimePeriod = TimePeriod::k16Milliseconds;
 
   // Resets the aggregator, clearing all buckets and live stats.
-  void Reset();
+  void Reset(std::chrono::steady_clock::time_point now =
+                 std::chrono::steady_clock::now());
 
   // Merges the passed metric into the live bucket, and clears it.
   template <typename T>
   void UpdateLiveStats(T&& stat);
 
   // Returns the latest completed stats for the given time period and time in
-  // seconds since that period finished last time. If include_live_time is
-  // false, it excludes the time since the last tick.
+  // seconds since that period finished last time. If now is nullopt, it
+  // excludes the time since the last metrics flush.
   std::pair<Metric, float> GetCompletedStatsAndAgeSeconds(
-      TimePeriod period, bool include_live_time = false) const;
+      TimePeriod period,
+      std::optional<std::chrono::steady_clock::time_point> now =
+          std::nullopt) const;
 
   // Returns the live stats that have been collected for at least `seconds`
   // seconds. Returns the stats and the time in seconds since the beginning of
-  // the covered period. If `include_live_stats` is false, it excludes the time
-  // since the last tick.
+  // the covered period. If `now` is nullopt, it excludes stats and the time
+  // since the last metrics flush.
   std::pair<Metric, float> GetLiveStatsOfAtLeast(
-      float seconds, bool include_live_stats = true) const;
+      float seconds, std::optional<std::chrono::steady_clock::time_point> now =
+                         std::chrono::steady_clock::now()) const;
 
   // Flushes the current live bucket into the exponential stats.
-  // Must be called every kBaseTimePeriod seconds.
   // Returns the largest time period that was updated by this tick (all smaller
   // periods are also updated).
-  TimePeriod Tick();
+  TimePeriod Tick(std::chrono::steady_clock::time_point now =
+                      std::chrono::steady_clock::now());
 
   constexpr uint64_t GetResolutionMicroseconds() const {
     return static_cast<uint64_t>(kPeriodSeconds * 1'000'000);
@@ -86,15 +91,14 @@ class ExponentialAggregator {
   Metric live_bucket_ ABSL_GUARDED_BY(live_mutex_);
 };
 
-
-
 template <typename Metric>
-void ExponentialAggregator<Metric>::Reset() {
+void ExponentialAggregator<Metric>::Reset(
+    std::chrono::steady_clock::time_point now) {
   {
     absl::MutexLock lock(&mutex_);
     tick_count_ = 0;
     buckets_.clear();
-    last_tick_time_ = std::chrono::steady_clock::now();
+    last_tick_time_ = now;
   }
   {
     absl::MutexLock live_lock(&live_mutex_);
@@ -113,50 +117,62 @@ void ExponentialAggregator<Metric>::UpdateLiveStats(T&& stat) {
 template <typename Metric>
 std::pair<Metric, float>
 ExponentialAggregator<Metric>::GetCompletedStatsAndAgeSeconds(
-    TimePeriod period, bool include_live_time) const {
+    TimePeriod period,
+    std::optional<std::chrono::steady_clock::time_point> now) const {
   absl::MutexLock lock(&mutex_);
   const size_t index =
       static_cast<int>(period) - static_cast<int>(kBaseTimePeriod);
   const float seconds_since_update =
-      kPeriodSeconds * (tick_count_ % (1ULL << index)) + include_live_time
-          ? (std::chrono::duration<float>(std::chrono::steady_clock::now() -
-                                          last_tick_time_)
-                 .count())
-          : 0.0f;
+      kPeriodSeconds * (tick_count_ % (1ULL << index)) +
+      (now.has_value()
+           ? (std::chrono::duration<float>(now.value() - last_tick_time_)
+                  .count())
+           : 0.0f);
   if (index >= buckets_.size()) return {Metric(), seconds_since_update};
   return {buckets_[index], seconds_since_update};
 }
 
 template <typename Metric>
 std::pair<Metric, float> ExponentialAggregator<Metric>::GetLiveStatsOfAtLeast(
-    float seconds, bool include_live_stats) const {
-  absl::MutexLock lock(&live_mutex_);
-  float seconds_since_update = 0.0f;
+    float seconds,
+    std::optional<std::chrono::steady_clock::time_point> now) const {
+  float result_seconds = 0.0f;
   Metric result;
-  if (include_live_stats) {
-    seconds_since_update =
-        std::chrono::duration<float>(std::chrono::steady_clock::now() -
-                                     last_tick_time_)
-            .count();
-    seconds -= seconds_since_update;
+
+  {
+    absl::MutexLock lock(&mutex_);
+    if (now.has_value()) {
+      float seconds_since_update =
+          std::chrono::duration<float>(now.value() - last_tick_time_).count();
+      seconds -= seconds_since_update;
+      result_seconds += seconds_since_update;
+    }
+
+    if (seconds > 0.0f) {
+      size_t num_buckets =
+          std::ceil(std::log2(seconds) - static_cast<int>(kBaseTimePeriod));
+      uint64_t mask =
+          (1ULL << num_buckets) + (tick_count_ & ((1ULL << num_buckets) - 1));
+      while (mask) {
+        size_t idx = std::countr_zero(mask);
+        mask &= ~(1ULL << idx);
+        if (idx < buckets_.size()) result.MergeFrom(buckets_[idx]);
+        result_seconds += kPeriodSeconds * (1ULL << idx);
+      }
+    }
+  }
+
+  if (now.has_value()) {
+    absl::MutexLock live_lock(&live_mutex_);
     result.MergeFrom(live_bucket_);
   }
-  if (seconds <= 0.0f) return {result, seconds_since_update};
-  size_t num_buckets =
-      std::ceil(std::log2(seconds) - static_cast<int>(kBaseTimePeriod));
-  uint64_t mask =
-      (1ULL << num_buckets) + (tick_count_ & ((1ULL << num_buckets) - 1));
-  while (mask) {
-    size_t idx = std::countr_zero(mask);
-    mask &= ~(1ULL << idx);
-    if (idx < buckets_.size()) result.MergeFrom(buckets_[idx]);
-    seconds_since_update += kPeriodSeconds * (1ULL << idx);
-  }
-  return {result, seconds_since_update};
+
+  return {result, result_seconds};
 }
 
 template <typename Metric>
-auto ExponentialAggregator<Metric>::Tick() -> TimePeriod {
+auto ExponentialAggregator<Metric>::Tick(
+    std::chrono::steady_clock::time_point now) -> TimePeriod {
   Metric carry;
   {
     absl::MutexLock live_lock(&live_mutex_);
@@ -165,7 +181,7 @@ auto ExponentialAggregator<Metric>::Tick() -> TimePeriod {
   }
   absl::MutexLock lock(&mutex_);
   tick_count_++;
-  last_tick_time_ = std::chrono::steady_clock::now();
+  last_tick_time_ = now;
 
   for (size_t i = 0;; ++i) {
     const uint64_t interval_size = 1ULL << i;
