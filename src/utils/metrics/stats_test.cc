@@ -368,7 +368,7 @@ TEST_F(ExponentialAggregatorTest, Advance) {
   aggregator_->UpdateLiveMetrics(std::move(metric));
 
   // Advance to move live metrics to buckets
-  auto tick_time = start_time_ + std::chrono::milliseconds(16);
+  auto tick_time = start_time_ + aggregator_->GetResolution();
   auto period = aggregator_->Advance(tick_time);
 
   // Should return the base time period
@@ -383,65 +383,90 @@ TEST_F(ExponentialAggregatorTest, Advance) {
 TEST_F(ExponentialAggregatorTest, MultipleAdvances) {
   // Add metrics and tick multiple times to test bucket management
   auto current_time = start_time_;
-  for (int i = 0; i < 8; ++i) {
+  for (const auto expected_period : {
+           TimePeriod::k16Milliseconds,
+           TimePeriod::k31Milliseconds,
+           TimePeriod::k16Milliseconds,
+           TimePeriod::k63Milliseconds,
+           TimePeriod::k16Milliseconds,
+           TimePeriod::k31Milliseconds,
+           TimePeriod::k16Milliseconds,
+           TimePeriod::k125Milliseconds,
+       }) {
     TestMetric metric;
     metric.GetMutable<CounterMetric>()->set_count(1);
     aggregator_->UpdateLiveMetrics(std::move(metric));
 
-    current_time += std::chrono::milliseconds(16);
+    current_time += aggregator_->GetResolution();
     auto period = aggregator_->Advance(current_time);
 
-    switch (i) {
-      case 0:
-        EXPECT_EQ(period, TimePeriod::k16Milliseconds);
-        break;
-      case 1:
-        EXPECT_EQ(period, TimePeriod::k31Milliseconds);
-        break;
-      case 2:
-        EXPECT_EQ(period, TimePeriod::k16Milliseconds);
-        break;
-      case 3:
-        EXPECT_EQ(period, TimePeriod::k63Milliseconds);
-        break;
-      case 4:
-        EXPECT_EQ(period, TimePeriod::k16Milliseconds);
-        break;
-      case 5:
-        EXPECT_EQ(period, TimePeriod::k31Milliseconds);
-        break;
-      case 6:
-        EXPECT_EQ(period, TimePeriod::k16Milliseconds);
-        break;
-      case 7:
-        EXPECT_EQ(period, TimePeriod::k125Milliseconds);
-        break;
-    }
+    EXPECT_EQ(period, expected_period);
   }
 }
 
 TEST_F(ExponentialAggregatorTest, GetCompletedMetrics) {
-  // Add some metrics and tick to create completed buckets
-  TestMetric metric;
-  metric.GetMutable<CounterMetric>()->set_count(5);
-  aggregator_->UpdateLiveMetrics(std::move(metric));
-  auto tick_time = start_time_ + std::chrono::milliseconds(16);
-  aggregator_->Advance(tick_time);
+  auto resolution = aggregator_->GetResolution();
+  auto current_time = start_time_;
 
-  // Get completed metrics for base period with time
-  auto current_time = tick_time + std::chrono::milliseconds(10);
-  auto [metrics, age] = aggregator_->GetCompletedMetricsAndAge(
-      TimePeriod::k16Milliseconds, current_time);
+  // Tick 1: Push count of 5
+  TestMetric m1;
+  m1.GetMutable<CounterMetric>()->set_count(5);
+  aggregator_->UpdateLiveMetrics(std::move(m1));
+  current_time += resolution;
+  aggregator_->Advance(current_time);
 
-  // Age should be non-negative
-  EXPECT_GE(age.count(), 0);
+  // Tick 2: Push count of 10
+  TestMetric m2;
+  m2.GetMutable<CounterMetric>()->set_count(10);
+  aggregator_->UpdateLiveMetrics(std::move(m2));
+  current_time += resolution;
+  aggregator_->Advance(current_time);
 
-  // Get completed metrics without time (should exclude live time)
-  auto [metrics_no_time, age_no_time] = aggregator_->GetCompletedMetricsAndAge(
-      TimePeriod::k16Milliseconds, std::nullopt);
+  // Tick 3: Push count of 4
+  TestMetric m3;
+  m3.GetMutable<CounterMetric>()->set_count(4);
+  aggregator_->UpdateLiveMetrics(std::move(m3));
+  current_time += resolution;
+  aggregator_->Advance(current_time);
 
-  // Age without live time should be less than or equal to age with live time
-  EXPECT_LE(age_no_time, age);
+  // Live data: Push count of 7, do not advance
+  TestMetric m4;
+  m4.GetMutable<CounterMetric>()->set_count(7);
+  aggregator_->UpdateLiveMetrics(std::move(m4));
+  auto final_time = current_time + resolution / 2;
+
+  // --- Check k16Milliseconds bucket (last completed tick) ---
+  {
+    // With live time: age should be time since last tick + live duration
+    auto [metrics, age] = aggregator_->GetCompletedMetricsAndAge(
+        TimePeriod::k16Milliseconds, final_time);
+    EXPECT_EQ(metrics.Get<CounterMetric>().count(), 4);
+    EXPECT_EQ(age, resolution / 2);
+
+    // Without live time: age should be 0 as we are at the exact tick boundary
+    auto [metrics_no_live, age_no_live] =
+        aggregator_->GetCompletedMetricsAndAge(TimePeriod::k16Milliseconds,
+                                               std::nullopt);
+    EXPECT_EQ(metrics_no_live.Get<CounterMetric>().count(), 4);
+    EXPECT_EQ(age_no_live.count(), 0);
+  }
+
+  // --- Check k31Milliseconds bucket (first two ticks merged) ---
+  {
+    // With live time: age should be time since bucket completion + live
+    // duration
+    auto [metrics, age] = aggregator_->GetCompletedMetricsAndAge(
+        TimePeriod::k31Milliseconds, final_time);
+    EXPECT_EQ(metrics.Get<CounterMetric>().count(), 5 + 10);
+    EXPECT_EQ(age, resolution + resolution / 2);
+
+    // Without live time: age should be time since bucket completion
+    auto [metrics_no_live, age_no_live] =
+        aggregator_->GetCompletedMetricsAndAge(TimePeriod::k31Milliseconds,
+                                               std::nullopt);
+    EXPECT_EQ(metrics_no_live.Get<CounterMetric>().count(), 5 + 10);
+    EXPECT_EQ(age_no_live, resolution);
+  }
 }
 
 TEST_F(ExponentialAggregatorTest, GetLiveMetricsOfAtLeast) {
@@ -451,7 +476,7 @@ TEST_F(ExponentialAggregatorTest, GetLiveMetricsOfAtLeast) {
   metric.GetMutable<AverageMetric>()->add_sample(20.0);
   aggregator_->UpdateLiveMetrics(std::move(metric));
 
-  auto current_time = start_time_ + std::chrono::milliseconds(10);
+  auto current_time = start_time_ + aggregator_->GetResolution() / 2;
 
   // Get live metrics requiring at least 0 seconds (should include current)
   auto [metrics, age] = aggregator_->GetLiveMetricsAtLeast(
@@ -469,7 +494,7 @@ TEST_F(ExponentialAggregatorTest, GetLiveMetricsOfAtLeast) {
 
 TEST_F(ExponentialAggregatorTest, Advance_TimeDifferenceSmallerThanTick) {
   // Advance with a time difference smaller than one tick.
-  auto tick_time = start_time_ + std::chrono::milliseconds(10);
+  auto tick_time = start_time_ + aggregator_->GetResolution() / 2;
   auto period = aggregator_->Advance(tick_time);
 
   // No tick should have occurred.
@@ -507,15 +532,15 @@ TEST_F(ExponentialAggregatorTest, GetLiveMetricsAtLeast_DurationLessThanTick) {
   metric.GetMutable<CounterMetric>()->set_count(10);
   aggregator_->UpdateLiveMetrics(std::move(metric));
 
-  auto current_time = start_time_ + std::chrono::milliseconds(10);
+  auto current_time = start_time_ + aggregator_->GetResolution() / 2;
 
   // Get live metrics with a duration less than a tick.
   auto [metrics, age] = aggregator_->GetLiveMetricsAtLeast(
-      std::chrono::milliseconds(5), current_time);
+      aggregator_->GetResolution() / 4, current_time);
 
   // Should still return the live metrics.
   EXPECT_EQ(metrics.Get<CounterMetric>().count(), 10);
-  EXPECT_GE(age.count(), std::chrono::milliseconds(10).count());
+  EXPECT_GE(age.count(), (aggregator_->GetResolution() / 2).count());
 }
 
 TEST_F(ExponentialAggregatorTest, GetLiveMetricsAtLeast_AcrossTicks) {
@@ -969,7 +994,7 @@ TEST_F(MetricsAggregatorEdgeCasesTest, IntegrationTest) {
     aggregator.UpdateLiveMetrics(std::move(metric));
 
     if (i % 3 == 2) {  // Advance every 3 updates
-      current_time += std::chrono::milliseconds(16);
+      current_time += aggregator.GetResolution();
       aggregator.Advance(current_time);
     }
   }
