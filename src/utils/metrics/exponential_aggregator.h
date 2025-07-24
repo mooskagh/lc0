@@ -39,6 +39,16 @@ enum class TimePeriod {
   k9Hours,
 };
 
+// ExponentialAggregator metrics over exponentially increasing time periods.
+//
+// The template parameter `Metric` must satisfy the following requirements:
+// * It must have a `Reset()` method that clears its state.
+// * It must have a `MergeFrom(const Metric& other)` method to merge another
+//  metric into itself.
+// * It must behave like a monoid:
+//   * Merging with a default-constructed (empty) metric is a no-op.
+//   * The `MergeFrom` operation must be associative. It does not need to be
+//     commutative.
 template <typename Metric>
 class ExponentialAggregator {
  public:
@@ -53,8 +63,8 @@ class ExponentialAggregator {
   template <typename T>
   void RecordMetrics(T&& metric);
 
-  // Returns the latest completed metrics for the given time period and duration
-  // since that period finished last time. If now is nullopt, it
+  // Returns the latest completed metrics bucket for the given time period and
+  // duration since that period finished last time. If now is nullopt, it
   // excludes the time since the last metrics flush.
   std::pair<Metric, Duration> GetBucketMetrics(
       TimePeriod period,
@@ -81,9 +91,24 @@ class ExponentialAggregator {
       std::chrono::duration_cast<Duration>(std::chrono::duration<double>(
           std::pow(2.0f, static_cast<int>(kBaseTimePeriod))));
 
+  static size_t GetBucketIndex(TimePeriod period) {
+    return static_cast<size_t>(period) - static_cast<size_t>(kBaseTimePeriod);
+  }
+
+  // The aggregation strategy is analogous to a binary counter. `tick_count_`
+  // represents the counter's value, and the `buckets_` array corresponds to its
+  // bits, each covering an exponentially larger time period.
+  //
+  // Advancing time increments `tick_count_`. When a bit flips from 1 to 0,
+  // its bucket's metric is merged (the "carry") into the next higher bucket.
+  //
+  // Note that buckets are never empty. A bucket whose corresponding bit in
+  // `tick_count_` is '0' simply holds the last complete metric for its time
+  // period. This ensures that a valid, historical metric is always available
+  // for the bucket query.
+
   mutable absl::Mutex mutex_;
   size_t tick_count_ ABSL_GUARDED_BY(mutex_);
-
   // Buckets for each time period, starting from kBaseTimePeriod.
   std::vector<Metric> buckets_ ABSL_GUARDED_BY(mutex_);
   Clock::time_point last_tick_time_ ABSL_GUARDED_BY(mutex_);
@@ -117,12 +142,10 @@ auto ExponentialAggregator<Metric>::GetBucketMetrics(
     TimePeriod period, std::optional<Clock::time_point> now) const
     -> std::pair<Metric, Duration> {
   absl::MutexLock lock(&mutex_);
-  const size_t index =
-      static_cast<int>(period) - static_cast<int>(kBaseTimePeriod);
+  const size_t index = GetBucketIndex(period);
   const Duration duration_since_update =
       kPeriodDuration * (tick_count_ % (1ULL << index)) +
-      (now.has_value() ? Duration(now.value() - last_tick_time_)
-                       : Duration::zero());
+      (now.has_value() ? Duration(*now - last_tick_time_) : Duration::zero());
   if (index >= buckets_.size()) return {Metric(), duration_since_update};
   return {buckets_[index], duration_since_update};
 }
@@ -137,21 +160,59 @@ auto ExponentialAggregator<Metric>::GetAggregateEndingNow(
   {
     absl::MutexLock lock(&mutex_);
     if (now.has_value()) {
+      // If we'll use pending bucket, remove its duration from the request.
+      // The actual bucket we'll merge in the end as we have to merge newer
+      // into older buckets.
       Duration duration_since_update = *now - last_tick_time_;
       duration -= duration_since_update;
       result_duration += duration_since_update;
     }
 
     if (duration > Duration::zero()) {
-      size_t num_buckets = std::max(
-          1.0, std::ceil(
-                   std::log2(std::chrono::duration<double>(duration).count())) -
-                   static_cast<int>(kBaseTimePeriod));
-      uint64_t mask =
-          (1ULL << num_buckets) + (tick_count_ & ((1ULL << num_buckets) - 1));
-      while (mask) {
-        size_t idx = std::countr_zero(mask);
-        mask &= ~(1ULL << idx);
+      // Convert the input `duration` into `num_ticks` (the number of base
+      //    time periods), rounding up.
+      const auto div = std::div(duration.count(), kPeriodDuration.count());
+      const size_t num_ticks = div.quot + bool(div.rem);
+
+      // To cover the remaining `duration`, we select the minimal set of active
+      // historical buckets (where the corresponding bit in `tick_count_` is 1)
+      // that, when combined, meet or exceed the target duration.
+      //
+      // 1. If `tick_count_` (representing our total history) is less than
+      //    `num_ticks`, the available history is shorter than the target.
+      //    In this case, we aggregate all active buckets.
+      // 2. Otherwise, determine the bit width of `num_ticks` (e.g., for 13
+      //    (1101b), the width is 4). Create a candidate set of ticks by
+      //    masking `tick_count_` to this width. If this masked value is >=
+      //    `num_ticks`, the corresponding set of buckets is sufficient.
+      // 3. If the masked value from step 2 is insufficient, we must include a
+      //    larger bucket. We find the lowest-order active bucket (the next '1'
+      //    bit in `tick_count_`) at a position *higher* than the bit width from
+      //    the previous step. The final selection includes all active buckets
+      //    up to and including this higher-order one.
+
+      size_t masked_ticks = [&]() {
+        // Case 1.
+        if (num_ticks >= tick_count_) return tick_count_;
+        const auto bit_width = std::bit_width(num_ticks);
+        {
+          // Case 2.
+          const size_t mask = ~((~size_t{0}) << bit_width);
+          const size_t candidate_ticks = tick_count_ & mask;
+          if (candidate_ticks >= num_ticks) return candidate_ticks;
+        }
+        // Case 3.
+        // Find the next '1' bit after the width.
+        const auto next_set_bit =
+            std::countr_zero(tick_count_ >> bit_width) + bit_width;
+        const size_t mask = ~((~size_t{0}) << next_set_bit);
+        return tick_count_ & mask;
+      }();
+
+    
+      while (masked_ticks) {
+        size_t idx = std::bit_width(masked_ticks) - 1;
+        masked_ticks &= ~(1ULL << idx);
         if (idx < buckets_.size()) result.MergeFrom(buckets_[idx]);
         result_duration += kPeriodDuration * (1ULL << idx);
       }
@@ -159,6 +220,8 @@ auto ExponentialAggregator<Metric>::GetAggregateEndingNow(
   }
 
   if (now.has_value()) {
+    // The pending bucket is merged last, as we have to merge newer into older
+    // buckets.
     absl::MutexLock lock(&pending_bucket_mutex_);
     result.MergeFrom(pending_bucket_);
   }
