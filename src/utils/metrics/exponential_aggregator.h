@@ -49,6 +49,7 @@ enum class TimePeriod {
 //   * Merging with a default-constructed (empty) metric is a no-op.
 //   * The `MergeFrom` operation must be associative. It does not need to be
 //     commutative.
+//   * Having a `std::swap(Metric&, Metric&)` method is also beneficial.
 template <typename Metric>
 class ExponentialAggregator {
  public:
@@ -209,7 +210,6 @@ auto ExponentialAggregator<Metric>::GetAggregateEndingNow(
         return tick_count_ & mask;
       }();
 
-    
       while (masked_ticks) {
         size_t idx = std::bit_width(masked_ticks) - 1;
         masked_ticks &= ~(1ULL << idx);
@@ -233,12 +233,13 @@ template <typename Metric>
 auto ExponentialAggregator<Metric>::Advance(Clock::time_point now)
     -> TimePeriod {
   absl::MutexLock lock(&mutex_);
-  const int num_ticks = (now - last_tick_time_) / kPeriodDuration;
-  if (num_ticks <= 0) return TimePeriod::kEmpty;
-  last_tick_time_ += num_ticks * kPeriodDuration;
+  const int num_ticks_to_advance = (now - last_tick_time_) / kPeriodDuration;
+  if (num_ticks_to_advance <= 0) return TimePeriod::kEmpty;
 
+  last_tick_time_ += num_ticks_to_advance * kPeriodDuration;
   Metric live_carry;
   {
+    // What was pending, now becomes carry. Pending bucket is cleared.
     absl::MutexLock pending_bucket_lock(&pending_bucket_mutex_);
     live_carry = std::move(pending_bucket_);
     pending_bucket_.Reset();
@@ -253,18 +254,25 @@ auto ExponentialAggregator<Metric>::Advance(Clock::time_point now)
       const uint64_t interval_size = 1ULL << i;
       if ((tick_count_ % interval_size) != 0) break;
       while (i >= buckets_.size()) buckets_.emplace_back();
-      // We merge new into old, so it's important to swap the carry first.
+      // We always merge new into the old, so we swap the carry first, and then
+      // merge into it.
       std::swap(carry, buckets_[i]);
       carry.MergeFrom(buckets_[i]);
     }
   };
 
+  // Carry the pending bucket into the first tick.
   one_tick(live_carry);
-  for (int i = 1; i < num_ticks; ++i) {
+  // Then, if more than one tick is requested, we carry the empty bucket
+  // through the remaining ticks.
+  for (int i = 1; i < num_ticks_to_advance; ++i) {
     Metric empty_carry;
     one_tick(empty_carry);
   }
 
+  // Largest time period is the highest bit that was flipped in the process.
+  // To find it, we XOR the initial tick count with the current one, and
+  // find the highest bit.
   return static_cast<TimePeriod>(
       std::bit_width(initial_tick_count ^ tick_count_) - 1 +
       static_cast<int>(kBaseTimePeriod));
