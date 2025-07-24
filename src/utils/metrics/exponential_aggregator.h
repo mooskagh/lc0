@@ -205,12 +205,13 @@ auto ExponentialAggregator<Metric>::GetAggregateEndingNow(
         // Case 3.
         // Find the next '1' bit after the width.
         const auto next_set_bit =
-            std::countr_zero(tick_count_ >> bit_width) + bit_width;
+            std::countr_zero(tick_count_ >> bit_width) + bit_width + 1;
         const size_t mask = ~((~size_t{0}) << next_set_bit);
         return tick_count_ & mask;
       }();
 
       while (masked_ticks) {
+        // Start merging from the highest bit (older bucket) to the lowest.
         size_t idx = std::bit_width(masked_ticks) - 1;
         masked_ticks &= ~(1ULL << idx);
         if (idx < buckets_.size()) result.MergeFrom(buckets_[idx]);
