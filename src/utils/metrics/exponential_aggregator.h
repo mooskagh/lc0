@@ -47,13 +47,13 @@ enum class TimePeriod {
 //  metric into itself.
 // * It must behave like a monoid (actually, unital magma is sufficient):
 //   * Merging with a default-constructed (empty) metric is a no-op.
-//   * The `MergeFrom` operation must be associative (actually, not really; currently we always merge old to new). It does not need to be
+//   * The `MergeFrom` operation must be associative (actually, not really;
+//   currently we always merge old to new). It does not need to be
 //     commutative.
 //   * Having a `std::swap(Metric&, Metric&)` method is also beneficial.
-template <typename Metric>
+template <typename Metric, TimePeriod Resolution = TimePeriod::k16Milliseconds>
 class ExponentialAggregator {
  public:
-  constexpr static TimePeriod kBaseTimePeriod = TimePeriod::k16Milliseconds;
   using Duration = std::chrono::nanoseconds;
   using Clock = std::chrono::steady_clock;
 
@@ -90,10 +90,10 @@ class ExponentialAggregator {
  private:
   static constexpr Duration kPeriodDuration =
       std::chrono::duration_cast<Duration>(std::chrono::duration<double>(
-          std::pow(2.0f, static_cast<int>(kBaseTimePeriod))));
+          std::pow(2.0f, static_cast<int>(Resolution))));
 
   static size_t GetBucketIndex(TimePeriod period) {
-    return static_cast<size_t>(period) - static_cast<size_t>(kBaseTimePeriod);
+    return static_cast<size_t>(period) - static_cast<size_t>(Resolution);
   }
 
   // The aggregation strategy is analogous to a binary counter. `tick_count_`
@@ -110,7 +110,7 @@ class ExponentialAggregator {
 
   mutable absl::Mutex mutex_;
   size_t tick_count_ ABSL_GUARDED_BY(mutex_);
-  // Buckets for each time period, starting from kBaseTimePeriod.
+  // Buckets for each time period, starting from Resolution.
   std::vector<Metric> buckets_ ABSL_GUARDED_BY(mutex_);
   Clock::time_point last_tick_time_ ABSL_GUARDED_BY(mutex_);
 
@@ -118,8 +118,8 @@ class ExponentialAggregator {
   Metric pending_bucket_ ABSL_GUARDED_BY(pending_bucket_mutex_);
 };
 
-template <typename Metric>
-void ExponentialAggregator<Metric>::Reset(
+template <typename Metric, TimePeriod Resolution>
+void ExponentialAggregator<Metric, Resolution>::Reset(
     std::chrono::steady_clock::time_point now) {
   absl::MutexLock lock(&mutex_);
   tick_count_ = 0;
@@ -130,16 +130,16 @@ void ExponentialAggregator<Metric>::Reset(
   pending_bucket_.Reset();
 }
 
-template <typename Metric>
+template <typename Metric, TimePeriod Resolution>
 template <typename T>
-void ExponentialAggregator<Metric>::RecordMetrics(T&& metric) {
+void ExponentialAggregator<Metric, Resolution>::RecordMetrics(T&& metric) {
   absl::MutexLock lock(&pending_bucket_mutex_);
   pending_bucket_.MergeFrom(std::forward<T>(metric));
   metric.Reset();
 }
 
-template <typename Metric>
-auto ExponentialAggregator<Metric>::GetBucketMetrics(
+template <typename Metric, TimePeriod Resolution>
+auto ExponentialAggregator<Metric, Resolution>::GetBucketMetrics(
     TimePeriod period, std::optional<Clock::time_point> now) const
     -> std::pair<Metric, Duration> {
   absl::MutexLock lock(&mutex_);
@@ -151,8 +151,8 @@ auto ExponentialAggregator<Metric>::GetBucketMetrics(
   return {buckets_[index], duration_since_update};
 }
 
-template <typename Metric>
-auto ExponentialAggregator<Metric>::GetAggregateEndingNow(
+template <typename Metric, TimePeriod Resolution>
+auto ExponentialAggregator<Metric, Resolution>::GetAggregateEndingNow(
     Duration duration, std::optional<Clock::time_point> now) const
     -> std::pair<Metric, Duration> {
   Duration result_duration = Duration::zero();
@@ -179,35 +179,19 @@ auto ExponentialAggregator<Metric>::GetAggregateEndingNow(
       // historical buckets (where the corresponding bit in `tick_count_` is 1)
       // that, when combined, meet or exceed the target duration.
       //
-      // 1. If `tick_count_` (representing our total history) is less than
-      //    `num_ticks`, the available history is shorter than the target.
-      //    In this case, we aggregate all active buckets.
-      // 2. Otherwise, determine the bit width of `num_ticks` (e.g., for 13
+      // 1. First we determine the bit width of `num_ticks` (e.g., for 13
       //    (1101b), the width is 4). Create a candidate set of ticks by
       //    masking `tick_count_` to this width. If this masked value is >=
       //    `num_ticks`, the corresponding set of buckets is sufficient.
-      // 3. If the masked value from step 2 is insufficient, we must include a
-      //    larger bucket. We find the lowest-order active bucket (the next '1'
-      //    bit in `tick_count_`) at a position *higher* than the bit width from
-      //    the previous step. The final selection includes all active buckets
-      //    up to and including this higher-order one.
-
+      // 2. If the masked value from step 2 is insufficient, we include one
+      //    additional bucket. It doesn't matter if it's active or not.
       size_t masked_ticks = [&]() {
-        // Case 1.
-        if (num_ticks >= tick_count_) return tick_count_;
         const auto bit_width = std::bit_width(num_ticks);
-        {
-          // Case 2.
-          const size_t mask = ~((~size_t{0}) << bit_width);
-          const size_t candidate_ticks = tick_count_ & mask;
-          if (candidate_ticks >= num_ticks) return candidate_ticks;
-        }
-        // Case 3.
-        // Find the next '1' bit after the width.
-        const auto next_set_bit =
-            std::countr_zero(tick_count_ >> bit_width) + bit_width + 1;
-        const size_t mask = ~((~size_t{0}) << next_set_bit);
-        return tick_count_ & mask;
+        const size_t mask = ~((~size_t{0}) << bit_width);
+        const size_t candidate_ticks = tick_count_ & mask;
+        if (candidate_ticks >= num_ticks) return candidate_ticks;
+        // One additional tick is needed.
+        return candidate_ticks | (size_t{1} << bit_width);
       }();
 
       while (masked_ticks) {
@@ -230,8 +214,8 @@ auto ExponentialAggregator<Metric>::GetAggregateEndingNow(
   return {result, result_duration};
 }
 
-template <typename Metric>
-auto ExponentialAggregator<Metric>::Advance(Clock::time_point now)
+template <typename Metric, TimePeriod Resolution>
+auto ExponentialAggregator<Metric, Resolution>::Advance(Clock::time_point now)
     -> TimePeriod {
   absl::MutexLock lock(&mutex_);
   const int num_ticks_to_advance = (now - last_tick_time_) / kPeriodDuration;
@@ -276,7 +260,7 @@ auto ExponentialAggregator<Metric>::Advance(Clock::time_point now)
   // find the highest bit.
   return static_cast<TimePeriod>(
       std::bit_width(initial_tick_count ^ tick_count_) - 1 +
-      static_cast<int>(kBaseTimePeriod));
+      static_cast<int>(Resolution));
 }
 
 }  // namespace lczero
