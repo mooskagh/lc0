@@ -158,12 +158,16 @@ void GatherWorker::EnqueueNodeForEval(Variation&& node, size_t batch_size) {
   NodeEvent* event = MakeNodeEvent(
       /*variation=*/std::move(node),
       /*num_visits=*/batch_size);
+  ++nodes_metrics_.num_nodes_sent_for_eval;
+  nodes_metrics_.num_visits_sent_for_eval += batch_size;
   env_.eval_sender.Enqueue(event);
 }
 
 void GatherWorker::EnqueueNodeForBackprop(
     Variation&& node, const NodeHandle::NodeAggregates& aggregates,
     size_t batch_size) {
+  ++nodes_metrics_.num_known_terminal_nodes;
+  nodes_metrics_.num_known_terminal_visits += batch_size;
   // For now we only do that for terminal nodes, but if needed, we can change
   // result_type below.
   assert(aggregates.IsTerminal());
@@ -179,6 +183,8 @@ void GatherWorker::EnqueueNodeForBackprop(
 
 void GatherWorker::EnqueueNodeForCollisionRollback(Variation&& node,
                                                    size_t batch_size) {
+  ++nodes_metrics_.num_collision_events;
+  nodes_metrics_.num_collision_visits += batch_size;
   NodeEvent* event = MakeNodeEvent(
       /*variation=*/std::move(node),
       /*num_visits=*/batch_size,
