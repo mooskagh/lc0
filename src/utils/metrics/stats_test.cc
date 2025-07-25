@@ -427,7 +427,7 @@ TEST_F(ExponentialAggregatorTest, AggregationTest) {
   TestMetric metric;
   // We do 37 (0b100101) updates.
   for (int i = 0; i < 37; ++i) {
-    metric.GetMutable<CounterMetric>()->set_count(i * 2 + 1);
+    metric.GetMutable<CounterMetric>()->set_count(i + 200);
     metric.GetMutable<OptionalValueMetric>()->set_value(i + 100);
     aggregator_->RecordMetrics(std::move(metric));
     start_time_ += aggregator_->GetResolution();
@@ -459,30 +459,25 @@ TEST_F(ExponentialAggregatorTest, AggregationTest) {
     EXPECT_EQ(age, expected_duration);
   };
 
-  check_completed_bucket(TimePeriod::k16Milliseconds, 36 * 2 + 1, 136,
-                         kRes * 0);
-  check_completed_bucket(TimePeriod::k31Milliseconds, (34 + 35) * 2 + 2, 135,
-                         kRes);
-  check_completed_bucket(TimePeriod::k63Milliseconds,
-                         (32 + 33 + 34 + 35) * 2 + 4, 135, kRes);
+  check_completed_bucket(TimePeriod::k16Milliseconds, 236, 136, kRes * 0);
+  check_completed_bucket(TimePeriod::k31Milliseconds, 234 + 235, 135, kRes);
+  check_completed_bucket(TimePeriod::k63Milliseconds, 232 + 233 + 234 + 235,
+                         135, kRes);
   check_completed_bucket(TimePeriod::k125Milliseconds,
-                         (24 + 25 + 26 + 27 + 28 + 29 + 30 + 31) * 2 + 8, 131,
+                         224 + 225 + 226 + 227 + 228 + 229 + 230 + 231, 131,
                          kRes * 5);
   check_completed_bucket(TimePeriod::k125Milliseconds,
-                         (24 + 25 + 26 + 27 + 28 + 29 + 30 + 31) * 2 + 8, 131,
+                         224 + 225 + 226 + 227 + 228 + 229 + 230 + 231, 131,
                          kRes * 5 + kRes / 3, true);
   check_completed_bucket(TimePeriod::k250Milliseconds,
-                         (16 + 17 + 18 + 19 + 20 + 21 + 22 + 23 + 24 + 25 + 26 +
-                          27 + 28 + 29 + 30 + 31) *
-                                 2 +
-                             16,
+                         216 + 217 + 218 + 219 + 220 + 221 + 222 + 223 + 224 +
+                             225 + 226 + 227 + 228 + 229 + 230 + 231,
                          131, kRes * 5);
   check_completed_bucket(TimePeriod::k500Milliseconds,
-                         (0 + 1 + 2 + 3 + 4 + 5 + 6 + 7 + 8 + 9 + 10 + 11 + 12 +
-                          13 + 14 + 15 + 16 + 17 + 18 + 19 + 20 + 21 + 22 + 23 +
-                          24 + 25 + 26 + 27 + 28 + 29 + 30 + 31) *
-                                 2 +
-                             32,
+                         200 + 201 + 202 + 203 + 204 + 205 + 206 + 207 + 208 +
+                             209 + 210 + 211 + 212 + 213 + 214 + 215 + 216 +
+                             217 + 218 + 219 + 220 + 221 + 222 + 223 + 224 +
+                             225 + 226 + 227 + 228 + 229 + 230 + 231,
                          131, kRes * 5);
   check_completed_bucket(TimePeriod::k1Second, 0, std::nullopt, kRes * 37);
 
@@ -507,15 +502,13 @@ TEST_F(ExponentialAggregatorTest, AggregationTest) {
   check_aggregate(TestAggregator::Duration::zero(), 0, std::nullopt, kRes * 0);
   check_aggregate(TestAggregator::Duration::zero(), 1001, 1002, kRes / 3, true);
   check_aggregate(kRes / 4, 1001, 1002, kRes / 3, true);
-  check_aggregate(kRes / 10, 36 * 2 + 1, 136, kRes);
-  check_aggregate(kRes * 45 / 10, (32 + 33 + 34 + 35 + 36) * 2 + 5, 136,
-                  kRes * 5);
+  check_aggregate(kRes / 10, 236, 136, kRes);
+  check_aggregate(kRes * 45 / 10, 232 + 233 + 234 + 235 + 236, 136, kRes * 5);
   check_aggregate(kRes * 55 / 10,
-                  (0 + 1 + 2 + 3 + 4 + 5 + 6 + 7 + 8 + 9 + 10 + 11 + 12 + 13 +
-                   14 + 15 + 16 + 17 + 18 + 19 + 20 + 21 + 22 + 23 + 24 + 25 +
-                   26 + 27 + 28 + 29 + 30 + 31 + 32 + 33 + 34 + 35 + 36) *
-                          2 +
-                      37,
+                  200 + 201 + 202 + 203 + 204 + 205 + 206 + 207 + 208 + 209 +
+                      210 + 211 + 212 + 213 + 214 + 215 + 216 + 217 + 218 +
+                      219 + 220 + 221 + 222 + 223 + 224 + 225 + 226 + 227 +
+                      228 + 229 + 230 + 231 + 232 + 233 + 234 + 235 + 236,
                   136, kRes * 37);
 }
 

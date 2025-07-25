@@ -45,9 +45,9 @@ enum class TimePeriod {
 // * It must have a `Reset()` method that clears its state.
 // * It must have a `MergeFrom(const Metric& other)` method to merge another
 //  metric into itself.
-// * It must behave like a monoid:
+// * It must behave like a monoid (actually, unital magma is sufficient):
 //   * Merging with a default-constructed (empty) metric is a no-op.
-//   * The `MergeFrom` operation must be associative. It does not need to be
+//   * The `MergeFrom` operation must be associative (actually, not really; currently we always merge old to new). It does not need to be
 //     commutative.
 //   * Having a `std::swap(Metric&, Metric&)` method is also beneficial.
 template <typename Metric>
