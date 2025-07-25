@@ -311,7 +311,8 @@ class ExponentialAggregatorTest : public ::testing::Test {
  protected:
   using TestMetric =
       MetricGroup<CounterMetric, AverageMetric, OptionalValueMetric>;
-  using TestAggregator = ExponentialAggregator<TestMetric>;
+  using TestAggregator =
+      ExponentialAggregator<TestMetric, TimePeriod::k16Milliseconds>;
 
   void SetUp() override {
     // Create a fresh aggregator for each test to avoid state contamination

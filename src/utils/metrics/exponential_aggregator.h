@@ -13,15 +13,20 @@
 
 namespace lczero {
 
+// 1 second period is exact. Other periods are powers of two.
 enum class TimePeriod {
   kEmpty = -128,
-  k16Milliseconds = -6,
+  k1Millisecond = -10,
+  k2Milliseconds,
+  k4Milliseconds,
+  k8Milliseconds,
+  k16Milliseconds,
   k31Milliseconds,
   k63Milliseconds,
   k125Milliseconds,
   k250Milliseconds,
   k500Milliseconds,
-  k1Second = 0,
+  k1Second /* = 0 */,
   k2Seconds,
   k4Seconds,
   k8Seconds,
