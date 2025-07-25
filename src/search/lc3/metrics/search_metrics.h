@@ -6,7 +6,7 @@
 namespace lczero {
 namespace lc3 {
 
-using SearchMetrics = MetricGroup<GatherNodesMetrics>;
+using SearchMetrics = MetricGroup<GatherNodesMetrics, EvalNodesMetrics>;
 
 }  // namespace lc3
 }  // namespace lczero

@@ -30,28 +30,32 @@ SearchSession::SearchSession(ThreadPool* thread_pool,
 
   game_stats_->NewSearchSession();
   gather_workers_.Start(thread_pool, settings_.GetNumGatherThreads(), [&]() {
-    return std::make_unique<GatherWorker>(
-        GatherWorkerEnvironment{.eval_sender = eval_queue_.MakeSender(),
-                                .backprop_sender = backprop_queue_.MakeSender(),
-                                .rate_limiter = &gather_rate_limiter_,
-                                .node_repository = node_repository,
-                                .head = &head_,
-                                .node_event_pool = &node_event_pool_,
-                                .stats = game_stats_});
+    return std::make_unique<GatherWorker>(GatherWorkerEnvironment{
+        .eval_sender = eval_queue_.MakeSender(),
+        .backprop_sender = backprop_queue_.MakeSender(),
+        .rate_limiter = &gather_rate_limiter_,
+        .node_repository = node_repository,
+        .head = &head_,
+        .node_event_pool = &node_event_pool_,
+        .stats = game_stats_,
+    });
   });
   eval_workers_.Start(thread_pool, settings_.GetNumEvalThreads(), [&]() {
     return std::make_unique<EvalWorker>(EvalWorkerEnvironment{
         .eval_receiver = &eval_queue_,
         .backprop_sender = backprop_queue_.MakeSender(),
         .gather_worker_unblocker = &gather_rate_limiter_.mutex,
-        .backend = backend});
+        .backend = backend,
+        .stats = game_stats_,
+    });
   });
   backprop_workers_.Start(
       thread_pool, settings_.GetNumBackpropThreads(), [&]() {
-        return std::make_unique<BackpropWorker>(
-            BackpropWorkerEnvironment{.backprop_receiver = &backprop_queue_,
-                                      .node_repository = node_repository,
-                                      .eval_item_pool = &node_event_pool_});
+        return std::make_unique<BackpropWorker>(BackpropWorkerEnvironment{
+            .backprop_receiver = &backprop_queue_,
+            .node_repository = node_repository,
+            .eval_item_pool = &node_event_pool_,
+        });
       });
   watchdog_worker_.Start(thread_pool, 1, [&]() {
     return std::make_unique<WatchdogWorker>(WatchdogWorkerEnvironment{

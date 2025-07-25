@@ -1,10 +1,11 @@
 #include "search/lc3/workers/eval_worker.h"
 
 #include <absl/container/fixed_array.h>
+#include <absl/synchronization/mutex.h>
 
 #include <array>
 
-#include "absl/synchronization/mutex.h"
+#include "search/lc3/metrics/game_stats.h"
 
 namespace lczero {
 namespace lc3 {
@@ -14,6 +15,7 @@ void EvalWorker::Run() { while (OneStep()); }
 bool EvalWorker::OneStep() {
   computation_ = env_.backend->CreateComputation();
   if (!Collect()) return false;
+  env_.stats->Feed(std::move(nodes_metrics_));
   if (computation_->UsedBatchSize() > 0) computation_->ComputeBlocking();
   SendCompletedBatchItems();
   return true;
@@ -112,6 +114,13 @@ void EvalWorker::EnqueueIncomingEvent(NodeEvent* event) {
     event->v = is_checkmate ? -1.0f : 0.0f;
     event->d = is_checkmate ? 0.0f : 1.0f;
     event->m = 0.0f;
+    if (is_checkmate) {
+      ++nodes_metrics_.num_discovered_checkmate_nodes;
+      nodes_metrics_.num_discovered_checkmate_visits += event->num_visits;
+    } else {
+      ++nodes_metrics_.num_discovered_stalemate_nodes;
+      nodes_metrics_.num_discovered_stalemate_visits += event->num_visits;
+    }
     SendCompletedNodeEvent(event);
     return;
   }
@@ -124,6 +133,8 @@ void EvalWorker::EnqueueIncomingEvent(NodeEvent* event) {
     event->d = 1.0f;
     event->m = 0.0f;
     event->moves.clear();
+    ++nodes_metrics_.num_discovered_other_draw_nodes;
+    nodes_metrics_.num_discovered_other_draw_visits += event->num_visits;
     SendCompletedNodeEvent(event);
     return;
   }
@@ -141,10 +152,14 @@ void EvalWorker::EnqueueIncomingEvent(NodeEvent* event) {
           .q = &event->v, .d = &event->d, .m = &event->m, .p = event->p});
   if (addinput_result == BackendComputation::FETCHED_IMMEDIATELY) {
     // The node turned out to be in cache, we can send it immediately.
+    ++nodes_metrics_.num_cache_hit_nodes;
+    nodes_metrics_.num_cache_hit_visits += event->num_visits;
     SendCompletedNodeEvent(event);
     return;
   }
   // Add to the NN computation batch.
+  ++nodes_metrics_.num_nn_evaluation_nodes;
+  nodes_metrics_.num_nn_evaluation_visits += event->num_visits;
   batched_node_events_.push_back(event);
 }
 

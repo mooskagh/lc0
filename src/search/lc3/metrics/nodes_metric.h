@@ -63,22 +63,53 @@ struct GatherNodesMetrics {
   }
 };
 
-// struct EvalNodesMetrics {
-//   // Filled by the EvalWorker.
-//   size_t num_cache_hit_nodes = 0;
-//   size_t num_discovered_terminal_nodes = 0;
-//   size_t num_nn_evaluation_nodes = 0;
-// num_known_terminal_visits, num_nodes_sent_for_eval,
-// num_visits_sent_for_eval);
-//   }
-// };
+struct EvalNodesMetrics {
+  // Filled by the EvalWorker.
+  size_t num_cache_hit_nodes = 0;
+  size_t num_cache_hit_visits = 0;
+  size_t num_discovered_checkmate_nodes = 0;
+  size_t num_discovered_checkmate_visits = 0;
+  size_t num_discovered_stalemate_nodes = 0;
+  size_t num_discovered_stalemate_visits = 0;
+  size_t num_discovered_other_draw_nodes = 0;
+  size_t num_discovered_other_draw_visits = 0;
+  size_t num_nn_evaluation_nodes = 0;
+  size_t num_nn_evaluation_visits = 0;
 
-// struct EvalNodesMetrics {
-//   // Filled by the EvalWorker.
-//   size_t num_cache_hit_nodes = 0;
-//   size_t num_discovered_terminal_nodes = 0;
-//   size_t num_nn_evaluation_nodes = 0;
-// };
+  void Reset() { std::memset(this, 0, sizeof(*this)); }
+  void MergeFrom(const EvalNodesMetrics& other) {
+    num_cache_hit_nodes += other.num_cache_hit_nodes;
+    num_cache_hit_visits += other.num_cache_hit_visits;
+    num_discovered_checkmate_nodes += other.num_discovered_checkmate_nodes;
+    num_discovered_checkmate_visits += other.num_discovered_checkmate_visits;
+    num_discovered_stalemate_nodes += other.num_discovered_stalemate_nodes;
+    num_discovered_stalemate_visits += other.num_discovered_stalemate_visits;
+    num_discovered_other_draw_nodes += other.num_discovered_other_draw_nodes;
+    num_discovered_other_draw_visits += other.num_discovered_other_draw_visits;
+    num_nn_evaluation_nodes += other.num_nn_evaluation_nodes;
+    num_nn_evaluation_visits += other.num_nn_evaluation_visits;
+  }
+  void Print(MetricPrinter& printer) const {
+    printer.StartGroup("EvalNodesMetrics");
+    printer.Print("num_cache_hit_nodes", num_cache_hit_nodes);
+    printer.Print("num_cache_hit_visits", num_cache_hit_visits);
+    printer.Print("num_discovered_checkmate_nodes",
+                  num_discovered_checkmate_nodes);
+    printer.Print("num_discovered_checkmate_visits",
+                  num_discovered_checkmate_visits);
+    printer.Print("num_discovered_stalemate_nodes",
+                  num_discovered_stalemate_nodes);
+    printer.Print("num_discovered_stalemate_visits",
+                  num_discovered_stalemate_visits);
+    printer.Print("num_discovered_other_draw_nodes",
+                  num_discovered_other_draw_nodes);
+    printer.Print("num_discovered_other_draw_visits",
+                  num_discovered_other_draw_visits);
+    printer.Print("num_nn_evaluation_nodes", num_nn_evaluation_nodes);
+    printer.Print("num_nn_evaluation_visits", num_nn_evaluation_visits);
+    printer.EndGroup();
+  }
+};
 
 }  // namespace lc3
 }  // namespace lczero
