@@ -102,5 +102,10 @@ void SearchSession::DrainPipeline() {
 
 void SearchSession::Wait() { DrainPipeline(); }
 
+SearchSession::~SearchSession() {
+  Abort();
+  DrainPipeline();
+}
+
 }  // namespace lc3
 }  // namespace lczero

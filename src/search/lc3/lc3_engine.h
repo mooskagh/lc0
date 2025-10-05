@@ -7,6 +7,7 @@
 namespace lczero {
 namespace lc3 {
 
+// Implementation of the Search API for LC3.
 class Lc3Engine : public SearchBase {
  public:
   Lc3Engine(UciResponder* responder, const OptionsDict* options)
