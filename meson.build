@@ -18,6 +18,8 @@ project('lc0', 'cpp',
         default_options : ['cpp_std=c++20', 'b_ndebug=if-release', 'warning_level=3', 'b_lto=true', 'b_vscrt=mt'],
         meson_version: '>=0.57')
 
+fs = import('fs')
+
 cc = meson.get_compiler('cpp')
 
 if cc.get_id() == 'clang'
@@ -466,10 +468,16 @@ if get_option('build_backends')
   ## cuDNN
   ## ~~~~~
   cudnn_libdirs = get_option('cudnn_libdirs')
+  nvcc_paths = []
+  foreach p : cudnn_libdirs
+    nvcc_paths += fs.parent(p) + '/bin/nvcc'
+  endforeach
+  nvcc_paths += ['nvcc', '/usr/local/cuda/bin/nvcc', '/opt/cuda/bin/nvcc']
+  message('Looking for nvcc in: ' + ', '.join(nvcc_paths))
   cu_blas = cc.find_library('cublas', dirs: cudnn_libdirs, required: false)
   cu_dnn = cc.find_library('cudnn', dirs: cudnn_libdirs, required: false)
   cu_dart = cc.find_library('cudart', dirs: cudnn_libdirs, required: false)
-  nvcc = find_program('nvcc', '/usr/local/cuda/bin/nvcc', '/opt/cuda/bin/nvcc',
+  nvcc = find_program(nvcc_paths,
                       required: false)
 
   if (get_option('cudnn') or get_option('plain_cuda')) and cu_blas.found() and cu_dart.found() and nvcc.found()
@@ -505,6 +513,9 @@ if get_option('build_backends')
       endif
     else
       cuda_arguments += ['--std=c++17', '-Xcompiler', '-fPIC']
+      if get_option('debug')
+        cuda_arguments += ['-g']
+      endif
     endif
     if get_option('nvcc_ccbin') != ''
       cuda_arguments += ['-ccbin=' + get_option('nvcc_ccbin')]
@@ -540,6 +551,7 @@ if get_option('build_backends')
     else
       outputname = '@BASENAME@.o'
     endif
+
 	 files += cuda_files
     files += custom_target('cuda fp32 code',
       input : 'src/neural/backends/cuda/common_kernels.cu',
@@ -612,6 +624,22 @@ if get_option('build_backends')
                        dirs: get_option('onnx_libdir'), required: false).found()
       add_project_arguments('-DUSE_ROCM', language : 'cpp')
     endif
+    if get_option('cudnn') or get_option('plain_cuda') and cu_dart.found() and nvcc.found()
+      add_project_arguments('-DUSE_ONNX_CUDART=1', language : 'cpp')
+      deps += cu_dart
+      foreach d : get_option('cudnn_include')
+        if run_command('scripts/checkdir.py', d, check : false).returncode() == 0
+          includes += include_directories(d, is_system: true)
+        endif
+      endforeach
+      files += custom_target('cuda onnx code',
+        input : 'src/neural/backends/cuda/onnx.cu',
+        output : outputname,
+        command : [nvcc, nvcc_extra_args, cuda_arguments]
+        )
+    else
+      warning('No CUDA support build. Using compatibility implementation for onnx-trt and onnx-cuda. Enable plain_cuda to use CUDA optimizations.')
+    endif
     has_backends = true
   endif
 
@@ -667,26 +695,6 @@ if get_option('build_backends')
       add_project_arguments('-fsycl', language : 'cpp')
       add_project_link_arguments('-fsycl', language : 'cpp')
 
-      dpct_args = []
-      foreach onemkl_include : get_option('onemkl_include')
-        if run_command('scripts/checkdir.py', onemkl_include, check : false).returncode() == 0
-          includes += include_directories(onemkl_include, is_system: true)
-          dpct_args += '-I' + onemkl_include
-        endif
-      endforeach
-      # Check for oneMKL header which is used by DPC++ CT. It could also depend
-      # on oneMATH headers but L0 Sycl uses oneMKL kernels too.
-      cc.has_header('oneapi/mkl.hpp', required: true, args: dpct_args)
-
-      foreach dpct_include : get_option('dpct_include')
-        if run_command('scripts/checkdir.py', dpct_include, check : false).returncode() == 0
-          includes += include_directories(dpct_include, is_system: true)
-          dpct_args += '-I' + dpct_include
-        endif
-      endforeach
-      # Check for DPC++ Compatibility Tool header.
-      cc.has_header('dpct/dpct.hpp', required: true, args: dpct_args)
-
       files += 'src/neural/backends/sycl/layers.cc.dp.cpp'
       files += 'src/neural/backends/sycl/network_sycl.cc.dp.cpp'
       files += 'src/neural/backends/sycl/common_kernels.dp.cpp'
@@ -704,7 +712,7 @@ if get_option('build_backends')
         hip_libdirs = get_option('hip_libdirs')
         hip_args = []
         foreach hip_include : get_option('hip_include')
-          if run_command('scripts/checkdir.py', dpct_include, check : false).returncode() == 0
+          if run_command('scripts/checkdir.py', hip_include, check : false).returncode() == 0
             includes += include_directories(hip_include, is_system: true)
             hip_args += '-I' + hip_include
           endif

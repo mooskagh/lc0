@@ -281,6 +281,7 @@ void Search::SendUciInfo() REQUIRES(nodes_mutex_) REQUIRES(counters_mutex_) {
             .count();
     if (time_since_first_batch_ms > 0) {
       common_info.nps = total_playouts_ * 1000 / time_since_first_batch_ms;
+      common_info.eps = network_evaluations_ * 1000 / time_since_first_batch_ms;
     }
   }
   common_info.tb_hits = tb_hits_.load(std::memory_order_acquire);
@@ -1161,7 +1162,7 @@ void SearchWorker::RunTasks(int tid) {
 
 void SearchWorker::ExecuteOneIteration() {
   // 1. Initialize internal structures.
-  InitializeIteration(search_->backend_->CreateComputation());
+  InitializeIteration();
 
   if (params_.GetMaxConcurrentSearchers() != 0) {
     std::unique_ptr<SpinHelper> spin_helper;
@@ -1250,9 +1251,11 @@ void SearchWorker::ExecuteOneIteration() {
 
 // 1. Initialize internal structures.
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-void SearchWorker::InitializeIteration(
-    std::unique_ptr<BackendComputation> computation) {
-  computation_ = std::move(computation);
+void SearchWorker::InitializeIteration() {
+  // Free the old computation before allocating a new one. This works better
+  // when backend caches buffer allocations between computations.
+  computation_.reset();
+  computation_ = search_->backend_->CreateComputation();
   minibatch_.clear();
   minibatch_.reserve(2 * target_minibatch_size_);
 }
@@ -2278,6 +2281,9 @@ void SearchWorker::DoBackupUpdateSingleNode(
     }
   }
   search_->total_playouts_ += node_to_process.multivisit;
+  if (node_to_process.nn_queried && !node_to_process.is_cache_hit) {
+    search_->network_evaluations_++;
+  }
   search_->cum_depth_ += node_to_process.depth * node_to_process.multivisit;
   search_->max_depth_ = std::max(search_->max_depth_, node_to_process.depth);
 }
