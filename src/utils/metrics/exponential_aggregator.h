@@ -5,6 +5,7 @@
 
 #include <chrono>
 #include <cmath>
+#include <functional>
 #include <optional>
 #include <string>
 #include <tuple>
@@ -42,14 +43,36 @@ enum class TimePeriod {
   k2Hours,
   k5Hours,
   k9Hours,
+  k18Hours,
+  k36Hours,
+  k3Days,
+  k6Days,
+  k12Days,
+  k24Days,
+  k49Days,
+  k97Days,
+  k194Days,
+  k388Days,
+  k777Days,
+  k2Years,
+  k4Years,
+  k9Years,
+  k17Years, /* = 29 */
+  kAllTime = 127
 };
 
 // ExponentialAggregator metrics over exponentially increasing time periods.
 //
-// The template parameter `Metric` must satisfy the following requirements:
+// The template parameter `Metric` can be used in two ways:
+// 1. Function-based: Pass Clear and UpdateFrom functions to constructor.
+//    This is the new approach for protobuf-based metrics.
+// 2. Method-based: The metric type has Reset() and MergeFrom() methods.
+//    This maintains backward compatibility with existing C++ struct metrics.
+//
+// For method-based metrics, the type must satisfy:
 // * It must have a `Reset()` method that clears its state.
 // * It must have a `MergeFrom(const Metric& other)` method to merge another
-//  metric into itself.
+//   metric into itself (used for bucket-to-bucket merging and live ingestion).
 // * It must behave like a monoid (actually, unital magma is sufficient):
 //   * Merging with a default-constructed (empty) metric is a no-op.
 //   * The `MergeFrom` operation must be associative (actually, not really;
@@ -61,13 +84,15 @@ class ExponentialAggregator {
  public:
   using Duration = std::chrono::nanoseconds;
   using Clock = std::chrono::steady_clock;
+  using ClearFn = std::function<void(Metric&)>;
+  using UpdateFromFn = std::function<void(Metric&, const Metric&)>;
+  static constexpr TimePeriod kResolution = Resolution;
 
   // Resets the aggregator, clearing all buckets and pending metrics.
   void Reset(Clock::time_point now = Clock::now());
 
-  // Merges the passed metric into the pending bucket, and clears it.
-  template <typename T>
-  void RecordMetrics(T&& metric);
+  // Ingests the passed metric into the pending bucket using MergeFrom + Reset.
+  void RecordMetrics(Metric&& metric);
 
   // Returns the latest completed metrics bucket for the given time period and
   // duration since that period finished last time. If now is nullopt, it
@@ -88,14 +113,36 @@ class ExponentialAggregator {
   // advances time by the elapsed duration, potentially processing multiple
   // ticks. Returns the largest time period that was updated by this advance
   // (all smaller periods are also updated).
+  //
+  // Note: Advance() should typically be called more frequently than the tick
+  // frequency. When called less frequently (advancing multiple ticks at once),
+  // live statistics go into the first bucket and subsequent buckets are padded
+  // with empty metrics.
   TimePeriod Advance(Clock::time_point now = Clock::now());
 
   constexpr Duration GetResolution() const { return kPeriodDuration; }
 
+  // Primary constructor for new protobuf-based metrics.
+  // Takes two free functions that define the metric's behavior.
+  ExponentialAggregator(ClearFn clear_fn, UpdateFromFn update_from_fn);
+
+  // Default constructor for backward compatibility with old C++ metrics.
+  // This will only compile if `Metric` has Reset() and MergeFrom() methods.
+  ExponentialAggregator();
+
  private:
+  // Constexpr power of 2 using bit shifts
+  static constexpr double constexpr_pow2(int exp) {
+    if (exp >= 0) {
+      return static_cast<double>(1LL << exp);
+    } else {
+      return 1.0 / static_cast<double>(1LL << (-exp));
+    }
+  }
+
   static constexpr Duration kPeriodDuration =
       std::chrono::duration_cast<Duration>(std::chrono::duration<double>(
-          std::pow(2.0f, static_cast<int>(Resolution))));
+          constexpr_pow2(static_cast<int>(Resolution))));
 
   static size_t GetBucketIndex(TimePeriod period) {
     return static_cast<size_t>(period) - static_cast<size_t>(Resolution);
@@ -113,6 +160,9 @@ class ExponentialAggregator {
   // period. This ensures that a valid, historical metric is always available
   // for the bucket query.
 
+  ClearFn clear_fn_;
+  UpdateFromFn update_from_fn_;
+
   mutable absl::Mutex mutex_;
   size_t tick_count_ ABSL_GUARDED_BY(mutex_);
   // Buckets for each time period, starting from Resolution.
@@ -124,6 +174,33 @@ class ExponentialAggregator {
 };
 
 template <typename Metric, TimePeriod Resolution>
+ExponentialAggregator<Metric, Resolution>::ExponentialAggregator(
+    ClearFn clear_fn, UpdateFromFn update_from_fn)
+    : clear_fn_(std::move(clear_fn)),
+      update_from_fn_(std::move(update_from_fn)),
+      tick_count_(0),
+      last_tick_time_(Clock::now()) {}
+
+template <typename Metric, TimePeriod Resolution>
+ExponentialAggregator<Metric, Resolution>::ExponentialAggregator()
+    : tick_count_(0), last_tick_time_(Clock::now()) {
+  // For backward compatibility, use metric methods if available
+  if constexpr (requires(Metric& m, const Metric& other) {
+                  m.Reset();
+                  m.MergeFrom(other);
+                }) {
+    clear_fn_ = [](Metric& m) { m.Reset(); };
+    update_from_fn_ = [](Metric& dest, const Metric& src) {
+      dest.MergeFrom(src);
+    };
+  } else {
+    static_assert(sizeof(Metric) == 0,
+                  "Metric type must have Reset() and MergeFrom() methods or "
+                  "use function-based constructor");
+  }
+}
+
+template <typename Metric, TimePeriod Resolution>
 void ExponentialAggregator<Metric, Resolution>::Reset(
     std::chrono::steady_clock::time_point now) {
   absl::MutexLock lock(&mutex_);
@@ -132,15 +209,14 @@ void ExponentialAggregator<Metric, Resolution>::Reset(
   last_tick_time_ = now;
 
   absl::MutexLock pending_bucket_lock(&pending_bucket_mutex_);
-  pending_bucket_.Reset();
+  clear_fn_(pending_bucket_);
 }
 
 template <typename Metric, TimePeriod Resolution>
-template <typename T>
-void ExponentialAggregator<Metric, Resolution>::RecordMetrics(T&& metric) {
+void ExponentialAggregator<Metric, Resolution>::RecordMetrics(Metric&& metric) {
   absl::MutexLock lock(&pending_bucket_mutex_);
-  pending_bucket_.MergeFrom(std::forward<T>(metric));
-  metric.Reset();
+  update_from_fn_(pending_bucket_, metric);
+  clear_fn_(metric);
 }
 
 template <typename Metric, TimePeriod Resolution>
@@ -203,8 +279,10 @@ auto ExponentialAggregator<Metric, Resolution>::GetAggregateEndingNow(
         // Start merging from the highest bit (older bucket) to the lowest.
         size_t idx = std::bit_width(masked_ticks) - 1;
         masked_ticks &= ~(1ULL << idx);
-        if (idx < buckets_.size()) result.MergeFrom(buckets_[idx]);
-        result_duration += kPeriodDuration * (1ULL << idx);
+        if (idx < buckets_.size()) {
+          update_from_fn_(result, buckets_[idx]);
+          result_duration += kPeriodDuration * (1ULL << idx);
+        }
       }
     }
   }
@@ -213,7 +291,7 @@ auto ExponentialAggregator<Metric, Resolution>::GetAggregateEndingNow(
     // The pending bucket is merged last, as we have to merge newer into older
     // buckets.
     absl::MutexLock lock(&pending_bucket_mutex_);
-    result.MergeFrom(pending_bucket_);
+    update_from_fn_(result, pending_bucket_);
   }
 
   return {result, result_duration};
@@ -232,7 +310,7 @@ auto ExponentialAggregator<Metric, Resolution>::Advance(Clock::time_point now)
     // What was pending, now becomes carry. Pending bucket is cleared.
     absl::MutexLock pending_bucket_lock(&pending_bucket_mutex_);
     live_carry = std::move(pending_bucket_);
-    pending_bucket_.Reset();
+    clear_fn_(pending_bucket_);
   }
 
   const size_t initial_tick_count = tick_count_;
@@ -247,7 +325,7 @@ auto ExponentialAggregator<Metric, Resolution>::Advance(Clock::time_point now)
       // We always merge new into the old, so we swap the carry first, and then
       // merge into it.
       std::swap(carry, buckets_[i]);
-      carry.MergeFrom(buckets_[i]);
+      update_from_fn_(carry, buckets_[i]);
     }
   };
 

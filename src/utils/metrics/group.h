@@ -1,6 +1,7 @@
 #pragma once
 
 #include <absl/strings/str_cat.h>
+#include <type_traits>
 
 #include "utils/metrics/printer.h"
 
@@ -11,7 +12,7 @@ namespace lczero {
 // - void MergeFrom(const Metric& other);  // Merges another metric into this
 // one. Note that the incoming always happens later in time, so if e.g. merge
 // keeps the latest value, it should update the current value with the incoming
-// one.
+// one. Used for bucket-to-bucket merging and live data ingestion.
 // - (optional) std::string_view name() const;
 // - (optional) std::string ToString() const; // If provided, returns a string
 // representation of the metric.
@@ -23,6 +24,14 @@ template <typename... StatRecords>
 class MetricGroup {
  public:
   MetricGroup() = default;
+  // Initialize with one metric set, others are empty.
+    template <
+        typename T,
+        typename = std::enable_if_t<(std::is_same_v<std::decay_t<T>, StatRecords> || ...)>
+    >
+    explicit MetricGroup(T&& stat) {
+      std::get<std::decay_t<T>>(stats_) = std::forward<T>(stat);
+    }
 
   // Calls reset on all stats.
   void Reset();

@@ -18,7 +18,8 @@ class GameStats {
 
   template <typename T>
   void Feed(T&& stat) {
-    live_stats_.RecordMetrics(std::forward<T>(stat));
+    SearchMetrics metric_group(std::forward<T>(stat));
+    live_stats_.RecordMetrics(std::move(metric_group));
   }
 
  private:

@@ -27,7 +27,7 @@ class Lc3Engine : public SearchBase {
   std::unique_ptr<SearchSession> search_;
   NodeRepository node_repository_;
   GameState game_state_;
-  ThreadPool thread_pool_{ThreadPoolOptions{.grow_automatically = true}};
+  ThreadPool thread_pool_{0, ThreadPoolOptions{.grow_automatically = true}};
   const OptionsDict* options_;
   GameStats game_stats_;
 };
