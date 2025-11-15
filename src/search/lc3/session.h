@@ -43,7 +43,6 @@ class SearchSession {
   void Stop();
   // Waits all workers to stop.
   void Wait();
-  // void StartSyncronized();
 
  private:
   using Policy = SearchPolicy;

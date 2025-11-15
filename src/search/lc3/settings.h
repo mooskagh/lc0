@@ -6,6 +6,8 @@
 namespace lczero {
 namespace lc3 {
 
+// UCI options for the Lc3 algorithm (in classic algorithm it was called
+// "params").
 class Settings {
  public:
   Settings(const OptionsDict& options);
