@@ -55,6 +55,7 @@ void GatherWorker::GatherDescent(size_t target_batch_size) {
     for (NodeAndBatch& item : work_queue_) ProcessNode(depth, item);
     next_depth_work_queue_.swap(work_queue_);
     env_.stats->Feed(std::move(nodes_metrics_));
+    nodes_metrics_.Reset();
   }
 }
 

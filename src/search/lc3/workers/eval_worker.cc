@@ -16,6 +16,7 @@ bool EvalWorker::OneStep() {
   computation_ = env_.backend->CreateComputation();
   if (!Collect()) return false;
   env_.stats->Feed(std::move(nodes_metrics_));
+  nodes_metrics_.Reset();
   if (computation_->UsedBatchSize() > 0) computation_->ComputeBlocking();
   SendCompletedBatchItems();
   return true;
