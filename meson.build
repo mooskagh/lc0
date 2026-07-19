@@ -208,13 +208,27 @@ files += [
 
 includes += include_directories('src')
 
-deps += dependency('absl_flat_hash_map', 'absl', modules:['absl::flat_hash_map'],
-                   include_type: 'system',
-                   fallback: ['abseil-cpp', 'absl_container_dep'],
-                   default_options : ['warning_level=0', 'cpp_std=c++20'])
+absl_flat_hash_map_dep = dependency(
+  'absl_flat_hash_map', 'absl', modules:['absl::flat_hash_map'],
+  include_type: 'system',
+  fallback: ['abseil-cpp', 'absl_container_dep'],
+  default_options : ['warning_level=0', 'cpp_std=c++20'])
+deps += absl_flat_hash_map_dep
 
 deps += dependency('threads')
 
+### Lc5 Search Algorithm
+
+if get_option('lc5')
+  files += [
+    'src/search/lc5/engine.cc',
+    'src/search/lc5/graph.cc',
+    'src/search/lc5/memory_node_store.cc',
+    'src/search/lc5/metrics.cc',
+    'src/search/lc5/search.cc',
+    'src/search/lc5/settings.cc',
+  ]
+endif
 #############################################################################
 ## Platform specific files
 ############################################################################
@@ -1171,6 +1185,25 @@ if get_option('gtest')
                'src/neural/memcache.cc', pb_files,
     include_directories: includes, link_with: lc0_lib, dependencies: [gtest, gmock]),
     args: '--gtest_output=xml:engine_test.xml', timeout: 90)
+  if get_option('lc5')
+    test('Lc5Graph',
+      executable('lc5_graph_test',
+        'src/search/lc5/graph_test.cc',
+        'src/search/lc5/graph.cc',
+        pb_files,
+        include_directories: includes, link_with: lc0_lib,
+        dependencies: [gtest, absl_flat_hash_map_dep]),
+      args: '--gtest_output=xml:lc5_graph_test.xml', timeout: 90)
+
+    test('Lc5Settings',
+      executable('lc5_settings_test',
+        'src/search/lc5/settings_test.cc',
+        'src/search/lc5/settings.cc',
+        pb_files,
+        include_directories: includes, link_with: lc0_lib,
+        dependencies: [gtest, absl_flat_hash_map_dep]),
+      args: '--gtest_output=xml:lc5_settings_test.xml', timeout: 90)
+  endif
 endif
 
 
