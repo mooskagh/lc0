@@ -1,0 +1,239 @@
+/*
+  This file is part of Leela Chess Zero.
+  Copyright (C) 2026 The LCZero Authors
+
+  Leela Chess is free software: you can redistribute it and/or modify
+  it under the terms of the GNU General Public License as published by
+  the Free Software Foundation, either version 3 of the License, or
+  (at your option) any later version.
+
+  Leela Chess is distributed in the hope that it will be useful,
+  but WITHOUT ANY WARRANTY; without even the implied warranty of
+  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+  GNU General Public License for more details.
+
+  You should have received a copy of the GNU General Public License
+  along with Leela Chess.  If not, see <http://www.gnu.org/licenses/>.
+
+  Additional permission under GNU GPL version 3 section 7
+
+  If you modify this Program, or any covered work, by linking or
+  combining it with NVIDIA Corporation's libraries from the NVIDIA CUDA
+  Toolkit and the NVIDIA CUDA Deep Neural Network library (or a
+  modified version of those libraries), containing parts covered by the
+  terms of the respective license agreement, the licensors of this
+  Program grant you additional permission to convey the resulting work.
+*/
+
+syntax = "proto2";
+
+package pblczero;
+
+// A serialized, GPU-specific neural-network executable.
+//
+// Names are identifiers within their respective repeated field. Binary,
+// allocation, buffer, kernel, program, and node names must each be unique in
+// their own namespace. References below always refer to these names.
+//
+// Resources are deliberately global rather than owned by a Program. Programs
+// may therefore share resources or use disjoint resources as chosen by the
+// compiler. A runtime may allocate only resources reachable from programs it
+// can select, but this is an implementation detail.
+message NeuralExecutable {
+  // Identifies incompatible generations of the complete executable format.
+  // Adding an optional field does not necessarily require a new value, but a
+  // semantic change that an old runtime cannot safely ignore does.
+  enum Format {
+    FORMAT_UNKNOWN = 0;
+    FORMAT_TRITON_CUBIN_V1 = 1;
+  }
+
+  message Lc0Version {
+    required uint32 major = 1;
+    required uint32 minor = 2;
+    required uint32 patch = 3;
+  }
+
+  // Must be 0x1c0e. This catches common wrong-file errors before processing
+  // the rest of the message.
+  required fixed32 magic = 1;
+  required Format format = 2;
+  required Lc0Version min_lc0_version = 3;
+
+  // Opaque fingerprint of the network architecture, excluding weight values.
+  // The compiler and runtime must use the same external fingerprint contract.
+  // A runtime must reject a network whose computed fingerprint differs.
+  required bytes network_fingerprint = 4;
+
+  repeated Binary binaries = 10;
+  repeated Allocation allocations = 11;
+  repeated Buffer buffers = 12;
+  repeated Kernel kernels = 13;
+  repeated Program programs = 14;
+}
+
+// An embedded CUDA cubin. V1 supports neither external binaries nor PTX.
+// A binary may contain any number of exported kernel functions.
+message Binary {
+  required string name = 1;
+  required bytes data = 2;
+}
+
+// A physical device-memory allocation. All Buffer ranges refer to one of
+// these allocations. Multiple buffers may overlap when the compiler has
+// established that their lifetimes do not conflict.
+message Allocation {
+  enum Lifetime {
+    LIFETIME_UNKNOWN = 0;
+
+    // Exists for the lifetime of the loaded backend. This is intended for
+    // network weights and other immutable constants.
+    LIFETIME_PERSISTENT = 1;
+
+    // Exists for the lifetime of a computation context. This is intended for
+    // inputs, outputs, activations, and scratch storage. A runtime may create
+    // several instances to support concurrent computations.
+    LIFETIME_EXECUTION = 2;
+  }
+
+  required string name = 1;
+  required uint64 size_bytes = 2;
+
+  // Required alignment of the allocation base. It must be a nonzero power of
+  // two. The runtime may have to overallocate to satisfy alignments stronger
+  // than those guaranteed by the CUDA allocation API it uses.
+  required uint64 alignment_bytes = 3;
+
+  required Lifetime lifetime = 4;
+}
+
+// A typed logical view into an Allocation.
+//
+// Shapes contain maximum storage dimensions, not dimensions for the current
+// invocation. For example, an input may have shape [max_batch, 112]. The
+// actual batch size is supplied separately through KERNEL_PARAMETER_BATCH_U32.
+// Which dimension represents batch is a convention between the compiler and
+// kernels; it is not encoded here.
+//
+// An empty shape denotes one scalar. Internal byte-oriented storage is
+// represented uniformly as DATA_TYPE_U8 with shape [byte_count]. The size of a
+// buffer is the product of its dimensions and data-type size, or one data-type
+// element for an empty shape. Every buffer range must fit within its allocation.
+message Buffer {
+  enum DataType {
+    DATA_TYPE_UNKNOWN = 0;
+    DATA_TYPE_U8 = 1;
+    DATA_TYPE_U64 = 2;
+    DATA_TYPE_F16 = 3;
+    DATA_TYPE_BF16 = 4;
+    DATA_TYPE_F32 = 5;
+  }
+
+  required string name = 1;
+  required string allocation = 2;
+  required uint64 offset_bytes = 3;
+
+  required DataType data_type = 4;
+  repeated uint64 shape = 5;
+
+  // Optional initial contents for constants that are independent of network
+  // weight values. Values use the native little-endian representation of
+  // data_type and data must have exactly the size implied by shape. The runtime
+  // copies it into this view before any program can execute. Initialized views
+  // must not overlap other initialized views.
+  //
+  // Network weights normally omit this field. Their conventional buffer names
+  // match leela2onnx initializer names, allowing the Lc0 runtime to locate,
+  // convert, and arrange weights for the destination dtype and shape.
+  optional bytes data = 6;
+}
+
+// CUDA ABI parameter kinds supported by V1. The batch size is always an
+// unsigned 32-bit value. Other runtime scalar arguments are intentionally not
+// supported by this format generation.
+enum KernelParameterKind {
+  KERNEL_PARAMETER_UNKNOWN = 0;
+  KERNEL_PARAMETER_BUFFER = 1;
+  KERNEL_PARAMETER_BATCH_U32 = 2;
+}
+
+// A CUDA function exported by one of the embedded cubins.
+message Kernel {
+  required string name = 1;
+  required string binary = 2;
+  required string function = 3;
+
+  // Complete parameter list in CUDA ABI order. Every Node referencing this
+  // kernel must have the same number and sequence of argument kinds.
+  repeated KernelParameterKind parameters = 4;
+}
+
+message Graph {
+  repeated Node nodes = 1;
+}
+
+// One executable variant for an exact CUDA compute capability and a batch-size
+// upper bound. For an invocation, the runtime selects the program with exact
+// matching SM major/minor and the smallest max_batch_size greater than or equal
+// to the actual batch size. Two programs must not have the same tuple of
+// (sm_major, sm_minor, max_batch_size).
+message Program {
+  required string name = 1;
+
+  required uint32 sm_major = 2;
+  required uint32 sm_minor = 3;
+  required uint32 max_batch_size = 4;
+
+  required Graph graph = 5;
+}
+
+// Computes one launch-grid dimension as:
+//
+//   ceil_div(batch * batch_multiplier + constant, divisor)
+//
+// Set batch_multiplier to zero for a fixed dimension. Divisor must be nonzero,
+// and the result must be nonzero and fit the corresponding CUDA grid limit.
+// The runtime evaluates the formula with checked 64-bit intermediate values.
+message GridDimension {
+  required uint32 batch_multiplier = 1;
+  required uint32 constant = 2;
+  required uint32 divisor = 3;
+}
+
+// One argument passed to cuLaunchKernel. Arguments occur in CUDA ABI order.
+message KernelArgument {
+  required KernelParameterKind kind = 1;
+
+  // Set exactly when kind is KERNEL_PARAMETER_BUFFER. The pointer passed to
+  // CUDA is the beginning of the named logical buffer plus offset_bytes.
+  // offset_bytes must not exceed that buffer's size. It is always a byte
+  // offset, independent of the buffer dtype.
+  optional string buffer = 2;
+  optional uint64 offset_bytes = 3;
+}
+
+// A kernel invocation in the dependency graph.
+//
+// Record order has no execution semantics. dependencies alone define the
+// partial order, and the resulting graph must be acyclic. An initial runtime
+// may execute any topological ordering serially. A later runtime may schedule
+// independent nodes concurrently or instantiate the graph as a CUDA Graph.
+message Node {
+  required string name = 1;
+  required string kernel = 2;
+
+  // Names of nodes in this Graph that must complete before this node starts.
+  repeated string dependencies = 3;
+  repeated KernelArgument arguments = 4;
+
+  required GridDimension grid_x = 5;
+  required GridDimension grid_y = 6;
+  required GridDimension grid_z = 7;
+
+  required uint32 block_x = 8;
+  required uint32 block_y = 9;
+  required uint32 block_z = 10;
+
+  // Dynamic shared memory passed to cuLaunchKernel, in bytes.
+  required uint32 shared_memory_bytes = 11;
+}

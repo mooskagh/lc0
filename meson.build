@@ -115,11 +115,14 @@ elif get_option('malloc') != ''
   deps += cc.find_library(get_option('malloc'), required: true)
 endif
 
-# ONNX and HLO protobufs.
+# ONNX, HLO, and neural executable protobufs.
 files += gen.process('proto/onnx.proto',
   preserve_path_from : meson.current_source_dir())
 
 files += gen.process('proto/hlo.proto',
+  preserve_path_from : meson.current_source_dir())
+
+files += gen.process('proto/lc0ex.proto',
   preserve_path_from : meson.current_source_dir())
 
 #############################################################################
