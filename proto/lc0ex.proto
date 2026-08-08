@@ -29,8 +29,8 @@ syntax = "proto2";
 
 package pblczero;
 
-// GPU target for which an executable was compiled.
-message GpuTarget {
+// Target for which an executable was compiled.
+message Target {
   enum Vendor {
     VENDOR_UNKNOWN = 0;
     VENDOR_NVIDIA = 1;
@@ -56,7 +56,7 @@ message NeuralExecutable {
   // minimum supported Lc0 version and network architecture fingerprint.
   optional bytes metadata = 3;
 
-  required GpuTarget gpu_target = 4;
+  required Target target = 4;
 
   repeated Binary binaries = 10;
   repeated Allocation allocations = 11;
@@ -66,7 +66,7 @@ message NeuralExecutable {
   repeated Program programs = 15;
 }
 
-// An embedded GPU module. A binary may contain any number of exported symbols.
+// An embedded binary module. A binary may contain any number of exported symbols.
 message Binary {
   enum Format {
     FORMAT_UNKNOWN = 0;
