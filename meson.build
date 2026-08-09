@@ -122,8 +122,21 @@ files += gen.process('proto/onnx.proto',
 files += gen.process('proto/hlo.proto',
   preserve_path_from : meson.current_source_dir())
 
-files += gen.process('proto/lc0ex.proto',
-  preserve_path_from : meson.current_source_dir())
+if get_option('lc0ex-runtime')
+  files += gen.process('proto/lc0ex.proto',
+    preserve_path_from : meson.current_source_dir())
+
+  cu_driver = cc.find_library('cuda', required: true)
+  deps += cu_driver
+
+  foreach d : get_option('cudnn_include')
+    if run_command('scripts/checkdir.py', d, check : false).returncode() == 0
+      includes += include_directories(d, is_system: true)
+    endif
+  endforeach
+
+  files += 'src/neural/backends/cuda-runtime/runtime/cuda_runtime.cc'
+endif
 
 #############################################################################
 ## Main files
