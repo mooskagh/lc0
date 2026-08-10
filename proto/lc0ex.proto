@@ -154,20 +154,31 @@ message Program {
 
 // A kernel invocation in the dependency graph.
 message Node {
-  // A parameter name or an allocation location. Exactly one of parameter_name
-  // and the allocation location must be present.
+  // A parameter name, allocation location, or module symbol. Exactly one
+  // source must be present.
   message Argument {
+    message AllocationLocation {
+      required uint32 index = 1;
+      required uint64 offset = 2;
+    }
+
+    message Symbol {
+      required uint32 binary_idx = 1;
+      required string symbol_name = 2;
+    }
+
     optional string parameter_name = 1;
-    optional uint32 allocation_idx = 2;
-    optional uint64 allocation_offset = 3;
+    optional AllocationLocation allocation = 2;
+    optional Symbol symbol = 3;
   }
 
   required uint32 kernel_idx = 1;
 
   // Indices of nodes in this Program that must complete before this node starts.
   repeated uint32 dependencies = 2;
-  // Arguments in kernel ABI order. An allocation location has effective type
-  // PARAMETER_TYPE_POINTER, while a parameter has its declared type.
+  // Arguments in kernel ABI order. Allocation locations and symbols have
+  // effective type PARAMETER_TYPE_POINTER, while a parameter has its declared
+  // type.
   repeated Argument arguments = 3;
 
   // Launch dimensions in x, y, z order. Each field must contain between one and

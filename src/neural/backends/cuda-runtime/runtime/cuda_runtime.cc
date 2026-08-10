@@ -200,8 +200,10 @@ struct CudaKernel {
 
 struct CudaArgument {
   bool is_parameter = false;
+  bool is_symbol = false;
   std::size_t index = 0;
   std::uint64_t allocation_offset = 0;
+  CUdeviceptr symbol = 0;
 };
 
 struct CudaNode {
@@ -447,11 +449,15 @@ class CudaInvocation final : public Invocation {
           arguments[argument_index] = parameters[argument.index].ArgumentAddress();
         } else {
           auto& value = allocation_values[argument_index];
-          value = context->allocation_addresses[argument.index];
-          Require(argument.allocation_offset <=
-                      std::numeric_limits<CUdeviceptr>::max() - value,
-                  "Kernel argument address overflows.");
-          value += argument.allocation_offset;
+          if (argument.is_symbol) {
+            value = argument.symbol;
+          } else {
+            value = context->allocation_addresses[argument.index];
+            Require(argument.allocation_offset <=
+                        std::numeric_limits<CUdeviceptr>::max() - value,
+                    "Kernel argument address overflows.");
+            value += argument.allocation_offset;
+          }
           arguments[argument_index] = &value;
         }
       }
@@ -766,13 +772,14 @@ void BuildProgram(CudaExecutable& executable, const pblczero::Program& source,
          argument_index < node.arguments_size(); ++argument_index) {
       const auto& source_argument = node.arguments(argument_index);
       const bool is_parameter = source_argument.has_parameter_name();
-      const bool has_allocation = source_argument.has_allocation_idx();
-      const bool has_offset = source_argument.has_allocation_offset();
-      Require(is_parameter
-                  ? !source_argument.parameter_name().empty() &&
-                        !has_allocation && !has_offset
-                  : has_allocation && has_offset,
+      const bool has_allocation = source_argument.has_allocation();
+      const bool has_symbol = source_argument.has_symbol();
+      Require(static_cast<int>(is_parameter) + static_cast<int>(has_allocation) +
+                  static_cast<int>(has_symbol) ==
+                  1,
               "Every node argument must specify exactly one location.");
+      Require(!is_parameter || !source_argument.parameter_name().empty(),
+              "Parameter node argument name must not be empty.");
 
       if (is_parameter) {
         const auto parameter_iter = executable.parameter_indices.find(
@@ -798,19 +805,40 @@ void BuildProgram(CudaExecutable& executable, const pblczero::Program& source,
           argument.index = local_iter->second;
         }
         plan.arguments.push_back(argument);
-      } else {
+      } else if (has_allocation) {
         Require(kernel.parameters[argument_index] ==
                     pblczero::ParameterType_PARAMETER_TYPE_POINTER,
                 "Allocation arguments must have pointer kernel parameters.");
-        Require(source_argument.allocation_idx() < executable.allocations.size(),
+        const auto& location = source_argument.allocation();
+        Require(location.has_index() && location.has_offset(),
+                "Allocation node argument must specify an index and offset.");
+        Require(location.index() < executable.allocations.size(),
                 "Node argument allocation index is out of range.");
         const auto& allocation =
-            executable.allocations[source_argument.allocation_idx()];
-        Require(source_argument.allocation_offset() < allocation.size_bytes,
+            executable.allocations[location.index()];
+        Require(location.offset() < allocation.size_bytes,
                 "Node argument allocation offset is out of range.");
         plan.arguments.push_back(
-            {false, source_argument.allocation_idx(),
-             source_argument.allocation_offset()});
+            {false, false, location.index(), location.offset(), 0});
+      } else {
+        Require(kernel.parameters[argument_index] ==
+                    pblczero::ParameterType_PARAMETER_TYPE_POINTER,
+                "Symbol arguments must have pointer kernel parameters.");
+        const auto& symbol = source_argument.symbol();
+        Require(symbol.has_binary_idx() && symbol.has_symbol_name() &&
+                    !symbol.symbol_name().empty(),
+                "Symbol node argument must specify a binary and symbol name.");
+        Require(symbol.binary_idx() < executable.modules.size(),
+                "Node argument symbol binary index is out of range.");
+        CudaArgument argument;
+        argument.is_symbol = true;
+        std::size_t symbol_size = 0;
+        const std::string symbol_name(symbol.symbol_name());
+        LC0EX_CUDA_CHECK(cuModuleGetGlobal(
+            &argument.symbol, &symbol_size, executable.modules[symbol.binary_idx()],
+            symbol_name.c_str()));
+        Require(symbol_size != 0, "Node argument symbol must not be empty.");
+        plan.arguments.push_back(argument);
       }
     }
 
