@@ -215,8 +215,7 @@ struct CudaNode {
 };
 
 class CudaExecutable;
-class CudaExecutionContext;
-class CudaInvocation;
+class CudaExecution;
 
 class CudaProgram final : public Program {
  public:
@@ -235,24 +234,28 @@ class CudaProgram final : public Program {
 
 class CudaBuffer final : public Buffer {
  public:
-  CudaBuffer(CudaExecutionContext* context, const BufferInfo* info,
-             CUdeviceptr address)
-      : context(context), info(info), address(address) {}
+  CudaBuffer(CudaExecutable* executable, CudaExecution* execution,
+             const BufferInfo* info, CUdeviceptr address)
+      : executable(executable),
+        execution(execution),
+        info(info),
+        address(address) {}
 
   const BufferInfo& GetInfo() const override { return *info; }
   void CopyFromHost(std::span<const std::byte> source) override;
   void CopyToHost(std::span<std::byte> destination) const override;
 
-  CudaExecutionContext* context;
+  CudaExecutable* executable;
+  CudaExecution* execution;
   const BufferInfo* info;
   CUdeviceptr address;
 };
 
 class CudaParameter final : public Parameter {
  public:
-  CudaParameter(CudaInvocation* invocation, std::size_t slot,
+  CudaParameter(CudaExecution* execution, std::size_t slot,
                 pblczero::ParameterType type)
-      : invocation(invocation), slot(slot), type(type) {}
+      : execution(execution), slot(slot), type(type) {}
 
   const ParameterInfo& GetInfo() const override;
   bool IsSet() const override { return is_set; }
@@ -272,7 +275,7 @@ class CudaParameter final : public Parameter {
     throw Exception("Unknown parameter type.");
   }
 
-  CudaInvocation* invocation;
+  CudaExecution* execution;
   std::size_t slot;
   pblczero::ParameterType type;
   bool is_set = false;
@@ -315,7 +318,12 @@ class CudaExecutable final : public Executable {
     return programs[iter->second];
   }
 
-  std::unique_ptr<ExecutionContext> CreateContext() const override;
+  Buffer& GetBuffer(const BufferInfo& info) override;
+  Buffer& GetBuffer(std::string_view name) override;
+
+  std::unique_ptr<Execution> CreateExecution(const Program& program) override;
+  std::unique_ptr<Execution> CreateExecution(
+      std::string_view program_name) override;
 
   void Initialize() {
     LC0EX_CUDA_CHECK(cuDevicePrimaryCtxRetain(&context, device));
@@ -341,6 +349,7 @@ class CudaExecutable final : public Executable {
 
   std::vector<BufferInfo> buffer_infos;
   std::vector<CudaBufferPlan> buffer_plans;
+  std::vector<std::unique_ptr<CudaBuffer>> persistent_buffers;
   std::unordered_map<std::string, std::size_t> buffer_indices;
 
   std::vector<CudaKernel> kernels;
@@ -350,11 +359,11 @@ class CudaExecutable final : public Executable {
   std::unordered_map<std::string, std::size_t> program_indices;
 };
 
-class CudaExecutionContext final : public ExecutionContext {
+class CudaExecution final : public Execution {
  public:
-  explicit CudaExecutionContext(CudaExecutable* executable)
-      : executable(executable) {}
-  ~CudaExecutionContext() override;
+  CudaExecution(CudaExecutable* executable, const CudaProgram* program)
+      : executable(executable), program(program) {}
+  ~CudaExecution() override;
 
   Buffer& GetBuffer(const BufferInfo& info) override {
     const auto iter = executable->buffer_indices.find(info.name);
@@ -362,23 +371,30 @@ class CudaExecutionContext final : public ExecutionContext {
             Missing("buffer", info.name));
     Require(&executable->buffer_infos[iter->second] == &info,
             "Buffer descriptor belongs to another executable.");
-    return buffers[iter->second];
+    Require(info.lifetime == pblczero::Allocation::LIFETIME_EXECUTION,
+            "Buffer is not an execution buffer.");
+    return *buffers[iter->second];
   }
 
   Buffer& GetBuffer(std::string_view name) override {
     const auto iter = executable->buffer_indices.find(std::string(name));
     Require(iter != executable->buffer_indices.end(), Missing("buffer", name));
-    return buffers[iter->second];
+    Require(executable->buffer_infos[iter->second].lifetime ==
+                pblczero::Allocation::LIFETIME_EXECUTION,
+            "Buffer is not an execution buffer.");
+    return *buffers[iter->second];
   }
 
-  std::unique_ptr<Invocation> CreateInvocation(
-      const Program& program) override;
-  std::unique_ptr<Invocation> CreateInvocation(
-      std::string_view program_name) override;
+  Parameter& GetParameter(std::string_view name) override {
+    const auto iter = program->parameter_indices.find(std::string(name));
+    Require(iter != program->parameter_indices.end(),
+            Missing("parameter", name));
+    return parameters[iter->second];
+  }
 
-  void Synchronize() override {
-    executable->SetCurrent();
-    LC0EX_CUDA_CHECK(cuStreamSynchronize(stream));
+  void ResetParameters() override {
+    EnsureIdle("reset parameters");
+    for (auto& parameter : parameters) parameter.Reset();
   }
 
   void Initialize() {
@@ -394,8 +410,8 @@ class CudaExecutionContext final : public ExecutionContext {
           allocation_addresses[i] = allocation.address;
           break;
         case pblczero::Allocation::LIFETIME_EXECUTION: {
-          const auto memory = AllocateDeviceMemory(
-              allocation.size_bytes, allocation.alignment_bytes);
+          const auto memory = AllocateDeviceMemory(allocation.size_bytes,
+                                                   allocation.alignment_bytes);
           allocation_bases[i] = memory.first;
           allocation_addresses[i] = memory.second;
           break;
@@ -405,29 +421,22 @@ class CudaExecutionContext final : public ExecutionContext {
       }
     }
 
-    buffers.reserve(executable->buffer_plans.size());
+    buffers.resize(executable->buffer_plans.size());
     for (std::size_t i = 0; i < executable->buffer_plans.size(); ++i) {
       const auto& plan = executable->buffer_plans[i];
+      if (executable->buffer_infos[i].lifetime !=
+          pblczero::Allocation::LIFETIME_EXECUTION) {
+        continue;
+      }
       auto address = allocation_addresses[plan.allocation];
       Require(plan.offset_bytes <=
                   std::numeric_limits<CUdeviceptr>::max() - address,
               "Buffer address overflows.");
       address += plan.offset_bytes;
-      buffers.emplace_back(this, &executable->buffer_infos[i], address);
+      buffers[i] = std::make_unique<CudaBuffer>(
+          executable, this, &executable->buffer_infos[i], address);
     }
-  }
 
-  CudaExecutable* executable;
-  CUstream stream = nullptr;
-  std::vector<CUdeviceptr> allocation_bases;
-  std::vector<CUdeviceptr> allocation_addresses;
-  std::vector<CudaBuffer> buffers;
-};
-
-class CudaInvocation final : public Invocation {
- public:
-  CudaInvocation(CudaExecutionContext* context, const CudaProgram* program)
-      : context(context), program(program) {
     parameters.reserve(program->parameters.size());
     for (std::size_t i = 0; i < program->parameters.size(); ++i) {
       parameters.emplace_back(this, i, program->parameters[i].type);
@@ -446,13 +455,14 @@ class CudaInvocation final : public Invocation {
            argument_index < node.arguments.size(); ++argument_index) {
         const auto& argument = node.arguments[argument_index];
         if (argument.is_parameter) {
-          arguments[argument_index] = parameters[argument.index].ArgumentAddress();
+          arguments[argument_index] =
+              parameters[argument.index].ArgumentAddress();
         } else {
           auto& value = allocation_values[argument_index];
           if (argument.is_symbol) {
             value = argument.symbol;
           } else {
-            value = context->allocation_addresses[argument.index];
+            value = allocation_addresses[argument.index];
             Require(argument.allocation_offset <=
                         std::numeric_limits<CUdeviceptr>::max() - value,
                     "Kernel argument address overflows.");
@@ -464,49 +474,57 @@ class CudaInvocation final : public Invocation {
     }
   }
 
-  Parameter& GetParameter(std::string_view name) override {
-    const auto iter = program->parameter_indices.find(std::string(name));
-    Require(iter != program->parameter_indices.end(),
-            Missing("parameter", name));
-    return parameters[iter->second];
-  }
-
-  void ResetParameters() override {
-    for (auto& parameter : parameters) parameter.Reset();
+  void EnsureIdle(std::string_view operation) const {
+    Require(!in_flight, "Cannot " + std::string(operation) +
+                            " while the execution is in flight.");
   }
 
   void Run() override {
+    EnsureIdle("run");
     for (const auto& parameter : parameters) {
-      Require(parameter.is_set,
-              "Invocation parameter is not set: \"" +
-                  parameter.GetInfo().name + "\".");
+      Require(parameter.is_set, "Execution parameter is not set: \"" +
+                                    parameter.GetInfo().name + "\".");
     }
 
-    context->executable->SetCurrent();
+    executable->SetCurrent();
+    in_flight = true;
     for (std::size_t i = 0; i < program->nodes.size(); ++i) {
       const auto& node = program->nodes[i];
-      LC0EX_CUDA_CHECK(cuLaunchKernel(
-          node.function, node.grid[0], node.grid[1], node.grid[2],
-          node.block[0], node.block[1], node.block[2],
-          node.dynamic_shared_memory_bytes, context->stream,
-          launch_arguments[i].data(), nullptr));
+      LC0EX_CUDA_CHECK(cuLaunchKernel(node.function, node.grid[0], node.grid[1],
+                                      node.grid[2], node.block[0],
+                                      node.block[1], node.block[2],
+                                      node.dynamic_shared_memory_bytes, stream,
+                                      launch_arguments[i].data(), nullptr));
     }
   }
 
-  CudaExecutionContext* context;
+  void Synchronize() override {
+    if (!in_flight) return;
+    executable->SetCurrent();
+    LC0EX_CUDA_CHECK(cuStreamSynchronize(stream));
+    in_flight = false;
+  }
+
+  CudaExecutable* executable;
   const CudaProgram* program;
+  CUstream stream = nullptr;
+  bool in_flight = false;
+  std::vector<CUdeviceptr> allocation_bases;
+  std::vector<CUdeviceptr> allocation_addresses;
+  std::vector<std::unique_ptr<CudaBuffer>> buffers;
   std::vector<CudaParameter> parameters;
   std::vector<std::vector<void*>> launch_arguments;
   std::vector<std::vector<CUdeviceptr>> allocation_argument_values;
 };
 
 const ParameterInfo& CudaParameter::GetInfo() const {
-  return invocation->program->parameters[slot];
+  return execution->program->parameters[slot];
 }
 
 void CudaParameter::Set(std::uint32_t value) {
   Require(type == pblczero::ParameterType_PARAMETER_TYPE_U32,
           "Parameter is not a u32 parameter.");
+  execution->EnsureIdle("set a parameter");
   u32 = value;
   is_set = true;
 }
@@ -517,13 +535,18 @@ void CudaParameter::Set(const Buffer& buffer) {
   const auto* cuda_buffer = dynamic_cast<const CudaBuffer*>(&buffer);
   Require(cuda_buffer != nullptr,
           "Pointer parameter buffer belongs to another runtime.");
-  Require(cuda_buffer->context == invocation->context,
-          "Pointer parameter buffer belongs to another execution context.");
+  Require(cuda_buffer->executable == execution->executable,
+          "Pointer parameter buffer belongs to another executable.");
+  Require(
+      cuda_buffer->execution == nullptr || cuda_buffer->execution == execution,
+      "Pointer parameter buffer belongs to another execution.");
+  execution->EnsureIdle("set a parameter");
   pointer = cuda_buffer->address;
   is_set = true;
 }
 
 void CudaParameter::Reset() {
+  execution->EnsureIdle("reset a parameter");
   is_set = false;
   u32 = 0;
   pointer = 0;
@@ -532,17 +555,18 @@ void CudaParameter::Reset() {
 void CudaBuffer::CopyFromHost(std::span<const std::byte> source) {
   Require(source.size() == info->size_bytes,
           "Host source size does not match buffer size.");
-  context->executable->SetCurrent();
-  LC0EX_CUDA_CHECK(cuMemcpyHtoDAsync(address, source.data(), source.size(),
-                                     context->stream));
+  if (execution) execution->EnsureIdle("write an execution buffer");
+  executable->SetCurrent();
+  LC0EX_CUDA_CHECK(cuMemcpyHtoD(address, source.data(), source.size()));
 }
 
 void CudaBuffer::CopyToHost(std::span<std::byte> destination) const {
   Require(destination.size() == info->size_bytes,
           "Host destination size does not match buffer size.");
-  context->executable->SetCurrent();
-  LC0EX_CUDA_CHECK(cuMemcpyDtoHAsync(destination.data(), address,
-                                     destination.size(), context->stream));
+  if (execution) execution->EnsureIdle("read an execution buffer");
+  executable->SetCurrent();
+  LC0EX_CUDA_CHECK(
+      cuMemcpyDtoH(destination.data(), address, destination.size()));
 }
 
 CudaExecutable::~CudaExecutable() {
@@ -558,7 +582,7 @@ CudaExecutable::~CudaExecutable() {
   IgnoreCuda(cuDevicePrimaryCtxRelease(device));
 }
 
-CudaExecutionContext::~CudaExecutionContext() {
+CudaExecution::~CudaExecution() {
   if (!executable || !executable->context_retained) return;
   if (cuCtxSetCurrent(executable->context) == CUDA_SUCCESS) {
     if (stream) IgnoreCuda(cuStreamSynchronize(stream));
@@ -569,27 +593,43 @@ CudaExecutionContext::~CudaExecutionContext() {
   }
 }
 
-std::unique_ptr<Invocation> CudaExecutionContext::CreateInvocation(
+Buffer& CudaExecutable::GetBuffer(const BufferInfo& info) {
+  const auto iter = buffer_indices.find(info.name);
+  Require(iter != buffer_indices.end(), Missing("buffer", info.name));
+  Require(&buffer_infos[iter->second] == &info,
+          "Buffer descriptor belongs to another executable.");
+  Require(info.lifetime == pblczero::Allocation::LIFETIME_PERSISTENT,
+          "Buffer is not a persistent buffer.");
+  return *persistent_buffers[iter->second];
+}
+
+Buffer& CudaExecutable::GetBuffer(std::string_view name) {
+  const auto iter = buffer_indices.find(std::string(name));
+  Require(iter != buffer_indices.end(), Missing("buffer", name));
+  Require(buffer_infos[iter->second].lifetime ==
+              pblczero::Allocation::LIFETIME_PERSISTENT,
+          "Buffer is not a persistent buffer.");
+  return *persistent_buffers[iter->second];
+}
+
+std::unique_ptr<Execution> CudaExecutable::CreateExecution(
     const Program& program) {
   const auto* cuda_program = dynamic_cast<const CudaProgram*>(&program);
-  Require(cuda_program != nullptr && cuda_program->owner == executable,
+  Require(cuda_program != nullptr && cuda_program->owner == this,
           "Program belongs to another executable.");
-  return std::make_unique<CudaInvocation>(this, cuda_program);
+  auto execution = std::make_unique<CudaExecution>(this, cuda_program);
+  execution->Initialize();
+  return execution;
 }
 
-std::unique_ptr<Invocation> CudaExecutionContext::CreateInvocation(
+std::unique_ptr<Execution> CudaExecutable::CreateExecution(
     std::string_view program_name) {
-  const auto iter = executable->program_indices.find(std::string(program_name));
-  Require(iter != executable->program_indices.end(),
-          Missing("program", program_name));
-  return std::make_unique<CudaInvocation>(this, &executable->programs[iter->second]);
-}
-
-std::unique_ptr<ExecutionContext> CudaExecutable::CreateContext() const {
-  auto context = std::make_unique<CudaExecutionContext>(
-      const_cast<CudaExecutable*>(this));
-  context->Initialize();
-  return context;
+  const auto iter = program_indices.find(std::string(program_name));
+  Require(iter != program_indices.end(), Missing("program", program_name));
+  auto execution =
+      std::make_unique<CudaExecution>(this, &programs[iter->second]);
+  execution->Initialize();
+  return execution;
 }
 
 void BuildModules(CudaExecutable& executable,
@@ -704,6 +744,22 @@ void BuildBuffers(CudaExecutable& executable,
     executable.buffer_plans.push_back(std::move(plan));
     executable.buffer_indices.emplace(executable.buffer_infos.back().name,
                                       executable.buffer_infos.size() - 1);
+  }
+
+  executable.persistent_buffers.resize(executable.buffer_plans.size());
+  for (std::size_t i = 0; i < executable.buffer_plans.size(); ++i) {
+    if (executable.buffer_infos[i].lifetime !=
+        pblczero::Allocation::LIFETIME_PERSISTENT) {
+      continue;
+    }
+    const auto& plan = executable.buffer_plans[i];
+    auto address = executable.allocations[plan.allocation].address;
+    Require(
+        plan.offset_bytes <= std::numeric_limits<CUdeviceptr>::max() - address,
+        "Buffer address overflows.");
+    address += plan.offset_bytes;
+    executable.persistent_buffers[i] = std::make_unique<CudaBuffer>(
+        &executable, nullptr, &executable.buffer_infos[i], address);
   }
 }
 

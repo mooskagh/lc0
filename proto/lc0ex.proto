@@ -83,14 +83,16 @@ message Allocation {
   enum Lifetime {
     LIFETIME_UNKNOWN = 0;
 
-    // Exists for the lifetime of the loaded backend. This is intended for
-    // network weights and other immutable constants.
+    // Exists for the lifetime of the loaded executable and is shared by all
+    // executions. This is intended for network weights and other constants.
+    // Executable producers and runtime callers must ensure that writes do not
+    // race any execution that may access the allocation.
     LIFETIME_PERSISTENT = 1;
 
-    // Exists for the lifetime of a computation context. This may contain named
-    // input and output buffers alongside internal activations and scratch
-    // storage. A runtime may create several instances to support concurrent
-    // computations.
+    // Exists for the lifetime of one reusable execution instance. This may
+    // contain named input and output buffers alongside internal activations and
+    // scratch storage. Each execution receives a separate instance so that
+    // different executions may run concurrently.
     LIFETIME_EXECUTION = 2;
   }
 

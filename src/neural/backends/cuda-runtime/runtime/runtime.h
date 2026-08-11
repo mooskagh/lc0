@@ -41,9 +41,9 @@ namespace lczero {
 namespace lc0ex {
 
 // Handles and descriptor references returned by an Executable remain valid
-// until that Executable is destroyed. An ExecutionContext, its buffers, and
-// its invocations must not outlive their Executable or each other as noted by
-// the owning object.
+// until that Executable is destroyed. An Execution and its buffers must not
+// outlive their Executable. Distinct Executions may be used concurrently; an
+// individual Execution must only be accessed by one host thread at a time.
 struct TargetInfo {
   pblczero::Target::Vendor vendor = pblczero::Target::VENDOR_UNKNOWN;
   std::string architecture;
@@ -74,6 +74,8 @@ class Buffer {
   virtual ~Buffer() = default;
 
   virtual const BufferInfo& GetInfo() const = 0;
+  // Host copies complete before returning, and therefore accept ordinary
+  // pageable host memory.
   virtual void CopyFromHost(std::span<const std::byte> source) = 0;
   virtual void CopyToHost(std::span<std::byte> destination) const = 0;
 };
@@ -97,25 +99,19 @@ class Program {
   virtual std::span<const ParameterInfo> GetParameters() const = 0;
 };
 
-class Invocation {
+// A reusable instance of one Program. It owns a stream and a separate instance
+// of every execution-lifetime allocation. Run() submits asynchronously; the
+// Execution may be modified or run again only after Synchronize().
+class Execution {
  public:
-  virtual ~Invocation() = default;
+  virtual ~Execution() = default;
 
+  // Only execution-lifetime buffers are available through an Execution.
+  virtual Buffer& GetBuffer(const BufferInfo& info) = 0;
+  virtual Buffer& GetBuffer(std::string_view name) = 0;
   virtual Parameter& GetParameter(std::string_view name) = 0;
   virtual void ResetParameters() = 0;
   virtual void Run() = 0;
-};
-
-class ExecutionContext {
- public:
-  virtual ~ExecutionContext() = default;
-
-  virtual Buffer& GetBuffer(const BufferInfo& info) = 0;
-  virtual Buffer& GetBuffer(std::string_view name) = 0;
-  virtual std::unique_ptr<Invocation> CreateInvocation(
-      const Program& program) = 0;
-  virtual std::unique_ptr<Invocation> CreateInvocation(
-      std::string_view program_name) = 0;
   virtual void Synchronize() = 0;
 };
 
@@ -133,7 +129,16 @@ class Executable {
   virtual const ParameterInfo& FindParameter(std::string_view name) const = 0;
   virtual const Program& FindProgram(std::string_view name) const = 0;
 
-  virtual std::unique_ptr<ExecutionContext> CreateContext() const = 0;
+  // Only persistent buffers are available through an Executable. Persistent
+  // storage is shared by all Executions; callers must not modify it while an
+  // Execution that may access it is in flight.
+  virtual Buffer& GetBuffer(const BufferInfo& info) = 0;
+  virtual Buffer& GetBuffer(std::string_view name) = 0;
+
+  virtual std::unique_ptr<Execution> CreateExecution(
+      const Program& program) = 0;
+  virtual std::unique_ptr<Execution> CreateExecution(
+      std::string_view program_name) = 0;
 };
 
 class Runtime {
