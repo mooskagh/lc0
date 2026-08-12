@@ -43,6 +43,12 @@ message Target {
   required string architecture = 2;
 }
 
+// One contiguous device-memory allocation.
+message Allocation {
+  required uint64 size_bytes = 1;
+  required uint64 alignment_bytes = 2;
+}
+
 // A serialized neural-network executable.
 message NeuralExecutable {
 
@@ -59,11 +65,16 @@ message NeuralExecutable {
   required Target target = 4;
 
   repeated Binary binaries = 10;
-  repeated Allocation allocations = 11;
   repeated Parameter parameters = 12;
-  repeated Buffer buffers = 13;
   repeated Kernel kernels = 14;
   repeated Program programs = 15;
+
+  // One persistent allocation shared by all programs. Omitted when the executable
+  // has no persistent storage.
+  optional Allocation persistent_allocation = 16;
+
+  // Named persistent buffers. Execution buffers are listed by their Program.
+  repeated Buffer buffers = 13;
 }
 
 // An embedded binary module. A binary may contain any number of exported symbols.
@@ -75,30 +86,6 @@ message Binary {
 
   required Format format = 1;
   required bytes data = 2;
-}
-
-// A physical device-memory allocation. Buffers and kernel arguments refer to
-// these allocations by index in NeuralExecutable.allocations.
-message Allocation {
-  enum Lifetime {
-    LIFETIME_UNKNOWN = 0;
-
-    // Exists for the lifetime of the loaded executable and is shared by all
-    // executions. This is intended for network weights and other constants.
-    // Executable producers and runtime callers must ensure that writes do not
-    // race any execution that may access the allocation.
-    LIFETIME_PERSISTENT = 1;
-
-    // Exists for the lifetime of one reusable execution instance. This may
-    // contain named input and output buffers alongside internal activations and
-    // scratch storage. Each execution receives a separate instance so that
-    // different executions may run concurrently.
-    LIFETIME_EXECUTION = 2;
-  }
-
-  required uint64 size_bytes = 1;
-  required uint64 alignment_bytes = 2;
-  required Lifetime lifetime = 3;
 }
 
 // A typed named memory range supplied to the runtime. Internal unnamed ranges
@@ -116,10 +103,9 @@ message Buffer {
   }
 
   required string name = 1;
-  required uint32 allocation_idx = 2;
-  required uint64 allocation_offset = 3;
-  required DataType data_type = 4;
-  repeated uint64 shape = 5;
+  required uint64 offset = 2;
+  required DataType data_type = 3;
+  repeated uint64 shape = 4;
 }
 
 // Kernel ABI parameter types supported by the initial format generation.
@@ -151,7 +137,9 @@ message Kernel {
 message Program {
   required string name = 1;
   optional bytes metadata = 2;
-  repeated Node nodes = 3;
+  optional Allocation execution_allocation = 3;
+  repeated Buffer buffers = 4;
+  repeated Node nodes = 5;
 }
 
 // A kernel invocation in the dependency graph.
@@ -160,7 +148,13 @@ message Node {
   // source must be present.
   message Argument {
     message AllocationLocation {
-      required uint32 index = 1;
+      enum AllocationKind {
+        ALLOCATION_UNKNOWN = 0;
+        ALLOCATION_PERSISTENT = 1;
+        ALLOCATION_EXECUTION = 2;
+      }
+
+      required AllocationKind kind = 1;
       required uint64 offset = 2;
     }
 

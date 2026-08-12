@@ -27,6 +27,8 @@
 
 #include "cuda_runtime.h"
 
+#include <cuda.h>
+
 #include <array>
 #include <bit>
 #include <cstddef>
@@ -39,8 +41,6 @@
 #include <unordered_set>
 #include <utility>
 #include <vector>
-
-#include <cuda.h>
 
 #include "utils/exception.h"
 
@@ -73,11 +73,11 @@ constexpr std::uint32_t kFormat = 1;
   throw Exception(message);
 }
 
-#define LC0EX_CUDA_CHECK(expression)                                    \
-  do {                                                                  \
-    const CUresult lc0ex_status = (expression);                         \
-    if (lc0ex_status != CUDA_SUCCESS)                                   \
-      ThrowCuda(lc0ex_status, #expression, __FILE__, __LINE__);         \
+#define LC0EX_CUDA_CHECK(expression)                            \
+  do {                                                          \
+    const CUresult lc0ex_status = (expression);                 \
+    if (lc0ex_status != CUDA_SUCCESS)                           \
+      ThrowCuda(lc0ex_status, #expression, __FILE__, __LINE__); \
   } while (false)
 
 void IgnoreCuda(CUresult status) { (void)status; }
@@ -146,6 +146,12 @@ std::uint64_t BufferSize(const pblczero::Buffer& buffer) {
                          "Buffer size");
 }
 
+void RequireBufferAlignment(const pblczero::Buffer& buffer,
+                            std::uint64_t offset) {
+  const auto alignment = ElementSize(buffer.data_type());
+  Require(offset % alignment == 0, "Buffer offset is not type-aligned.");
+}
+
 std::array<unsigned int, 3> LaunchDimensions(
     const std::vector<std::uint32_t>& dimensions, std::string_view kind) {
   Require(!dimensions.empty() && dimensions.size() <= 3,
@@ -168,11 +174,12 @@ std::pair<CUdeviceptr, CUdeviceptr> AllocateDeviceMemory(
           "Device allocation size does not fit in size_t.");
 
   CUdeviceptr base = 0;
-  LC0EX_CUDA_CHECK(cuMemAlloc(&base, static_cast<std::size_t>(allocation_size)));
+  LC0EX_CUDA_CHECK(
+      cuMemAlloc(&base, static_cast<std::size_t>(allocation_size)));
 
   const auto base_address = static_cast<std::uint64_t>(base);
-  Require(base_address <= std::numeric_limits<std::uint64_t>::max() -
-                              alignment_bytes + 1,
+  Require(base_address <=
+              std::numeric_limits<std::uint64_t>::max() - alignment_bytes + 1,
           "Device allocation address overflows.");
   const auto aligned_address =
       (base_address + alignment_bytes - 1) & ~(alignment_bytes - 1);
@@ -182,14 +189,11 @@ std::pair<CUdeviceptr, CUdeviceptr> AllocateDeviceMemory(
 struct CudaAllocation {
   std::uint64_t size_bytes = 0;
   std::uint64_t alignment_bytes = 0;
-  pblczero::Allocation::Lifetime lifetime =
-      pblczero::Allocation::LIFETIME_UNKNOWN;
   CUdeviceptr base = 0;
   CUdeviceptr address = 0;
 };
 
 struct CudaBufferPlan {
-  std::size_t allocation = 0;
   std::uint64_t offset_bytes = 0;
 };
 
@@ -202,7 +206,9 @@ struct CudaArgument {
   bool is_parameter = false;
   bool is_symbol = false;
   std::size_t index = 0;
-  std::uint64_t allocation_offset = 0;
+  pblczero::Node::Argument::AllocationLocation::AllocationKind kind =
+      pblczero::Node::Argument::AllocationLocation::ALLOCATION_UNKNOWN;
+  std::uint64_t offset = 0;
   CUdeviceptr symbol = 0;
 };
 
@@ -221,6 +227,16 @@ class CudaProgram final : public Program {
  public:
   const ProgramInfo& GetInfo() const override { return info; }
 
+  std::span<const BufferInfo> GetBuffers() const override {
+    return {buffer_infos.data(), buffer_infos.size()};
+  }
+
+  const BufferInfo& FindBuffer(std::string_view name) const override {
+    const auto iter = buffer_indices.find(std::string(name));
+    Require(iter != buffer_indices.end(), Missing("buffer", name));
+    return buffer_infos[iter->second];
+  }
+
   std::span<const ParameterInfo> GetParameters() const override {
     return {parameters.data(), parameters.size()};
   }
@@ -229,6 +245,10 @@ class CudaProgram final : public Program {
   ProgramInfo info;
   std::vector<ParameterInfo> parameters;
   std::unordered_map<std::string, std::size_t> parameter_indices;
+  CudaAllocation execution_allocation;
+  std::vector<BufferInfo> buffer_infos;
+  std::vector<CudaBufferPlan> buffer_plans;
+  std::unordered_map<std::string, std::size_t> buffer_indices;
   std::vector<CudaNode> nodes;
 };
 
@@ -319,11 +339,8 @@ class CudaExecutable final : public Executable {
   }
 
   Buffer& GetBuffer(const BufferInfo& info) override;
-  Buffer& GetBuffer(std::string_view name) override;
 
   std::unique_ptr<Execution> CreateExecution(const Program& program) override;
-  std::unique_ptr<Execution> CreateExecution(
-      std::string_view program_name) override;
 
   void Initialize() {
     LC0EX_CUDA_CHECK(cuDevicePrimaryCtxRetain(&context, device));
@@ -342,7 +359,7 @@ class CudaExecutable final : public Executable {
 
   std::vector<CUmodule> modules;
 
-  std::vector<CudaAllocation> allocations;
+  CudaAllocation persistent_allocation;
 
   std::vector<ParameterInfo> parameters;
   std::unordered_map<std::string, std::size_t> parameter_indices;
@@ -366,22 +383,11 @@ class CudaExecution final : public Execution {
   ~CudaExecution() override;
 
   Buffer& GetBuffer(const BufferInfo& info) override {
-    const auto iter = executable->buffer_indices.find(info.name);
-    Require(iter != executable->buffer_indices.end(),
+    const auto iter = program->buffer_indices.find(info.name);
+    Require(iter != program->buffer_indices.end(),
             Missing("buffer", info.name));
-    Require(&executable->buffer_infos[iter->second] == &info,
-            "Buffer descriptor belongs to another executable.");
-    Require(info.lifetime == pblczero::Allocation::LIFETIME_EXECUTION,
-            "Buffer is not an execution buffer.");
-    return *buffers[iter->second];
-  }
-
-  Buffer& GetBuffer(std::string_view name) override {
-    const auto iter = executable->buffer_indices.find(std::string(name));
-    Require(iter != executable->buffer_indices.end(), Missing("buffer", name));
-    Require(executable->buffer_infos[iter->second].lifetime ==
-                pblczero::Allocation::LIFETIME_EXECUTION,
-            "Buffer is not an execution buffer.");
+    Require(&program->buffer_infos[iter->second] == &info,
+            "Buffer descriptor belongs to another program.");
     return *buffers[iter->second];
   }
 
@@ -401,40 +407,24 @@ class CudaExecution final : public Execution {
     executable->SetCurrent();
     LC0EX_CUDA_CHECK(cuStreamCreate(&stream, CU_STREAM_DEFAULT));
 
-    allocation_bases.resize(executable->allocations.size());
-    allocation_addresses.resize(executable->allocations.size());
-    for (std::size_t i = 0; i < executable->allocations.size(); ++i) {
-      const auto& allocation = executable->allocations[i];
-      switch (allocation.lifetime) {
-        case pblczero::Allocation::LIFETIME_PERSISTENT:
-          allocation_addresses[i] = allocation.address;
-          break;
-        case pblczero::Allocation::LIFETIME_EXECUTION: {
-          const auto memory = AllocateDeviceMemory(allocation.size_bytes,
-                                                   allocation.alignment_bytes);
-          allocation_bases[i] = memory.first;
-          allocation_addresses[i] = memory.second;
-          break;
-        }
-        case pblczero::Allocation::LIFETIME_UNKNOWN:
-          throw Exception("Unknown allocation lifetime.");
-      }
+    if (program->execution_allocation.size_bytes != 0) {
+      const auto memory =
+          AllocateDeviceMemory(program->execution_allocation.size_bytes,
+                               program->execution_allocation.alignment_bytes);
+      execution_base = memory.first;
+      execution_address = memory.second;
     }
 
-    buffers.resize(executable->buffer_plans.size());
-    for (std::size_t i = 0; i < executable->buffer_plans.size(); ++i) {
-      const auto& plan = executable->buffer_plans[i];
-      if (executable->buffer_infos[i].lifetime !=
-          pblczero::Allocation::LIFETIME_EXECUTION) {
-        continue;
-      }
-      auto address = allocation_addresses[plan.allocation];
+    buffers.resize(program->buffer_plans.size());
+    for (std::size_t i = 0; i < program->buffer_plans.size(); ++i) {
+      const auto& plan = program->buffer_plans[i];
+      auto address = execution_address;
       Require(plan.offset_bytes <=
                   std::numeric_limits<CUdeviceptr>::max() - address,
               "Buffer address overflows.");
       address += plan.offset_bytes;
       buffers[i] = std::make_unique<CudaBuffer>(
-          executable, this, &executable->buffer_infos[i], address);
+          executable, this, &program->buffer_infos[i], address);
     }
 
     parameters.reserve(program->parameters.size());
@@ -462,11 +452,15 @@ class CudaExecution final : public Execution {
           if (argument.is_symbol) {
             value = argument.symbol;
           } else {
-            value = allocation_addresses[argument.index];
-            Require(argument.allocation_offset <=
+            value = argument.kind ==
+                            pblczero::Node::Argument::AllocationLocation::
+                                ALLOCATION_PERSISTENT
+                        ? executable->persistent_allocation.address
+                        : execution_address;
+            Require(argument.offset <=
                         std::numeric_limits<CUdeviceptr>::max() - value,
                     "Kernel argument address overflows.");
-            value += argument.allocation_offset;
+            value += argument.offset;
           }
           arguments[argument_index] = &value;
         }
@@ -509,8 +503,8 @@ class CudaExecution final : public Execution {
   const CudaProgram* program;
   CUstream stream = nullptr;
   bool in_flight = false;
-  std::vector<CUdeviceptr> allocation_bases;
-  std::vector<CUdeviceptr> allocation_addresses;
+  CUdeviceptr execution_base = 0;
+  CUdeviceptr execution_address = 0;
   std::vector<std::unique_ptr<CudaBuffer>> buffers;
   std::vector<CudaParameter> parameters;
   std::vector<std::vector<void*>> launch_arguments;
@@ -572,8 +566,8 @@ void CudaBuffer::CopyToHost(std::span<std::byte> destination) const {
 CudaExecutable::~CudaExecutable() {
   if (!context_retained) return;
   if (cuCtxSetCurrent(context) == CUDA_SUCCESS) {
-    for (auto& allocation : allocations) {
-      if (allocation.base) IgnoreCuda(cuMemFree(allocation.base));
+    if (persistent_allocation.base) {
+      IgnoreCuda(cuMemFree(persistent_allocation.base));
     }
     for (auto& module : modules) {
       if (module) IgnoreCuda(cuModuleUnload(module));
@@ -586,9 +580,7 @@ CudaExecution::~CudaExecution() {
   if (!executable || !executable->context_retained) return;
   if (cuCtxSetCurrent(executable->context) == CUDA_SUCCESS) {
     if (stream) IgnoreCuda(cuStreamSynchronize(stream));
-    for (const auto allocation : allocation_bases) {
-      if (allocation) IgnoreCuda(cuMemFree(allocation));
-    }
+    if (execution_base) IgnoreCuda(cuMemFree(execution_base));
     if (stream) IgnoreCuda(cuStreamDestroy(stream));
   }
 }
@@ -598,17 +590,6 @@ Buffer& CudaExecutable::GetBuffer(const BufferInfo& info) {
   Require(iter != buffer_indices.end(), Missing("buffer", info.name));
   Require(&buffer_infos[iter->second] == &info,
           "Buffer descriptor belongs to another executable.");
-  Require(info.lifetime == pblczero::Allocation::LIFETIME_PERSISTENT,
-          "Buffer is not a persistent buffer.");
-  return *persistent_buffers[iter->second];
-}
-
-Buffer& CudaExecutable::GetBuffer(std::string_view name) {
-  const auto iter = buffer_indices.find(std::string(name));
-  Require(iter != buffer_indices.end(), Missing("buffer", name));
-  Require(buffer_infos[iter->second].lifetime ==
-              pblczero::Allocation::LIFETIME_PERSISTENT,
-          "Buffer is not a persistent buffer.");
   return *persistent_buffers[iter->second];
 }
 
@@ -618,16 +599,6 @@ std::unique_ptr<Execution> CudaExecutable::CreateExecution(
   Require(cuda_program != nullptr && cuda_program->owner == this,
           "Program belongs to another executable.");
   auto execution = std::make_unique<CudaExecution>(this, cuda_program);
-  execution->Initialize();
-  return execution;
-}
-
-std::unique_ptr<Execution> CudaExecutable::CreateExecution(
-    std::string_view program_name) {
-  const auto iter = program_indices.find(std::string(program_name));
-  Require(iter != program_indices.end(), Missing("program", program_name));
-  auto execution =
-      std::make_unique<CudaExecution>(this, &programs[iter->second]);
   execution->Initialize();
   return execution;
 }
@@ -648,34 +619,28 @@ void BuildModules(CudaExecutable& executable,
   }
 }
 
-void BuildAllocations(CudaExecutable& executable,
-                      const pblczero::NeuralExecutable& source) {
-  executable.allocations.reserve(source.allocations_size());
-  for (const auto& allocation : source.allocations()) {
-    Require(allocation.has_size_bytes() && allocation.size_bytes() != 0,
-            "Every allocation must have a nonzero size.");
-    Require(allocation.has_alignment_bytes() &&
-                allocation.alignment_bytes() != 0 &&
-                std::has_single_bit(allocation.alignment_bytes()),
-            "Every allocation must have a nonzero power-of-two alignment.");
-    Require(allocation.has_lifetime(),
-            "Every allocation must have a lifetime.");
-    Require(allocation.lifetime() ==
-                pblczero::Allocation::LIFETIME_PERSISTENT ||
-                allocation.lifetime() ==
-                    pblczero::Allocation::LIFETIME_EXECUTION,
-            "Unknown allocation lifetime.");
+void BuildAllocation(CudaAllocation& destination,
+                     const pblczero::Allocation& source,
+                     std::string_view name) {
+  Require(source.has_size_bytes() && source.size_bytes() != 0,
+          std::string(name) + " must have a nonzero size.");
+  Require(source.has_alignment_bytes() && source.alignment_bytes() != 0 &&
+              std::has_single_bit(source.alignment_bytes()),
+          std::string(name) + " must have a nonzero power-of-two alignment.");
+  destination.size_bytes = source.size_bytes();
+  destination.alignment_bytes = source.alignment_bytes();
+}
 
-    auto& plan = executable.allocations.emplace_back(
-        CudaAllocation{allocation.size_bytes(), allocation.alignment_bytes(),
-                       allocation.lifetime(), 0, 0});
-
-    if (plan.lifetime == pblczero::Allocation::LIFETIME_PERSISTENT) {
-      const auto memory =
-          AllocateDeviceMemory(plan.size_bytes, plan.alignment_bytes);
-      plan.base = memory.first;
-      plan.address = memory.second;
-    }
+void BuildPersistentAllocation(CudaExecutable& executable,
+                               const pblczero::NeuralExecutable& source) {
+  if (source.has_persistent_allocation()) {
+    BuildAllocation(executable.persistent_allocation,
+                    source.persistent_allocation(), "Persistent allocation");
+    const auto memory =
+        AllocateDeviceMemory(executable.persistent_allocation.size_bytes,
+                             executable.persistent_allocation.alignment_bytes);
+    executable.persistent_allocation.base = memory.first;
+    executable.persistent_allocation.address = memory.second;
   }
 }
 
@@ -686,12 +651,12 @@ void BuildParameters(CudaExecutable& executable,
   for (const auto& parameter : source.parameters()) {
     Require(parameter.has_name() && !parameter.name().empty(),
             "Every parameter must have a nonempty name.");
-    Require(parameter.has_type() &&
-                (parameter.type() ==
-                     pblczero::ParameterType_PARAMETER_TYPE_U32 ||
-                 parameter.type() ==
-                     pblczero::ParameterType_PARAMETER_TYPE_POINTER),
-            "Every parameter must have a known type.");
+    Require(
+        parameter.has_type() &&
+            (parameter.type() == pblczero::ParameterType_PARAMETER_TYPE_U32 ||
+             parameter.type() ==
+                 pblczero::ParameterType_PARAMETER_TYPE_POINTER),
+        "Every parameter must have a known type.");
 
     const auto name = std::string(parameter.name());
     Require(executable.parameter_indices.find(name) ==
@@ -703,8 +668,8 @@ void BuildParameters(CudaExecutable& executable,
   }
 }
 
-void BuildBuffers(CudaExecutable& executable,
-                  const pblczero::NeuralExecutable& source) {
+void BuildPersistentBuffers(CudaExecutable& executable,
+                            const pblczero::NeuralExecutable& source) {
   executable.buffer_infos.reserve(source.buffers_size());
   executable.buffer_plans.reserve(source.buffers_size());
   executable.buffer_indices.reserve(source.buffers_size());
@@ -714,31 +679,26 @@ void BuildBuffers(CudaExecutable& executable,
     Require(buffer.has_data_type() &&
                 buffer.data_type() != pblczero::Buffer::DATA_TYPE_UNKNOWN,
             "Every buffer must have a known data type.");
-    Require(buffer.has_allocation_idx() && buffer.has_allocation_offset(),
-            "Every buffer must specify an allocation location.");
-    Require(buffer.allocation_idx() < executable.allocations.size(),
-            "Buffer allocation index is out of range.");
+    Require(buffer.has_offset(), "Every buffer must specify an offset.");
+    RequireBufferAlignment(buffer, buffer.offset());
 
     const auto size_bytes = BufferSize(buffer);
 
     const auto name = std::string(buffer.name());
-    Require(executable.buffer_indices.find(name) ==
-                executable.buffer_indices.end(),
-            Duplicate("buffer", name));
+    Require(
+        executable.buffer_indices.find(name) == executable.buffer_indices.end(),
+        Duplicate("buffer", name));
 
-    BufferInfo info{
-        name,
-        buffer.data_type(),
-        std::vector<std::uint64_t>(buffer.shape().begin(), buffer.shape().end()),
-        size_bytes,
-        pblczero::Allocation::LIFETIME_UNKNOWN};
-    CudaBufferPlan plan{buffer.allocation_idx(), buffer.allocation_offset()};
-    const auto& allocation = executable.allocations[plan.allocation];
-    const auto end = CheckedAdd(plan.offset_bytes, size_bytes,
-                                "Buffer allocation range");
-    Require(end <= allocation.size_bytes,
+    BufferInfo info{name, buffer.data_type(),
+                    std::vector<std::uint64_t>(buffer.shape().begin(),
+                                               buffer.shape().end()),
+                    size_bytes};
+    CudaBufferPlan plan{buffer.offset()};
+    const auto end =
+        CheckedAdd(plan.offset_bytes, size_bytes, "Persistent buffer range");
+    Require(executable.persistent_allocation.size_bytes != 0 &&
+                end <= executable.persistent_allocation.size_bytes,
             "Buffer does not fit in its allocation.");
-    info.lifetime = allocation.lifetime;
 
     executable.buffer_infos.push_back(std::move(info));
     executable.buffer_plans.push_back(std::move(plan));
@@ -748,18 +708,52 @@ void BuildBuffers(CudaExecutable& executable,
 
   executable.persistent_buffers.resize(executable.buffer_plans.size());
   for (std::size_t i = 0; i < executable.buffer_plans.size(); ++i) {
-    if (executable.buffer_infos[i].lifetime !=
-        pblczero::Allocation::LIFETIME_PERSISTENT) {
-      continue;
-    }
     const auto& plan = executable.buffer_plans[i];
-    auto address = executable.allocations[plan.allocation].address;
+    auto address = executable.persistent_allocation.address;
     Require(
         plan.offset_bytes <= std::numeric_limits<CUdeviceptr>::max() - address,
         "Buffer address overflows.");
     address += plan.offset_bytes;
     executable.persistent_buffers[i] = std::make_unique<CudaBuffer>(
         &executable, nullptr, &executable.buffer_infos[i], address);
+  }
+}
+
+void BuildProgramBuffers(CudaProgram& program,
+                         const pblczero::Program& source) {
+  program.buffer_infos.reserve(source.buffers_size());
+  program.buffer_plans.reserve(source.buffers_size());
+  program.buffer_indices.reserve(source.buffers_size());
+  for (const auto& buffer : source.buffers()) {
+    Require(buffer.has_name() && !buffer.name().empty(),
+            "Every program buffer must have a nonempty name.");
+    Require(buffer.has_data_type() &&
+                buffer.data_type() != pblczero::Buffer::DATA_TYPE_UNKNOWN,
+            "Every program buffer must have a known data type.");
+    Require(buffer.has_offset(),
+            "Every program buffer must specify an offset.");
+    RequireBufferAlignment(buffer, buffer.offset());
+
+    const auto name = std::string(buffer.name());
+    Require(program.buffer_indices.find(name) == program.buffer_indices.end(),
+            Duplicate("program buffer", name));
+    const auto size_bytes = BufferSize(buffer);
+    const auto end =
+        CheckedAdd(buffer.offset(), size_bytes, "Program buffer range");
+    Require(program.execution_allocation.size_bytes != 0 &&
+                end <= program.execution_allocation.size_bytes,
+            "Program buffer does not fit in its execution allocation.");
+
+    program.buffer_infos.push_back({
+        name,
+        buffer.data_type(),
+        std::vector<std::uint64_t>(buffer.shape().begin(),
+                                   buffer.shape().end()),
+        size_bytes,
+    });
+    program.buffer_plans.push_back({buffer.offset()});
+    program.buffer_indices.emplace(program.buffer_infos.back().name,
+                                   program.buffer_infos.size() - 1);
   }
 }
 
@@ -774,13 +768,14 @@ void BuildKernels(CudaExecutable& executable,
             "Every kernel must name a function.");
 
     CUfunction function = nullptr;
-    LC0EX_CUDA_CHECK(cuModuleGetFunction(
-        &function, executable.modules[kernel.binary_idx()],
-        std::string(kernel.function()).c_str()));
+    LC0EX_CUDA_CHECK(
+        cuModuleGetFunction(&function, executable.modules[kernel.binary_idx()],
+                            std::string(kernel.function()).c_str()));
 
     CudaKernel plan;
     plan.function = function;
-    plan.parameters.assign(kernel.parameters().begin(), kernel.parameters().end());
+    plan.parameters.assign(kernel.parameters().begin(),
+                           kernel.parameters().end());
     for (const auto parameter : plan.parameters) {
       Require(parameter == pblczero::ParameterType_PARAMETER_TYPE_U32 ||
                   parameter == pblczero::ParameterType_PARAMETER_TYPE_POINTER,
@@ -798,6 +793,11 @@ void BuildProgram(CudaExecutable& executable, const pblczero::Program& source,
   destination->owner = &executable;
   destination->info.name = std::string(source.name());
   if (source.has_metadata()) destination->info.metadata = source.metadata();
+  if (source.has_execution_allocation()) {
+    BuildAllocation(destination->execution_allocation,
+                    source.execution_allocation(), "Execution allocation");
+  }
+  BuildProgramBuffers(*destination, source);
 
   std::vector<CudaNode> source_nodes;
   source_nodes.reserve(source.nodes_size());
@@ -824,14 +824,15 @@ void BuildProgram(CudaExecutable& executable, const pblczero::Program& source,
     plan.dynamic_shared_memory_bytes = node.dynamic_shared_memory_bytes();
     plan.arguments.reserve(node.arguments_size());
 
-    for (std::size_t argument_index = 0;
-         argument_index < node.arguments_size(); ++argument_index) {
+    for (std::size_t argument_index = 0; argument_index < node.arguments_size();
+         ++argument_index) {
       const auto& source_argument = node.arguments(argument_index);
       const bool is_parameter = source_argument.has_parameter_name();
       const bool has_allocation = source_argument.has_allocation();
       const bool has_symbol = source_argument.has_symbol();
-      Require(static_cast<int>(is_parameter) + static_cast<int>(has_allocation) +
-                  static_cast<int>(has_symbol) ==
+      Require(static_cast<int>(is_parameter) +
+                      static_cast<int>(has_allocation) +
+                      static_cast<int>(has_symbol) ==
                   1,
               "Every node argument must specify exactly one location.");
       Require(!is_parameter || !source_argument.parameter_name().empty(),
@@ -866,16 +867,29 @@ void BuildProgram(CudaExecutable& executable, const pblczero::Program& source,
                     pblczero::ParameterType_PARAMETER_TYPE_POINTER,
                 "Allocation arguments must have pointer kernel parameters.");
         const auto& location = source_argument.allocation();
-        Require(location.has_index() && location.has_offset(),
-                "Allocation node argument must specify an index and offset.");
-        Require(location.index() < executable.allocations.size(),
-                "Node argument allocation index is out of range.");
-        const auto& allocation =
-            executable.allocations[location.index()];
-        Require(location.offset() < allocation.size_bytes,
-                "Node argument allocation offset is out of range.");
-        plan.arguments.push_back(
-            {false, false, location.index(), location.offset(), 0});
+        Require(location.has_kind() && location.has_offset(),
+                "Allocation argument must specify an allocation and offset.");
+        Require(
+            location.kind() == pblczero::Node::Argument::AllocationLocation::
+                                   ALLOCATION_PERSISTENT ||
+                location.kind() == pblczero::Node::Argument::
+                                       AllocationLocation::ALLOCATION_EXECUTION,
+            "Allocation argument has an unknown allocation kind.");
+        const auto allocation_size =
+            location.kind() == pblczero::Node::Argument::AllocationLocation::
+                                   ALLOCATION_PERSISTENT
+                ? executable.persistent_allocation.size_bytes
+                : destination->execution_allocation.size_bytes;
+        Require(allocation_size != 0 && location.offset() < allocation_size,
+                "Allocation argument offset is out of range.");
+        plan.arguments.push_back({
+            false,
+            false,
+            0,
+            location.kind(),
+            location.offset(),
+            0,
+        });
       } else {
         Require(kernel.parameters[argument_index] ==
                     pblczero::ParameterType_PARAMETER_TYPE_POINTER,
@@ -891,8 +905,8 @@ void BuildProgram(CudaExecutable& executable, const pblczero::Program& source,
         std::size_t symbol_size = 0;
         const std::string symbol_name(symbol.symbol_name());
         LC0EX_CUDA_CHECK(cuModuleGetGlobal(
-            &argument.symbol, &symbol_size, executable.modules[symbol.binary_idx()],
-            symbol_name.c_str()));
+            &argument.symbol, &symbol_size,
+            executable.modules[symbol.binary_idx()], symbol_name.c_str()));
         Require(symbol_size != 0, "Node argument symbol must not be empty.");
         plan.arguments.push_back(argument);
       }
@@ -906,8 +920,7 @@ void BuildProgram(CudaExecutable& executable, const pblczero::Program& source,
               "Node dependencies must not be duplicated.");
       Require(dependency < source.nodes_size(),
               "Node dependency index is out of range.");
-      Require(dependency != node_index,
-              "A node cannot depend on itself.");
+      Require(dependency != node_index, "A node cannot depend on itself.");
       ++indegree[node_index];
       outgoing[dependency].push_back(node_index);
     }
@@ -982,9 +995,9 @@ class CudaRuntime final : public Runtime {
     if (source.has_metadata()) executable->metadata = source.metadata();
 
     BuildModules(*executable, source);
-    BuildAllocations(*executable, source);
+    BuildPersistentAllocation(*executable, source);
     BuildParameters(*executable, source);
-    BuildBuffers(*executable, source);
+    BuildPersistentBuffers(*executable, source);
     BuildKernels(*executable, source);
     BuildPrograms(*executable, source);
     return executable;

@@ -54,14 +54,11 @@ struct BufferInfo {
   pblczero::Buffer::DataType data_type = pblczero::Buffer::DATA_TYPE_UNKNOWN;
   std::vector<std::uint64_t> shape;
   std::uint64_t size_bytes = 0;
-  pblczero::Allocation::Lifetime lifetime =
-      pblczero::Allocation::LIFETIME_UNKNOWN;
 };
 
 struct ParameterInfo {
   std::string name;
-  pblczero::ParameterType type =
-      pblczero::ParameterType_PARAMETER_TYPE_UNKNOWN;
+  pblczero::ParameterType type = pblczero::ParameterType_PARAMETER_TYPE_UNKNOWN;
 };
 
 struct ProgramInfo {
@@ -96,19 +93,20 @@ class Program {
   virtual ~Program() = default;
 
   virtual const ProgramInfo& GetInfo() const = 0;
+  virtual std::span<const BufferInfo> GetBuffers() const = 0;
+  virtual const BufferInfo& FindBuffer(std::string_view name) const = 0;
   virtual std::span<const ParameterInfo> GetParameters() const = 0;
 };
 
 // A reusable instance of one Program. It owns a stream and a separate instance
-// of every execution-lifetime allocation. Run() submits asynchronously; the
+// of that Program's execution allocation. Run() submits asynchronously; the
 // Execution may be modified or run again only after Synchronize().
 class Execution {
  public:
   virtual ~Execution() = default;
 
-  // Only execution-lifetime buffers are available through an Execution.
+  // Only buffers belonging to this Execution's Program are available.
   virtual Buffer& GetBuffer(const BufferInfo& info) = 0;
-  virtual Buffer& GetBuffer(std::string_view name) = 0;
   virtual Parameter& GetParameter(std::string_view name) = 0;
   virtual void ResetParameters() = 0;
   virtual void Run() = 0;
@@ -121,6 +119,7 @@ class Executable {
 
   virtual const TargetInfo& GetTarget() const = 0;
   virtual std::string_view GetMetadata() const = 0;
+  // Only persistent buffers are available through an Executable.
   virtual std::span<const BufferInfo> GetBuffers() const = 0;
   virtual std::span<const ParameterInfo> GetParameters() const = 0;
   virtual std::span<const ProgramInfo> GetPrograms() const = 0;
@@ -129,16 +128,12 @@ class Executable {
   virtual const ParameterInfo& FindParameter(std::string_view name) const = 0;
   virtual const Program& FindProgram(std::string_view name) const = 0;
 
-  // Only persistent buffers are available through an Executable. Persistent
-  // storage is shared by all Executions; callers must not modify it while an
-  // Execution that may access it is in flight.
+  // Persistent storage is shared by all Executions; callers must not modify it
+  // while an Execution that may access it is in flight.
   virtual Buffer& GetBuffer(const BufferInfo& info) = 0;
-  virtual Buffer& GetBuffer(std::string_view name) = 0;
 
   virtual std::unique_ptr<Execution> CreateExecution(
       const Program& program) = 0;
-  virtual std::unique_ptr<Execution> CreateExecution(
-      std::string_view program_name) = 0;
 };
 
 class Runtime {
