@@ -94,7 +94,7 @@ class Program {
 
   virtual const ProgramInfo& GetInfo() const = 0;
   virtual std::span<const BufferInfo> GetBuffers() const = 0;
-  virtual const BufferInfo& FindBuffer(std::string_view name) const = 0;
+  virtual const BufferInfo* FindBuffer(std::string_view name) const = 0;
   virtual std::span<const ParameterInfo> GetParameters() const = 0;
 };
 
@@ -124,9 +124,9 @@ class Executable {
   virtual std::span<const ParameterInfo> GetParameters() const = 0;
   virtual std::span<const ProgramInfo> GetPrograms() const = 0;
 
-  virtual const BufferInfo& FindBuffer(std::string_view name) const = 0;
-  virtual const ParameterInfo& FindParameter(std::string_view name) const = 0;
-  virtual const Program& FindProgram(std::string_view name) const = 0;
+  virtual const BufferInfo* FindBuffer(std::string_view name) const = 0;
+  virtual const ParameterInfo* FindParameter(std::string_view name) const = 0;
+  virtual const Program* FindProgram(std::string_view name) const = 0;
 
   // Persistent storage is shared by all Executions; callers must not modify it
   // while an Execution that may access it is in flight.

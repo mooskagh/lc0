@@ -45,6 +45,9 @@ namespace lczero {
 namespace lc0ex {
 namespace {
 
+constexpr std::uint32_t kMagic = 0x1c0e;
+constexpr std::uint32_t kFormat = 1;
+
 [[noreturn]] void ThrowCuda(CUresult status, const char* expression,
                             const char* file, int line) {
   const char* name = nullptr;
@@ -103,11 +106,10 @@ std::uint64_t BufferSize(const pblczero::Buffer& buffer) {
 }
 
 BufferInfo MakeBufferInfo(const pblczero::Buffer& buffer) {
-  return {std::string(buffer.name()),
-          buffer.data_type(),
-          std::vector<std::uint64_t>(buffer.shape().begin(),
-                                     buffer.shape().end()),
-          BufferSize(buffer)};
+  return {
+      std::string(buffer.name()), buffer.data_type(),
+      std::vector<std::uint64_t>(buffer.shape().begin(), buffer.shape().end()),
+      BufferSize(buffer)};
 }
 
 std::array<unsigned int, 3> LaunchDimensions(
@@ -134,37 +136,37 @@ std::pair<CUdeviceptr, CUdeviceptr> AllocateDeviceMemory(
 }
 
 struct CudaAllocation {
-  std::uint64_t size_bytes = 0;
-  std::uint64_t alignment_bytes = 0;
-  CUdeviceptr base = 0;
-  CUdeviceptr address = 0;
+  std::uint64_t size_bytes_ = 0;
+  std::uint64_t alignment_bytes_ = 0;
+  CUdeviceptr base_ = 0;
+  CUdeviceptr address_ = 0;
 };
 
 struct CudaBufferPlan {
-  std::uint64_t offset_bytes = 0;
+  std::uint64_t offset_bytes_ = 0;
 };
 
 struct CudaKernel {
-  CUfunction function = nullptr;
-  std::vector<pblczero::ParameterType> parameters;
+  CUfunction function_ = nullptr;
+  std::vector<pblczero::ParameterType> parameters_;
 };
 
 struct CudaArgument {
-  bool is_parameter = false;
-  bool is_symbol = false;
-  std::size_t index = 0;
-  pblczero::Node::Argument::AllocationLocation::AllocationKind kind =
+  bool is_parameter_ = false;
+  bool is_symbol_ = false;
+  std::size_t index_ = 0;
+  pblczero::Node::Argument::AllocationLocation::AllocationKind kind_ =
       pblczero::Node::Argument::AllocationLocation::ALLOCATION_UNKNOWN;
-  std::uint64_t offset = 0;
-  CUdeviceptr symbol = 0;
+  std::uint64_t offset_ = 0;
+  CUdeviceptr symbol_ = 0;
 };
 
 struct CudaNode {
-  CUfunction function = nullptr;
-  std::array<unsigned int, 3> grid = {1, 1, 1};
-  std::array<unsigned int, 3> block = {1, 1, 1};
-  unsigned int dynamic_shared_memory_bytes = 0;
-  std::vector<CudaArgument> arguments;
+  CUfunction function_ = nullptr;
+  std::array<unsigned int, 3> grid_ = {1, 1, 1};
+  std::array<unsigned int, 3> block_ = {1, 1, 1};
+  unsigned int dynamic_shared_memory_bytes_ = 0;
+  std::vector<CudaArgument> arguments_;
 };
 
 class CudaExecutable;
@@ -172,106 +174,111 @@ class CudaExecution;
 
 class CudaProgram final : public Program {
  public:
-  const ProgramInfo& GetInfo() const override { return info; }
+  const ProgramInfo& GetInfo() const override { return info_; }
 
   std::span<const BufferInfo> GetBuffers() const override {
-    return {buffer_infos.data(), buffer_infos.size()};
+    return {buffer_infos_.data(), buffer_infos_.size()};
   }
 
-  const BufferInfo& FindBuffer(std::string_view name) const override {
-    return buffer_infos[buffer_indices.find(std::string(name))->second];
+  const BufferInfo* FindBuffer(std::string_view name) const override {
+    const auto iter = buffer_indices_.find(std::string(name));
+    return iter == buffer_indices_.end() ? nullptr
+                                         : &buffer_infos_[iter->second];
   }
 
   std::span<const ParameterInfo> GetParameters() const override {
-    return {parameters.data(), parameters.size()};
+    return {parameters_.data(), parameters_.size()};
   }
 
-  ProgramInfo info;
-  std::vector<ParameterInfo> parameters;
-  std::unordered_map<std::string, std::size_t> parameter_indices;
-  CudaAllocation execution_allocation;
-  std::vector<BufferInfo> buffer_infos;
-  std::vector<CudaBufferPlan> buffer_plans;
-  std::unordered_map<std::string, std::size_t> buffer_indices;
-  std::vector<CudaNode> nodes;
+  ProgramInfo info_;
+  std::vector<ParameterInfo> parameters_;
+  std::unordered_map<std::string, std::size_t> parameter_indices_;
+  CudaAllocation execution_allocation_;
+  std::vector<BufferInfo> buffer_infos_;
+  std::vector<CudaBufferPlan> buffer_plans_;
+  std::unordered_map<std::string, std::size_t> buffer_indices_;
+  std::vector<CudaNode> nodes_;
 };
 
 class CudaBuffer final : public Buffer {
  public:
   CudaBuffer(CudaExecutable* executable, const BufferInfo* info,
              CUdeviceptr address)
-      : executable(executable),
-        info(info),
-        address(address) {}
+      : executable_(executable), info_(info), address_(address) {}
 
-  const BufferInfo& GetInfo() const override { return *info; }
+  const BufferInfo& GetInfo() const override { return *info_; }
   void CopyFromHost(std::span<const std::byte> source) override;
   void CopyToHost(std::span<std::byte> destination) const override;
 
-  CudaExecutable* executable;
-  const BufferInfo* info;
-  CUdeviceptr address;
+  CudaExecutable* executable_;
+  const BufferInfo* info_;
+  CUdeviceptr address_;
 };
 
 class CudaParameter final : public Parameter {
  public:
   CudaParameter(CudaExecution* execution, std::size_t slot,
                 pblczero::ParameterType type)
-      : execution(execution), slot(slot), type(type) {}
+      : execution_(execution), slot_(slot), type_(type) {}
 
   const ParameterInfo& GetInfo() const override;
-  bool IsSet() const override { return is_set; }
+  bool IsSet() const override { return is_set_; }
   void Set(std::uint32_t value) override;
   void Set(const Buffer& buffer) override;
   void Reset() override;
 
   void* ArgumentAddress() {
-    switch (type) {
+    switch (type_) {
       case pblczero::ParameterType_PARAMETER_TYPE_U32:
-        return &u32;
+        return &u32_;
       case pblczero::ParameterType_PARAMETER_TYPE_POINTER:
-        return &pointer;
+        return &pointer_;
       case pblczero::ParameterType_PARAMETER_TYPE_UNKNOWN:
         break;
     }
     throw Exception("Unknown parameter type.");
   }
 
-  CudaExecution* execution;
-  std::size_t slot;
-  pblczero::ParameterType type;
-  bool is_set = false;
-  std::uint32_t u32 = 0;
-  CUdeviceptr pointer = 0;
+  CudaExecution* execution_;
+  std::size_t slot_;
+  pblczero::ParameterType type_;
+  bool is_set_ = false;
+  std::uint32_t u32_ = 0;
+  CUdeviceptr pointer_ = 0;
 };
 
 class CudaExecutable final : public Executable {
  public:
-  explicit CudaExecutable(CUdevice device) : device(device) {}
+  explicit CudaExecutable(CUdevice device) : device_(device) {}
   ~CudaExecutable() override;
 
-  const TargetInfo& GetTarget() const override { return target; }
-  std::string_view GetMetadata() const override { return metadata; }
+  const TargetInfo& GetTarget() const override { return target_; }
+  std::string_view GetMetadata() const override { return metadata_; }
   std::span<const BufferInfo> GetBuffers() const override {
-    return {buffer_infos.data(), buffer_infos.size()};
+    return {buffer_infos_.data(), buffer_infos_.size()};
   }
   std::span<const ParameterInfo> GetParameters() const override {
-    return {parameters.data(), parameters.size()};
+    return {parameters_.data(), parameters_.size()};
   }
   std::span<const ProgramInfo> GetPrograms() const override {
-    return {program_infos.data(), program_infos.size()};
+    return {program_infos_.data(), program_infos_.size()};
   }
 
-  const BufferInfo& FindBuffer(std::string_view name) const override {
-    return buffer_infos[buffer_indices.find(std::string(name))->second];
+  const BufferInfo* FindBuffer(std::string_view name) const override {
+    const auto iter = buffer_indices_.find(std::string(name));
+    return iter == buffer_indices_.end() ? nullptr
+                                         : &buffer_infos_[iter->second];
   }
 
-  const ParameterInfo& FindParameter(std::string_view name) const override {
-    return parameters[parameter_indices.find(std::string(name))->second];
+  const ParameterInfo* FindParameter(std::string_view name) const override {
+    const auto iter = parameter_indices_.find(std::string(name));
+    return iter == parameter_indices_.end() ? nullptr
+                                            : &parameters_[iter->second];
   }
 
-  const Program& FindProgram(std::string_view name) const override {
-    return programs[program_indices.find(std::string(name))->second];
+  const Program* FindProgram(std::string_view name) const override {
+    const auto iter = program_indices_.find(std::string(name));
+    return iter == program_indices_.end() ? nullptr : &programs_[iter->second];
   }
 
   Buffer& GetBuffer(const BufferInfo& info) override;
@@ -279,110 +286,110 @@ class CudaExecutable final : public Executable {
   std::unique_ptr<Execution> CreateExecution(const Program& program) override;
 
   void Initialize() {
-    LC0EX_CUDA_CHECK(cuDevicePrimaryCtxRetain(&context, device));
-    context_retained = true;
-    LC0EX_CUDA_CHECK(cuCtxSetCurrent(context));
+    LC0EX_CUDA_CHECK(cuDevicePrimaryCtxRetain(&context_, device_));
+    context_retained_ = true;
+    LC0EX_CUDA_CHECK(cuCtxSetCurrent(context_));
   }
 
-  void SetCurrent() const { LC0EX_CUDA_CHECK(cuCtxSetCurrent(context)); }
+  void SetCurrent() const { LC0EX_CUDA_CHECK(cuCtxSetCurrent(context_)); }
 
-  CUdevice device = 0;
-  CUcontext context = nullptr;
-  bool context_retained = false;
+  CUdevice device_ = 0;
+  CUcontext context_ = nullptr;
+  bool context_retained_ = false;
 
-  TargetInfo target;
-  std::string metadata;
+  TargetInfo target_;
+  std::string metadata_;
 
-  std::vector<CUmodule> modules;
+  std::vector<CUmodule> modules_;
 
-  CudaAllocation persistent_allocation;
+  CudaAllocation persistent_allocation_;
 
-  std::vector<ParameterInfo> parameters;
-  std::unordered_map<std::string, std::size_t> parameter_indices;
+  std::vector<ParameterInfo> parameters_;
+  std::unordered_map<std::string, std::size_t> parameter_indices_;
 
-  std::vector<BufferInfo> buffer_infos;
-  std::vector<CudaBufferPlan> buffer_plans;
-  std::vector<std::unique_ptr<CudaBuffer>> persistent_buffers;
-  std::unordered_map<std::string, std::size_t> buffer_indices;
+  std::vector<BufferInfo> buffer_infos_;
+  std::vector<CudaBufferPlan> buffer_plans_;
+  std::vector<std::unique_ptr<CudaBuffer>> persistent_buffers_;
+  std::unordered_map<std::string, std::size_t> buffer_indices_;
 
-  std::vector<CudaKernel> kernels;
+  std::vector<CudaKernel> kernels_;
 
-  std::vector<CudaProgram> programs;
-  std::vector<ProgramInfo> program_infos;
-  std::unordered_map<std::string, std::size_t> program_indices;
+  std::vector<CudaProgram> programs_;
+  std::vector<ProgramInfo> program_infos_;
+  std::unordered_map<std::string, std::size_t> program_indices_;
 };
 
 class CudaExecution final : public Execution {
  public:
   CudaExecution(CudaExecutable* executable, const CudaProgram* program)
-      : executable(executable), program(program) {}
+      : executable_(executable), program_(program) {}
   ~CudaExecution() override;
 
   Buffer& GetBuffer(const BufferInfo& info) override {
-    return *buffers[program->buffer_indices.find(info.name)->second];
+    return *buffers_[program_->buffer_indices_.find(info.name)->second];
   }
 
   Parameter& GetParameter(std::string_view name) override {
-    return parameters[
-        program->parameter_indices.find(std::string(name))->second];
+    return parameters_[program_->parameter_indices_.find(std::string(name))
+                           ->second];
   }
 
   void ResetParameters() override {
-    for (auto& parameter : parameters) parameter.Reset();
+    for (auto& parameter : parameters_) parameter.Reset();
   }
 
   void Initialize() {
-    executable->SetCurrent();
-    LC0EX_CUDA_CHECK(cuStreamCreate(&stream, CU_STREAM_DEFAULT));
+    executable_->SetCurrent();
+    LC0EX_CUDA_CHECK(cuStreamCreate(&stream_, CU_STREAM_DEFAULT));
 
-    if (program->execution_allocation.size_bytes != 0) {
-      const auto memory =
-          AllocateDeviceMemory(program->execution_allocation.size_bytes,
-                               program->execution_allocation.alignment_bytes);
-      execution_base = memory.first;
-      execution_address = memory.second;
+    if (program_->execution_allocation_.size_bytes_ != 0) {
+      const auto memory = AllocateDeviceMemory(
+          program_->execution_allocation_.size_bytes_,
+          program_->execution_allocation_.alignment_bytes_);
+      execution_base_ = memory.first;
+      execution_address_ = memory.second;
     }
 
-    buffers.resize(program->buffer_plans.size());
-    for (std::size_t i = 0; i < program->buffer_plans.size(); ++i) {
-      const auto& plan = program->buffer_plans[i];
-      auto address = execution_address;
-      address += plan.offset_bytes;
-      buffers[i] = std::make_unique<CudaBuffer>(
-          executable, &program->buffer_infos[i], address);
+    buffers_.resize(program_->buffer_plans_.size());
+    for (std::size_t i = 0; i < program_->buffer_plans_.size(); ++i) {
+      const auto& plan = program_->buffer_plans_[i];
+      auto address = execution_address_;
+      address += plan.offset_bytes_;
+      buffers_[i] = std::make_unique<CudaBuffer>(
+          executable_, &program_->buffer_infos_[i], address);
     }
 
-    parameters.reserve(program->parameters.size());
-    for (std::size_t i = 0; i < program->parameters.size(); ++i) {
-      parameters.emplace_back(this, i, program->parameters[i].type);
+    parameters_.reserve(program_->parameters_.size());
+    for (std::size_t i = 0; i < program_->parameters_.size(); ++i) {
+      parameters_.emplace_back(this, i, program_->parameters_[i].type);
     }
 
-    launch_arguments.resize(program->nodes.size());
-    allocation_argument_values.resize(program->nodes.size());
-    for (std::size_t node_index = 0; node_index < program->nodes.size();
+    launch_arguments_.resize(program_->nodes_.size());
+    allocation_argument_values_.resize(program_->nodes_.size());
+    for (std::size_t node_index = 0; node_index < program_->nodes_.size();
          ++node_index) {
-      const auto& node = program->nodes[node_index];
-      auto& arguments = launch_arguments[node_index];
-      auto& allocation_values = allocation_argument_values[node_index];
-      arguments.resize(node.arguments.size());
-      allocation_values.resize(node.arguments.size());
+      const auto& node = program_->nodes_[node_index];
+      auto& arguments = launch_arguments_[node_index];
+      auto& allocation_values = allocation_argument_values_[node_index];
+      arguments.resize(node.arguments_.size());
+      allocation_values.resize(node.arguments_.size());
       for (std::size_t argument_index = 0;
-           argument_index < node.arguments.size(); ++argument_index) {
-        const auto& argument = node.arguments[argument_index];
-        if (argument.is_parameter) {
+           argument_index < node.arguments_.size(); ++argument_index) {
+        const auto& argument = node.arguments_[argument_index];
+        if (argument.is_parameter_) {
           arguments[argument_index] =
-              parameters[argument.index].ArgumentAddress();
+              parameters_[argument.index_].ArgumentAddress();
         } else {
           auto& value = allocation_values[argument_index];
-          if (argument.is_symbol) {
-            value = argument.symbol;
+          if (argument.is_symbol_) {
+            value = argument.symbol_;
           } else {
-            value = argument.kind ==
+            value = argument.kind_ ==
                             pblczero::Node::Argument::AllocationLocation::
                                 ALLOCATION_PERSISTENT
-                        ? executable->persistent_allocation.address
-                        : execution_address;
-            value += argument.offset;
+                        ? executable_->persistent_allocation_.address_
+                        : execution_address_;
+            value += argument.offset_;
           }
           arguments[argument_index] = &value;
         }
@@ -391,92 +398,92 @@ class CudaExecution final : public Execution {
   }
 
   void Run() override {
-    executable->SetCurrent();
-    in_flight = true;
-    for (std::size_t i = 0; i < program->nodes.size(); ++i) {
-      const auto& node = program->nodes[i];
-      LC0EX_CUDA_CHECK(cuLaunchKernel(node.function, node.grid[0], node.grid[1],
-                                      node.grid[2], node.block[0],
-                                      node.block[1], node.block[2],
-                                      node.dynamic_shared_memory_bytes, stream,
-                                      launch_arguments[i].data(), nullptr));
+    executable_->SetCurrent();
+    in_flight_ = true;
+    for (std::size_t i = 0; i < program_->nodes_.size(); ++i) {
+      const auto& node = program_->nodes_[i];
+      LC0EX_CUDA_CHECK(
+          cuLaunchKernel(node.function_, node.grid_[0], node.grid_[1],
+                         node.grid_[2], node.block_[0], node.block_[1],
+                         node.block_[2], node.dynamic_shared_memory_bytes_,
+                         stream_, launch_arguments_[i].data(), nullptr));
     }
   }
 
   void Synchronize() override {
-    if (!in_flight) return;
-    executable->SetCurrent();
-    LC0EX_CUDA_CHECK(cuStreamSynchronize(stream));
-    in_flight = false;
+    if (!in_flight_) return;
+    executable_->SetCurrent();
+    LC0EX_CUDA_CHECK(cuStreamSynchronize(stream_));
+    in_flight_ = false;
   }
 
-  CudaExecutable* executable;
-  const CudaProgram* program;
-  CUstream stream = nullptr;
-  bool in_flight = false;
-  CUdeviceptr execution_base = 0;
-  CUdeviceptr execution_address = 0;
-  std::vector<std::unique_ptr<CudaBuffer>> buffers;
-  std::vector<CudaParameter> parameters;
-  std::vector<std::vector<void*>> launch_arguments;
-  std::vector<std::vector<CUdeviceptr>> allocation_argument_values;
+  CudaExecutable* executable_;
+  const CudaProgram* program_;
+  CUstream stream_ = nullptr;
+  bool in_flight_ = false;
+  CUdeviceptr execution_base_ = 0;
+  CUdeviceptr execution_address_ = 0;
+  std::vector<std::unique_ptr<CudaBuffer>> buffers_;
+  std::vector<CudaParameter> parameters_;
+  std::vector<std::vector<void*>> launch_arguments_;
+  std::vector<std::vector<CUdeviceptr>> allocation_argument_values_;
 };
 
 const ParameterInfo& CudaParameter::GetInfo() const {
-  return execution->program->parameters[slot];
+  return execution_->program_->parameters_[slot_];
 }
 
 void CudaParameter::Set(std::uint32_t value) {
-  u32 = value;
-  is_set = true;
+  u32_ = value;
+  is_set_ = true;
 }
 
 void CudaParameter::Set(const Buffer& buffer) {
-  pointer = static_cast<const CudaBuffer&>(buffer).address;
-  is_set = true;
+  pointer_ = static_cast<const CudaBuffer&>(buffer).address_;
+  is_set_ = true;
 }
 
 void CudaParameter::Reset() {
-  is_set = false;
-  u32 = 0;
-  pointer = 0;
+  is_set_ = false;
+  u32_ = 0;
+  pointer_ = 0;
 }
 
 void CudaBuffer::CopyFromHost(std::span<const std::byte> source) {
-  executable->SetCurrent();
-  LC0EX_CUDA_CHECK(cuMemcpyHtoD(address, source.data(), source.size()));
+  executable_->SetCurrent();
+  LC0EX_CUDA_CHECK(cuMemcpyHtoD(address_, source.data(), source.size()));
 }
 
 void CudaBuffer::CopyToHost(std::span<std::byte> destination) const {
-  executable->SetCurrent();
+  executable_->SetCurrent();
   LC0EX_CUDA_CHECK(
-      cuMemcpyDtoH(destination.data(), address, destination.size()));
+      cuMemcpyDtoH(destination.data(), address_, destination.size()));
 }
 
 CudaExecutable::~CudaExecutable() {
-  if (!context_retained) return;
-  if (cuCtxSetCurrent(context) == CUDA_SUCCESS) {
-    if (persistent_allocation.base) {
-      IgnoreCuda(cuMemFree(persistent_allocation.base));
+  if (!context_retained_) return;
+  if (cuCtxSetCurrent(context_) == CUDA_SUCCESS) {
+    if (persistent_allocation_.base_) {
+      IgnoreCuda(cuMemFree(persistent_allocation_.base_));
     }
-    for (auto& module : modules) {
+    for (auto& module : modules_) {
       if (module) IgnoreCuda(cuModuleUnload(module));
     }
   }
-  IgnoreCuda(cuDevicePrimaryCtxRelease(device));
+  IgnoreCuda(cuDevicePrimaryCtxRelease(device_));
 }
 
 CudaExecution::~CudaExecution() {
-  if (!executable || !executable->context_retained) return;
-  if (cuCtxSetCurrent(executable->context) == CUDA_SUCCESS) {
-    if (stream) IgnoreCuda(cuStreamSynchronize(stream));
-    if (execution_base) IgnoreCuda(cuMemFree(execution_base));
-    if (stream) IgnoreCuda(cuStreamDestroy(stream));
+  if (!executable_ || !executable_->context_retained_) return;
+  if (cuCtxSetCurrent(executable_->context_) == CUDA_SUCCESS) {
+    if (stream_) IgnoreCuda(cuStreamSynchronize(stream_));
+    if (execution_base_) IgnoreCuda(cuMemFree(execution_base_));
+    if (stream_) IgnoreCuda(cuStreamDestroy(stream_));
   }
 }
 
 Buffer& CudaExecutable::GetBuffer(const BufferInfo& info) {
-  return *persistent_buffers[buffer_indices.find(info.name)->second];
+  return *persistent_buffers_[buffer_indices_.find(info.name)->second];
 }
 
 std::unique_ptr<Execution> CudaExecutable::CreateExecution(
@@ -489,109 +496,109 @@ std::unique_ptr<Execution> CudaExecutable::CreateExecution(
 
 void BuildModules(CudaExecutable& executable,
                   const pblczero::NeuralExecutable& source) {
-  executable.modules.reserve(source.binaries_size());
+  executable.modules_.reserve(source.binaries_size());
   for (const auto& binary : source.binaries()) {
     CUmodule module = nullptr;
     LC0EX_CUDA_CHECK(cuModuleLoadData(&module, binary.data().data()));
-    executable.modules.push_back(module);
+    executable.modules_.push_back(module);
   }
 }
 
 void BuildAllocation(CudaAllocation& destination,
                      const pblczero::Allocation& source) {
-  destination.size_bytes = source.size_bytes();
-  destination.alignment_bytes = source.alignment_bytes();
+  destination.size_bytes_ = source.size_bytes();
+  destination.alignment_bytes_ = source.alignment_bytes();
 }
 
 void BuildPersistentAllocation(CudaExecutable& executable,
                                const pblczero::NeuralExecutable& source) {
   if (source.has_persistent_allocation()) {
-    BuildAllocation(executable.persistent_allocation,
+    BuildAllocation(executable.persistent_allocation_,
                     source.persistent_allocation());
-    const auto memory =
-        AllocateDeviceMemory(executable.persistent_allocation.size_bytes,
-                             executable.persistent_allocation.alignment_bytes);
-    executable.persistent_allocation.base = memory.first;
-    executable.persistent_allocation.address = memory.second;
+    const auto memory = AllocateDeviceMemory(
+        executable.persistent_allocation_.size_bytes_,
+        executable.persistent_allocation_.alignment_bytes_);
+    executable.persistent_allocation_.base_ = memory.first;
+    executable.persistent_allocation_.address_ = memory.second;
   }
 }
 
 void BuildParameters(CudaExecutable& executable,
                      const pblczero::NeuralExecutable& source) {
-  executable.parameters.reserve(source.parameters_size());
-  executable.parameter_indices.reserve(source.parameters_size());
+  executable.parameters_.reserve(source.parameters_size());
+  executable.parameter_indices_.reserve(source.parameters_size());
   for (const auto& parameter : source.parameters()) {
     const auto name = std::string(parameter.name());
-    executable.parameters.push_back({name, parameter.type()});
-    executable.parameter_indices.emplace(executable.parameters.back().name,
-                                         executable.parameters.size() - 1);
+    executable.parameters_.push_back({name, parameter.type()});
+    executable.parameter_indices_.emplace(executable.parameters_.back().name,
+                                          executable.parameters_.size() - 1);
   }
 }
 
 void BuildPersistentBuffers(CudaExecutable& executable,
                             const pblczero::NeuralExecutable& source) {
-  executable.buffer_infos.reserve(source.buffers_size());
-  executable.buffer_plans.reserve(source.buffers_size());
-  executable.buffer_indices.reserve(source.buffers_size());
+  executable.buffer_infos_.reserve(source.buffers_size());
+  executable.buffer_plans_.reserve(source.buffers_size());
+  executable.buffer_indices_.reserve(source.buffers_size());
   for (const auto& buffer : source.buffers()) {
     auto info = MakeBufferInfo(buffer);
     CudaBufferPlan plan{buffer.offset()};
 
-    executable.buffer_infos.push_back(std::move(info));
-    executable.buffer_plans.push_back(std::move(plan));
-    executable.buffer_indices.emplace(executable.buffer_infos.back().name,
-                                      executable.buffer_infos.size() - 1);
+    executable.buffer_infos_.push_back(std::move(info));
+    executable.buffer_plans_.push_back(std::move(plan));
+    executable.buffer_indices_.emplace(executable.buffer_infos_.back().name,
+                                       executable.buffer_infos_.size() - 1);
   }
 
-  executable.persistent_buffers.resize(executable.buffer_plans.size());
-  for (std::size_t i = 0; i < executable.buffer_plans.size(); ++i) {
-    const auto& plan = executable.buffer_plans[i];
-    auto address = executable.persistent_allocation.address;
-    address += plan.offset_bytes;
-    executable.persistent_buffers[i] = std::make_unique<CudaBuffer>(
-        &executable, &executable.buffer_infos[i], address);
+  executable.persistent_buffers_.resize(executable.buffer_plans_.size());
+  for (std::size_t i = 0; i < executable.buffer_plans_.size(); ++i) {
+    const auto& plan = executable.buffer_plans_[i];
+    auto address = executable.persistent_allocation_.address_;
+    address += plan.offset_bytes_;
+    executable.persistent_buffers_[i] = std::make_unique<CudaBuffer>(
+        &executable, &executable.buffer_infos_[i], address);
   }
 }
 
 void BuildProgramBuffers(CudaProgram& program,
                          const pblczero::Program& source) {
-  program.buffer_infos.reserve(source.buffers_size());
-  program.buffer_plans.reserve(source.buffers_size());
-  program.buffer_indices.reserve(source.buffers_size());
+  program.buffer_infos_.reserve(source.buffers_size());
+  program.buffer_plans_.reserve(source.buffers_size());
+  program.buffer_indices_.reserve(source.buffers_size());
   for (const auto& buffer : source.buffers()) {
     auto info = MakeBufferInfo(buffer);
 
-    program.buffer_infos.push_back(std::move(info));
-    program.buffer_plans.push_back({buffer.offset()});
-    program.buffer_indices.emplace(program.buffer_infos.back().name,
-                                   program.buffer_infos.size() - 1);
+    program.buffer_infos_.push_back(std::move(info));
+    program.buffer_plans_.push_back({buffer.offset()});
+    program.buffer_indices_.emplace(program.buffer_infos_.back().name,
+                                    program.buffer_infos_.size() - 1);
   }
 }
 
 void BuildKernels(CudaExecutable& executable,
                   const pblczero::NeuralExecutable& source) {
-  executable.kernels.reserve(source.kernels_size());
+  executable.kernels_.reserve(source.kernels_size());
   for (const auto& kernel : source.kernels()) {
     CUfunction function = nullptr;
     LC0EX_CUDA_CHECK(
-        cuModuleGetFunction(&function, executable.modules[kernel.binary_idx()],
+        cuModuleGetFunction(&function, executable.modules_[kernel.binary_idx()],
                             std::string(kernel.function()).c_str()));
 
     CudaKernel plan;
-    plan.function = function;
-    plan.parameters.assign(kernel.parameters().begin(),
-                           kernel.parameters().end());
+    plan.function_ = function;
+    plan.parameters_.assign(kernel.parameters().begin(),
+                            kernel.parameters().end());
 
-    executable.kernels.push_back(std::move(plan));
+    executable.kernels_.push_back(std::move(plan));
   }
 }
 
 void BuildProgram(CudaExecutable& executable, const pblczero::Program& source,
                   CudaProgram* destination) {
-  destination->info.name = std::string(source.name());
-  destination->info.metadata = source.metadata();
+  destination->info_.name = std::string(source.name());
+  destination->info_.metadata = source.metadata();
   if (source.has_execution_allocation()) {
-    BuildAllocation(destination->execution_allocation,
+    BuildAllocation(destination->execution_allocation_,
                     source.execution_allocation());
   }
   BuildProgramBuffers(*destination, source);
@@ -604,14 +611,14 @@ void BuildProgram(CudaExecutable& executable, const pblczero::Program& source,
   for (std::size_t node_index = 0; node_index < source.nodes_size();
        ++node_index) {
     const auto& node = source.nodes(node_index);
-    const auto& kernel = executable.kernels[node.kernel_idx()];
+    const auto& kernel = executable.kernels_[node.kernel_idx()];
 
     CudaNode plan;
-    plan.function = kernel.function;
-    plan.grid = LaunchDimensions(node.grid());
-    plan.block = LaunchDimensions(node.block());
-    plan.dynamic_shared_memory_bytes = node.dynamic_shared_memory_bytes();
-    plan.arguments.reserve(node.arguments_size());
+    plan.function_ = kernel.function_;
+    plan.grid_ = LaunchDimensions(node.grid());
+    plan.block_ = LaunchDimensions(node.block());
+    plan.dynamic_shared_memory_bytes_ = node.dynamic_shared_memory_bytes();
+    plan.arguments_.reserve(node.arguments_size());
 
     for (std::size_t argument_index = 0; argument_index < node.arguments_size();
          ++argument_index) {
@@ -619,28 +626,28 @@ void BuildProgram(CudaExecutable& executable, const pblczero::Program& source,
       const bool is_parameter = source_argument.has_parameter_name();
 
       if (is_parameter) {
-        const auto parameter_iter = executable.parameter_indices.find(
+        const auto parameter_iter = executable.parameter_indices_.find(
             std::string(source_argument.parameter_name()));
         const auto& global_parameter =
-            executable.parameters[parameter_iter->second];
+            executable.parameters_[parameter_iter->second];
 
         CudaArgument argument;
-        argument.is_parameter = true;
+        argument.is_parameter_ = true;
         const auto local_iter =
-            destination->parameter_indices.find(global_parameter.name);
-        if (local_iter == destination->parameter_indices.end()) {
-          const auto local_index = destination->parameters.size();
-          destination->parameters.push_back(global_parameter);
-          destination->parameter_indices.emplace(
-              destination->parameters.back().name, local_index);
-          argument.index = local_index;
+            destination->parameter_indices_.find(global_parameter.name);
+        if (local_iter == destination->parameter_indices_.end()) {
+          const auto local_index = destination->parameters_.size();
+          destination->parameters_.push_back(global_parameter);
+          destination->parameter_indices_.emplace(
+              destination->parameters_.back().name, local_index);
+          argument.index_ = local_index;
         } else {
-          argument.index = local_iter->second;
+          argument.index_ = local_iter->second;
         }
-        plan.arguments.push_back(argument);
+        plan.arguments_.push_back(argument);
       } else if (source_argument.has_allocation()) {
         const auto& location = source_argument.allocation();
-        plan.arguments.push_back({
+        plan.arguments_.push_back({
             false,
             false,
             0,
@@ -651,13 +658,13 @@ void BuildProgram(CudaExecutable& executable, const pblczero::Program& source,
       } else {
         const auto& symbol = source_argument.symbol();
         CudaArgument argument;
-        argument.is_symbol = true;
+        argument.is_symbol_ = true;
         std::size_t symbol_size = 0;
         const std::string symbol_name(symbol.symbol_name());
         LC0EX_CUDA_CHECK(cuModuleGetGlobal(
-            &argument.symbol, &symbol_size,
-            executable.modules[symbol.binary_idx()], symbol_name.c_str()));
-        plan.arguments.push_back(argument);
+            &argument.symbol_, &symbol_size,
+            executable.modules_[symbol.binary_idx()], symbol_name.c_str()));
+        plan.arguments_.push_back(argument);
       }
     }
 
@@ -674,10 +681,10 @@ void BuildProgram(CudaExecutable& executable, const pblczero::Program& source,
     if (indegree[i] == 0) ready.push_back(i);
   }
 
-  destination->nodes.reserve(source_nodes.size());
+  destination->nodes_.reserve(source_nodes.size());
   for (std::size_t ready_index = 0; ready_index < ready.size(); ++ready_index) {
     const auto node = ready[ready_index];
-    destination->nodes.push_back(std::move(source_nodes[node]));
+    destination->nodes_.push_back(std::move(source_nodes[node]));
     for (const auto dependent : outgoing[node]) {
       if (--indegree[dependent] == 0) ready.push_back(dependent);
     }
@@ -686,17 +693,17 @@ void BuildProgram(CudaExecutable& executable, const pblczero::Program& source,
 
 void BuildPrograms(CudaExecutable& executable,
                    const pblczero::NeuralExecutable& source) {
-  executable.programs.reserve(source.programs_size());
-  executable.program_infos.reserve(source.programs_size());
-  executable.program_indices.reserve(source.programs_size());
+  executable.programs_.reserve(source.programs_size());
+  executable.program_infos_.reserve(source.programs_size());
+  executable.program_indices_.reserve(source.programs_size());
   for (const auto& program : source.programs()) {
     const auto name = std::string(program.name());
 
     CudaProgram plan;
     BuildProgram(executable, program, &plan);
-    executable.program_infos.push_back(plan.info);
-    executable.programs.push_back(std::move(plan));
-    executable.program_indices.emplace(name, executable.programs.size() - 1);
+    executable.program_infos_.push_back(plan.info_);
+    executable.programs_.push_back(std::move(plan));
+    executable.program_indices_.emplace(name, executable.programs_.size() - 1);
   }
 }
 
@@ -704,17 +711,22 @@ class CudaRuntime final : public Runtime {
  public:
   explicit CudaRuntime(int device_ordinal) {
     LC0EX_CUDA_CHECK(cuInit(0));
-    LC0EX_CUDA_CHECK(cuDeviceGet(&device, device_ordinal));
+    LC0EX_CUDA_CHECK(cuDeviceGet(&device_, device_ordinal));
   }
 
   std::unique_ptr<Executable> Load(
       const pblczero::NeuralExecutable& source) override {
-    auto executable = std::make_unique<CudaExecutable>(device);
+    if (source.magic() != kMagic) throw Exception("Invalid lc0ex magic.");
+    if (source.format() != kFormat) {
+      throw Exception("Unsupported lc0ex format generation.");
+    }
+
+    auto executable = std::make_unique<CudaExecutable>(device_);
     executable->Initialize();
-    executable->target.vendor = pblczero::Target::VENDOR_NVIDIA;
-    executable->target.architecture =
+    executable->target_.vendor = pblczero::Target::VENDOR_NVIDIA;
+    executable->target_.architecture =
         std::string(source.target().architecture());
-    executable->metadata = source.metadata();
+    executable->metadata_ = source.metadata();
 
     BuildModules(*executable, source);
     BuildPersistentAllocation(*executable, source);
@@ -726,7 +738,7 @@ class CudaRuntime final : public Runtime {
   }
 
  private:
-  CUdevice device = 0;
+  CUdevice device_ = 0;
 };
 
 }  // namespace
