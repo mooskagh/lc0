@@ -136,6 +136,7 @@ if get_option('lc0ex-runtime')
   endforeach
 
   files += 'src/neural/backends/cuda-runtime/runtime/cuda_runtime.cc'
+  files += 'src/neural/backends/cuda-runtime/network_fingerprint.cc'
 endif
 
 #############################################################################
