@@ -46,24 +46,20 @@ namespace {
 
 constexpr std::string_view kBackendName = "lc0ex-cuda";
 
-std::string ReadExecutableFile(const std::string& path) {
+pblczero::NeuralExecutable LoadExecutableFile(const std::string& path) {
   std::ifstream file(path, std::ios::in | std::ios::binary);
   if (!file) {
     throw Exception("Cannot read lc0ex executable from " + path + ".");
   }
 
-  std::string result((std::istreambuf_iterator<char>(file)),
-                     std::istreambuf_iterator<char>());
+  std::string serialized((std::istreambuf_iterator<char>(file)),
+                         std::istreambuf_iterator<char>());
   if (file.bad()) {
     throw Exception("Error while reading lc0ex executable from " + path +
                     ".");
   }
-  return result;
-}
 
-pblczero::NeuralExecutable LoadExecutableFile(const std::string& path) {
   pblczero::NeuralExecutable executable;
-  const auto serialized = ReadExecutableFile(path);
   executable.ParseFromString(serialized);
   return executable;
 }
@@ -84,12 +80,13 @@ void CheckNetworkFingerprint(const WeightsFile& weights,
 BackendAttributes MakeBackendAttributes(const WeightsFile& weights) {
   const auto& format = weights.format().network_format();
   return {
-      format.moves_left() != pblczero::NetworkFormat::MOVES_LEFT_NONE,
-      format.output() == pblczero::NetworkFormat::OUTPUT_WDL,
-      false,
-      1,
-      256,
-      1024,
+      .has_mlh =
+          format.moves_left() != pblczero::NetworkFormat::MOVES_LEFT_NONE,
+      .has_wdl = format.output() == pblczero::NetworkFormat::OUTPUT_WDL,
+      .runs_on_cpu = false,
+      .suggested_num_search_threads = 2,
+      .recommended_batch_size = 256,
+      .maximum_batch_size = 1024,
   };
 }
 
@@ -107,19 +104,7 @@ class Lc0exCudaBackendComputation final : public BackendComputation {
     return ENQUEUED_FOR_EVAL;
   }
 
-  void ComputeBlocking() override {
-    // The executable tensor ABI is not wired to the search result contract yet.
-    // Preserve the legacy wrapper's current zero-logit behavior meanwhile.
-    for (const auto& entry : entries_) {
-      if (entry.result.q) *entry.result.q = 0.0f;
-      if (entry.result.d) *entry.result.d = 0.0f;
-      if (entry.result.m) *entry.result.m = 0.0f;
-      if (!entry.result.p.empty()) {
-        const float value = 1.0f / entry.result.p.size();
-        for (float& policy : entry.result.p) policy = value;
-      }
-    }
-  }
+  void ComputeBlocking() override;
 
  private:
   struct Entry {
@@ -127,7 +112,7 @@ class Lc0exCudaBackendComputation final : public BackendComputation {
     EvalResultPtr result;
   };
 
-  std::unique_ptr<lc0ex::Execution> execution_;
+  Lc0exCudaBackend* backend_;
   std::vector<Entry> entries_;
 };
 
@@ -150,7 +135,8 @@ class Lc0exCudaBackend final : public Backend {
     const auto executable_proto = LoadExecutableFile(lc0ex_path);
     CheckNetworkFingerprint(weights, executable_proto);
 
-    runtime_ = lc0ex::CreateLc0exCudaRuntime();
+    const int gpu = backend_options.GetOrDefault<int>("gpu", 0);
+    runtime_ = lc0ex::CreateLc0exCudaRuntime(gpu);
     executable_ = runtime_->Load(executable_proto);
   }
 
@@ -174,12 +160,9 @@ class Lc0exCudaBackend final : public Backend {
     return UPDATE_OK;
   }
 
-  std::unique_ptr<lc0ex::Execution> CreateExecution() {
+  std::unique_ptr<lc0ex::Execution> CreateExecution(
+      std::size_t /*batch_size*/) {
     const auto programs = executable_->GetPrograms();
-    if (programs.empty()) {
-      throw Exception("The lc0ex executable contains no programs.");
-    }
-
     const auto* program = executable_->FindProgram(programs.front().name);
     if (!program) {
       throw Exception("The lc0ex executable's first program could not be found.");
@@ -201,7 +184,26 @@ class Lc0exCudaBackend final : public Backend {
 
 Lc0exCudaBackendComputation::Lc0exCudaBackendComputation(
     Lc0exCudaBackend* backend)
-    : execution_(backend->CreateExecution()) {}
+    : backend_(backend) {
+  entries_.reserve(backend_->GetAttributes().maximum_batch_size);
+}
+
+void Lc0exCudaBackendComputation::ComputeBlocking() {
+  [[maybe_unused]] const auto execution =
+      backend_->CreateExecution(entries_.size());
+
+  // The executable tensor ABI is not wired to the search result contract yet.
+  // Preserve the legacy wrapper's current zero-logit behavior meanwhile.
+  for (const auto& entry : entries_) {
+    if (entry.result.q) *entry.result.q = 0.0f;
+    if (entry.result.d) *entry.result.d = 0.0f;
+    if (entry.result.m) *entry.result.m = 0.0f;
+    if (!entry.result.p.empty()) {
+      const float value = 1.0f / entry.result.p.size();
+      for (float& policy : entry.result.p) policy = value;
+    }
+  }
+}
 
 class Lc0exCudaBackendFactory final : public BackendFactory {
  public:
