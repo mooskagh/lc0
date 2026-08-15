@@ -137,6 +137,8 @@ if get_option('lc0ex-runtime')
 
   files += 'src/neural/backends/cuda-runtime/runtime/cuda_runtime.cc'
   files += 'src/neural/backends/cuda-runtime/network_fingerprint.cc'
+  files += 'src/neural/backends/cuda-runtime/network_cuda_runtime.cc'
+  has_backends = true
 endif
 
 #############################################################################
