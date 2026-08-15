@@ -35,6 +35,7 @@
 #include <cstdint>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -155,10 +156,11 @@ struct Lc0exCudaKernel {
 };
 
 struct Lc0exCudaArgument {
-  bool is_parameter_ = false;
-  bool is_symbol_ = false;
+  enum class Kind { kAllocation, kSymbol, kParameter, kNullPointer };
+
+  Kind kind_ = Kind::kAllocation;
   std::size_t index_ = 0;
-  pblczero::Node::Argument::AllocationLocation::AllocationKind kind_ =
+  pblczero::Node::Argument::AllocationLocation::AllocationKind allocation_kind_ =
       pblczero::Node::Argument::AllocationLocation::ALLOCATION_UNKNOWN;
   std::uint64_t offset_ = 0;
   CUdeviceptr symbol_ = 0;
@@ -222,8 +224,10 @@ class Lc0exCudaBuffer final : public Buffer {
       : executable_(executable), info_(info), address_(address) {}
 
   const BufferInfo& GetInfo() const override { return *info_; }
-  void CopyFromHost(std::span<const std::byte> source) override;
-  void CopyToHost(std::span<std::byte> destination) const override;
+  void CopyFromHost(std::span<const std::byte> source,
+                    std::optional<std::size_t> size_bytes) override;
+  void CopyToHost(std::span<std::byte> destination,
+                  std::optional<std::size_t> size_bytes) const override;
 
   Lc0exCudaExecutable* executable_;
   const BufferInfo* info_;
@@ -248,6 +252,8 @@ class Lc0exCudaParameter final : public Parameter {
         return &u32_;
       case pblczero::ParameterType_PARAMETER_TYPE_POINTER:
         return &pointer_;
+      case pblczero::ParameterType_PARAMETER_TYPE_NULL_POINTER:
+        throw Exception("Null pointer is not a runtime parameter.");
       case pblczero::ParameterType_PARAMETER_TYPE_UNKNOWN:
         break;
     }
@@ -393,22 +399,29 @@ class Lc0exCudaExecution final : public Execution {
       for (std::size_t argument_index = 0;
            argument_index < node.arguments_.size(); ++argument_index) {
         const auto& argument = node.arguments_[argument_index];
-        if (argument.is_parameter_) {
-          arguments[argument_index] =
-              parameters_[argument.index_].ArgumentAddress();
-        } else {
-          auto& value = allocation_values[argument_index];
-          if (argument.is_symbol_) {
+        auto& value = allocation_values[argument_index];
+        switch (argument.kind_) {
+          case Lc0exCudaArgument::Kind::kNullPointer:
+            value = 0;
+            arguments[argument_index] = &value;
+            break;
+          case Lc0exCudaArgument::Kind::kParameter:
+            arguments[argument_index] =
+                parameters_[argument.index_].ArgumentAddress();
+            break;
+          case Lc0exCudaArgument::Kind::kSymbol:
             value = argument.symbol_;
-          } else {
-            value = argument.kind_ ==
+            arguments[argument_index] = &value;
+            break;
+          case Lc0exCudaArgument::Kind::kAllocation:
+            value = argument.allocation_kind_ ==
                             pblczero::Node::Argument::AllocationLocation::
                                 ALLOCATION_PERSISTENT
                         ? executable_->persistent_allocation_.address_
                         : slot_->allocation_.address_;
             value += argument.offset_;
-          }
-          arguments[argument_index] = &value;
+            arguments[argument_index] = &value;
+            break;
         }
       }
     }
@@ -464,15 +477,22 @@ void Lc0exCudaParameter::Reset() {
   pointer_ = 0;
 }
 
-void Lc0exCudaBuffer::CopyFromHost(std::span<const std::byte> source) {
+void Lc0exCudaBuffer::CopyFromHost(std::span<const std::byte> source,
+                                   std::optional<std::size_t> size_bytes) {
+  const std::size_t copy_size = size_bytes.value_or(source.size());
+  if (copy_size == 0) return;
+
   executable_->SetCurrent();
-  LC0EX_CUDA_CHECK(cuMemcpyHtoD(address_, source.data(), source.size()));
+  LC0EX_CUDA_CHECK(cuMemcpyHtoD(address_, source.data(), copy_size));
 }
 
-void Lc0exCudaBuffer::CopyToHost(std::span<std::byte> destination) const {
+void Lc0exCudaBuffer::CopyToHost(std::span<std::byte> destination,
+                                 std::optional<std::size_t> size_bytes) const {
+  const std::size_t copy_size = size_bytes.value_or(destination.size());
+  if (copy_size == 0) return;
+
   executable_->SetCurrent();
-  LC0EX_CUDA_CHECK(
-      cuMemcpyDtoH(destination.data(), address_, destination.size()));
+  LC0EX_CUDA_CHECK(cuMemcpyDtoH(destination.data(), address_, copy_size));
 }
 
 Lc0exCudaExecutable::~Lc0exCudaExecutable() {
@@ -578,6 +598,10 @@ void BuildParameters(Lc0exCudaExecutable& executable,
   executable.parameters_.reserve(source.parameters_size());
   executable.parameter_indices_.reserve(source.parameters_size());
   for (const auto& parameter : source.parameters()) {
+    if (parameter.type() ==
+        pblczero::ParameterType_PARAMETER_TYPE_NULL_POINTER) {
+      throw Exception("Null pointer is not a runtime parameter.");
+    }
     const auto name = std::string(parameter.name());
     executable.parameters_.push_back({name, parameter.type()});
     executable.parameter_indices_.emplace(executable.parameters_.back().name,
@@ -643,6 +667,82 @@ void BuildKernels(Lc0exCudaExecutable& executable,
   }
 }
 
+Lc0exCudaArgument BuildParameterArgument(
+    Lc0exCudaExecutable& executable, Lc0exCudaProgram& program,
+    const pblczero::Node::Argument& source) {
+  const auto& global_parameter = executable.parameters_[
+      executable.parameter_indices_.at(std::string(source.parameter_name()))];
+  const auto [local_iter, inserted] = program.parameter_indices_.try_emplace(
+      global_parameter.name, program.parameters_.size());
+  if (inserted) program.parameters_.push_back(global_parameter);
+
+  Lc0exCudaArgument argument;
+  argument.kind_ = Lc0exCudaArgument::Kind::kParameter;
+  argument.index_ = local_iter->second;
+  return argument;
+}
+
+Lc0exCudaArgument BuildAllocationArgument(
+    const pblczero::Node::Argument& source) {
+  const auto& location = source.allocation();
+  Lc0exCudaArgument argument;
+  argument.kind_ = Lc0exCudaArgument::Kind::kAllocation;
+  argument.allocation_kind_ = location.kind();
+  argument.offset_ = location.offset();
+  return argument;
+}
+
+Lc0exCudaArgument BuildSymbolArgument(
+    Lc0exCudaExecutable& executable, const pblczero::Node::Argument& source) {
+  const auto& symbol = source.symbol();
+  Lc0exCudaArgument argument;
+  argument.kind_ = Lc0exCudaArgument::Kind::kSymbol;
+  std::size_t symbol_size = 0;
+  const std::string symbol_name(symbol.symbol_name());
+  LC0EX_CUDA_CHECK(cuModuleGetGlobal(
+      &argument.symbol_, &symbol_size,
+      executable.modules_[symbol.binary_idx()], symbol_name.c_str()));
+  return argument;
+}
+
+Lc0exCudaArgument BuildArgument(
+    Lc0exCudaExecutable& executable, Lc0exCudaProgram& program,
+    const pblczero::Node::Argument& source) {
+  if (source.has_allocation()) {
+    return BuildAllocationArgument(source);
+  }
+  if (source.has_symbol()) {
+    return BuildSymbolArgument(executable, source);
+  }
+  return BuildParameterArgument(executable, program, source);
+}
+
+void BuildArguments(Lc0exCudaExecutable& executable,
+                    Lc0exCudaProgram& program,
+                    const pblczero::Node& source,
+                    const Lc0exCudaKernel& kernel,
+                    Lc0exCudaNode* destination) {
+  auto source_argument = source.arguments().begin();
+  destination->arguments_.reserve(kernel.parameters_.size());
+  for (const auto parameter_type : kernel.parameters_) {
+    switch (parameter_type) {
+      case pblczero::ParameterType_PARAMETER_TYPE_NULL_POINTER: {
+        Lc0exCudaArgument argument;
+        argument.kind_ = Lc0exCudaArgument::Kind::kNullPointer;
+        destination->arguments_.push_back(argument);
+        break;
+      }
+      case pblczero::ParameterType_PARAMETER_TYPE_U32:
+      case pblczero::ParameterType_PARAMETER_TYPE_POINTER:
+        destination->arguments_.push_back(
+            BuildArgument(executable, program, *source_argument++));
+        break;
+      case pblczero::ParameterType_PARAMETER_TYPE_UNKNOWN:
+        throw Exception("The lc0ex kernel has an unknown parameter type.");
+    }
+  }
+}
+
 void BuildProgram(Lc0exCudaExecutable& executable,
                   const pblczero::Program& source,
                   Lc0exCudaProgram* destination) {
@@ -669,55 +769,12 @@ void BuildProgram(Lc0exCudaExecutable& executable,
     plan.grid_ = LaunchDimensions(node.grid());
     plan.block_ = LaunchDimensions(node.block());
     plan.dynamic_shared_memory_bytes_ = node.dynamic_shared_memory_bytes();
-    plan.arguments_.reserve(node.arguments_size());
-
-    for (std::size_t argument_index = 0; argument_index < node.arguments_size();
-         ++argument_index) {
-      const auto& source_argument = node.arguments(argument_index);
-      const bool is_parameter = source_argument.has_parameter_name();
-
-      if (is_parameter) {
-        const auto parameter_iter = executable.parameter_indices_.find(
-            std::string(source_argument.parameter_name()));
-        const auto& global_parameter =
-            executable.parameters_[parameter_iter->second];
-
-        Lc0exCudaArgument argument;
-        argument.is_parameter_ = true;
-        const auto local_iter =
-            destination->parameter_indices_.find(global_parameter.name);
-        if (local_iter == destination->parameter_indices_.end()) {
-          const auto local_index = destination->parameters_.size();
-          destination->parameters_.push_back(global_parameter);
-          destination->parameter_indices_.emplace(
-              destination->parameters_.back().name, local_index);
-          argument.index_ = local_index;
-        } else {
-          argument.index_ = local_iter->second;
-        }
-        plan.arguments_.push_back(argument);
-      } else if (source_argument.has_allocation()) {
-        const auto& location = source_argument.allocation();
-        plan.arguments_.push_back({
-            false,
-            false,
-            0,
-            location.kind(),
-            location.offset(),
-            0,
-        });
-      } else {
-        const auto& symbol = source_argument.symbol();
-        Lc0exCudaArgument argument;
-        argument.is_symbol_ = true;
-        std::size_t symbol_size = 0;
-        const std::string symbol_name(symbol.symbol_name());
-        LC0EX_CUDA_CHECK(cuModuleGetGlobal(
-            &argument.symbol_, &symbol_size,
-            executable.modules_[symbol.binary_idx()], symbol_name.c_str()));
-        plan.arguments_.push_back(argument);
-      }
+    if (plan.dynamic_shared_memory_bytes_ != 0) {
+      LC0EX_CUDA_CHECK(cuFuncSetAttribute(
+          plan.function_, CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES,
+          plan.dynamic_shared_memory_bytes_));
     }
+    BuildArguments(executable, *destination, node, kernel, &plan);
 
     source_nodes.push_back(std::move(plan));
     for (const auto dependency : node.dependencies()) {

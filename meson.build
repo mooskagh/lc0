@@ -125,6 +125,8 @@ files += gen.process('proto/hlo.proto',
 if get_option('lc0ex-runtime')
   files += gen.process('proto/lc0ex.proto',
     preserve_path_from : meson.current_source_dir())
+  files += gen.process('proto/lc0ex_metadata.proto',
+    preserve_path_from : meson.current_source_dir())
 
   cu_driver = cc.find_library('cuda', required: true)
   deps += cu_driver

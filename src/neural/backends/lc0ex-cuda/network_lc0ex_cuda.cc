@@ -25,33 +25,119 @@
   Program grant you additional permission to convey the resulting work.
 */
 
+#include <algorithm>
+#include <array>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <fstream>
+#include <initializer_list>
 #include <iterator>
+#include <limits>
 #include <memory>
 #include <optional>
+#include <semaphore>
 #include <span>
 #include <string>
 #include <string_view>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 #include "absl/algorithm/container.h"
 #include "neural/backend.h"
+#include "neural/encoder.h"
 #include "neural/loader.h"
 #include "neural/onnx/converter.h"
 #include "neural/register.h"
 #include "neural/shared_params.h"
 #include "network_fingerprint.h"
+#include "proto/lc0ex_metadata.pb.h"
 #include "runtime/lc0ex_cuda.h"
+#include "utils/atomic_vector.h"
 #include "utils/exception.h"
+#include "utils/fastmath.h"
 #include "utils/logging.h"
 
 namespace lczero {
 namespace {
 
 constexpr std::string_view kBackendName = "lc0ex-cuda";
+constexpr std::string_view kInputMasksName = "/input/plane_masks";
+constexpr std::string_view kInputValuesName = "/input/plane_values";
+constexpr std::string_view kOutputPolicyName = "/output/policy";
+constexpr std::string_view kOutputWdlName = "/output/wdl";
+constexpr std::string_view kOutputMlhName = "/output/mlh";
+constexpr std::size_t kNumOutputPolicy = 1858;
+constexpr std::size_t kNumWdlOutputs = 3;
+
+FillEmptyHistory ParseHistoryFill(const std::string& value) {
+  if (value == "fen_only") return FillEmptyHistory::FEN_ONLY;
+  if (value == "always") return FillEmptyHistory::ALWAYS;
+  if (value == "no") return FillEmptyHistory::NO;
+  throw Exception("Unknown history fill mode '" + value + "'.");
+}
+
+std::uint64_t DataTypeSize(pblczero::Buffer::DataType data_type) {
+  switch (data_type) {
+    case pblczero::Buffer::DATA_TYPE_F32:
+      return sizeof(float);
+    case pblczero::Buffer::DATA_TYPE_U64:
+      return sizeof(std::uint64_t);
+    default:
+      throw Exception("Unsupported lc0ex execution buffer data type.");
+  }
+}
+
+const lc0ex::BufferInfo* RequireProgramBuffer(
+    const lc0ex::Program& program, std::string_view name,
+    pblczero::Buffer::DataType data_type,
+    std::initializer_list<std::uint64_t> shape) {
+  const auto* buffer = program.FindBuffer(name);
+  if (!buffer) {
+    throw Exception("The lc0ex program '" + program.GetInfo().name +
+                    "' has no buffer '" + std::string(name) + "'.");
+  }
+  if (buffer->data_type != data_type) {
+    throw Exception("Data type mismatch for lc0ex program buffer '" +
+                    std::string(name) + "'.");
+  }
+  if (buffer->shape.size() != shape.size()) {
+    throw Exception("Shape mismatch for lc0ex program buffer '" +
+                    std::string(name) + "'.");
+  }
+
+  std::uint64_t expected_size = DataTypeSize(data_type);
+  std::size_t dimension_index = 0;
+  for (const std::uint64_t dimension : shape) {
+    if (buffer->shape[dimension_index++] != dimension) {
+      throw Exception("Shape mismatch for lc0ex program buffer '" +
+                      std::string(name) + "'.");
+    }
+    if (dimension != 0 &&
+        expected_size > std::numeric_limits<std::uint64_t>::max() /
+                            dimension) {
+      throw Exception("Size overflow for lc0ex program buffer '" +
+                      std::string(name) + "'.");
+    }
+    expected_size *= dimension;
+  }
+  if (buffer->size_bytes != expected_size) {
+    throw Exception("Size mismatch for lc0ex program buffer '" +
+                    std::string(name) + "'.");
+  }
+  return buffer;
+}
+
+struct ProgramSpec {
+  std::size_t batch_size;
+  const lc0ex::Program* program;
+  const lc0ex::BufferInfo* input_masks;
+  const lc0ex::BufferInfo* input_values;
+  const lc0ex::BufferInfo* output_policy;
+  const lc0ex::BufferInfo* output_wdl;
+  const lc0ex::BufferInfo* output_mlh;
+};
 
 pblczero::NeuralExecutable LoadExecutableFile(const std::string& path) {
   std::ifstream file(path, std::ios::in | std::ios::binary);
@@ -216,10 +302,37 @@ BackendAttributes MakeBackendAttributes(const WeightsFile& weights) {
       .has_wdl = format.output() == pblczero::NetworkFormat::OUTPUT_WDL,
       .runs_on_cpu = false,
       .suggested_num_search_threads = 2,
-      .recommended_batch_size = 256,
-      .maximum_batch_size = 1024,
+      .recommended_batch_size = 0,
+      .maximum_batch_size = 0,
   };
 }
+
+void DecodeWdl(std::span<const float> logits, EvalResultPtr result) {
+  const float maximum = std::max({logits[0], logits[1], logits[2]});
+  const float win = std::exp(logits[0] - maximum);
+  const float draw = std::exp(logits[1] - maximum);
+  const float loss = std::exp(logits[2] - maximum);
+  const float scale = 1.0f / (win + draw + loss);
+
+  if (result.q) *result.q = (win - loss) * scale;
+  if (result.d) *result.d = draw * scale;
+}
+
+class ExecutionPermit {
+ public:
+  explicit ExecutionPermit(std::counting_semaphore<>& semaphore)
+      : semaphore_(semaphore) {
+    semaphore_.acquire();
+  }
+
+  ~ExecutionPermit() { semaphore_.release(); }
+
+  ExecutionPermit(const ExecutionPermit&) = delete;
+  ExecutionPermit& operator=(const ExecutionPermit&) = delete;
+
+ private:
+  std::counting_semaphore<>& semaphore_;
+};
 
 class Lc0exCudaBackend;
 
@@ -230,21 +343,23 @@ class Lc0exCudaBackendComputation final : public BackendComputation {
   size_t UsedBatchSize() const override { return entries_.size(); }
 
   AddInputResult AddInput(const EvalPosition& pos,
-                          EvalResultPtr result) override {
-    entries_.push_back({pos, result});
-    return ENQUEUED_FOR_EVAL;
-  }
+                          EvalResultPtr result) override;
 
   void ComputeBlocking() override;
 
  private:
   struct Entry {
-    EvalPosition position;
+    std::array<std::uint64_t, kInputPlanes> masks;
+    std::array<float, kInputPlanes> values;
+    MoveList legal_moves;
     EvalResultPtr result;
+    int transform;
   };
 
+  void DecodePolicy(const Entry& entry, std::span<const float> logits) const;
+
   Lc0exCudaBackend* backend_;
-  std::vector<Entry> entries_;
+  AtomicVector<Entry> entries_;
 };
 
 class Lc0exCudaBackend final : public Backend {
@@ -252,10 +367,12 @@ class Lc0exCudaBackend final : public Backend {
   Lc0exCudaBackend(const WeightsFile& weights, const OptionsDict& options,
                    const OptionsDict& backend_options)
       : attributes_(MakeBackendAttributes(weights)),
-        concurrency_(backend_options.GetOrDefault<int>("concurrency", 1)),
+        execution_semaphore_(
+            backend_options.GetOrDefault<int>("concurrency", 1)),
         backend_options_(
             options.Get<std::string>(SharedBackendParams::kBackendOptionsId)),
-        weights_path_(options.Get<std::string>(SharedBackendParams::kWeightsId)) {
+        weights_path_(options.Get<std::string>(SharedBackendParams::kWeightsId)),
+        input_format_(weights.format().network_format().input()) {
     UpdateConfiguration(options);
 
     const std::string lc0ex_path = backend_options.Get<std::string>("lc0ex");
@@ -269,6 +386,7 @@ class Lc0exCudaBackend final : public Backend {
     const int gpu = backend_options.GetOrDefault<int>("gpu", 0);
     runtime_ = lc0ex::CreateLc0exCudaRuntime(gpu);
     executable_ = runtime_->Load(executable_proto);
+    InitializePrograms();
     UploadWeights(weights, *executable_, backend_options);
   }
 
@@ -289,50 +407,205 @@ class Lc0exCudaBackend final : public Backend {
         options.Get<std::string>(SharedBackendParams::kWeightsId)) {
       return NEED_RESTART;
     }
+
+    inverse_policy_temperature_ =
+        1.0f / options.Get<float>(SharedBackendParams::kPolicySoftmaxTemp);
+    fill_empty_history_ = ParseHistoryFill(
+        options.Get<std::string>(SharedBackendParams::kHistoryFill));
     return UPDATE_OK;
   }
 
-  std::unique_ptr<lc0ex::Execution> CreateExecution(
-      std::size_t /*batch_size*/) {
-    const auto programs = executable_->GetPrograms();
-    const auto* program = executable_->FindProgram(programs.front().name);
-    if (!program) {
-      throw Exception("The lc0ex executable's first program could not be found.");
+  const ProgramSpec& FindProgram(std::size_t batch_size) const {
+    const auto iter = std::lower_bound(
+        programs_.begin(), programs_.end(), batch_size,
+        [](const ProgramSpec& program, std::size_t size) {
+          return program.batch_size < size;
+        });
+    if (iter == programs_.end()) {
+      throw Exception("NN input exceeds maximum lc0ex batch size of " +
+                      std::to_string(attributes_.maximum_batch_size) + ".");
     }
-    return executable_->CreateExecution(*program);
+    return *iter;
+  }
+
+  std::unique_ptr<lc0ex::Execution> CreateExecution(
+      const ProgramSpec& program) {
+    return executable_->CreateExecution(*program.program);
   }
 
  private:
-  const BackendAttributes attributes_;
-  // Reserved for future execution policy. It must not affect search threads.
-  const int concurrency_;
+  void InitializePrograms() {
+    for (const auto& program_info : executable_->GetPrograms()) {
+      const auto* program = executable_->FindProgram(program_info.name);
+
+      pblczero::ProgramMetadata metadata;
+      metadata.ParseFromString(program_info.metadata);
+      const std::size_t batch_size = metadata.batch_size();
+      if (batch_size >
+          static_cast<std::size_t>(std::numeric_limits<int>::max())) {
+        throw Exception("The lc0ex program '" + program_info.name +
+                        "' has an unsupported batch size.");
+      }
+
+      const auto* input_masks = RequireProgramBuffer(
+          *program, kInputMasksName, pblczero::Buffer::DATA_TYPE_U64,
+          {batch_size, kInputPlanes});
+      const auto* input_values = RequireProgramBuffer(
+          *program, kInputValuesName, pblczero::Buffer::DATA_TYPE_F32,
+          {batch_size, kInputPlanes});
+      const auto* output_policy = RequireProgramBuffer(
+          *program, kOutputPolicyName, pblczero::Buffer::DATA_TYPE_F32,
+          {batch_size, kNumOutputPolicy});
+      const auto* output_wdl = RequireProgramBuffer(
+          *program, kOutputWdlName, pblczero::Buffer::DATA_TYPE_F32,
+          {batch_size, kNumWdlOutputs});
+
+      const auto* output_mlh = program->FindBuffer(kOutputMlhName);
+      if (attributes_.has_mlh && !output_mlh) {
+        throw Exception("The lc0ex program '" + program_info.name +
+                        "' has no moves-left output buffer.");
+      }
+      if (output_mlh) {
+        output_mlh = RequireProgramBuffer(
+            *program, kOutputMlhName, pblczero::Buffer::DATA_TYPE_F32,
+            {batch_size, 1});
+      }
+
+      programs_.push_back({batch_size, program, input_masks, input_values,
+                           output_policy, output_wdl, output_mlh});
+    }
+
+    std::sort(programs_.begin(), programs_.end(),
+              [](const ProgramSpec& lhs, const ProgramSpec& rhs) {
+                return lhs.batch_size < rhs.batch_size;
+              });
+    attributes_.recommended_batch_size =
+        static_cast<int>(programs_.back().batch_size);
+    attributes_.maximum_batch_size =
+        static_cast<int>(programs_.back().batch_size);
+  }
+
+  BackendAttributes attributes_;
+  std::counting_semaphore<> execution_semaphore_;
   const std::string backend_options_;
   const std::string weights_path_;
+  const pblczero::NetworkFormat::InputFormat input_format_;
+  float inverse_policy_temperature_ = 1.0f;
+  FillEmptyHistory fill_empty_history_ = FillEmptyHistory::NO;
   std::unique_ptr<lc0ex::Runtime> runtime_;
   std::unique_ptr<lc0ex::Executable> executable_;
+  std::vector<ProgramSpec> programs_;
 
   friend class Lc0exCudaBackendComputation;
 };
 
+BackendComputation::AddInputResult Lc0exCudaBackendComputation::AddInput(
+    const EvalPosition& pos, EvalResultPtr result) {
+  int transform = 0;
+  const InputPlanes input = EncodePositionForNN(
+      backend_->input_format_, pos.pos, kMoveHistory,
+      backend_->fill_empty_history_, &transform);
+
+  Entry entry{
+      .masks = {},
+      .values = {},
+      .legal_moves = MoveList(pos.legal_moves.begin(), pos.legal_moves.end()),
+      .result = result,
+      .transform = transform,
+  };
+  for (std::size_t i = 0; i < kInputPlanes; ++i) {
+    entry.masks[i] = input[i].mask;
+    entry.values[i] = input[i].value;
+  }
+  entries_.emplace_back(std::move(entry));
+  return ENQUEUED_FOR_EVAL;
+}
+
 Lc0exCudaBackendComputation::Lc0exCudaBackendComputation(
     Lc0exCudaBackend* backend)
-    : backend_(backend) {
-  entries_.reserve(backend_->GetAttributes().maximum_batch_size);
+    : backend_(backend),
+      entries_(backend_->GetAttributes().maximum_batch_size) {}
+
+void Lc0exCudaBackendComputation::DecodePolicy(
+    const Entry& entry, std::span<const float> logits) const {
+  float maximum = -std::numeric_limits<float>::infinity();
+  for (std::size_t i = 0; i < entry.legal_moves.size(); ++i) {
+    const std::size_t policy_index =
+        MoveToNNIndex(entry.legal_moves[i], entry.transform);
+    entry.result.p[i] = logits[policy_index];
+    maximum = std::max(maximum, entry.result.p[i]);
+  }
+
+  float total = 0.0f;
+  for (float& value : entry.result.p) {
+    value = FastExp(
+        (value - maximum) * backend_->inverse_policy_temperature_);
+    total += value;
+  }
+  const float scale = total > 0.0f ? 1.0f / total : 1.0f;
+  for (float& value : entry.result.p) value *= scale;
 }
 
 void Lc0exCudaBackendComputation::ComputeBlocking() {
-  [[maybe_unused]] const auto execution =
-      backend_->CreateExecution(entries_.size());
+  const std::size_t actual_batch = entries_.size();
+  if (actual_batch == 0) return;
 
-  // The executable tensor ABI is not wired to the search result contract yet.
-  // Preserve the legacy wrapper's current zero-logit behavior meanwhile.
-  for (const auto& entry : entries_) {
-    if (entry.result.q) *entry.result.q = 0.0f;
-    if (entry.result.d) *entry.result.d = 0.0f;
-    if (entry.result.m) *entry.result.m = 0.0f;
+  const ProgramSpec& program = backend_->FindProgram(actual_batch);
+  auto execution = backend_->CreateExecution(program);
+
+  std::vector<std::uint64_t> masks(actual_batch * kInputPlanes);
+  std::vector<float> values(actual_batch * kInputPlanes);
+  for (std::size_t sample = 0; sample < actual_batch; ++sample) {
+    const std::size_t offset = sample * kInputPlanes;
+    std::copy(entries_[sample].masks.begin(), entries_[sample].masks.end(),
+              masks.begin() + offset);
+    std::copy(entries_[sample].values.begin(), entries_[sample].values.end(),
+              values.begin() + offset);
+  }
+
+  const auto mask_bytes = std::as_bytes(std::span<const std::uint64_t>(masks));
+  const auto value_bytes = std::as_bytes(std::span<const float>(values));
+  execution->GetBuffer(*program.input_masks)
+      .CopyFromHost(mask_bytes, mask_bytes.size());
+  execution->GetBuffer(*program.input_values)
+      .CopyFromHost(value_bytes, value_bytes.size());
+
+  std::vector<float> policy(actual_batch * kNumOutputPolicy);
+  std::vector<float> wdl(actual_batch * kNumWdlOutputs);
+  std::vector<float> mlh;
+  if (program.output_mlh) mlh.resize(actual_batch);
+
+  {
+    ExecutionPermit permit(backend_->execution_semaphore_);
+    execution->Run();
+    execution->Synchronize();
+  }
+
+  const auto policy_bytes = std::as_writable_bytes(std::span<float>(policy));
+  execution->GetBuffer(*program.output_policy)
+      .CopyToHost(policy_bytes, policy_bytes.size());
+  const auto wdl_bytes = std::as_writable_bytes(std::span<float>(wdl));
+  execution->GetBuffer(*program.output_wdl)
+      .CopyToHost(wdl_bytes, wdl_bytes.size());
+  if (program.output_mlh) {
+    const auto mlh_bytes = std::as_writable_bytes(std::span<float>(mlh));
+    execution->GetBuffer(*program.output_mlh)
+        .CopyToHost(mlh_bytes, mlh_bytes.size());
+  }
+
+  for (std::size_t sample = 0; sample < actual_batch; ++sample) {
+    const Entry& entry = entries_[sample];
+    DecodeWdl(std::span<const float>(
+                  wdl.data() + sample * kNumWdlOutputs, kNumWdlOutputs),
+              entry.result);
     if (!entry.result.p.empty()) {
-      const float value = 1.0f / entry.result.p.size();
-      for (float& policy : entry.result.p) policy = value;
+      DecodePolicy(
+          entry,
+          std::span<const float>(policy.data() + sample * kNumOutputPolicy,
+                                 kNumOutputPolicy));
+    }
+    if (entry.result.m) {
+      *entry.result.m = mlh.empty() ? 0.0f : mlh[sample];
     }
   }
 }

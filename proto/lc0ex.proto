@@ -114,6 +114,9 @@ enum ParameterType {
   PARAMETER_TYPE_UNKNOWN = 0;
   PARAMETER_TYPE_U32 = 1;
   PARAMETER_TYPE_POINTER = 2;
+  // A pointer-sized zero value supplied by the runtime. This type is valid in
+  // Kernel.parameters but does not consume a Node.Argument.
+  PARAMETER_TYPE_NULL_POINTER = 3;
 }
 
 // A runtime-supplied value. Its value is provided separately for each
@@ -129,7 +132,8 @@ message Kernel {
   required string function = 2;
 
   // Complete parameter list in ABI order. Every Node referencing this kernel
-  // must provide arguments with the same number and sequence of effective types.
+  // must provide arguments with the same sequence of effective types, except
+  // PARAMETER_TYPE_NULL_POINTER slots, which the runtime supplies.
   repeated ParameterType parameters = 3;
 }
 
@@ -173,9 +177,10 @@ message Node {
 
   // Indices of nodes in this Program that must complete before this node starts.
   repeated uint32 dependencies = 2;
-  // Arguments in kernel ABI order. Allocation locations and symbols have
-  // effective type PARAMETER_TYPE_POINTER, while a parameter has its declared
-  // type.
+  // Arguments for non-null-pointer kernel parameters in ABI order. Allocation
+  // locations and symbols have effective type PARAMETER_TYPE_POINTER, while a
+  // parameter has its declared type. PARAMETER_TYPE_NULL_POINTER slots do not
+  // consume an argument.
   repeated Argument arguments = 3;
 
   // Launch dimensions in x, y, z order. Each field must contain between one and

@@ -30,6 +30,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -72,9 +73,14 @@ class Buffer {
 
   virtual const BufferInfo& GetInfo() const = 0;
   // Host copies complete before returning, and therefore accept ordinary
-  // pageable host memory.
-  virtual void CopyFromHost(std::span<const std::byte> source) = 0;
-  virtual void CopyToHost(std::span<std::byte> destination) const = 0;
+  // pageable host memory. If size_bytes is specified, only that prefix is
+  // copied.
+  virtual void CopyFromHost(
+      std::span<const std::byte> source,
+      std::optional<std::size_t> size_bytes = std::nullopt) = 0;
+  virtual void CopyToHost(
+      std::span<std::byte> destination,
+      std::optional<std::size_t> size_bytes = std::nullopt) const = 0;
 };
 
 class Parameter {
