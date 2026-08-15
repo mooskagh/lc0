@@ -25,21 +25,28 @@
   Program grant you additional permission to convey the resulting work.
 */
 
+#include <cstddef>
+#include <cstdint>
 #include <fstream>
 #include <iterator>
 #include <memory>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <vector>
 
+#include "absl/algorithm/container.h"
 #include "neural/backend.h"
 #include "neural/loader.h"
+#include "neural/onnx/converter.h"
 #include "neural/register.h"
 #include "neural/shared_params.h"
 #include "network_fingerprint.h"
 #include "runtime/lc0ex_cuda.h"
 #include "utils/exception.h"
+#include "utils/logging.h"
 
 namespace lczero {
 namespace {
@@ -74,6 +81,130 @@ void CheckNetworkFingerprint(const WeightsFile& weights,
       executable_fingerprint.OutputAsString()) {
     throw Exception(
         "The lc0ex executable was created for a different network architecture.");
+  }
+}
+
+bool HasMatchingShape(const lc0ex::BufferInfo& buffer,
+                      const pblczero::TensorProto& initializer) {
+  if (initializer.dims_size() != buffer.shape.size()) {
+    return false;
+  }
+  for (std::size_t i = 0; i < initializer.dims_size(); ++i) {
+    const auto dimension = initializer.dims(i);
+    if (dimension < 0 ||
+        static_cast<std::uint64_t>(dimension) != buffer.shape[i]) {
+      return false;
+    }
+  }
+  return true;
+}
+
+void ValidateInitializer(const lc0ex::BufferInfo& buffer,
+                         const pblczero::TensorProto& initializer) {
+  if (static_cast<int>(buffer.data_type) !=
+      static_cast<int>(initializer.data_type())) {
+    throw Exception("Data type mismatch for lc0ex buffer '" + buffer.name +
+                    "'.");
+  }
+  if (!HasMatchingShape(buffer, initializer)) {
+    throw Exception("Shape mismatch for lc0ex buffer '" + buffer.name +
+                    "'.");
+  }
+  if (static_cast<std::uint64_t>(initializer.raw_data().size()) !=
+      buffer.size_bytes) {
+    throw Exception("Size mismatch for lc0ex buffer '" + buffer.name +
+                    "'.");
+  }
+}
+
+WeightsToOnnxConverterOptions MakeConverterOptions(
+    const OptionsDict& backend_options) {
+  WeightsToOnnxConverterOptions converter_options;
+  converter_options.opset = backend_options.GetOrDefault<int>("opset", 17);
+  converter_options.ir = backend_options.GetOrDefault<int>("ir", -1);
+  converter_options.alt_mish =
+      backend_options.GetOrDefault<bool>("alt_mish", false);
+  converter_options.alt_layernorm =
+      backend_options.GetOrDefault<bool>("alt_layernorm", false);
+  converter_options.no_shape =
+      backend_options.GetOrDefault<bool>("no_shape", false);
+  converter_options.policy_head =
+      backend_options.GetOrDefault<std::string>("policy_head", "vanilla");
+  converter_options.value_head =
+      backend_options.GetOrDefault<std::string>("value_head", "winner");
+  converter_options.no_wdl_softmax = true;
+
+  std::string datatype;
+  if (backend_options.Exists<std::string>("datatype")) {
+    datatype = backend_options.Get<std::string>("datatype");
+  } else {
+    const bool fp16 = backend_options.GetOrDefault<bool>("fp16", true);
+    datatype = fp16 ? "f16" : "f32";
+  }
+  converter_options.data_type =
+      WeightsToOnnxConverterOptions::StringToDataType(datatype);
+  return converter_options;
+}
+
+void UploadWeights(const WeightsFile& weights, lc0ex::Executable& executable,
+                   const OptionsDict& backend_options) {
+  std::optional<WeightsFile> converted_weights;
+  if (!weights.has_onnx_model()) {
+    CERR << "Converting weights to ONNX first.";
+    converted_weights =
+        ConvertWeightsToOnnx(weights, MakeConverterOptions(backend_options));
+  }
+
+  const auto& onnx_weights = converted_weights ? *converted_weights : weights;
+
+  pblczero::ModelProto onnx;
+  onnx.ParseFromString(onnx_weights.onnx_model().model());
+
+  std::unordered_map<std::string, const pblczero::TensorProto*>
+      initializers_by_name;
+  initializers_by_name.reserve(onnx.graph().initializer_size());
+  std::string duplicate_initializer;
+  const bool unique_initializers = absl::c_all_of(
+      onnx.graph().initializer(), [&](const auto& initializer) {
+        const auto name = std::string(initializer.name());
+        if (!initializers_by_name.emplace(name, &initializer).second) {
+          duplicate_initializer = name;
+          return false;
+        }
+        return true;
+      });
+  if (!unique_initializers) {
+    throw Exception("The ONNX model contains duplicate initializer '" +
+                    duplicate_initializer + "'.");
+  }
+
+  std::string missing_buffer;
+  if (absl::c_any_of(executable.GetBuffers(), [&](const auto& buffer) {
+        if (initializers_by_name.find(buffer.name) ==
+            initializers_by_name.end()) {
+          missing_buffer = buffer.name;
+          return true;
+        }
+        return false;
+      })) {
+    throw Exception("The lc0ex buffer '" + missing_buffer +
+                    "' has no corresponding ONNX initializer.");
+  }
+
+  CERR << "Uploading ONNX initializers to the lc0ex runtime.";
+  for (const auto& initializer : onnx.graph().initializer()) {
+    const auto* buffer = executable.FindBuffer(initializer.name());
+    if (!buffer) {
+      CERR << "WARNING: ONNX initializer '" << initializer.name()
+           << "' has no corresponding lc0ex buffer.";
+      continue;
+    }
+
+    ValidateInitializer(*buffer, initializer);
+    const auto source = std::span<const std::byte>(
+        reinterpret_cast<const std::byte*>(initializer.raw_data().data()),
+        initializer.raw_data().size());
+    executable.GetBuffer(*buffer).CopyFromHost(source);
   }
 }
 
@@ -138,6 +269,7 @@ class Lc0exCudaBackend final : public Backend {
     const int gpu = backend_options.GetOrDefault<int>("gpu", 0);
     runtime_ = lc0ex::CreateLc0exCudaRuntime(gpu);
     executable_ = runtime_->Load(executable_proto);
+    UploadWeights(weights, *executable_, backend_options);
   }
 
   BackendAttributes GetAttributes() const override { return attributes_; }
