@@ -46,6 +46,7 @@ message Target {
 // One contiguous device-memory allocation.
 message Allocation {
   required uint64 size_bytes = 1;
+  // Must be a nonzero power of two.
   required uint64 alignment_bytes = 2;
 }
 

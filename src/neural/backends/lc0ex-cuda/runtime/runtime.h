@@ -98,9 +98,11 @@ class Program {
   virtual std::span<const ParameterInfo> GetParameters() const = 0;
 };
 
-// A reusable instance of one Program. It owns a stream and a separate instance
-// of that Program's execution allocation. Run() submits asynchronously; the
-// Execution may be modified or run again only after Synchronize().
+// A reusable instance of one Program. It exclusively leases a stream and an
+// execution allocation until it is destroyed. The allocation may be larger
+// than this Program's requirements and may be reused by another Execution.
+// Run() submits asynchronously; the Execution may be modified or run again
+// only after Synchronize().
 class Execution {
  public:
   virtual ~Execution() = default;

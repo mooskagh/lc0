@@ -29,16 +29,19 @@
 
 #include <cuda.h>
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <string_view>
 #include <unordered_map>
 #include <utility>
 #include <vector>
 
+#include "absl/algorithm/container.h"
 #include "utils/exception.h"
 
 namespace lczero {
@@ -172,6 +175,18 @@ struct Lc0exCudaNode {
 class Lc0exCudaExecutable;
 class Lc0exCudaExecution;
 
+struct Lc0exCudaExecutionSlot {
+  Lc0exCudaAllocation allocation_;
+  CUstream stream_ = nullptr;
+  bool in_use_ = false;
+};
+
+void DestroyExecutionSlot(Lc0exCudaExecutionSlot& slot) {
+  if (slot.stream_) IgnoreCuda(cuStreamSynchronize(slot.stream_));
+  if (slot.allocation_.base_) IgnoreCuda(cuMemFree(slot.allocation_.base_));
+  if (slot.stream_) IgnoreCuda(cuStreamDestroy(slot.stream_));
+}
+
 class Lc0exCudaProgram final : public Program {
  public:
   const ProgramInfo& GetInfo() const override { return info_; }
@@ -285,6 +300,9 @@ class Lc0exCudaExecutable final : public Executable {
 
   std::unique_ptr<Execution> CreateExecution(const Program& program) override;
 
+  Lc0exCudaExecutionSlot* AcquireExecutionSlot();
+  void ReleaseExecutionSlot(Lc0exCudaExecutionSlot* slot);
+
   void Initialize() {
     LC0EX_CUDA_CHECK(cuDevicePrimaryCtxRetain(&context_, device_));
     context_retained_ = true;
@@ -317,6 +335,12 @@ class Lc0exCudaExecutable final : public Executable {
   std::vector<Lc0exCudaProgram> programs_;
   std::vector<ProgramInfo> program_infos_;
   std::unordered_map<std::string, std::size_t> program_indices_;
+
+  // This is the maximum execution allocation required by any program. Slots
+  // use it so that sequential executions can reuse device memory.
+  Lc0exCudaAllocation execution_pool_allocation_{0, 1, 0, 0};
+  std::mutex execution_slots_mutex_;
+  std::vector<std::unique_ptr<Lc0exCudaExecutionSlot>> execution_slots_;
 };
 
 class Lc0exCudaExecution final : public Execution {
@@ -341,20 +365,12 @@ class Lc0exCudaExecution final : public Execution {
 
   void Initialize() {
     executable_->SetCurrent();
-    LC0EX_CUDA_CHECK(cuStreamCreate(&stream_, CU_STREAM_DEFAULT));
-
-    if (program_->execution_allocation_.size_bytes_ != 0) {
-      const auto memory = AllocateDeviceMemory(
-          program_->execution_allocation_.size_bytes_,
-          program_->execution_allocation_.alignment_bytes_);
-      execution_base_ = memory.first;
-      execution_address_ = memory.second;
-    }
+    slot_ = executable_->AcquireExecutionSlot();
 
     buffers_.resize(program_->buffer_plans_.size());
     for (std::size_t i = 0; i < program_->buffer_plans_.size(); ++i) {
       const auto& plan = program_->buffer_plans_[i];
-      auto address = execution_address_;
+      auto address = slot_->allocation_.address_;
       address += plan.offset_bytes_;
       buffers_[i] = std::make_unique<Lc0exCudaBuffer>(
           executable_, &program_->buffer_infos_[i], address);
@@ -389,7 +405,7 @@ class Lc0exCudaExecution final : public Execution {
                             pblczero::Node::Argument::AllocationLocation::
                                 ALLOCATION_PERSISTENT
                         ? executable_->persistent_allocation_.address_
-                        : execution_address_;
+                        : slot_->allocation_.address_;
             value += argument.offset_;
           }
           arguments[argument_index] = &value;
@@ -407,23 +423,21 @@ class Lc0exCudaExecution final : public Execution {
           cuLaunchKernel(node.function_, node.grid_[0], node.grid_[1],
                          node.grid_[2], node.block_[0], node.block_[1],
                          node.block_[2], node.dynamic_shared_memory_bytes_,
-                         stream_, launch_arguments_[i].data(), nullptr));
+                         slot_->stream_, launch_arguments_[i].data(), nullptr));
     }
   }
 
   void Synchronize() override {
     if (!in_flight_) return;
     executable_->SetCurrent();
-    LC0EX_CUDA_CHECK(cuStreamSynchronize(stream_));
+    LC0EX_CUDA_CHECK(cuStreamSynchronize(slot_->stream_));
     in_flight_ = false;
   }
 
   Lc0exCudaExecutable* executable_;
   const Lc0exCudaProgram* program_;
-  CUstream stream_ = nullptr;
+  Lc0exCudaExecutionSlot* slot_ = nullptr;
   bool in_flight_ = false;
-  CUdeviceptr execution_base_ = 0;
-  CUdeviceptr execution_address_ = 0;
   std::vector<std::unique_ptr<Lc0exCudaBuffer>> buffers_;
   std::vector<Lc0exCudaParameter> parameters_;
   std::vector<std::vector<void*>> launch_arguments_;
@@ -464,6 +478,8 @@ void Lc0exCudaBuffer::CopyToHost(std::span<std::byte> destination) const {
 Lc0exCudaExecutable::~Lc0exCudaExecutable() {
   if (!context_retained_) return;
   if (cuCtxSetCurrent(context_) == CUDA_SUCCESS) {
+    absl::c_for_each(execution_slots_,
+                     [](const auto& slot) { DestroyExecutionSlot(*slot); });
     if (persistent_allocation_.base_) {
       IgnoreCuda(cuMemFree(persistent_allocation_.base_));
     }
@@ -475,16 +491,49 @@ Lc0exCudaExecutable::~Lc0exCudaExecutable() {
 }
 
 Lc0exCudaExecution::~Lc0exCudaExecution() {
-  if (!executable_ || !executable_->context_retained_) return;
+  if (!executable_ || !slot_ || !executable_->context_retained_) return;
   if (cuCtxSetCurrent(executable_->context_) == CUDA_SUCCESS) {
-    if (stream_) IgnoreCuda(cuStreamSynchronize(stream_));
-    if (execution_base_) IgnoreCuda(cuMemFree(execution_base_));
-    if (stream_) IgnoreCuda(cuStreamDestroy(stream_));
+    IgnoreCuda(cuStreamSynchronize(slot_->stream_));
+    executable_->ReleaseExecutionSlot(slot_);
+    slot_ = nullptr;
   }
 }
 
 Buffer& Lc0exCudaExecutable::GetBuffer(const BufferInfo& info) {
   return *persistent_buffers_[buffer_indices_.find(info.name)->second];
+}
+
+Lc0exCudaExecutionSlot* Lc0exCudaExecutable::AcquireExecutionSlot() {
+  std::lock_guard<std::mutex> lock(execution_slots_mutex_);
+  const auto free_slot = absl::c_find_if(
+      execution_slots_, [](const auto& slot) { return !slot->in_use_; });
+  if (free_slot != execution_slots_.end()) {
+    (*free_slot)->in_use_ = true;
+    return free_slot->get();
+  }
+
+  auto slot = std::make_unique<Lc0exCudaExecutionSlot>();
+  slot->allocation_.size_bytes_ = execution_pool_allocation_.size_bytes_;
+  slot->allocation_.alignment_bytes_ =
+      execution_pool_allocation_.alignment_bytes_;
+
+  SetCurrent();
+  LC0EX_CUDA_CHECK(cuStreamCreate(&slot->stream_, CU_STREAM_DEFAULT));
+  if (slot->allocation_.size_bytes_ != 0) {
+    const auto memory = AllocateDeviceMemory(
+        slot->allocation_.size_bytes_, slot->allocation_.alignment_bytes_);
+    slot->allocation_.base_ = memory.first;
+    slot->allocation_.address_ = memory.second;
+  }
+  auto* result = slot.get();
+  execution_slots_.push_back(std::move(slot));
+  result->in_use_ = true;
+  return result;
+}
+
+void Lc0exCudaExecutable::ReleaseExecutionSlot(Lc0exCudaExecutionSlot* slot) {
+  std::lock_guard<std::mutex> lock(execution_slots_mutex_);
+  slot->in_use_ = false;
 }
 
 std::unique_ptr<Execution> Lc0exCudaExecutable::CreateExecution(
@@ -703,6 +752,12 @@ void BuildPrograms(Lc0exCudaExecutable& executable,
 
     Lc0exCudaProgram plan;
     BuildProgram(executable, program, &plan);
+    executable.execution_pool_allocation_.size_bytes_ =
+        std::max(executable.execution_pool_allocation_.size_bytes_,
+                 plan.execution_allocation_.size_bytes_);
+    executable.execution_pool_allocation_.alignment_bytes_ =
+        std::max(executable.execution_pool_allocation_.alignment_bytes_,
+                 plan.execution_allocation_.alignment_bytes_);
     executable.program_infos_.push_back(plan.info_);
     executable.programs_.push_back(std::move(plan));
     executable.program_indices_.emplace(name, executable.programs_.size() - 1);
