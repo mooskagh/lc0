@@ -32,7 +32,7 @@
 namespace lczero {
 namespace lc0ex {
 
-std::unique_ptr<Runtime> CreateCudaRuntime(int device_ordinal = 0);
+std::unique_ptr<Runtime> CreateLc0exCudaRuntime(int device_ordinal = 0);
 
 }  // namespace lc0ex
 }  // namespace lczero
