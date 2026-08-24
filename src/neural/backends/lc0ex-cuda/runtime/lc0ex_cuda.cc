@@ -176,15 +176,19 @@ struct Lc0exCudaNode {
 
 class Lc0exCudaExecutable;
 class Lc0exCudaExecution;
+class Lc0exCudaProgram;
 
 struct Lc0exCudaExecutionSlot {
   Lc0exCudaAllocation allocation_;
   CUstream stream_ = nullptr;
+  CUgraphExec graph_exec_ = nullptr;
+  const Lc0exCudaProgram* captured_program_ = nullptr;
   bool in_use_ = false;
 };
 
 void DestroyExecutionSlot(Lc0exCudaExecutionSlot& slot) {
   if (slot.stream_) IgnoreCuda(cuStreamSynchronize(slot.stream_));
+  if (slot.graph_exec_) IgnoreCuda(cuGraphExecDestroy(slot.graph_exec_));
   if (slot.allocation_.base_) IgnoreCuda(cuMemFree(slot.allocation_.base_));
   if (slot.stream_) IgnoreCuda(cuStreamDestroy(slot.stream_));
 }
@@ -430,6 +434,17 @@ class Lc0exCudaExecution final : public Execution {
   void Run() override {
     executable_->SetCurrent();
     in_flight_ = true;
+    if (slot_->graph_exec_ != nullptr && slot_->captured_program_ == program_) {
+      LC0EX_CUDA_CHECK(cuGraphLaunch(slot_->graph_exec_, slot_->stream_));
+      return;
+    }
+    if (slot_->graph_exec_ != nullptr) {
+      cuGraphExecDestroy(slot_->graph_exec_);
+      slot_->graph_exec_ = nullptr;
+    }
+    CUgraph graph = nullptr;
+    LC0EX_CUDA_CHECK(
+        cuStreamBeginCapture(slot_->stream_, CU_STREAM_CAPTURE_MODE_GLOBAL));
     for (std::size_t i = 0; i < program_->nodes_.size(); ++i) {
       const auto& node = program_->nodes_[i];
       LC0EX_CUDA_CHECK(
@@ -438,6 +453,11 @@ class Lc0exCudaExecution final : public Execution {
                          node.block_[2], node.dynamic_shared_memory_bytes_,
                          slot_->stream_, launch_arguments_[i].data(), nullptr));
     }
+    LC0EX_CUDA_CHECK(cuStreamEndCapture(slot_->stream_, &graph));
+    LC0EX_CUDA_CHECK(cuGraphInstantiate(&slot_->graph_exec_, graph, 0));
+    LC0EX_CUDA_CHECK(cuGraphDestroy(graph));
+    slot_->captured_program_ = program_;
+    LC0EX_CUDA_CHECK(cuGraphLaunch(slot_->graph_exec_, slot_->stream_));
   }
 
   void Synchronize() override {
