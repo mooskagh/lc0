@@ -82,10 +82,16 @@ std::uint64_t DataTypeSize(pblczero::Buffer::DataType data_type) {
   switch (data_type) {
     case pblczero::Buffer::DATA_TYPE_F32:
       return sizeof(float);
+    case pblczero::Buffer::DATA_TYPE_U8:
+      return sizeof(std::uint8_t);
+    case pblczero::Buffer::DATA_TYPE_F16:
+      return sizeof(std::uint16_t);
     case pblczero::Buffer::DATA_TYPE_U64:
       return sizeof(std::uint64_t);
+    case pblczero::Buffer::DATA_TYPE_BF16:
+      return sizeof(std::uint16_t);
     default:
-      throw Exception("Unsupported lc0ex execution buffer data type.");
+      throw Exception("Unsupported or unknown lc0ex buffer data type.");
   }
 }
 
@@ -232,6 +238,83 @@ WeightsToOnnxConverterOptions MakeConverterOptions(
   return converter_options;
 }
 
+void CopyStridedHostTensor(
+    const std::vector<std::uint64_t>& shape,
+    const std::vector<std::int64_t>& dst_strides,
+    const std::vector<std::int64_t>& src_strides,
+    std::size_t elem_size,
+    const std::byte* src,
+    std::byte* dst) {
+  if (shape.empty()) {
+    std::memcpy(dst, src, elem_size);
+    return;
+  }
+  std::size_t contiguous_dim = shape.size();
+  std::size_t contiguous_bytes = elem_size;
+  while (contiguous_dim > 0) {
+    std::size_t dim = contiguous_dim - 1;
+    if (dim == shape.size() - 1) {
+      if (dst_strides[dim] == 1 && src_strides[dim] == 1) {
+        contiguous_bytes *= shape[dim];
+        contiguous_dim = dim;
+      } else {
+        break;
+      }
+    } else {
+      if (dst_strides[dim] ==
+              dst_strides[dim + 1] *
+                  static_cast<std::int64_t>(shape[dim + 1]) &&
+          src_strides[dim] ==
+              src_strides[dim + 1] *
+                  static_cast<std::int64_t>(shape[dim + 1])) {
+        contiguous_bytes *= shape[dim];
+        contiguous_dim = dim;
+      } else {
+        break;
+      }
+    }
+  }
+
+  auto copy_dim = [&](auto& self, std::size_t dim, const std::byte* s,
+                      std::byte* d) -> void {
+    if (dim >= contiguous_dim) {
+      std::memcpy(d, s, contiguous_bytes);
+      return;
+    }
+    for (std::uint64_t i = 0; i < shape[dim]; ++i) {
+      self(self, dim + 1, s + i * src_strides[dim] * elem_size,
+           d + i * dst_strides[dim] * elem_size);
+    }
+  };
+  copy_dim(copy_dim, 0, src, dst);
+}
+
+std::vector<std::int64_t> DefaultStrides(
+    const std::vector<std::uint64_t>& shape) {
+  std::vector<std::int64_t> strides(shape.size(), 1);
+  if (shape.empty()) return strides;
+  for (std::size_t i = shape.size() - 1; i > 0; --i) {
+    strides[i - 1] = strides[i] * static_cast<std::int64_t>(shape[i]);
+  }
+  return strides;
+}
+
+void CopyTensorToHostStaging(const lc0ex::BufferInfo& buffer,
+                             std::span<const std::byte> source,
+                             std::span<std::byte> destination_staging) {
+  const auto elem_size = DataTypeSize(buffer.data_type);
+  const auto src_strides = DefaultStrides(buffer.shape);
+
+  if (buffer.offset_bytes >= destination_staging.size()) {
+    throw Exception("Buffer '" + buffer.name +
+                    "' offset exceeds persistent allocation bounds.");
+  }
+
+  CopyStridedHostTensor(
+      buffer.shape, buffer.strides, src_strides, elem_size,
+      source.data(), destination_staging.data() + buffer.offset_bytes);
+}
+
 void UploadWeights(const WeightsFile& weights, lc0ex::Executable& executable,
                    const OptionsDict& backend_options) {
   std::optional<WeightsFile> converted_weights;
@@ -278,6 +361,9 @@ void UploadWeights(const WeightsFile& weights, lc0ex::Executable& executable,
   }
 
   CERR << "Uploading ONNX initializers to the lc0ex runtime.";
+  std::vector<std::byte> staging(executable.GetPersistentAllocationSize(),
+                                 std::byte{0});
+
   for (const auto& initializer : onnx.graph().initializer()) {
     const auto* buffer = executable.FindBuffer(initializer.name());
     if (!buffer) {
@@ -290,8 +376,10 @@ void UploadWeights(const WeightsFile& weights, lc0ex::Executable& executable,
     const auto source = std::span<const std::byte>(
         reinterpret_cast<const std::byte*>(initializer.raw_data().data()),
         initializer.raw_data().size());
-    executable.GetBuffer(*buffer).CopyFromHost(source);
+    CopyTensorToHostStaging(*buffer, source, staging);
   }
+
+  executable.CopyPersistentFromHost(staging);
 }
 
 BackendAttributes MakeBackendAttributes(const WeightsFile& weights) {

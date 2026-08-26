@@ -54,7 +54,9 @@ struct BufferInfo {
   std::string name;
   pblczero::Buffer::DataType data_type = pblczero::Buffer::DATA_TYPE_UNKNOWN;
   std::vector<std::uint64_t> shape;
+  std::vector<std::int64_t> strides;
   std::uint64_t size_bytes = 0;
+  std::uint64_t offset_bytes = 0;
 };
 
 struct ParameterInfo {
@@ -135,6 +137,11 @@ class Executable {
   virtual const BufferInfo* FindBuffer(std::string_view name) const = 0;
   virtual const ParameterInfo* FindParameter(std::string_view name) const = 0;
   virtual const Program* FindProgram(std::string_view name) const = 0;
+
+  virtual std::size_t GetPersistentAllocationSize() const = 0;
+  virtual void CopyPersistentFromHost(
+      std::span<const std::byte> source,
+      std::optional<std::size_t> size_bytes = std::nullopt) = 0;
 
   // Persistent storage is shared by all Executions; callers must not modify it
   // while an Execution that may access it is in flight.

@@ -103,10 +103,15 @@ message Buffer {
     DATA_TYPE_BF16 = 16;
   }
 
+  message Layout {
+    repeated int64 strides = 1;
+  }
+
   required string name = 1;
   required uint64 offset = 2;
   required DataType data_type = 3;
   repeated uint64 shape = 4;
+  optional Layout layout = 5;
 }
 
 // Kernel ABI parameter types supported by the initial format generation.

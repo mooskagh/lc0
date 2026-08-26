@@ -109,11 +109,132 @@ std::uint64_t BufferSize(const pblczero::Buffer& buffer) {
   return elements * ElementSize(buffer.data_type());
 }
 
+std::vector<std::int64_t> DefaultStrides(
+    const std::vector<std::uint64_t>& shape) {
+  std::vector<std::int64_t> strides(shape.size(), 1);
+  if (shape.empty()) return strides;
+  for (std::size_t i = shape.size() - 1; i > 0; --i) {
+    strides[i - 1] = strides[i] * static_cast<std::int64_t>(shape[i]);
+  }
+  return strides;
+}
+
 BufferInfo MakeBufferInfo(const pblczero::Buffer& buffer) {
+  std::vector<std::uint64_t> shape(buffer.shape().begin(),
+                                   buffer.shape().end());
+  std::vector<std::int64_t> strides;
+  if (buffer.has_layout() && buffer.layout().strides_size() > 0) {
+    strides.assign(buffer.layout().strides().begin(),
+                   buffer.layout().strides().end());
+  } else {
+    strides = DefaultStrides(shape);
+  }
   return {
-      std::string(buffer.name()), buffer.data_type(),
-      std::vector<std::uint64_t>(buffer.shape().begin(), buffer.shape().end()),
-      BufferSize(buffer)};
+      std::string(buffer.name()),
+      buffer.data_type(),
+      std::move(shape),
+      std::move(strides),
+      BufferSize(buffer),
+      buffer.offset(),
+  };
+}
+
+void CopyStridedHtoD(const std::vector<std::uint64_t>& shape,
+                     const std::vector<std::int64_t>& dst_strides,
+                     const std::vector<std::int64_t>& src_strides,
+                     std::size_t elem_size, const std::byte* src,
+                     CUdeviceptr dst) {
+  if (shape.empty()) {
+    LC0EX_CUDA_CHECK(cuMemcpyHtoD(dst, src, elem_size));
+    return;
+  }
+  std::size_t contiguous_dim = shape.size();
+  std::size_t contiguous_bytes = elem_size;
+  while (contiguous_dim > 0) {
+    std::size_t dim = contiguous_dim - 1;
+    if (dim == shape.size() - 1) {
+      if (dst_strides[dim] == 1 && src_strides[dim] == 1) {
+        contiguous_bytes *= shape[dim];
+        contiguous_dim = dim;
+      } else {
+        break;
+      }
+    } else {
+      if (dst_strides[dim] ==
+              dst_strides[dim + 1] *
+                  static_cast<std::int64_t>(shape[dim + 1]) &&
+          src_strides[dim] ==
+              src_strides[dim + 1] *
+                  static_cast<std::int64_t>(shape[dim + 1])) {
+        contiguous_bytes *= shape[dim];
+        contiguous_dim = dim;
+      } else {
+        break;
+      }
+    }
+  }
+
+  auto copy_dim = [&](auto& self, std::size_t dim, const std::byte* s,
+                      CUdeviceptr d) -> void {
+    if (dim >= contiguous_dim) {
+      LC0EX_CUDA_CHECK(cuMemcpyHtoD(d, s, contiguous_bytes));
+      return;
+    }
+    for (std::uint64_t i = 0; i < shape[dim]; ++i) {
+      self(self, dim + 1, s + i * src_strides[dim] * elem_size,
+           d + i * dst_strides[dim] * elem_size);
+    }
+  };
+  copy_dim(copy_dim, 0, src, dst);
+}
+
+void CopyStridedDtoH(const std::vector<std::uint64_t>& shape,
+                     const std::vector<std::int64_t>& dst_strides,
+                     const std::vector<std::int64_t>& src_strides,
+                     std::size_t elem_size, CUdeviceptr src,
+                     std::byte* dst) {
+  if (shape.empty()) {
+    LC0EX_CUDA_CHECK(cuMemcpyDtoH(dst, src, elem_size));
+    return;
+  }
+  std::size_t contiguous_dim = shape.size();
+  std::size_t contiguous_bytes = elem_size;
+  while (contiguous_dim > 0) {
+    std::size_t dim = contiguous_dim - 1;
+    if (dim == shape.size() - 1) {
+      if (dst_strides[dim] == 1 && src_strides[dim] == 1) {
+        contiguous_bytes *= shape[dim];
+        contiguous_dim = dim;
+      } else {
+        break;
+      }
+    } else {
+      if (dst_strides[dim] ==
+              dst_strides[dim + 1] *
+                  static_cast<std::int64_t>(shape[dim + 1]) &&
+          src_strides[dim] ==
+              src_strides[dim + 1] *
+                  static_cast<std::int64_t>(shape[dim + 1])) {
+        contiguous_bytes *= shape[dim];
+        contiguous_dim = dim;
+      } else {
+        break;
+      }
+    }
+  }
+
+  auto copy_dim = [&](auto& self, std::size_t dim, CUdeviceptr s,
+                      std::byte* d) -> void {
+    if (dim >= contiguous_dim) {
+      LC0EX_CUDA_CHECK(cuMemcpyDtoH(d, s, contiguous_bytes));
+      return;
+    }
+    for (std::uint64_t i = 0; i < shape[dim]; ++i) {
+      self(self, dim + 1, s + i * src_strides[dim] * elem_size,
+           d + i * dst_strides[dim] * elem_size);
+    }
+  };
+  copy_dim(copy_dim, 0, src, dst);
 }
 
 std::array<unsigned int, 3> LaunchDimensions(
@@ -304,6 +425,21 @@ class Lc0exCudaExecutable final : public Executable {
   const Program* FindProgram(std::string_view name) const override {
     const auto iter = program_indices_.find(std::string(name));
     return iter == program_indices_.end() ? nullptr : &programs_[iter->second];
+  }
+
+  std::size_t GetPersistentAllocationSize() const override {
+    return persistent_allocation_.size_bytes_;
+  }
+
+  void CopyPersistentFromHost(
+      std::span<const std::byte> source,
+      std::optional<std::size_t> size_bytes = std::nullopt) override {
+    const std::size_t copy_size = size_bytes.value_or(source.size());
+    if (copy_size == 0 || !persistent_allocation_.address_) return;
+
+    SetCurrent();
+    LC0EX_CUDA_CHECK(cuMemcpyHtoD(persistent_allocation_.address_,
+                                  source.data(), copy_size));
   }
 
   Buffer& GetBuffer(const BufferInfo& info) override;
@@ -503,7 +639,15 @@ void Lc0exCudaBuffer::CopyFromHost(std::span<const std::byte> source,
   if (copy_size == 0) return;
 
   executable_->SetCurrent();
-  LC0EX_CUDA_CHECK(cuMemcpyHtoD(address_, source.data(), copy_size));
+  const auto default_strides = DefaultStrides(info_->shape);
+  if (info_->strides == default_strides) {
+    LC0EX_CUDA_CHECK(cuMemcpyHtoD(address_, source.data(), copy_size));
+    return;
+  }
+
+  const auto elem_size = ElementSize(info_->data_type);
+  CopyStridedHtoD(info_->shape, info_->strides, default_strides, elem_size,
+                  source.data(), address_);
 }
 
 void Lc0exCudaBuffer::CopyToHost(std::span<std::byte> destination,
@@ -512,7 +656,15 @@ void Lc0exCudaBuffer::CopyToHost(std::span<std::byte> destination,
   if (copy_size == 0) return;
 
   executable_->SetCurrent();
-  LC0EX_CUDA_CHECK(cuMemcpyDtoH(destination.data(), address_, copy_size));
+  const auto default_strides = DefaultStrides(info_->shape);
+  if (info_->strides == default_strides) {
+    LC0EX_CUDA_CHECK(cuMemcpyDtoH(destination.data(), address_, copy_size));
+    return;
+  }
+
+  const auto elem_size = ElementSize(info_->data_type);
+  CopyStridedDtoH(info_->shape, default_strides, info_->strides, elem_size,
+                  address_, destination.data());
 }
 
 Lc0exCudaExecutable::~Lc0exCudaExecutable() {
