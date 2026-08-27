@@ -293,6 +293,7 @@ struct Lc0exCudaNode {
   std::array<unsigned int, 3> block_ = {1, 1, 1};
   unsigned int dynamic_shared_memory_bytes_ = 0;
   std::vector<Lc0exCudaArgument> arguments_;
+  std::vector<std::size_t> dependencies_;
 };
 
 class Lc0exCudaExecutable;
@@ -579,17 +580,34 @@ class Lc0exCudaExecution final : public Execution {
       slot_->graph_exec_ = nullptr;
     }
     CUgraph graph = nullptr;
-    LC0EX_CUDA_CHECK(
-        cuStreamBeginCapture(slot_->stream_, CU_STREAM_CAPTURE_MODE_GLOBAL));
+    LC0EX_CUDA_CHECK(cuGraphCreate(&graph, 0));
+
+    std::vector<CUgraphNode> graph_nodes(program_->nodes_.size(), nullptr);
     for (std::size_t i = 0; i < program_->nodes_.size(); ++i) {
       const auto& node = program_->nodes_[i];
-      LC0EX_CUDA_CHECK(
-          cuLaunchKernel(node.function_, node.grid_[0], node.grid_[1],
-                         node.grid_[2], node.block_[0], node.block_[1],
-                         node.block_[2], node.dynamic_shared_memory_bytes_,
-                         slot_->stream_, launch_arguments_[i].data(), nullptr));
+
+      CUDA_KERNEL_NODE_PARAMS params{};
+      params.func = node.function_;
+      params.gridDimX = node.grid_[0];
+      params.gridDimY = node.grid_[1];
+      params.gridDimZ = node.grid_[2];
+      params.blockDimX = node.block_[0];
+      params.blockDimY = node.block_[1];
+      params.blockDimZ = node.block_[2];
+      params.sharedMemBytes = node.dynamic_shared_memory_bytes_;
+      params.kernelParams = const_cast<void**>(launch_arguments_[i].data());
+      params.extra = nullptr;
+
+      std::vector<CUgraphNode> deps;
+      deps.reserve(node.dependencies_.size());
+      for (const auto dep_idx : node.dependencies_) {
+        deps.push_back(graph_nodes[dep_idx]);
+      }
+
+      LC0EX_CUDA_CHECK(cuGraphAddKernelNode(
+          &graph_nodes[i], graph, deps.data(), deps.size(), &params));
     }
-    LC0EX_CUDA_CHECK(cuStreamEndCapture(slot_->stream_, &graph));
+
     LC0EX_CUDA_CHECK(cuGraphInstantiate(&slot_->graph_exec_, graph, 0));
     LC0EX_CUDA_CHECK(cuGraphDestroy(graph));
     slot_->captured_program_ = program_;
@@ -926,11 +944,7 @@ void BuildProgram(Lc0exCudaExecutable& executable,
   }
   BuildProgramBuffers(*destination, source);
 
-  std::vector<Lc0exCudaNode> source_nodes;
-  source_nodes.reserve(source.nodes_size());
-  std::vector<std::size_t> indegree(source.nodes_size(), 0);
-  std::vector<std::vector<std::size_t>> outgoing(source.nodes_size());
-
+  destination->nodes_.reserve(source.nodes_size());
   for (std::size_t node_index = 0; node_index < source.nodes_size();
        ++node_index) {
     const auto& node = source.nodes(node_index);
@@ -947,27 +961,10 @@ void BuildProgram(Lc0exCudaExecutable& executable,
           plan.dynamic_shared_memory_bytes_));
     }
     BuildArguments(executable, *destination, node, kernel, &plan);
+    plan.dependencies_.assign(node.dependencies().begin(),
+                              node.dependencies().end());
 
-    source_nodes.push_back(std::move(plan));
-    for (const auto dependency : node.dependencies()) {
-      ++indegree[node_index];
-      outgoing[dependency].push_back(node_index);
-    }
-  }
-
-  std::vector<std::size_t> ready;
-  ready.reserve(source_nodes.size());
-  for (std::size_t i = 0; i < indegree.size(); ++i) {
-    if (indegree[i] == 0) ready.push_back(i);
-  }
-
-  destination->nodes_.reserve(source_nodes.size());
-  for (std::size_t ready_index = 0; ready_index < ready.size(); ++ready_index) {
-    const auto node = ready[ready_index];
-    destination->nodes_.push_back(std::move(source_nodes[node]));
-    for (const auto dependent : outgoing[node]) {
-      if (--indegree[dependent] == 0) ready.push_back(dependent);
-    }
+    destination->nodes_.push_back(std::move(plan));
   }
 }
 
