@@ -140,6 +140,9 @@ message Kernel {
   // must provide arguments with the same sequence of effective types, except
   // PARAMETER_TYPE_NULL_POINTER slots, which the runtime supplies.
   repeated ParameterType parameters = 3;
+
+  // Autotuned or profiled execution runtime of this kernel in nanoseconds.
+  optional uint64 runtime_ns = 4;
 }
 
 // One executable variant. Metadata is opaque to this format and describes the
