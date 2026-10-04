@@ -35,7 +35,9 @@ FindOrCreateResult GameGraph::FindOrCreateMaterializing(
 }
 
 uint64_t GameGraph::InstallPayload(NodeKey key, MaterializationTicketId ticket,
-                                   const ExpansionPayload& payload) {
+                                   const ExpansionPayload& payload,
+                                   bool* accepted) {
+  if (accepted) *accepted = false;
   assert(payload.moves.size() == payload.priors.size());
   assert(payload.terminal == TerminalKind::kNonTerminal ||
          payload.moves.empty());
@@ -55,6 +57,7 @@ uint64_t GameGraph::InstallPayload(NodeKey key, MaterializationTicketId ticket,
   if (node.lifecycle == NodeLifecycle::kExpanded || node.ticket != ticket) {
     return node.generation;
   }
+  if (accepted) *accepted = true;
   node.lifecycle = NodeLifecycle::kExpanded;
   node.ticket = 0;
   node.terminal = payload.terminal;
@@ -94,22 +97,21 @@ SelectResult GameGraph::SelectAndReserve(NodeKey key,
     if (started > 0) visited_policy += edge.prior;
   }
   const float cpuct =
-      settings.cpuct +
-      settings.cpuct_factor *
-          std::log((node.value.visits + settings.cpuct_base) /
-                   settings.cpuct_base);
-  const float scale = std::sqrt(static_cast<float>(std::max<uint64_t>(1, children_started)));
+      settings.cpuct + settings.cpuct_factor *
+                           std::log((node.value.visits + settings.cpuct_base) /
+                                    settings.cpuct_base);
+  const float scale =
+      std::sqrt(static_cast<float>(std::max<uint64_t>(1, children_started)));
   size_t best = 0;
   float best_score = -std::numeric_limits<float>::infinity();
   for (size_t i = 0; i < node.edges.size(); ++i) {
     const auto& edge = node.edges[i];
     const uint64_t started = edge.visits + edge.in_flight;
-    const float q = edge.visits
-                        ? edge.Q()
-                        : settings.fpu_strategy == FpuStrategy::kAbsolute
-                              ? settings.fpu_value
-                              : node.value.Q() - settings.fpu_value *
-                                                     std::sqrt(visited_policy);
+    const float q =
+        edge.visits ? edge.Q()
+        : settings.fpu_strategy == FpuStrategy::kAbsolute
+            ? settings.fpu_value
+            : node.value.Q() - settings.fpu_value * std::sqrt(visited_policy);
     const float score = q + cpuct * edge.prior * scale / (1.0f + started);
     const auto& current = node.edges[best];
     if (score > best_score ||
@@ -129,7 +131,8 @@ SelectResult GameGraph::SelectAndReserve(NodeKey key,
 }
 
 BackupResult GameGraph::BackupNode(NodeKey key, uint64_t expected_generation,
-                                   SearchValue value, std::optional<Move> move) {
+                                   SearchValue value,
+                                   std::optional<Move> move) {
   auto& shard = shards_[ShardIndex(key)];
   std::lock_guard lock(shard.mutex);
   auto it = shard.nodes.find(key);
@@ -142,8 +145,9 @@ BackupResult GameGraph::BackupNode(NodeKey key, uint64_t expected_generation,
     return rejected(UpdateResult::kStale);
   node.value.Add(value.q, value.d, value.m);
   if (!move) return {UpdateResult::kApplied, UpdateResult::kApplied};
-  auto edge = std::find_if(node.edges.begin(), node.edges.end(),
-                           [move](const EdgeState& e) { return e.move == *move; });
+  auto edge =
+      std::find_if(node.edges.begin(), node.edges.end(),
+                   [move](const EdgeState& e) { return e.move == *move; });
   if (edge == node.edges.end())
     return {UpdateResult::kApplied, UpdateResult::kEdgeMissing};
   if (edge->in_flight == 0)
@@ -168,16 +172,16 @@ UpdateResult GameGraph::UpdateNodeValue(NodeKey key,
   return UpdateResult::kApplied;
 }
 
-UpdateResult GameGraph::CompleteEdge(NodeKey key,
-                                     uint64_t expected_generation, Move move,
-                                     SearchValue value) {
+UpdateResult GameGraph::CompleteEdge(NodeKey key, uint64_t expected_generation,
+                                     Move move, SearchValue value) {
   auto& shard = shards_[ShardIndex(key)];
   std::lock_guard lock(shard.mutex);
   auto it = shard.nodes.find(key);
   if (it == shard.nodes.end()) return UpdateResult::kMissing;
   if (it->second.generation != expected_generation) return UpdateResult::kStale;
-  auto edge = std::find_if(it->second.edges.begin(), it->second.edges.end(),
-                           [move](const EdgeState& e) { return e.move == move; });
+  auto edge =
+      std::find_if(it->second.edges.begin(), it->second.edges.end(),
+                   [move](const EdgeState& e) { return e.move == move; });
   if (edge == it->second.edges.end()) return UpdateResult::kEdgeMissing;
   if (edge->in_flight == 0) return UpdateResult::kUnderflow;
   --edge->in_flight;
@@ -188,15 +192,16 @@ UpdateResult GameGraph::CompleteEdge(NodeKey key,
   return UpdateResult::kApplied;
 }
 
-UpdateResult GameGraph::CancelEdge(NodeKey key,
-                                   uint64_t expected_generation, Move move) {
+UpdateResult GameGraph::CancelEdge(NodeKey key, uint64_t expected_generation,
+                                   Move move) {
   auto& shard = shards_[ShardIndex(key)];
   std::lock_guard lock(shard.mutex);
   auto it = shard.nodes.find(key);
   if (it == shard.nodes.end()) return UpdateResult::kMissing;
   if (it->second.generation != expected_generation) return UpdateResult::kStale;
-  auto edge = std::find_if(it->second.edges.begin(), it->second.edges.end(),
-                           [move](const EdgeState& e) { return e.move == move; });
+  auto edge =
+      std::find_if(it->second.edges.begin(), it->second.edges.end(),
+                   [move](const EdgeState& e) { return e.move == move; });
   if (edge == it->second.edges.end()) return UpdateResult::kEdgeMissing;
   if (edge->in_flight == 0) return UpdateResult::kUnderflow;
   --edge->in_flight;
@@ -234,17 +239,16 @@ void GameGraph::Clear() {
     std::lock_guard lock(shard.mutex);
     const size_t removed = shard.nodes.size();
     shard.nodes.clear();
-    // Preserve concurrent insertions into shards that have already been cleared.
+    // Preserve concurrent insertions into shards that have already been
+    // cleared.
     size_.fetch_sub(removed, std::memory_order_relaxed);
   }
 }
 
-size_t GameGraph::Size() const {
-  return size_.load(std::memory_order_relaxed);
-}
+size_t GameGraph::Size() const { return size_.load(std::memory_order_relaxed); }
 
-std::vector<std::pair<NodeKey, NodeSnapshot>>
-GameGraph::SnapshotAllForTesting() const {
+std::vector<std::pair<NodeKey, NodeSnapshot>> GameGraph::SnapshotAllForTesting()
+    const {
   std::vector<std::pair<NodeKey, NodeSnapshot>> result;
   for (const auto& shard : shards_) {
     std::lock_guard lock(shard.mutex);

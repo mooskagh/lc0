@@ -38,6 +38,79 @@ TEST(Lc5ValueTest, PerspectiveAndSumsAreExact) {
   EXPECT_FLOAT_EQ(stats.M(), 4.0f);
 }
 
+TEST(Lc5GraphTest, PublicationAcceptanceIsIndependentOfReturnedGeneration) {
+  GameGraph graph;
+  const NodeKey key{123};
+  const Move move = M(kFileA, kFileA);
+  const ExpansionPayload payload{.moves = {move}, .priors = {1.0f}};
+  const ExpansionPayload replacement{.moves = {M(kFileB, kFileB)},
+                                     .priors = {0.5f}};
+  const auto created = graph.FindOrCreateMaterializing(key, 7);
+
+  bool accepted = true;
+  EXPECT_EQ(graph.InstallPayload(key, 8, replacement, &accepted),
+            created.generation);
+  EXPECT_FALSE(accepted);
+  auto node = graph.SnapshotNode(key);
+  ASSERT_TRUE(node);
+  EXPECT_EQ(node->lifecycle, NodeLifecycle::kMaterializing);
+  EXPECT_EQ(node->ticket, 7u);
+  EXPECT_TRUE(node->edges.empty());
+
+  EXPECT_EQ(graph.InstallPayload(key, 7, payload, &accepted),
+            created.generation);
+  EXPECT_TRUE(accepted);
+  ASSERT_EQ(
+      graph.SelectAndReserve(key, created.generation, TestSettings()).status,
+      SelectStatus::kSelected);
+  ASSERT_EQ(
+      graph.BackupNode(key, created.generation, {0.25f, 0.5f, 3.0f}, move).edge,
+      UpdateResult::kApplied);
+  ASSERT_EQ(
+      graph.SelectAndReserve(key, created.generation, TestSettings()).status,
+      SelectStatus::kSelected);
+  // Both duplicate and wrong-ticket publications return the same generation
+  // as success; only the out-parameter distinguishes them. It must be reset
+  // on every rejection, without disturbing statistics or live reservations.
+  for (const auto ticket : {7u, 8u}) {
+    accepted = true;
+    EXPECT_EQ(graph.InstallPayload(key, ticket, replacement, &accepted),
+              created.generation);
+    EXPECT_FALSE(accepted);
+    node = graph.SnapshotNode(key);
+    ASSERT_TRUE(node);
+    EXPECT_EQ(node->lifecycle, NodeLifecycle::kExpanded);
+    EXPECT_EQ(node->ticket, 0u);
+    ASSERT_EQ(node->edges.size(), 1u);
+    EXPECT_EQ(node->edges[0].move, move);
+    EXPECT_FLOAT_EQ(node->edges[0].prior, 1.0f);
+    EXPECT_EQ(node->edges[0].visits, 1u);
+    EXPECT_EQ(node->edges[0].in_flight, 1u);
+    EXPECT_FLOAT_EQ(node->edges[0].Q(), 0.25f);
+    EXPECT_EQ(node->value.visits, 1u);
+  }
+  EXPECT_EQ(graph.CancelEdge(key, created.generation, move),
+            UpdateResult::kApplied);
+
+  ASSERT_TRUE(graph.Erase(key));
+  const auto recreated = graph.FindOrCreateMaterializing(key, 9);
+  ASSERT_NE(recreated.generation, created.generation);
+  accepted = true;
+  EXPECT_EQ(graph.InstallPayload(key, 7, payload, &accepted),
+            recreated.generation);
+  EXPECT_FALSE(accepted);
+  EXPECT_EQ(graph.SnapshotNode(key)->ticket, 9u);
+  EXPECT_EQ(graph.InstallPayload(key, 9, replacement, &accepted),
+            recreated.generation);
+  EXPECT_TRUE(accepted);
+
+  // The insertion path also reports acceptance, not just existing tickets.
+  accepted = false;
+  graph.InstallPayload(NodeKey{456}, 10, payload, &accepted);
+  EXPECT_TRUE(accepted);
+  EXPECT_EQ(graph.Size(), 2u);
+}
+
 TEST(Lc5GraphTest, MetadataSnapshotTracksPublicationByValue) {
   GameGraph graph;
   const NodeKey key{123};

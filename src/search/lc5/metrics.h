@@ -42,6 +42,9 @@ struct Metrics {
   std::atomic<uint64_t> max_selected_depth{0};
   std::atomic<uint64_t> ready_eval_high_water{0};
   std::atomic<uint64_t> active_visits_high_water{0};
+  std::atomic<uint64_t> mailbox_notifications{0};
+  std::atomic<uint64_t> io_jobs_high_water{0};
+  std::atomic<uint64_t> publications_rejected{0};
 
   std::string Format(size_t graph_size, size_t active, size_t ready_eval) const;
 };

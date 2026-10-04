@@ -1,5 +1,7 @@
 #pragma once
 
+#include <absl/container/flat_hash_map.h>
+
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -9,9 +11,8 @@
 #include <optional>
 #include <thread>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
-
-#include <absl/container/flat_hash_map.h>
 
 #include "chess/callbacks.h"
 #include "chess/uciloop.h"
@@ -27,10 +28,12 @@ template <typename T>
 class WorkQueue {
  public:
   bool Push(T value) {
-    std::lock_guard lock(mutex_);
-    if (closed_) return false;
-    queue_.push_back(std::move(value));
-    size_.store(queue_.size(), std::memory_order_relaxed);
+    {
+      std::lock_guard lock(mutex_);
+      if (closed_) return false;
+      queue_.push_back(std::move(value));
+      size_.store(queue_.size(), std::memory_order_relaxed);
+    }
     cv_.notify_one();
     return true;
   }
@@ -51,17 +54,37 @@ class WorkQueue {
     size_.store(queue_.size(), std::memory_order_relaxed);
     return true;
   }
-  void Close() {
-    std::lock_guard lock(mutex_);
-    closed_ = true;
+  // The predicate reads only atomic scheduler state. WakeAll synchronizes
+  // external predicate transitions with this queue's wait, avoiding lost wakes.
+  template <typename Predicate>
+  bool PopUntil(T* value, std::chrono::steady_clock::time_point deadline,
+                Predicate flush) {
+    std::unique_lock lock(mutex_);
+    cv_.wait_until(lock, deadline,
+                   [&] { return closed_ || !queue_.empty() || flush(); });
+    if (queue_.empty()) return false;
+    *value = std::move(queue_.front());
+    queue_.pop_front();
+    size_.store(queue_.size(), std::memory_order_relaxed);
+    return true;
+  }
+  void WakeAll() {
+    {
+      std::lock_guard lock(mutex_);
+    }
     cv_.notify_all();
   }
-  void WakeAll() { cv_.notify_all(); }
+  void Close() {
+    {
+      std::lock_guard lock(mutex_);
+      closed_ = true;
+    }
+    cv_.notify_all();
+  }
   size_t Size() const { return size_.load(std::memory_order_relaxed); }
-  bool Empty() const { return Size() == 0; }
 
  private:
-  mutable std::mutex mutex_;
+  std::mutex mutex_;
   std::condition_variable cv_;
   std::deque<T> queue_;
   std::atomic<size_t> size_{0};
@@ -83,60 +106,109 @@ class SearchRun {
   bool Finished() const { return finished_.load(std::memory_order_acquire); }
   const Metrics& metrics() const { return metrics_; }
 
-  // Internal arbitrary-origin primitive. Returns false when admission is
-  // closed or the fixed VisitPool is full.
+  // Arbitrary-origin admission shares the exact node budget with root visits.
+  // It may be used before Start(); false means closed, budget exhausted or
+  // full.
   bool Admit(const VisitOrigin& origin);
 
  private:
   enum class StopMode : uint8_t { kRunning, kRespondBestmove, kAbort };
-  enum class TicketState : uint8_t {
-    kLoadingStore,
-    kWaitingForEval,
-    kEvaluating,
-    kCompleting,
+  struct Continuation {
+    VisitId id;
+    size_t worker;
+    MaterializationTicketId ticket = 0;
+    uint64_t generation = 0;
+    bool backup = false;
+    SearchValue value;
+    bool terminal = false;
   };
   struct Ticket {
-    MaterializationTicketId id = 0;
+    MaterializationTicketId id;
     NodeKey key;
-    TicketState state = TicketState::kLoadingStore;
-    VisitId owner;
-    std::vector<VisitId> waiters;
-    PositionHistory owner_history;
-    std::chrono::steady_clock::time_point created_at;
+    Continuation owner;
+    std::vector<Continuation> waiters;
   };
-  struct StoreRequest {
-    MaterializationTicketId ticket;
-    NodeKey key;
-  };
-  struct EvalRequest {
+  struct Request {
     MaterializationTicketId ticket;
     NodeKey key;
     PositionHistory history;
     ExpansionPayload payload;
-    std::chrono::steady_clock::time_point queued_at;
+    std::optional<ExpansionPayload> loaded;
   };
+  enum class JobKind { kEval, kLoad, kPersist };
+  struct Job {
+    JobKind kind;
+    size_t worker;
+    std::chrono::steady_clock::time_point queued_at;
+    // Storage is fixed before AddInput; the whole job lives through compute
+    // and completion consumption, including immediate-cache results.
+    std::vector<Request> requests;
+    std::vector<StoredExpansion> entries;
+  };
+  struct Mailbox {
+    std::mutex mutex;
+    std::condition_variable cv;
+    std::vector<Continuation> continuations;
+    std::vector<std::unique_ptr<Job>> completions;
+    bool admission_ready = false;
+  };
+  struct Worker {
+    explicit Worker(size_t index) : index(index) {}
+    const size_t index;
+    Mailbox mailbox;
+    // All fields below are touched only by this worker.
+    std::deque<VisitId> runnable;
+    std::unordered_set<uint64_t> active;
+    std::deque<Request> loads;
+    std::deque<Request> evals;
+    std::deque<StoredExpansion> persistence;
+    std::vector<std::vector<Continuation>> outgoing;
+    std::atomic<bool> drained{false};
+    // Conservative signal: this worker can submit without a collected job's
+    // completion. Initially true until the first work chunk is inspected.
+    std::atomic<bool> producing{true};
+    size_t outstanding = 0;
+    size_t outstanding_items = 0;
+    bool cancelled = false;
+    bool released_capacity = false;
+    bool controller_event = false;
+    // Protected by admission_mutex_, not worker-owned.
+    bool admission_waiting = false;
+  };
+  // Two minibatches of items, with a separate cap for fragmented whole jobs.
+  static constexpr size_t kBatchCredits = 16;
+  static constexpr size_t kWorkChunk = 32;
 
-  void VisitWorker();
+  void VisitWorker(Worker& worker);
   void StoreWorker();
   void EvaluatorWorker();
   void Controller();
-  void AdvanceVisit(VisitId id);
-  bool SuspendForMaterialization(VisitPool::Slot& slot);
-  void Backup(VisitPool::Slot& slot);
-  void Cancel(VisitPool::Slot& slot);
-  void FinishVisit(VisitPool::Slot& slot, bool completed);
-  void AdmitMore();
+  void AdvanceVisit(Worker& worker, VisitId id);
+  bool SuspendForMaterialization(Worker& worker, VisitPool::Slot& slot);
+  void Backup(Worker& worker, VisitPool::Slot& slot);
+  void Cancel(Worker& worker, VisitPool::Slot& slot);
+  void FinishVisit(Worker& worker, VisitPool::Slot& slot, bool completed);
+  std::optional<VisitId> Allocate(const VisitOrigin& origin, size_t worker);
+  void AdmitMore(Worker& worker);
+  void WakeAdmissionWaiters();
+  void NotifyController();
+  void Resume(Worker& worker, const Continuation& continuation);
+  void SendContinuations(std::vector<std::vector<Continuation>> groups);
+  void ReturnJob(std::unique_ptr<Job> job);
+  void ConsumeJob(Worker& worker, std::unique_ptr<Job> job);
+  void SubmitJobs(Worker& worker);
+  bool HasJobCredit(const Worker& worker) const;
+  void SetProducing(Worker& worker, bool producing);
+  bool EvaluationStarved() const;
+  void PrepareEvaluation(Worker& worker, Request request);
   ExpansionPayload DetectTerminal(const PositionHistory& history) const;
-  void CompleteMaterialization(MaterializationTicketId ticket,
+  void CompleteMaterialization(Worker& worker, MaterializationTicketId ticket,
                                ExpansionPayload payload, bool store_payload);
-  void PublishEvaluation(std::shared_ptr<EvalRequest> request);
+  void PublishEvaluation(Worker& worker, Request& request);
   void OutputInfo(bool final);
   std::vector<Move> BuildPv() const;
   Move FallbackMove() const;
   void RequestStop(StopMode mode);
-  bool ShouldFlushEvaluation() const;
-  void CancelAllVisits();
-  void NotifyController();
 
   GameGraph* graph_;
   NodeStore* store_;
@@ -149,21 +221,23 @@ class SearchRun {
   VisitPool visits_;
   Metrics metrics_;
 
-  WorkQueue<VisitId> ready_visits_;
-  WorkQueue<StoreRequest> store_requests_;
-  WorkQueue<std::shared_ptr<EvalRequest>> ready_evals_;
+  std::vector<std::unique_ptr<Worker>> workers_;
+  WorkQueue<std::unique_ptr<Job>> store_jobs_;
+  WorkQueue<std::unique_ptr<Job>> eval_jobs_;
   std::vector<std::thread> visit_threads_;
   std::vector<std::thread> store_threads_;
   std::vector<std::thread> evaluator_threads_;
   std::thread controller_thread_;
 
-  mutable std::mutex tickets_mutex_;
+  std::mutex tickets_mutex_;
   absl::flat_hash_map<NodeKey, MaterializationTicketId> ticket_by_key_;
   std::unordered_map<MaterializationTicketId, Ticket> tickets_;
-  std::atomic<uint64_t> next_ticket_{1};
+  uint64_t next_ticket_ = 1;
 
   std::mutex admission_mutex_;
   uint64_t admitted_ = 0;
+  size_t next_owner_ = 0;
+  size_t next_admission_waiter_ = 0;
   std::optional<uint64_t> node_limit_;
   std::optional<std::chrono::steady_clock::time_point> deadline_;
 
@@ -171,10 +245,16 @@ class SearchRun {
   std::atomic<bool> started_{false};
   std::atomic<bool> finished_{false};
   std::atomic<bool> output_committed_{false};
-  std::atomic<int> advancing_visits_{0};
-  std::atomic<int> evaluations_in_progress_{0};
-  mutable std::mutex controller_mutex_;
+  std::atomic<bool> shutdown_{false};
+  // Includes queued, executing, and returned-but-unconsumed jobs.
+  std::atomic<size_t> jobs_in_flight_{0};
+  // Jobs held by collectors (including retained whole jobs), not computing or
+  // returned. If these are all remaining jobs and producers are blocked,
+  // further collection depends on flushing at least one computation.
+  std::atomic<size_t> collecting_jobs_{0};
+  std::mutex controller_mutex_;
   std::condition_variable controller_cv_;
+  uint64_t controller_generation_ = 0;  // Protected by controller_mutex_.
 };
 
 }  // namespace lczero::lc5

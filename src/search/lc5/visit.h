@@ -46,6 +46,7 @@ enum class VisitState : uint8_t {
 
 struct Visit {
   VisitId id;
+  size_t worker = 0;
   VisitState state = VisitState::kFree;
   VisitOrigin origin;
   PositionHistory history;
@@ -74,7 +75,8 @@ class VisitPool {
   }
   size_t capacity() const { return slots_.size(); }
 
-  std::optional<VisitId> Allocate(const VisitOrigin& origin) {
+  std::optional<VisitId> Allocate(const VisitOrigin& origin,
+                                  size_t worker = 0) {
     uint32_t i;
     {
       std::lock_guard pool_lock(pool_mutex_);
@@ -95,6 +97,7 @@ class VisitPool {
     slot.epoch.store(epoch, std::memory_order_release);
     VisitId id{(static_cast<uint64_t>(epoch) << 32) | i};
     slot.visit = Visit{.id = id,
+                       .worker = worker,
                        .state = VisitState::kReadySelect,
                        .origin = origin,
                        .history = origin.history,

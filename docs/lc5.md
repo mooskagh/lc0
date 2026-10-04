@@ -15,22 +15,82 @@ payload persistence. Without a store, materialization uses the same queues,
 tickets, terminal detection, and neural evaluation path, but does not build
 store batches or record store metrics.
 
-Store loads and neural evaluations run away from visit workers, and the
-ready-evaluation queue is intentionally allowed to contain more than one
-backend batch. A non-owner visit reaching a
-pending node suspends and, after a nonterminal expansion, resumes selection
-below that node. Stop and abort cancel every surviving reservation and retain
-epoch checks on late completions.
+## Worker-owned batched scheduler
 
-Supported v1 limits are `nodes`, `movetime`, `infinite`, and ponder as
-infinite. Fields belonging to the classic time manager are reported as
+Each visit has one worker owner for selection, suspension/resumption, backup,
+and cancellation. Workers own their runnable/active visits and pending load,
+evaluation, and persistence requests; the graph and materialization tickets
+remain shared and synchronized. Cross-worker continuations are grouped into
+mailboxes. A ticket's owner publishes its expansion and wakes waiters; a
+non-owner visit resumes selection below a nonterminal expansion rather than
+backing up the owner's leaf value. Epoch and generation checks reject stale
+continuations and graph updates.
+
+Workers submit whole I/O jobs and consume whole-job completions through their
+mailboxes. Evaluators only add inputs and run backend computations; store
+workers only call `LoadBatch`/`StoreBatch`. Publication, store-miss preparation,
+and visit transitions run on the owning visit worker, not on I/O threads.
+`EvalThreads` sets evaluator concurrency and, with a store, store-worker
+concurrency. Evaluators combine jobs across owners toward `MinibatchSize`,
+accounting for immediate/cache results without exceeding the batch target;
+store calls use each submitted job's batch.
+
+Per worker, submitted I/O is bounded by two minibatches of item credits and
+16 whole-job credits, shared by loads, evaluations, and persistence. Jobs
+contain at most `ceil(MinibatchSize / 4)` items; persistence is submitted first,
+then loads, then evaluations. Credits cover queued, executing, and
+returned-but-unconsumed jobs and are released only when the owner consumes a
+completion. The evaluation queue may span multiple backend batches, but is
+not unbounded. `MaxActiveVisits` separately bounds the epoch-tagged VisitPool.
+
+Workers refill their own visits in chunks of at most 32, targeting a rounded-up
+share of the pool under the global admission/node-limit guard. They process
+mailboxes, advance runnable visits, refill, and submit jobs; pending persistence
+of at least one minibatch pauses refill/selection so writes can catch up.
+The controller checks time/node limits, emits periodic info, and coordinates
+shutdown/output; it does not drive visit refill or individual I/O completions.
+
+`MaxBatchDelayMs` defaults to 2. A positive value gives a partial computation a
+deadline measured from its first job's enqueue time. Dependency-starvation
+flushing requires no worker able to produce more work and no outstanding job
+outside evaluator collection. With `0`, the timeout is disabled, but starvation
+flushing still occurs when no worker can produce, even if another I/O job is
+outstanding. Both modes return immediate-only jobs without waiting for neural
+work and flush partial batches on stop/abort. Metrics distinguish partial
+starvation, timeout, and drain flushes; mailbox notifications, I/O-job high
+water, and rejected publications expose scheduler activity. `ready_eval` and
+its high-water metric count queued jobs, not individual evaluation items.
+
+Stop and abort close admission and make owners cancel surviving visit
+reservations, while tickets, continuations, and whole-job completions drain.
+Accepted immutable payloads still drain to persistence after cancellation;
+rejected publications are not stored. Blocking backend/store calls are not
+interrupted, so shutdown waits for them and owner-side completion consumption.
+Only after visits, tickets, jobs, pending requests, and mailboxes drain does the
+controller join visit workers, close I/O queues, and join I/O workers. Stop emits
+final info/bestmove; abort suppresses it unless output was already committed.
+
+For issue #1734, selection (`GameGraph::SelectAndReserve`) and propagation
+(`SearchRun::Backup` / `GameGraph::BackupNode`) remain separate named policy
+seams. They currently implement concrete selection/backup rules, not a
+pluggable policy API; changing those rules is independent of worker ownership,
+mailboxes, or I/O thread counts.
+
+## Limits and game lifetime
+
+Supported limits include `nodes`, `movetime`, `infinite`, and ponder as infinite.
+Without explicit `movetime`, the engine derives a simple budget from the
+side-to-move's `wtime`/`btime`, subtracting `MoveOverheadMs` and applying
+`AlphazeroTimePct`; infinite/ponder suppress this clock-derived budget.
+`winc`, `binc`, `movestogo`, `depth`, `mate`, and `searchmoves` are reported as
 ignored. The default engine's hot graph survives same-game `position` changes;
 `ucinewgame`, an incompatible starting position, and backend replacement clear
 it.
 
 ## Verification performed during implementation
 
-The following checks were run on the implementation host:
+The following historical checks were run on the implementation host; they are
+not a fresh validation of the current uncommitted scheduler:
 
 ```text
 meson setup build/debug --reconfigure -Dlc5=true -Dgtest=true

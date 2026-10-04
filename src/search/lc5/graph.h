@@ -1,13 +1,13 @@
 #pragma once
 
+#include <absl/container/flat_hash_map.h>
+
 #include <array>
 #include <atomic>
 #include <cstdint>
 #include <mutex>
 #include <optional>
 #include <vector>
-
-#include <absl/container/flat_hash_map.h>
 
 #include "search/lc5/key.h"
 #include "search/lc5/node_store.h"
@@ -57,14 +57,26 @@ struct FindOrCreateResult {
   MaterializationTicketId ticket;
 };
 
-enum class SelectStatus { kSelected, kMissing, kStale, kMaterializing, kTerminal };
+enum class SelectStatus {
+  kSelected,
+  kMissing,
+  kStale,
+  kMaterializing,
+  kTerminal
+};
 struct SelectResult {
   SelectStatus status = SelectStatus::kMissing;
   Move move{};
   uint64_t generation = 0;
 };
 
-enum class UpdateResult { kApplied, kMissing, kStale, kEdgeMissing, kUnderflow };
+enum class UpdateResult {
+  kApplied,
+  kMissing,
+  kStale,
+  kEdgeMissing,
+  kUnderflow
+};
 
 struct BackupResult {
   UpdateResult node;
@@ -77,9 +89,12 @@ class GameGraph {
   static constexpr size_t kShardCount = 1024;
 
   FindOrCreateResult FindOrCreateMaterializing(NodeKey key,
-                                                MaterializationTicketId ticket);
+                                               MaterializationTicketId ticket);
+  // The optional acceptance result distinguishes rejection from publication;
+  // the returned generation alone is not evidence that the payload was used.
   uint64_t InstallPayload(NodeKey key, MaterializationTicketId ticket,
-                          const ExpansionPayload& payload);
+                          const ExpansionPayload& payload,
+                          bool* accepted = nullptr);
   SelectResult SelectAndReserve(NodeKey key, uint64_t expected_generation,
                                 const Settings::Resolved& settings);
   // Commits the node value even if the optional edge completion fails.
@@ -108,7 +123,8 @@ class GameGraph {
   uint64_t NextGeneration();
 
   std::array<GraphShard, kShardCount> shards_;
-  // Membership changes update this counter while holding the affected shard lock.
+  // Membership changes update this counter while holding the affected shard
+  // lock.
   std::atomic<size_t> size_{0};
   std::atomic<uint64_t> next_generation_{1};
   std::atomic<uint64_t> access_epoch_{1};

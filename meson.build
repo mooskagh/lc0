@@ -1203,6 +1203,20 @@ if get_option('gtest')
         dependencies: [gtest, absl_flat_hash_map_dep]),
       args: '--gtest_output=xml:lc5_graph_test.xml', timeout: 90)
 
+    test('Lc5Search',
+      executable('lc5_search_test',
+        'src/search/lc5/search_test.cc',
+        'src/search/lc5/search.cc',
+        'src/search/lc5/engine.cc',
+        'src/search/lc5/graph.cc',
+        'src/search/lc5/metrics.cc',
+        'src/search/lc5/settings.cc',
+        'src/search/register.cc',
+        pb_files,
+        include_directories: includes, link_with: lc0_lib,
+        dependencies: [gtest, absl_flat_hash_map_dep]),
+      args: '--gtest_output=xml:lc5_search_test.xml', timeout: 90)
+
     test('Lc5Settings',
       executable('lc5_settings_test',
         'src/search/lc5/settings_test.cc',
