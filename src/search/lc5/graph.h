@@ -43,6 +43,13 @@ struct NodeState {
 
 using NodeSnapshot = NodeState;
 
+// Selection metadata only; no edge or value-statistics copies.
+struct NodeMetadataSnapshot {
+  uint64_t generation;
+  NodeLifecycle lifecycle;
+  TerminalKind terminal;
+};
+
 struct FindOrCreateResult {
   uint64_t generation;
   bool created;
@@ -74,6 +81,7 @@ class GameGraph {
   UpdateResult CompleteEdge(NodeKey key, uint64_t expected_generation,
                             Move move, SearchValue value);
   UpdateResult CancelEdge(NodeKey key, uint64_t expected_generation, Move move);
+  std::optional<NodeMetadataSnapshot> SnapshotNodeMetadata(NodeKey key) const;
   std::optional<NodeSnapshot> SnapshotNode(NodeKey key) const;
   bool Erase(NodeKey key);
   void Clear();

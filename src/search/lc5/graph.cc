@@ -175,6 +175,16 @@ UpdateResult GameGraph::CancelEdge(NodeKey key,
   return UpdateResult::kApplied;
 }
 
+std::optional<NodeMetadataSnapshot> GameGraph::SnapshotNodeMetadata(
+    NodeKey key) const {
+  auto& shard = shards_[ShardIndex(key)];
+  std::lock_guard lock(shard.mutex);
+  const auto it = shard.nodes.find(key);
+  if (it == shard.nodes.end()) return std::nullopt;
+  const NodeState& node = it->second;
+  return NodeMetadataSnapshot{node.generation, node.lifecycle, node.terminal};
+}
+
 std::optional<NodeSnapshot> GameGraph::SnapshotNode(NodeKey key) const {
   auto& shard = shards_[ShardIndex(key)];
   std::lock_guard lock(shard.mutex);

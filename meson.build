@@ -1186,6 +1186,14 @@ if get_option('gtest')
     include_directories: includes, link_with: lc0_lib, dependencies: [gtest, gmock]),
     args: '--gtest_output=xml:engine_test.xml', timeout: 90)
   if get_option('lc5')
+    test('Lc5VisitPool',
+      executable('lc5_visit_test',
+        'src/search/lc5/visit_test.cc',
+        pb_files,
+        include_directories: includes, link_with: lc0_lib,
+        dependencies: [gtest, absl_flat_hash_map_dep]),
+      args: '--gtest_output=xml:lc5_visit_test.xml', timeout: 90)
+
     test('Lc5Graph',
       executable('lc5_graph_test',
         'src/search/lc5/graph_test.cc',

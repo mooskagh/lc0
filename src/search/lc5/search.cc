@@ -169,7 +169,7 @@ void SearchRun::AdvanceVisit(VisitId id) {
                                     .selected_move = std::nullopt});
     }
     PathStep& step = visit.path.back();
-    auto snapshot = graph_->SnapshotNode(visit.current_key);
+    auto snapshot = graph_->SnapshotNodeMetadata(visit.current_key);
     metrics_.selection_node_steps.fetch_add(1);
     RaiseHighWater(metrics_.max_selected_depth,
                    static_cast<uint64_t>(visit.path.size()));

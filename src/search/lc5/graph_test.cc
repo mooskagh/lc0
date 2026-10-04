@@ -38,6 +38,89 @@ TEST(Lc5ValueTest, PerspectiveAndSumsAreExact) {
   EXPECT_FLOAT_EQ(stats.M(), 4.0f);
 }
 
+TEST(Lc5GraphTest, MetadataSnapshotTracksPublicationByValue) {
+  GameGraph graph;
+  const NodeKey key{123};
+  EXPECT_FALSE(graph.SnapshotNodeMetadata(key));
+
+  const auto created = graph.FindOrCreateMaterializing(key, 7);
+  const auto materializing = graph.SnapshotNodeMetadata(key);
+  ASSERT_TRUE(materializing);
+  EXPECT_EQ(materializing->generation, created.generation);
+  EXPECT_EQ(materializing->lifecycle, NodeLifecycle::kMaterializing);
+  EXPECT_EQ(materializing->terminal, TerminalKind::kNonTerminal);
+
+  const ExpansionPayload payload{.moves = {M(kFileA, kFileA)},
+                                 .priors = {1.0f}};
+  graph.InstallPayload(key, 7, payload);
+  const auto expanded = graph.SnapshotNodeMetadata(key);
+  ASSERT_TRUE(expanded);
+  EXPECT_EQ(expanded->generation, created.generation);
+  EXPECT_EQ(expanded->lifecycle, NodeLifecycle::kExpanded);
+  EXPECT_EQ(expanded->terminal, TerminalKind::kNonTerminal);
+  // Publication does not change a previously returned value.
+  EXPECT_EQ(materializing->lifecycle, NodeLifecycle::kMaterializing);
+
+  const auto selected =
+      graph.SelectAndReserve(key, expanded->generation, TestSettings());
+  EXPECT_EQ(selected.status, SelectStatus::kSelected);
+  const auto full = graph.SnapshotNode(key);
+  ASSERT_TRUE(full);
+  ASSERT_EQ(full->edges.size(), 1u);
+  EXPECT_EQ(full->edges[0].in_flight, 1u);
+  EXPECT_EQ(full->generation, expanded->generation);
+  EXPECT_EQ(full->lifecycle, expanded->lifecycle);
+  EXPECT_EQ(full->terminal, expanded->terminal);
+}
+
+TEST(Lc5GraphTest, MetadataSnapshotIncludesExpandedTerminalKind) {
+  GameGraph graph;
+  const NodeKey key{123};
+  const auto created = graph.FindOrCreateMaterializing(key, 7);
+  graph.InstallPayload(
+      key, 7,
+      ExpansionPayload{
+          .terminal = TerminalKind::kCheckmate, .moves = {}, .priors = {}});
+  const auto terminal = graph.SnapshotNodeMetadata(key);
+  ASSERT_TRUE(terminal);
+  EXPECT_EQ(terminal->generation, created.generation);
+  EXPECT_EQ(terminal->lifecycle, NodeLifecycle::kExpanded);
+  EXPECT_EQ(terminal->terminal, TerminalKind::kCheckmate);
+  EXPECT_EQ(
+      graph.SelectAndReserve(key, terminal->generation, TestSettings()).status,
+      SelectStatus::kTerminal);
+}
+
+TEST(Lc5GraphTest, MetadataSnapshotPreservesStaleGenerationAfterRecreation) {
+  GameGraph graph;
+  const NodeKey key{123};
+  graph.FindOrCreateMaterializing(key, 7);
+  const ExpansionPayload payload{.moves = {M(kFileA, kFileA)},
+                                 .priors = {1.0f}};
+  graph.InstallPayload(key, 7, payload);
+  const auto old = graph.SnapshotNodeMetadata(key);
+  ASSERT_TRUE(old);
+  ASSERT_TRUE(graph.Erase(key));
+  EXPECT_FALSE(graph.SnapshotNodeMetadata(key));
+
+  const auto recreated = graph.FindOrCreateMaterializing(key, 8);
+  graph.InstallPayload(key, 8, payload);
+  const auto current = graph.SnapshotNodeMetadata(key);
+  ASSERT_TRUE(current);
+  EXPECT_NE(current->generation, old->generation);
+  EXPECT_EQ(current->generation, recreated.generation);
+  EXPECT_EQ(current->lifecycle, NodeLifecycle::kExpanded);
+  EXPECT_EQ(old->lifecycle, NodeLifecycle::kExpanded);
+  const auto stale =
+      graph.SelectAndReserve(key, old->generation, TestSettings());
+  EXPECT_EQ(stale.status, SelectStatus::kStale);
+  EXPECT_EQ(stale.generation, current->generation);
+  const auto full = graph.SnapshotNode(key);
+  ASSERT_TRUE(full);
+  ASSERT_EQ(full->edges.size(), 1u);
+  EXPECT_EQ(full->edges[0].in_flight, 0u);
+}
+
 TEST(Lc5GraphTest, SizeCountsOnlyNewNodes) {
   GameGraph graph;
   EXPECT_EQ(graph.Size(), 0u);

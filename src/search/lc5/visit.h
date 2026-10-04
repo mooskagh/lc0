@@ -1,8 +1,10 @@
 #pragma once
 
-#include <cstdint>
+#include <algorithm>
 #include <atomic>
 #include <compare>
+#include <cstdint>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -63,45 +65,62 @@ class VisitPool {
 
   explicit VisitPool(size_t capacity) {
     slots_.reserve(capacity);
-    for (size_t i = 0; i < capacity; ++i) slots_.push_back(std::make_unique<Slot>());
+    free_indices_.reserve(capacity);
+    for (size_t i = 0; i < capacity; ++i) {
+      slots_.push_back(std::make_unique<Slot>());
+      free_indices_.push_back(i);
+    }
+    // Ascending indices already form a min-heap.
   }
   size_t capacity() const { return slots_.size(); }
 
   std::optional<VisitId> Allocate(const VisitOrigin& origin) {
-    std::lock_guard pool_lock(pool_mutex_);
-    for (uint32_t i = 0; i < slots_.size(); ++i) {
-      Slot& slot = *slots_[i];
-      std::lock_guard slot_lock(slot.mutex);
-      if (slot.visit.state != VisitState::kFree) continue;
-      uint32_t epoch = slot.epoch.load(std::memory_order_relaxed) + 1;
-      if (epoch == 0) ++epoch;
-      slot.epoch.store(epoch, std::memory_order_release);
-      VisitId id{(static_cast<uint64_t>(epoch) << 32) | i};
-      slot.visit = Visit{.id = id,
-                         .state = VisitState::kReadySelect,
-                         .origin = origin,
-                         .history = origin.history,
-                         .current_key = origin.key,
-                         .path = origin.backup_prefix,
-                         .result = {}};
+    uint32_t i;
+    {
+      std::lock_guard pool_lock(pool_mutex_);
+      if (free_indices_.empty()) return std::nullopt;
+      std::pop_heap(free_indices_.begin(), free_indices_.end(),
+                    std::greater<uint32_t>{});
+      i = free_indices_.back();
+      free_indices_.pop_back();
+      // Count reservations too, so admission cannot overfill the pool.
       ++active_;
-      return id;
     }
-    return std::nullopt;
+    // Never hold pool_mutex_ while waiting for a slot: release takes slot ->
+    // pool.
+    Slot& slot = *slots_[i];
+    std::lock_guard slot_lock(slot.mutex);
+    uint32_t epoch = slot.epoch.load(std::memory_order_relaxed) + 1;
+    if (epoch == 0) ++epoch;
+    slot.epoch.store(epoch, std::memory_order_release);
+    VisitId id{(static_cast<uint64_t>(epoch) << 32) | i};
+    slot.visit = Visit{.id = id,
+                       .state = VisitState::kReadySelect,
+                       .origin = origin,
+                       .history = origin.history,
+                       .current_key = origin.key,
+                       .path = origin.backup_prefix,
+                       .result = {}};
+    return id;
   }
 
   Slot* Lookup(VisitId id) {
     if (!id || id.slot() >= slots_.size()) return nullptr;
     Slot* slot = slots_[id.slot()].get();
     return slot->epoch.load(std::memory_order_acquire) == id.epoch() ? slot
-                                                                    : nullptr;
+                                                                     : nullptr;
   }
 
   bool ReleaseLocked(Slot& slot, VisitId id) {
     if (slot.epoch.load(std::memory_order_relaxed) != id.epoch() ||
-        slot.visit.state == VisitState::kFree)
+        slot.visit.id != id || slot.visit.state == VisitState::kFree)
       return false;
     slot.visit = Visit{};
+    // The caller holds slot.mutex. Publish only after resetting the visit.
+    std::lock_guard pool_lock(pool_mutex_);
+    free_indices_.push_back(id.slot());
+    std::push_heap(free_indices_.begin(), free_indices_.end(),
+                   std::greater<uint32_t>{});
     active_.fetch_sub(1, std::memory_order_relaxed);
     return true;
   }
@@ -119,6 +138,8 @@ class VisitPool {
  private:
   mutable std::mutex pool_mutex_;
   std::vector<std::unique_ptr<Slot>> slots_;
+  // Protected by pool_mutex_; every index is either free or reserved/active.
+  std::vector<uint32_t> free_indices_;
   std::atomic<size_t> active_{0};
 };
 
