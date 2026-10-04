@@ -20,76 +20,10 @@
 #include "search/lc5/graph.h"
 #include "search/lc5/metrics.h"
 #include "search/lc5/node_store.h"
+#include "search/lc5/search_internal.h"
 #include "search/lc5/visit.h"
 
 namespace lczero::lc5 {
-
-template <typename T>
-class WorkQueue {
- public:
-  bool Push(T value) {
-    {
-      std::lock_guard lock(mutex_);
-      if (closed_) return false;
-      queue_.push_back(std::move(value));
-      size_.store(queue_.size(), std::memory_order_relaxed);
-    }
-    cv_.notify_one();
-    return true;
-  }
-  bool Pop(T* value) {
-    std::unique_lock lock(mutex_);
-    cv_.wait(lock, [&] { return closed_ || !queue_.empty(); });
-    if (queue_.empty()) return false;
-    *value = std::move(queue_.front());
-    queue_.pop_front();
-    size_.store(queue_.size(), std::memory_order_relaxed);
-    return true;
-  }
-  bool TryPop(T* value) {
-    std::lock_guard lock(mutex_);
-    if (queue_.empty()) return false;
-    *value = std::move(queue_.front());
-    queue_.pop_front();
-    size_.store(queue_.size(), std::memory_order_relaxed);
-    return true;
-  }
-  // The predicate reads only atomic scheduler state. WakeAll synchronizes
-  // external predicate transitions with this queue's wait, avoiding lost wakes.
-  template <typename Predicate>
-  bool PopUntil(T* value, std::chrono::steady_clock::time_point deadline,
-                Predicate flush) {
-    std::unique_lock lock(mutex_);
-    cv_.wait_until(lock, deadline,
-                   [&] { return closed_ || !queue_.empty() || flush(); });
-    if (queue_.empty()) return false;
-    *value = std::move(queue_.front());
-    queue_.pop_front();
-    size_.store(queue_.size(), std::memory_order_relaxed);
-    return true;
-  }
-  void WakeAll() {
-    {
-      std::lock_guard lock(mutex_);
-    }
-    cv_.notify_all();
-  }
-  void Close() {
-    {
-      std::lock_guard lock(mutex_);
-      closed_ = true;
-    }
-    cv_.notify_all();
-  }
-  size_t Size() const { return size_.load(std::memory_order_relaxed); }
-
- private:
-  std::mutex mutex_;
-  std::condition_variable cv_;
-  std::deque<T> queue_;
-  std::atomic<size_t> size_{0};
-  bool closed_ = false;
-};
 
 class SearchRun {
  public:
@@ -222,8 +156,8 @@ class SearchRun {
   Metrics metrics_;
 
   std::vector<std::unique_ptr<Worker>> workers_;
-  WorkQueue<std::unique_ptr<Job>> store_jobs_;
-  WorkQueue<std::unique_ptr<Job>> eval_jobs_;
+  detail::WorkQueue<std::unique_ptr<Job>> store_jobs_;
+  detail::WorkQueue<std::unique_ptr<Job>> eval_jobs_;
   std::vector<std::thread> visit_threads_;
   std::vector<std::thread> store_threads_;
   std::vector<std::thread> evaluator_threads_;

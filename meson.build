@@ -226,6 +226,8 @@ if get_option('lc5')
     'src/search/lc5/memory_node_store.cc',
     'src/search/lc5/metrics.cc',
     'src/search/lc5/search.cc',
+    'src/search/lc5/search_visits.cc',
+    'src/search/lc5/search_materialization.cc',
     'src/search/lc5/settings.cc',
   ]
 endif
@@ -1207,6 +1209,8 @@ if get_option('gtest')
       executable('lc5_search_test',
         'src/search/lc5/search_test.cc',
         'src/search/lc5/search.cc',
+        'src/search/lc5/search_visits.cc',
+        'src/search/lc5/search_materialization.cc',
         'src/search/lc5/engine.cc',
         'src/search/lc5/graph.cc',
         'src/search/lc5/metrics.cc',
