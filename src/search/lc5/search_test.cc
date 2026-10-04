@@ -101,6 +101,7 @@ class ControlledBackend final : public Backend {
     cv_.notify_all();
   }
 
+  float q = 0.25f;
   std::atomic<size_t> inputs{0};
   std::atomic<size_t> computes{0};
   // Protected by mutex_ while writing; tests read after the run joins.
@@ -109,8 +110,8 @@ class ControlledBackend final : public Backend {
   std::unordered_set<std::thread::id> evaluator_ids;
 
  private:
-  static void Fill(EvalResultPtr result) {
-    *result.q = 0.25f;
+  void Fill(EvalResultPtr result) {
+    *result.q = q;
     *result.d = 0.5f;
     *result.m = 3.0f;
     std::fill(result.p.begin(), result.p.end(), 1.0f / result.p.size());
@@ -129,7 +130,7 @@ class ControlledBackend final : public Backend {
       }
       if (backend_.cache_ == Cache::kAll ||
           (backend_.cache_ == Cache::kAlternating && index % 2 == 0)) {
-        Fill(result);
+        backend_.Fill(result);
         return FETCHED_IMMEDIATELY;
       }
       // Keep the input spans too: read them at compute time to exercise job
@@ -150,7 +151,7 @@ class ControlledBackend final : public Backend {
       for (size_t i = 0; i < pending_.size(); ++i) {
         EXPECT_FALSE(positions_[i].pos.empty());
         EXPECT_EQ(positions_[i].legal_moves.size(), pending_[i].p.size());
-        Fill(pending_[i]);
+        backend_.Fill(pending_[i]);
       }
     }
 
@@ -302,10 +303,51 @@ TEST(Lc5SearchTest, ExactNodeBudgetWithMoreWorkersThanCapacity) {
     EXPECT_LE(run.metrics().active_visits_high_water.load(), 2u);
     EXPECT_FALSE(run.Admit(root));
     ExpectFinalOutput(responder, nodes);
+    if (nodes == 0) {
+      EXPECT_FALSE(responder.thinking.back().score.has_value());
+      EXPECT_FALSE(responder.thinking.back().wdl.has_value());
+    }
     const auto legal = root.history.Last().GetBoard().GenerateLegalMoves();
     EXPECT_NE(
         std::find(legal.begin(), legal.end(), responder.bestmoves[0].bestmove),
         legal.end());
+  }
+}
+
+TEST(Lc5SearchTest, ReportsCentipawnsAndWdlFromRootSideToMove) {
+  struct Case {
+    float q;
+    int score;
+    int win;
+    int loss;
+  };
+  for (const auto* fen :
+       {ChessBoard::kStartposFen,
+        "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR b KQkq - 0 1"}) {
+    SCOPED_TRACE(fen);
+    for (const auto& test :
+         {Case{0.25f, 37, 375, 125}, Case{-0.25f, -37, 125, 375},
+          Case{0.0f, 0, 250, 250}}) {
+      SCOPED_TRACE(test.q);
+      GameGraph graph;
+      ControlledBackend backend;
+      backend.q = test.q;
+      RecordingResponder responder;
+      SearchRun run(&graph, nullptr, &backend, &responder, TestSettings(),
+                    Origin(fen), GoParams{.nodes = 1},
+                    std::chrono::steady_clock::now());
+      run.Start();
+      run.Wait();
+      ExpectDrained(run, graph);
+      ExpectFinalOutput(responder, 1);
+      const auto& final = responder.thinking.back();
+      ASSERT_TRUE(final.score.has_value());
+      EXPECT_EQ(*final.score, test.score);
+      ASSERT_TRUE(final.wdl.has_value());
+      EXPECT_EQ(final.wdl->w, test.win);
+      EXPECT_EQ(final.wdl->d, 500);
+      EXPECT_EQ(final.wdl->l, test.loss);
+    }
   }
 }
 
@@ -346,6 +388,10 @@ TEST(Lc5SearchTest, TerminalOwnerAndWaitersNeverEvaluate) {
   for (const auto& test : {Case{"7k/6Q1/5K2/8/8/8/8/8 b - - 0 1",
                                 TerminalKind::kCheckmate, -1.0f, 0.0f},
                            Case{"7k/5K2/6Q1/8/8/8/8/8 b - - 0 1",
+                                TerminalKind::kStalemate, 0.0f, 1.0f},
+                           Case{"8/8/8/8/8/5k2/6q1/7K w - - 0 1",
+                                TerminalKind::kCheckmate, -1.0f, 0.0f},
+                           Case{"8/8/8/8/8/6q1/5k2/7K w - - 0 1",
                                 TerminalKind::kStalemate, 0.0f, 1.0f}}) {
     SCOPED_TRACE(test.fen);
     GameGraph graph;
@@ -372,6 +418,13 @@ TEST(Lc5SearchTest, TerminalOwnerAndWaitersNeverEvaluate) {
     EXPECT_EQ(node->value.visits, 4u);
     EXPECT_FLOAT_EQ(node->value.Q(), test.q);
     EXPECT_FLOAT_EQ(node->value.D(), test.d);
+    const auto& final = responder.thinking.back();
+    ASSERT_TRUE(final.score.has_value());
+    EXPECT_EQ(*final.score, test.kind == TerminalKind::kCheckmate ? -12780 : 0);
+    ASSERT_TRUE(final.wdl.has_value());
+    EXPECT_EQ(final.wdl->w, 0);
+    EXPECT_EQ(final.wdl->d, test.kind == TerminalKind::kStalemate ? 1000 : 0);
+    EXPECT_EQ(final.wdl->l, test.kind == TerminalKind::kCheckmate ? 1000 : 0);
   }
 }
 

@@ -1,5 +1,7 @@
 # Lc5 search backend
 
+For a source-oriented review, see [Reading the lc5 search](lc5-code-walkthrough.md).
+
 Lc5 is an experimental, game-scoped DAG search selected with `lc0 lc5`.  It
 uses key/generation paths, exact per-edge in-flight reservations, a bounded
 epoch-tagged VisitPool, deduplicated materialization tickets, and a
@@ -79,11 +81,17 @@ mailboxes, or I/O thread counts.
 ## Limits and game lifetime
 
 Supported limits include `nodes`, `movetime`, `infinite`, and ponder as infinite.
-Without explicit `movetime`, the engine derives a simple budget from the
-side-to-move's `wtime`/`btime`, subtracting `MoveOverheadMs` and applying
-`AlphazeroTimePct`; infinite/ponder suppress this clock-derived budget.
-`winc`, `binc`, `movestogo`, `depth`, `mate`, and `searchmoves` are reported as
-ignored. The default engine's hot graph survives same-game `position` changes;
+Without explicit `movetime`, the engine derives a budget from the side-to-move's
+`wtime`/`btime` and `winc`/`binc`. It reserves `MoveOverheadMs` and uses
+`AlphaZeroTimePct` as the clock fraction, raised to `1 / movestogo` when a
+positive `movestogo` implies a shorter horizon. The budget is
+`usable_clock * fraction + increment * (1 - fraction)`, capped at the usable
+clock with a 1 ms floor when usable time remains. Clocks at or below overhead
+receive a zero budget; infinite/ponder suppress clock-derived budgets.
+Only `depth`, `mate`, and `searchmoves` are reported as ignored.
+Thinking output includes a centipawn score converted from root Q, from the
+side-to-move's perspective, alongside WDL when root value visits are available.
+The default engine's hot graph survives same-game `position` changes;
 `ucinewgame`, an incompatible starting position, and backend replacement clear
 it.
 

@@ -78,9 +78,6 @@ void Lc5Engine::StartSearch(const GoParams& params) {
   }
 
   std::vector<std::string> ignored;
-  if (params.winc) ignored.push_back("winc");
-  if (params.binc) ignored.push_back("binc");
-  if (params.movestogo) ignored.push_back("movestogo");
   if (params.depth) ignored.push_back("depth");
   if (params.mate) ignored.push_back("mate");
   if (!params.searchmoves.empty()) ignored.push_back("searchmoves");

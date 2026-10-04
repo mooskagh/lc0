@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstdint>
 #include <memory>
 #include <mutex>
@@ -225,6 +226,7 @@ void SearchRun::OutputInfo(bool final) {
   info.pv = BuildPv();
   if (auto root = graph_->SnapshotNode(root_.key); root && root->value.visits) {
     const float q = root->value.Q();
+    info.score = static_cast<int>(90 * std::tan(1.5637541897 * q));
     const float d = std::clamp(root->value.D(), 0.0f, 1.0f);
     const int draw = static_cast<int>(d * 1000.0f);
     const int win = static_cast<int>((1.0f - d + q) * 500.0f);

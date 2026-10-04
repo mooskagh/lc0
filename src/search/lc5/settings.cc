@@ -79,8 +79,19 @@ std::optional<int64_t> Settings::GetTimeBudget(const GoParams& params,
   const auto& remaining = black_to_move ? params.btime : params.wtime;
   if (!remaining) return std::nullopt;
   if (*remaining <= move_overhead_ms_) return 0;
-  return static_cast<int64_t>((*remaining - move_overhead_ms_) *
-                              (alphazero_time_pct_ / 100.0));
+
+  const int64_t usable = *remaining - move_overhead_ms_;
+  const int64_t increment = std::max<int64_t>(
+      0, (black_to_move ? params.binc : params.winc).value_or(0));
+  long double fraction = alphazero_time_pct_ / 100.0L;
+  if (params.movestogo && *params.movestogo > 0) {
+    fraction = std::max(fraction, 1.0L / *params.movestogo);
+  }
+  // Divide the clock and future increments over the implied move horizon.
+  // The current move's increment is only received after we finish searching.
+  const long double budget = usable * fraction + increment * (1 - fraction);
+  return static_cast<int64_t>(
+      std::clamp(budget, 1.0L, static_cast<long double>(usable)));
 }
 
 Settings::Resolved Settings::Resolve(const BackendAttributes& backend) const {

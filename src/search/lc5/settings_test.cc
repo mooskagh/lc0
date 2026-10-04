@@ -58,6 +58,69 @@ TEST(Lc5SettingsTest, TimeBudgetOptionsAreConfigurable) {
   EXPECT_EQ(settings.GetTimeBudget(GoParams{.wtime = 50}, false), 0);
 }
 
+TEST(Lc5SettingsTest, IncludesOnlyActiveSideIncrement) {
+  OptionsParser parser;
+  Settings::Populate(&parser);
+  Settings settings(parser.GetOptionsDict());
+  GoParams params{.wtime = 10200, .btime = 5200, .winc = 100, .binc = 200};
+
+  EXPECT_EQ(settings.GetTimeBudget(params, false), 1288);
+  EXPECT_EQ(settings.GetTimeBudget(params, true), 776);
+  params.winc = -100;
+  EXPECT_EQ(settings.GetTimeBudget(params, false), 1200);
+}
+
+TEST(Lc5SettingsTest, HonorsShorterMovesToGoHorizon) {
+  OptionsParser parser;
+  Settings::Populate(&parser);
+  Settings settings(parser.GetOptionsDict());
+  GoParams params{.wtime = 4200, .winc = 100, .movestogo = 4};
+
+  EXPECT_EQ(settings.GetTimeBudget(params, false), 1075);
+  params.movestogo = 1;
+  EXPECT_EQ(settings.GetTimeBudget(params, false), 4000);
+  for (int moves : {0, -1, 100}) {
+    params.movestogo = moves;
+    EXPECT_EQ(settings.GetTimeBudget(params, false), 568);
+  }
+}
+
+TEST(Lc5SettingsTest, CapsBudgetAndPreservesOverhead) {
+  OptionsParser parser;
+  Settings::Populate(&parser);
+  Settings settings(parser.GetOptionsDict());
+
+  EXPECT_EQ(
+      settings.GetTimeBudget(GoParams{.wtime = 300, .winc = 10000}, false),
+      100);
+  EXPECT_EQ(settings.GetTimeBudget(GoParams{.wtime = 201, .winc = 80}, false),
+            1);
+  EXPECT_EQ(settings.GetTimeBudget(GoParams{.wtime = 201}, false), 1);
+  EXPECT_EQ(settings.GetTimeBudget(GoParams{.wtime = 200, .winc = 80}, false),
+            0);
+  EXPECT_EQ(settings.GetTimeBudget(GoParams{.wtime = 100, .winc = 80}, false),
+            0);
+  parser.SetUciOption("AlphaZeroTimePct", "0");
+  EXPECT_EQ(Settings(parser.GetOptionsDict())
+                .GetTimeBudget(GoParams{.wtime = 1000}, false),
+            1);
+}
+
+TEST(Lc5SettingsTest, IncrementMaintainsBudgetOverLongGame) {
+  OptionsParser parser;
+  Settings::Populate(&parser);
+  Settings settings(parser.GetOptionsDict());
+  GoParams params{.wtime = 8000, .winc = 80};
+
+  for (int move = 0; move < 200; ++move) {
+    const auto budget = settings.GetTimeBudget(params, false);
+    ASSERT_TRUE(budget.has_value());
+    EXPECT_GE(*budget, 80) << "move " << move;
+    EXPECT_LE(*budget, *params.wtime - 200);
+    *params.wtime += *params.winc - *budget;
+  }
+}
+
 TEST(Lc5SettingsTest, TimeBudgetDoesNotLimitUnclockedSearches) {
   OptionsParser parser;
   Settings::Populate(&parser);
