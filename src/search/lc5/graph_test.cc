@@ -23,6 +23,21 @@ Settings::Resolved TestSettings() {
           .fpu_value = 0.0f};
 }
 
+TEST(Lc5GraphTest, CancellationOnlyErasesMatchingPlaceholder) {
+  GameGraph graph;
+  const NodeKey key{123};
+  graph.FindOrCreateMaterializing(key, 7);
+  EXPECT_FALSE(graph.CancelMaterialization(key, 8));
+  EXPECT_TRUE(graph.CancelMaterialization(key, 7));
+  EXPECT_EQ(graph.Size(), 0u);
+  graph.FindOrCreateMaterializing(key, 8);
+  EXPECT_FALSE(graph.CancelMaterialization(key, 7));
+  graph.InstallPayload(key, 8, {.moves = {M(kFileA, kFileA)}, .priors = {1.0f}});
+  EXPECT_FALSE(graph.CancelMaterialization(key, 8));
+  ASSERT_TRUE(graph.SnapshotNode(key));
+  EXPECT_EQ(graph.SnapshotNode(key)->lifecycle, NodeLifecycle::kExpanded);
+}
+
 TEST(Lc5ValueTest, PerspectiveAndSumsAreExact) {
   SearchValue child{0.25f, 0.5f, 3.0f};
   SearchValue parent = child.Parent();

@@ -64,14 +64,6 @@ void SearchRun::RequestStop(StopMode requested) {
       stop_mode_.store(StopMode::kRespondBestmove);
     }
   }
-  for (auto& worker : workers_) {
-    // Synchronize the predicate transition with each mailbox's wait.
-    {
-      std::lock_guard lock(worker->mailbox.mutex);
-    }
-    worker->mailbox.cv.notify_one();
-  }
-  eval_jobs_.WakeAll();
   NotifyController();
 }
 
@@ -93,6 +85,7 @@ void SearchRun::NotifyController() {
 
 void SearchRun::Controller() {
   auto next_info = std::chrono::steady_clock::now() + std::chrono::seconds(1);
+  bool stop_notified = false;
   for (;;) {
     uint64_t generation;
     {
@@ -112,10 +105,42 @@ void SearchRun::Controller() {
         metrics_.visits_completed.load() >= *node_limit_)
       Stop();
     if (stop_mode_.load() == StopMode::kRunning && now >= next_info) {
-      OutputInfo(false);
+      std::vector<ThinkingInfo> infos{BuildInfo(false)};
+      responder_->OutputThinkingInfo(&infos);
       next_info = now + std::chrono::seconds(1);
     }
-    if (stop_mode_.load() != StopMode::kRunning && visits_.active() == 0) {
+    if (stop_mode_.load() != StopMode::kRunning && !stop_notified) {
+      // Capture once, without waiting for any executor or persistence. Abort
+      // can suppress this snapshot until commitment, but cannot retract it.
+      if (stop_mode_.load() == StopMode::kRespondBestmove) {
+        std::vector<ThinkingInfo> infos{BuildInfo(true)};
+        const auto& pv = infos.front().pv;
+        BestMoveInfo best(pv.empty() ? FallbackMove() : pv.front(),
+                          pv.size() > 1 ? pv[1] : Move{});
+        bool respond;
+        {
+          std::lock_guard lock(admission_mutex_);
+          respond = stop_mode_.load() == StopMode::kRespondBestmove;
+          if (respond) output_committed_.store(true);
+        }
+        if (respond) {
+          responder_->OutputThinkingInfo(&infos);
+          responder_->OutputBestMove(&best);
+        }
+      }
+      stop_notified = true;
+      // Synchronize predicate changes with sleepers only after the response.
+      for (auto& worker : workers_) {
+        {
+          std::lock_guard lock(worker->mailbox.mutex);
+        }
+        worker->mailbox.cv.notify_one();
+      }
+      eval_jobs_.WakeAll();
+    }
+    // Stop may arrive after the stop-phase check above. Never finish a drain
+    // until that phase has committed/suppressed output and synchronized wakes.
+    if (stop_notified && visits_.active() == 0) {
       bool no_tickets;
       {
         std::lock_guard lock(tickets_mutex_);
@@ -155,29 +180,16 @@ void SearchRun::Controller() {
   eval_jobs_.Close();
   for (auto& thread : store_threads_) thread.join();
   for (auto& thread : evaluator_threads_) thread.join();
-  bool respond;
-  {
-    std::lock_guard lock(admission_mutex_);
-    respond = stop_mode_.load() == StopMode::kRespondBestmove;
-    if (respond) output_committed_.store(true);
-  }
-  if (respond) {
-    OutputInfo(true);
-    auto pv = BuildPv();
-    BestMoveInfo info(pv.empty() ? FallbackMove() : pv.front(),
-                      pv.size() > 1 ? pv[1] : Move{});
-    responder_->OutputBestMove(&info);
-  }
   finished_.store(true, std::memory_order_release);
 }
 
-std::vector<Move> SearchRun::BuildPv() const {
+std::vector<Move> SearchRun::BuildPv(std::optional<NodeSnapshot> root) const {
   std::vector<Move> pv;
   PositionHistory history = root_.history;
   NodeKey key = root_.key;
   std::unordered_set<uint64_t> seen;
   for (int ply = 0; ply < 256 && seen.insert(key.hash).second; ++ply) {
-    auto node = graph_->SnapshotNode(key);
+    auto node = ply == 0 ? std::move(root) : graph_->SnapshotNode(key);
     if (!node || node->lifecycle != NodeLifecycle::kExpanded ||
         node->terminal != TerminalKind::kNonTerminal)
       break;
@@ -213,7 +225,7 @@ Move SearchRun::FallbackMove() const {
   return best;
 }
 
-void SearchRun::OutputInfo(bool final) {
+ThinkingInfo SearchRun::BuildInfo(bool final) const {
   const auto elapsed = std::chrono::steady_clock::now() - start_time_;
   const int64_t ms =
       std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count();
@@ -226,8 +238,9 @@ void SearchRun::OutputInfo(bool final) {
   info.eps = ms > 0 ? static_cast<int>(evals * 1000 / ms) : 0;
   info.depth = static_cast<int>(metrics_.max_depth.load());
   info.seldepth = static_cast<int>(metrics_.max_selected_depth.load());
-  info.pv = BuildPv();
-  if (auto root = graph_->SnapshotNode(root_.key); root && root->value.visits) {
+  auto root = graph_->SnapshotNode(root_.key);
+  info.pv = BuildPv(root);
+  if (root && root->value.visits) {
     const float q = root->value.Q();
     info.score = static_cast<int>(90 * std::tan(1.5637541897 * q));
     const float d = std::clamp(root->value.D(), 0.0f, 1.0f);
@@ -239,8 +252,7 @@ void SearchRun::OutputInfo(bool final) {
   info.comment =
       metrics_.Format(graph_->Size(), visits_.active(), eval_jobs_.Size());
   if (final) info.comment += " final";
-  std::vector<ThinkingInfo> infos{std::move(info)};
-  responder_->OutputThinkingInfo(&infos);
+  return info;
 }
 
 }  // namespace lczero::lc5

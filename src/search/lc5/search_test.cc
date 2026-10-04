@@ -12,6 +12,60 @@
 #include "search/lc5/engine.h"
 
 namespace lczero::lc5 {
+
+class SearchRunTestPeer {
+ public:
+  // Before Start only: make the entire backlog ready before collectors run.
+  static void PrepareAdmissions(SearchRun& run) {
+    for (auto& ptr : run.workers_) {
+      auto& worker = *ptr;
+      worker.outgoing.resize(run.workers_.size());
+      for (const auto& event : worker.mailbox.continuations)
+        run.Resume(worker, event);
+      worker.mailbox.continuations.clear();
+      while (!worker.runnable.empty()) {
+        auto id = worker.runnable.front();
+        worker.runnable.pop_front();
+        run.AdvanceVisit(worker, id);
+      }
+      run.SubmitJobs(worker);
+      run.SetProducing(worker, false);
+    }
+  }
+  // Inspect owner-local state only after Wait's full join barrier.
+  static void ExpectDrained(const SearchRun& run) {
+    EXPECT_EQ(run.visits_.active(), 0u);
+    EXPECT_TRUE(run.tickets_.empty());
+    EXPECT_TRUE(run.ticket_by_key_.empty());
+    EXPECT_EQ(run.jobs_in_flight_.load(), 0u);
+    EXPECT_EQ(run.collecting_jobs_.load(), 0u);
+    EXPECT_EQ(run.eval_jobs_.Size(), 0u);
+    EXPECT_EQ(run.store_jobs_.Size(), 0u);
+    for (const auto& worker : run.workers_) {
+      EXPECT_TRUE(worker->drained.load());
+      EXPECT_TRUE(worker->active.empty());
+      EXPECT_TRUE(worker->runnable.empty());
+      EXPECT_TRUE(worker->loads.empty());
+      EXPECT_TRUE(worker->evals.empty());
+      EXPECT_TRUE(worker->persistence.empty());
+      EXPECT_EQ(worker->outstanding, 0u);
+      EXPECT_EQ(worker->outstanding_items, 0u);
+      EXPECT_TRUE(worker->mailbox.continuations.empty());
+      EXPECT_TRUE(worker->mailbox.completions.empty());
+    }
+  }
+  static void ExpectDrained(const Lc5Engine& engine) {
+    ASSERT_TRUE(engine.run_);
+    ASSERT_TRUE(engine.run_->Finished());
+    ExpectDrained(*engine.run_);
+    for (const auto& [key, node] : engine.graph_.SnapshotAllForTesting()) {
+      EXPECT_EQ(node.lifecycle, NodeLifecycle::kExpanded);
+      EXPECT_EQ(node.ticket, 0u);
+      for (const auto& edge : node.edges) EXPECT_EQ(edge.in_flight, 0u);
+    }
+  }
+};
+
 namespace {
 
 Settings::Resolved TestSettings(int threads = 1, int capacity = 4) {
@@ -44,8 +98,17 @@ VisitOrigin Origin(std::string_view fen = ChessBoard::kStartposFen) {
 class RecordingResponder final : public UciResponder {
  public:
   void OutputBestMove(BestMoveInfo* info) override {
-    bestmoves.push_back(*info);
-    bestmove_count.fetch_add(1);
+    {
+      std::lock_guard lock(mutex_);
+      bestmoves.push_back(*info);
+      bestmove_count.fetch_add(1);
+    }
+    cv_.notify_all();
+  }
+  bool WaitForBestmove() {
+    std::unique_lock lock(mutex_);
+    return cv_.wait_for(lock, std::chrono::seconds(5),
+                        [&] { return bestmove_count.load() != 0; });
   }
   void OutputThinkingInfo(std::vector<ThinkingInfo>* infos) override {
     thinking.insert(thinking.end(), infos->begin(), infos->end());
@@ -53,6 +116,39 @@ class RecordingResponder final : public UciResponder {
   std::atomic<size_t> bestmove_count{0};
   std::vector<BestMoveInfo> bestmoves;
   std::vector<ThinkingInfo> thinking;
+
+ private:
+  std::mutex mutex_;
+  std::condition_variable cv_;
+};
+
+// One-shot barrier: arrival is observable before return; release is untimed.
+class OperationBarrier {
+ public:
+  void ArriveAndWait() {
+    std::unique_lock lock(mutex_);
+    arrived_ = true;
+    cv_.notify_all();
+    cv_.wait(lock, [&] { return released_; });
+  }
+  bool WaitForArrival() {
+    std::unique_lock lock(mutex_);
+    return cv_.wait_for(lock, std::chrono::seconds(5),
+                        [&] { return arrived_; });
+  }
+  void Release() {
+    {
+      std::lock_guard lock(mutex_);
+      released_ = true;
+    }
+    cv_.notify_all();
+  }
+
+ private:
+  std::mutex mutex_;
+  std::condition_variable cv_;
+  bool arrived_ = false;
+  bool released_ = false;
 };
 
 class ControlledBackend final : public Backend {
@@ -92,25 +188,30 @@ class ControlledBackend final : public Backend {
     return cv_.wait_for(lock, std::chrono::seconds(5),
                         [&] { return history_sizes.size() >= count; });
   }
-  bool WaitForCompute() {
+  bool WaitForCompute(size_t count = 1) {
     std::unique_lock lock(mutex_);
     return cv_.wait_for(lock, std::chrono::seconds(5),
-                        [&] { return entered_; });
+                        [&] { return batch_sizes.size() >= count; });
   }
   void Release() {
     {
       std::lock_guard lock(mutex_);
       released_ = true;
     }
+    input.Release();
     cv_.notify_all();
   }
 
+  // Configure before Start. Pause the numbered AddInput before returning.
+  size_t blocked_input = 0;
+  OperationBarrier input;
   float q = 0.25f;
   std::atomic<size_t> inputs{0};
   std::atomic<size_t> computes{0};
   // Protected by mutex_ while writing; tests read after the run joins.
   std::vector<size_t> history_sizes;
   std::vector<size_t> batch_sizes;
+  std::unordered_map<std::thread::id, size_t> calls_by_evaluator;
   std::unordered_set<std::thread::id> evaluator_ids;
 
  private:
@@ -132,6 +233,8 @@ class ControlledBackend final : public Backend {
         backend_.history_sizes.push_back(pos.pos.size());
         backend_.cv_.notify_all();
       }
+      if (index + 1 == backend_.blocked_input)
+        backend_.input.ArriveAndWait();
       if (backend_.cache_ == Cache::kAll ||
           (backend_.cache_ == Cache::kAlternating && index % 2 == 0)) {
         backend_.Fill(result);
@@ -147,7 +250,7 @@ class ControlledBackend final : public Backend {
       {
         std::unique_lock lock(backend_.mutex_);
         backend_.batch_sizes.push_back(pending_.size());
-        backend_.entered_ = true;
+        ++backend_.calls_by_evaluator[std::this_thread::get_id()];
         backend_.cv_.notify_all();
         backend_.cv_.wait(lock, [&] { return backend_.released_; });
       }
@@ -169,7 +272,6 @@ class ControlledBackend final : public Backend {
   const size_t evaluator_count_;
   std::mutex mutex_;
   std::condition_variable cv_;
-  bool entered_ = false;
   bool released_;
 };
 
@@ -205,36 +307,6 @@ class RecordingStore final : public NodeStore {
   std::mutex mutex_;
 };
 
-// One-shot barrier between the test thread and an existing scheduler thread.
-// Arrival is observable before the operation returns; release is never timed.
-class OperationBarrier {
- public:
-  void ArriveAndWait() {
-    std::unique_lock lock(mutex_);
-    arrived_ = true;
-    cv_.notify_all();
-    cv_.wait(lock, [&] { return released_; });
-  }
-  bool WaitForArrival() {
-    std::unique_lock lock(mutex_);
-    return cv_.wait_for(lock, std::chrono::seconds(5),
-                        [&] { return arrived_; });
-  }
-  void Release() {
-    {
-      std::lock_guard lock(mutex_);
-      released_ = true;
-    }
-    cv_.notify_all();
-  }
-
- private:
-  std::mutex mutex_;
-  std::condition_variable cv_;
-  bool arrived_ = false;
-  bool released_ = false;
-};
-
 class BlockingStore final : public NodeStore {
  public:
   explicit BlockingStore(size_t blocked_load = 1, bool block_persistence = true)
@@ -265,6 +337,7 @@ class BlockingStore final : public NodeStore {
 
 void ExpectDrained(const SearchRun& run, const GameGraph& graph) {
   ASSERT_TRUE(run.Finished());
+  SearchRunTestPeer::ExpectDrained(run);
   const auto& m = run.metrics();
   EXPECT_EQ(m.visits_admitted.load(),
             m.visits_completed.load() + m.visits_cancelled.load());
@@ -282,9 +355,9 @@ void ExpectFinalOutput(const RecordingResponder& responder, uint64_t nodes) {
   ASSERT_EQ(responder.bestmoves.size(), 1u);
   ASSERT_FALSE(responder.thinking.empty());
   const auto& final = responder.thinking.back();
-  EXPECT_EQ(final.nodes, nodes);
-  EXPECT_NE(final.comment.find(" active=0 "), std::string::npos);
-  EXPECT_NE(final.comment.find(" ready_eval=0 "), std::string::npos);
+  EXPECT_LE(final.nodes, nodes);
+  EXPECT_NE(final.comment.find(" active="), std::string::npos);
+  EXPECT_NE(final.comment.find(" ready_eval="), std::string::npos);
   EXPECT_TRUE(final.comment.ends_with(" final"));
 }
 
@@ -318,7 +391,7 @@ TEST(Lc5SearchTest, ExpiredTimeBudgetStopsAndDrains) {
     ExpectDrained(run, graph);
     ExpectFinalOutput(responder, run.metrics().visits_completed.load());
     ExpectLegalBestmove(responder, root);
-    EXPECT_EQ(store.stored, run.metrics().node_store_misses.load());
+    EXPECT_LE(store.stored, run.metrics().node_store_misses.load());
   }
 }
 
@@ -625,12 +698,17 @@ TEST(Lc5SearchTest, BlockedBackendStopAndAbortDrainReservationsAndPersistence) {
     }
     EXPECT_EQ(graph.SnapshotNode(root.key)->edges[0].in_flight, 4u);
     EXPECT_EQ(run.metrics().ticket_waiters.load(), 3u);
-    run.Stop();
     if (abort)
-      run.Abort();  // Abort must override an uncommitted stop response.
+      run.Abort();
+    else {
+      run.Stop();
+      EXPECT_TRUE(responder.WaitForBestmove());
+      run.Abort();  // A committed response cannot be retracted.
+      run.Stop();
+    }
     EXPECT_FALSE(run.Admit(root));
     EXPECT_FALSE(run.Finished());
-    EXPECT_EQ(responder.bestmove_count.load(), 0u);
+    EXPECT_EQ(responder.bestmove_count.load(), abort ? 0u : 1u);
     backend.Release();
     run.Wait();
     ExpectDrained(run, graph);
@@ -772,7 +850,8 @@ TEST(Lc5SearchTest, CollectionFlushesWhileAnotherWorkerIsBlockedInStore) {
     ExpectFinalOutput(responder, 0);
     EXPECT_EQ(run.metrics().visits_cancelled.load(), 2u);
     EXPECT_EQ(run.metrics().node_store_misses.load(), 2u);
-    EXPECT_EQ(store.recording.stored, 2u);
+    EXPECT_EQ(store.recording.stored, 1u);
+    EXPECT_EQ(backend.computes.load(), 1u);
   }
 }
 
@@ -952,44 +1031,29 @@ TEST(Lc5SearchTest, BlockedStoreLoadsAndPersistenceDrainAfterStopOrAbort) {
         EXPECT_EQ(run.metrics().ticket_waiters.load(), 3u);
         EXPECT_EQ(backend.inputs.load(), 0u);
       }
-      run.Stop();
-      if (abort || !loading) run.Abort();
+      if (abort || !loading)
+        run.Abort();
+      else {
+        run.Stop();
+        EXPECT_TRUE(responder.WaitForBestmove());
+      }
       EXPECT_FALSE(run.Admit(root));
       EXPECT_FALSE(run.Finished());
-      EXPECT_EQ(responder.bestmove_count.load(), 0u);
       store.load.Release();
-      // A miss must publish and persist even though all visits were cancelled;
-      // a hit must not write back the payload it just loaded.
-      const bool persisting = loading && !hit && store.persist.WaitForArrival();
-      if (persisting) {
-        EXPECT_FALSE(run.Finished());
-        EXPECT_EQ(responder.bestmove_count.load(), 0u);
-        const auto node = graph.SnapshotNode(child.key);
-        EXPECT_TRUE(node);
-        if (node) {
-          EXPECT_EQ(node->lifecycle, NodeLifecycle::kExpanded);
-          EXPECT_EQ(node->ticket, 0u);
-          EXPECT_EQ(node->value.visits, 0u);
-        }
-      }
       store.Release();
       run.Wait();
       ASSERT_TRUE(loading);
-      if (!hit) {
-        ASSERT_TRUE(persisting);
-      }
       ExpectDrained(run, graph);
       EXPECT_EQ(run.metrics().visits_admitted.load(), 4u);
       EXPECT_EQ(run.metrics().visits_completed.load(), 0u);
       EXPECT_EQ(run.metrics().visits_cancelled.load(), 4u);
       EXPECT_EQ(run.metrics().node_store_hits.load(), hit ? 1u : 0u);
       EXPECT_EQ(run.metrics().node_store_misses.load(), hit ? 0u : 1u);
-      EXPECT_EQ(store.recording.stored, hit ? 0u : 1u);
-      EXPECT_EQ(backend.inputs.load(), hit ? 0u : 1u);
+      EXPECT_EQ(store.recording.stored, 0u);
+      EXPECT_EQ(backend.inputs.load(), 0u);
       EXPECT_EQ(backend.computes.load(), 0u);
-      ASSERT_TRUE(store.recording.entries.contains(child.key));
-      EXPECT_FLOAT_EQ(store.recording.entries.at(child.key).leaf_q,
-                      hit ? 0.75f : 0.25f);
+      EXPECT_EQ(store.recording.entries.contains(child.key), hit);
+      EXPECT_EQ(graph.SnapshotNode(child.key).has_value(), hit);
       EXPECT_EQ(graph.SnapshotNode(root.key)->value.visits, 0u);
       if (abort) {
         EXPECT_TRUE(responder.bestmoves.empty());
@@ -1003,6 +1067,188 @@ TEST(Lc5SearchTest, BlockedStoreLoadsAndPersistenceDrainAfterStopOrAbort) {
       }
     }
   }
+}
+
+std::vector<VisitOrigin> AdmitChildren(SearchRun& run, const VisitOrigin& root,
+                                       size_t count) {
+  std::vector<VisitOrigin> origins;
+  const auto legal = root.history.Last().GetBoard().GenerateLegalMoves();
+  for (size_t i = 0; i < count; ++i) {
+    auto origin = root;
+    origin.history.Append(legal[i]);
+    origin.key = MakeNodeKey(origin.history, 7);
+    EXPECT_TRUE(run.Admit(origin));
+    origins.push_back(std::move(origin));
+  }
+  SearchRunTestPeer::PrepareAdmissions(run);
+  return origins;
+}
+
+TEST(Lc5SearchTest, QueuedBacklogCannotComputeAgainAfterStop) {
+  for (const int evaluators : {1, 3}) {
+    SCOPED_TRACE(evaluators);
+    GameGraph graph;
+    ControlledBackend backend(ControlledBackend::Cache::kNone, true, 4,
+                              evaluators);
+    RecordingResponder responder;
+    const auto root = Origin();
+    auto settings = TestSettings(4, 20);
+    settings.eval_threads = evaluators;
+    SearchRun run(&graph, nullptr, &backend, &responder, settings,
+                  TestTimeManagement(), root, GoParams{.nodes = 20},
+                  std::chrono::steady_clock::now());
+    AdmitChildren(run, root, 20);
+    run.Start();
+    // Each evaluator is executing one authorized batch, with more ready jobs
+    // than that cohort can consume. Stop must not authorize a second batch.
+    const bool computing = backend.WaitForCompute(evaluators);
+    run.Stop();
+    const bool responding = responder.WaitForBestmove();
+    EXPECT_FALSE(run.Finished());
+    backend.Release();
+    run.Wait();
+    ASSERT_TRUE(computing);
+    ASSERT_TRUE(responding);
+    EXPECT_EQ(backend.computes.load(), static_cast<size_t>(evaluators));
+    EXPECT_EQ(backend.calls_by_evaluator.size(),
+              static_cast<size_t>(evaluators));
+    for (const auto& [id, calls] : backend.calls_by_evaluator)
+      EXPECT_EQ(calls, 1u);
+    EXPECT_EQ(backend.inputs.load(), 4u * evaluators);
+    EXPECT_EQ(graph.Size(), 4u * evaluators);
+    EXPECT_EQ(run.metrics().visits_completed.load(), 0u);
+    ExpectDrained(run, graph);
+    ExpectLegalBestmove(responder, root);
+  }
+}
+
+TEST(Lc5SearchTest, StopDuringAddInputKeepsOnlyImmediateResults) {
+  GameGraph graph;
+  ControlledBackend backend(ControlledBackend::Cache::kAlternating, true, 8);
+  backend.blocked_input = 2;
+  RecordingResponder responder;
+  const auto root = Origin();
+  auto settings = TestSettings(1, 4);
+  settings.minibatch_size = 8;
+  SearchRun run(&graph, nullptr, &backend, &responder, settings,
+                TestTimeManagement(), root, GoParams{.nodes = 4},
+                std::chrono::steady_clock::now());
+  const auto origins = AdmitChildren(run, root, 4);
+  run.Start();
+  // The first job has an immediate hit and an AddInput that will enqueue only
+  // after release. The second job must not even reach AddInput after stop.
+  const bool adding = backend.input.WaitForArrival();
+  run.Stop();
+  const bool responding = responder.WaitForBestmove();
+  EXPECT_FALSE(run.Finished());
+  backend.Release();
+  run.Wait();
+  ASSERT_TRUE(adding);
+  ASSERT_TRUE(responding);
+  EXPECT_EQ(backend.inputs.load(), 2u);
+  EXPECT_EQ(backend.computes.load(), 0u);
+  EXPECT_EQ(graph.Size(), 1u);
+  auto hit = graph.SnapshotNode(origins[0].key);
+  ASSERT_TRUE(hit);
+  EXPECT_EQ(hit->value.visits, 0u);
+  for (const auto& edge : hit->edges)
+    EXPECT_FLOAT_EQ(edge.prior, 1.0f / hit->edges.size());
+  for (size_t i = 1; i < origins.size(); ++i)
+    EXPECT_FALSE(graph.SnapshotNode(origins[i].key));
+  ExpectDrained(run, graph);
+}
+
+TEST(Lc5SearchTest, RetainedNonfittingJobIsCancelledAfterAuthorizedBatch) {
+  GameGraph graph;
+  ControlledBackend backend(ControlledBackend::Cache::kNone, true, 5);
+  RecordingResponder responder;
+  const auto root = Origin();
+  auto settings = TestSettings(1, 6);
+  settings.minibatch_size = 5;
+  SearchRun run(&graph, nullptr, &backend, &responder, settings,
+                TestTimeManagement(), root, GoParams{.nodes = 6},
+                std::chrono::steady_clock::now());
+  const auto origins = AdmitChildren(run, root, 6);
+  run.Start();
+  // Three whole jobs of two inputs: after adding four inputs, the collector
+  // has popped and retained the last job because 4 + 2 exceeds the target 5.
+  const bool computing = backend.WaitForCompute();
+  run.Stop();
+  const bool responding = responder.WaitForBestmove();
+  backend.Release();
+  run.Wait();
+  ASSERT_TRUE(computing);
+  ASSERT_TRUE(responding);
+  EXPECT_EQ(backend.batch_sizes, (std::vector<size_t>{4}));
+  EXPECT_EQ(backend.inputs.load(), 4u);
+  EXPECT_EQ(backend.computes.load(), 1u);
+  EXPECT_EQ(graph.Size(), 4u);
+  for (size_t i = 4; i < origins.size(); ++i)
+    EXPECT_FALSE(graph.SnapshotNode(origins[i].key));
+  ExpectDrained(run, graph);
+}
+
+TEST(Lc5SearchTest, AbortOverridesRepeatedStopBeforeCommitment) {
+  GameGraph graph;
+  ControlledBackend backend;
+  RecordingResponder responder;
+  const auto root = Origin();
+  SearchRun run(&graph, nullptr, &backend, &responder, TestSettings(),
+                TestTimeManagement(), root, GoParams{.nodes = 4},
+                std::chrono::steady_clock::now());
+  AdmitChildren(run, root, 4);
+  run.Stop();
+  run.Stop();
+  run.Abort();
+  run.Stop();
+  run.Abort();
+  run.Start();
+  run.Wait();
+  ExpectDrained(run, graph);
+  EXPECT_TRUE(responder.bestmoves.empty());
+  EXPECT_TRUE(responder.thinking.empty());
+  EXPECT_EQ(backend.inputs.load(), 0u);
+  EXPECT_EQ(backend.computes.load(), 0u);
+  EXPECT_EQ(graph.Size(), 0u);
+}
+
+TEST(Lc5SearchTest, RespondsBeforeBlockedPersistenceDrains) {
+  GameGraph graph;
+  BlockingStore store(0);
+  ControlledBackend backend;
+  RecordingResponder responder;
+  SearchRun run(&graph, &store, &backend, &responder, TestSettings(),
+                TestTimeManagement(), Origin(), GoParams{.nodes = 1},
+                std::chrono::steady_clock::now());
+  run.Start();
+  const bool persisting = store.persist.WaitForArrival();
+  const bool responding = responder.WaitForBestmove();
+  EXPECT_FALSE(run.Finished());
+  store.Release();
+  run.Wait();
+  ASSERT_TRUE(persisting);
+  ASSERT_TRUE(responding);
+  ExpectDrained(run, graph);
+  ExpectFinalOutput(responder, 1);
+}
+
+TEST(Lc5SearchTest, FreshRootStoppedBeforeStartUsesLegalFallbackWithoutEvaluation) {
+  GameGraph graph;
+  ControlledBackend backend;
+  RecordingResponder responder;
+  const auto root = Origin();
+  SearchRun run(&graph, nullptr, &backend, &responder, TestSettings(),
+                TestTimeManagement(), root, GoParams{},
+                std::chrono::steady_clock::now());
+  ASSERT_TRUE(run.Admit(root));
+  run.Stop();
+  run.Start();
+  run.Wait();
+  ExpectDrained(run, graph);
+  ExpectLegalBestmove(responder, root);
+  EXPECT_EQ(backend.inputs.load(), 0u);
+  EXPECT_EQ(backend.computes.load(), 0u);
+  EXPECT_EQ(graph.Size(), 0u);
 }
 
 TEST(Lc5SearchTest, EnginePreservesExplicitMovetimeAndInfinitePrecedence) {
@@ -1061,8 +1307,10 @@ TEST(Lc5SearchTest, EngineRetainsGraphAcrossSearchesAndResetsForNewGame) {
     engine.WaitSearch();
     EXPECT_EQ(responder.bestmoves.size(), static_cast<size_t>(i + 1));
     EXPECT_EQ(responder.thinking.back().nodes, 1);
-    EXPECT_NE(responder.thinking.back().comment.find(" active=0 "),
+    EXPECT_NE(responder.thinking.back().comment.find(" active="),
               std::string::npos);
+    EXPECT_TRUE(responder.thinking.back().comment.ends_with(" final"));
+    SearchRunTestPeer::ExpectDrained(engine);
   }
   // First run evaluates the root; retained search evaluates its child instead
   // of evaluating the root again. NewGame resets that retained expansion.

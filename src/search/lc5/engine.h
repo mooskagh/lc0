@@ -27,6 +27,7 @@ class Lc5Engine final : public SearchBase {
   void NewGame() override;
 
  private:
+  friend class SearchRunTestPeer;
   void AbortAndWait();
   void ClearGame();
 

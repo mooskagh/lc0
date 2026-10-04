@@ -34,6 +34,20 @@ FindOrCreateResult GameGraph::FindOrCreateMaterializing(
   return {generation, true, NodeLifecycle::kMaterializing, ticket};
 }
 
+bool GameGraph::CancelMaterialization(NodeKey key,
+                                      MaterializationTicketId ticket) {
+  auto& shard = shards_[ShardIndex(key)];
+  std::lock_guard lock(shard.mutex);
+  auto it = shard.nodes.find(key);
+  if (it == shard.nodes.end() ||
+      it->second.lifecycle != NodeLifecycle::kMaterializing ||
+      it->second.ticket != ticket)
+    return false;
+  shard.nodes.erase(it);
+  size_.fetch_sub(1, std::memory_order_relaxed);
+  return true;
+}
+
 uint64_t GameGraph::InstallPayload(NodeKey key, MaterializationTicketId ticket,
                                    const ExpansionPayload& payload,
                                    bool* accepted) {

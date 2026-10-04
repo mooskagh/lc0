@@ -58,19 +58,52 @@ flushing requires no worker able to produce more work and no outstanding job
 outside evaluator collection. With `0`, the timeout is disabled, but starvation
 flushing still occurs when no worker can produce, even if another I/O job is
 outstanding. Both modes return immediate-only jobs without waiting for neural
-work and flush partial batches on stop/abort. Metrics distinguish partial
-starvation, timeout, and drain flushes; mailbox notifications, I/O-job high
-water, and rejected publications expose scheduler activity. `ready_eval` and
+work. Stop/abort abandons unauthorized partial batches instead of flushing them.
+Metrics distinguish partial starvation and timeout flushes; mailbox notifications,
+I/O-job high water, and rejected publications expose scheduler activity. `ready_eval` and
 its high-water metric count queued jobs, not individual evaluation items.
 
-Stop and abort close admission and make owners cancel surviving visit
-reservations, while tickets, continuations, and whole-job completions drain.
+Stop and abort atomically close admission under the same mutex used to authorize
+NN computations, then promptly notify the controller. On responding stop, the
+controller builds one value-owned final info/PV and bestmove before inspecting
+any drain predicate or synchronizing wakeups with individual worker mailboxes.
+The root is snapshotted once, so final score and the first PV move use the same
+snapshot. Final info may report nonzero active work and queued evaluation jobs.
+Abort suppresses output before commitment under the admission mutex; after
+commitment it cannot retract the response. The stop phase must run even if all
+work has already drained when an external stop arrives.
+
+If no completed root edge exists, including an unexpanded root, bestmove uses
+the deterministic legal `FallbackMove` (or the empty move if no legal move
+exists). There is no bootstrap exception, protected visit, or required evaluation
+before responding. Completed graph statistics are retained without fabricated
+value samples.
+
+Every nonempty backend computation needs final authorization under the admission
+mutex, which is released before entering the backend. No authorization is
+possible after stop. Each serial evaluator therefore has at most one outstanding
+authorized NN computation at stop, including one already executing or about to
+enter the backend, not an additional shutdown computation on top. Whole jobs
+must conservatively fit the batch target before `AddInput`, preventing hidden
+batch-split computations. Worker-local requests are cancelled without preparation
+or submission; queued loads are skipped, an in-flight hit may publish, and a
+returned miss after stop cannot evaluate. Immediate cache results and successful
+authorized results remain valid; abandoned outputs never publish default values.
+
+Owners cancel surviving visit reservations separately from request retirement.
+An abandoned owner request retires its ticket and key mapping under the ticket
+mutex and conditionally erases only the matching materializing placeholder
+under one graph-shard mutex. Expanded or replacement nodes are never removed.
+This also covers suspension racing with stop; whole-run cancellation does not
+need to resume ticket waiters. Computations are destroyed while their referenced
+jobs remain alive, then owners consume returned jobs and release credits once.
+
 Accepted immutable payloads still drain to persistence after cancellation;
 rejected publications are not stored. Blocking backend/store calls are not
-interrupted, so shutdown waits for them and owner-side completion consumption.
-Only after visits, tickets, jobs, pending requests, and mailboxes drain does the
-controller join visit workers, close I/O queues, and join I/O workers. Stop emits
-final info/bestmove; abort suppresses it unless output was already committed.
+interrupted. Only after visits, tickets, jobs, pending requests, and mailboxes
+drain does the controller join visit workers, close I/O queues, and join I/O
+workers. `Wait`, `Finished`, and destruction remain full drain/join barriers;
+receiving bestmove alone does not make the retained graph reusable yet.
 
 For issue #1734, selection (`GameGraph::SelectAndReserve`) and propagation
 (`SearchRun::Backup` / `GameGraph::BackupNode`) remain separate named policy
@@ -127,9 +160,11 @@ enabling notification. During stop/abort drain it uses lifecycle notifications,
 not an expired policy wakeup.
 
 A time decision requests stopping, not a hard bestmove response deadline:
-outstanding backend/store work still drains before final output. Visit workers
+final output does not wait for outstanding backend/store work to drain, but
+controller scheduling and snapshot/output work still take time. Visit workers
 start before the controller, so an already-expired budget can race with initial
-admission and does not guarantee zero visits or evaluations.
+admission and does not guarantee zero visits or evaluations. Only a computation
+authorized before admission closes may run after stop.
 
 This is a concrete policy seam, not the classical time manager or an adaptive
 algorithm. A future policy could extend `Evaluate` with a small

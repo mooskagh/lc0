@@ -48,6 +48,7 @@ class SearchRun {
   bool Admit(const VisitOrigin& origin);
 
  private:
+  friend class SearchRunTestPeer;
   enum class StopMode : uint8_t { kRunning, kRespondBestmove, kAbort };
   struct Continuation {
     VisitId id;
@@ -70,6 +71,9 @@ class SearchRun {
     PositionHistory history;
     ExpansionPayload payload;
     std::optional<ExpansionPayload> loaded;
+    bool load_completed = false;
+    enum class Evaluation { kInvalid, kQueued, kValid };
+    Evaluation evaluation = Evaluation::kInvalid;
   };
   enum class JobKind { kEval, kLoad, kPersist };
   struct Job {
@@ -140,9 +144,10 @@ class SearchRun {
   ExpansionPayload DetectTerminal(const PositionHistory& history) const;
   void CompleteMaterialization(Worker& worker, MaterializationTicketId ticket,
                                ExpansionPayload payload, bool store_payload);
+  void CancelMaterialization(MaterializationTicketId ticket);
   void PublishEvaluation(Worker& worker, Request& request);
-  void OutputInfo(bool final);
-  std::vector<Move> BuildPv() const;
+  ThinkingInfo BuildInfo(bool final) const;
+  std::vector<Move> BuildPv(std::optional<NodeSnapshot> root) const;
   Move FallbackMove() const;
   void RequestStop(StopMode mode);
 

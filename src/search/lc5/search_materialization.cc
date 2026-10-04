@@ -102,6 +102,10 @@ ExpansionPayload SearchRun::DetectTerminal(
 }
 
 void SearchRun::PrepareEvaluation(Worker& worker, Request request) {
+  if (stop_mode_.load() != StopMode::kRunning) {
+    CancelMaterialization(request.ticket);
+    return;
+  }
   request.payload = DetectTerminal(request.history);
   if (request.payload.terminal != TerminalKind::kNonTerminal) {
     CompleteMaterialization(worker, request.ticket, std::move(request.payload),
@@ -139,6 +143,14 @@ bool SearchRun::EvaluationStarved() const {
 }
 
 void SearchRun::SubmitJobs(Worker& worker) {
+  auto cancel_pending = [&] {
+    for (auto* requests : {&worker.loads, &worker.evals}) {
+      for (const auto& request : *requests)
+        CancelMaterialization(request.ticket);
+      requests->clear();
+    }
+  };
+  if (stop_mode_.load() != StopMode::kRunning) cancel_pending();
   // Fresh requests have no legal moves yet. Prepare them outside any slot lock.
   // Only process the current queue, since preparation appends evaluated misses.
   const size_t count = worker.evals.size();
@@ -155,6 +167,7 @@ void SearchRun::SubmitJobs(Worker& worker) {
   // exceeding the backend limit. Item credits bound all I/O, including stores.
   const size_t job_size = (batch_size + 3) / 4;
   while (HasJobCredit(worker)) {
+    if (stop_mode_.load() != StopMode::kRunning) cancel_pending();
     const size_t limit =
         std::min(job_size, 2 * batch_size - worker.outstanding_items);
     auto job = std::make_unique<Job>();
@@ -195,7 +208,12 @@ void SearchRun::SubmitJobs(Worker& worker) {
 void SearchRun::ConsumeJob(Worker& worker, std::unique_ptr<Job> job) {
   assert(worker.outstanding > 0);
   if (job->kind == JobKind::kEval) {
-    for (auto& request : job->requests) PublishEvaluation(worker, request);
+    for (auto& request : job->requests) {
+      if (request.evaluation == Request::Evaluation::kValid)
+        PublishEvaluation(worker, request);
+      else
+        CancelMaterialization(request.ticket);
+    }
   } else if (job->kind == JobKind::kLoad) {
     for (auto& request : job->requests) {
       if (request.loaded) {
@@ -203,9 +221,11 @@ void SearchRun::ConsumeJob(Worker& worker, std::unique_ptr<Job> job) {
         metrics_.graph_nodes_rehydrated.fetch_add(1);
         CompleteMaterialization(worker, request.ticket,
                                 std::move(*request.loaded), false);
-      } else {
+      } else if (request.load_completed) {
         metrics_.node_store_misses.fetch_add(1);
         PrepareEvaluation(worker, std::move(request));
+      } else {
+        CancelMaterialization(request.ticket);
       }
     }
   }
@@ -221,12 +241,18 @@ void SearchRun::StoreWorker() {
   std::unique_ptr<Job> job;
   while (store_jobs_.Pop(&job)) {
     if (job->kind == JobKind::kLoad) {
+      if (stop_mode_.load() != StopMode::kRunning) {
+        ReturnJob(std::move(job));
+        continue;
+      }
       std::vector<NodeKey> keys;
       for (const auto& request : job->requests) keys.push_back(request.key);
       auto loaded = store_->LoadBatch(keys);
       assert(loaded.size() == job->requests.size());
-      for (size_t i = 0; i < loaded.size(); ++i)
+      for (size_t i = 0; i < loaded.size(); ++i) {
         job->requests[i].loaded = std::move(loaded[i]);
+        job->requests[i].load_completed = true;
+      }
       metrics_.node_store_load_batches.fetch_add(1);
       metrics_.node_store_load_keys.fetch_add(keys.size());
     } else {
@@ -247,6 +273,11 @@ void SearchRun::EvaluatorWorker() {
       if (!eval_jobs_.Pop(&first)) break;
       collecting_jobs_.fetch_add(1);
     }
+    if (stop_mode_.load() != StopMode::kRunning) {
+      collecting_jobs_.fetch_sub(1);
+      ReturnJob(std::move(first));
+      continue;
+    }
     auto computation = backend_->CreateComputation();
     std::vector<std::unique_ptr<Job>> jobs;
     const auto deadline =
@@ -258,6 +289,7 @@ void SearchRun::EvaluatorWorker() {
     bool timed_out = false;
     for (;;) {
       for (auto& request : job->requests) {
+        if (stop_mode_.load() != StopMode::kRunning) break;
         auto& payload = request.payload;
         if (computation->AddInput(
                 EvalPosition{.pos = request.history.GetPositions(),
@@ -266,12 +298,16 @@ void SearchRun::EvaluatorWorker() {
                               .d = &payload.leaf_d,
                               .m = &payload.leaf_m,
                               .p = payload.priors}) ==
-            BackendComputation::FETCHED_IMMEDIATELY)
+            BackendComputation::FETCHED_IMMEDIATELY) {
+          request.evaluation = Request::Evaluation::kValid;
           metrics_.cache_hits.fetch_add(1);
+        } else {
+          request.evaluation = Request::Evaluation::kQueued;
+        }
       }
       jobs.push_back(std::move(job));
       const auto used = computation->UsedBatchSize();
-      if (used >= target) break;
+      if (used >= target || stop_mode_.load() != StopMode::kRunning) break;
       // An overdue job may have waited behind ComputeBlocking. Always consume
       // already-ready jobs first; its deadline forbids an additional wait,
       // rather than fragmenting that accumulated backlog into single jobs.
@@ -303,11 +339,16 @@ void SearchRun::EvaluatorWorker() {
     // the increment handshake before PopUntil above is the enabling wake.
     collecting_jobs_.fetch_sub(jobs.size());
     const auto used = computation->UsedBatchSize();
+    bool authorized = false;
     if (used > 0) {
+      // The last gate shares stop's linearization point. A serial evaluator
+      // cannot authorize again until this computation has returned.
+      std::lock_guard lock(admission_mutex_);
+      authorized = stop_mode_.load() == StopMode::kRunning;
+    }
+    if (authorized) {
       if (used < target) {
-        if (stop_mode_.load() != StopMode::kRunning)
-          metrics_.partial_drain_flushes.fetch_add(1);
-        else if (timed_out)
+        if (timed_out)
           metrics_.partial_timeout_flushes.fetch_add(1);
         else
           metrics_.partial_starvation_flushes.fetch_add(1);
@@ -315,10 +356,25 @@ void SearchRun::EvaluatorWorker() {
       metrics_.evaluation_batches.fetch_add(1);
       metrics_.nn_evaluations.fetch_add(used);
       computation->ComputeBlocking();
+      for (auto& completed : jobs)
+        for (auto& request : completed->requests)
+          if (request.evaluation == Request::Evaluation::kQueued)
+            request.evaluation = Request::Evaluation::kValid;
     }
     computation.reset();
     for (auto& completed : jobs) ReturnJob(std::move(completed));
   }
+}
+
+void SearchRun::CancelMaterialization(MaterializationTicketId ticket_id) {
+  // Owner requests retire tickets even if suspension raced with stop. Visits
+  // cancel their own reservations; no waiter needs resuming on whole-run stop.
+  std::lock_guard lock(tickets_mutex_);
+  auto it = tickets_.find(ticket_id);
+  if (it == tickets_.end()) return;
+  graph_->CancelMaterialization(it->second.key, ticket_id);
+  ticket_by_key_.erase(it->second.key);
+  tickets_.erase(it);
 }
 
 void SearchRun::PublishEvaluation(Worker& worker, Request& request) {

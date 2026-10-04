@@ -161,7 +161,13 @@ The first visit at a missing key creates a materialization ticket and request;
 others attach as waiters. Suspension takes slot, ticket-registry, then graph-shard
 locks. If the node became expanded in the meantime, selection retries instead.
 A request copies history so its work can outlive the originating visit. Cancelling
-the ticket owner does not cancel the expansion or discard other waiters.
+a visit does not invalidate an authorized evaluation or completed store hit.
+On whole-run stop, abandoned owner requests retire their ticket and key mapping
+under `tickets_mutex_`, and `GameGraph::CancelMaterialization` conditionally erases
+only the matching materializing placeholder under one shard mutex. It cannot
+remove an expanded node or a replacement ticket. Owners cancel visit reservations
+separately; no waiter resume is needed for this whole-run cancellation. Owner
+request retirement also covers a suspension that was already starting at stop.
 
 Without a store, the request goes directly to worker-side `PrepareEvaluation`.
 `DetectTerminal` checks no legal moves, mating material, rule-50 and repetition,
@@ -183,6 +189,18 @@ this optional path with injected stores.
 
 Follow `SubmitJobs`, `EvaluatorWorker`, `StoreWorker`, then `ConsumeJob`.
 
+Worker-local loads/evaluations are cancelled after stop without preparation or
+submission, but persistence still submits. Queued store loads are skipped;
+in-flight loads may finish. `load_completed` distinguishes a completed miss from
+a cancelled load: a hit may publish after stop, but a returned miss cannot start
+an evaluation. Each evaluation request is explicitly invalid, queued, or valid.
+Immediate/cache results are valid immediately; queued results become valid only
+after successful authorized compute. Mixed jobs can therefore publish cache hits
+while cancelling abandoned outputs, never interpreting defaults as results.
+A computation is destroyed before its referenced jobs return to owner mailboxes,
+where completion consumption releases each job/item credit once. Collector counts
+also include any retained nonfitting first job until it returns or computes.
+
 Each worker has 16 whole-job credits and two minibatches of item credits, shared
 by loads, evaluations and persistence. A job contains at most a quarter minibatch
 rounded up. Persistence is submitted first, then loads, then evaluation. A pending
@@ -199,10 +217,15 @@ make total requests exceed the neural batch target; conservative whole-job
 fitting prevents queued NN work from exceeding it.
 
 A partial batch waits until its target, the first job's enqueue-time deadline,
-dependency starvation, or stop. It also flushes when the next whole job cannot
-fit conservatively; that job is retained for the next computation. Ready jobs
-are consumed before waiting. An
-immediate-only computation returns without waiting for neural work.
+dependency starvation, or stop. While running, it also flushes when the next whole
+job cannot fit conservatively; that job is retained for the next computation.
+Stop abandons unauthorized work instead of flushing another batch. Every
+nonempty computation passes a final gate under the admission mutex shared with
+`RequestStop`, then enters the backend without that mutex. Each serial evaluator
+can have at most one outstanding authorized computation at stop, already executing
+or about to enter the backend; there is no extra shutdown computation. Ready jobs
+are consumed before waiting while running. An immediate-only computation returns
+without waiting for neural work.
 `MaxBatchDelayMs=0` disables the timeout, not starvation flushing. With positive
 delay, starvation requires no producing worker and all outstanding jobs held
 by collectors; with zero delay, no producing worker suffices. `producing` is a
@@ -262,7 +285,7 @@ of a production eviction policy.
 
 ## 9. Report, stop and retain
 
-Return to `Controller`, `BuildPv`, `OutputInfo` and `RequestStop` in `search.cc`.
+Return to `Controller`, `BuildPv`, `BuildInfo` and `RequestStop` in `search.cc`.
 
 On each running iteration, the controller passes its `now` to
 `time_manager_.Evaluate(now)` outside search locks. `Decision::should_stop`
@@ -292,21 +315,34 @@ lowest raw-encoded legal move, not the highest prior. No legal move yields null.
 [`metrics.cc`](../src/search/lc5/metrics.cc) formats a subset. `ready_eval` counts
 queued jobs, not requests. Eviction accounting exists but has no production writer.
 
-Stop closes admission and asks owners to cancel remaining visits. Already-created
-expansion and persistence work still drains; blocking backend/store calls are
-not interrupted. Drain requires no visits, tickets or outstanding jobs, empty
-mailboxes, and worker acknowledgements covering their pending local requests.
-Then the controller joins visit workers, closes executor queues and joins I/O
-threads. `Wait` joins this controller.
+Stop closes admission atomically and promptly notifies the controller. Before any
+drain predicate, the controller captures a value-owned final info/PV and bestmove,
+using one root snapshot for score and the first PV move. It commits the response
+under the admission mutex, then outputs final info and bestmove. Only afterward
+does it synchronize wakeups with worker mailboxes and collectors. Final active
+and ready-eval counters are not forced to zero. With no completed root edge,
+including an unexpanded root, deterministic legal fallback does not wait for a
+bootstrap evaluation or protect any visit from cancellation.
+
+The controller's `stop_notified` guard requires this response/wakeup phase before
+drain exit, even if an external stop arrives after the phase check in the current
+iteration and workers finish draining immediately. The notification generation
+then ensures another iteration handles the stop rather than sleeping forever.
+Owners cancel remaining visits and abandoned requests; authorized late results
+and persistence still drain. Blocking backend/store calls are not interrupted.
+Drain requires no visits, tickets or outstanding jobs, empty mailboxes, and worker
+acknowledgements covering pending local requests. Then the controller joins visit
+workers, closes executor queues and joins I/O threads. `Wait` joins this controller;
+`Finished` and destruction likewise remain full drain/join barriers.
 
 A time decision requests this same stop path, not a hard response deadline:
-final bestmove can arrive after the policy deadline because drain must finish.
-Stop requests final info/bestmove; abort can override it until output commitment
-under the admission mutex. `Finished` is published after output. Queue/mailbox
+final bestmove does not wait for drain, but snapshot/output work and controller
+scheduling still take time. Abort can override stop until output commitment under
+the admission mutex; after commitment it cannot retract the response. Queue/mailbox
 mutex handshakes and the controller notification generation avoid lost wakeups;
 see [`search_internal.h`](../src/search/lc5/search_internal.h) for queue mechanics.
 No graph/slot/registry lock spans backend or store calls. The retained graph is
-available to the next run only after this drain.
+available to the next run only after full drain, not merely after bestmove.
 
 ## 10. Review tests and boundaries
 
@@ -325,10 +361,18 @@ Finish with the five test files:
   limit precedence, supplied clock origin and stop/next-check decisions using
   synthetic timestamps.
 
-`ExpectDrained` in the search tests checks visit accounting, absent tickets and
-reservations, and ordinary-run rejection/underflow counters. Rehydration tests
-use a fresh graph, not live-search eviction. Nonempty origin prefixes, history-key
-merging and live eviction are not comprehensively exercised here.
+`ExpectDrained` in the search tests checks visit accounting, both ticket maps,
+collector/in-flight counts, executor queues, owner-local work, job/item credits,
+mailboxes, graph reservations, and ordinary-run rejection/underflow counters.
+The engine-retention test also audits this state after `WaitSearch`, separately
+from the final response snapshot. Controlled barriers cover response during
+blocked backend/persistence calls, stopped store misses, queued backlogs with
+one/multiple evaluators, mixed immediate/queued abandonment during `AddInput`,
+and retained nonfitting jobs. Pre-start stop/abort ordering covers pre-commit
+suppression; committed responses cannot be retracted.
+Rehydration tests use a fresh graph, not live-search eviction. Nonempty origin
+prefixes, history-key merging and live eviction are not comprehensively exercised
+here.
 
 [`meson.build`](../meson.build) wires production sources under `lc5` and the four
 test targets under `gtest` plus `lc5`. The concrete selection and backup functions

@@ -96,6 +96,9 @@ class GameGraph {
   FindOrCreateResult FindOrCreateMaterializing(NodeKey key,
                                                MaterializationTicketId ticket);
 
+  // Erases only the matching materializing placeholder, never an expansion.
+  bool CancelMaterialization(NodeKey key, MaterializationTicketId ticket);
+
   // Transitions node to kExpanded and installs edges. Rejected if ticket
   // doesn't match.
   uint64_t InstallPayload(NodeKey key, MaterializationTicketId ticket,
