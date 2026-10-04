@@ -43,8 +43,8 @@ TEST(Lc5SettingsTest, ComputesBudgetFromActiveClock) {
   Settings settings(parser.GetOptionsDict());
   GoParams params{.wtime = 10200, .btime = 5200};
 
-  EXPECT_EQ(settings.GetTimeBudget(params, false), 1200);
-  EXPECT_EQ(settings.GetTimeBudget(params, true), 600);
+  EXPECT_EQ(settings.GetTimeBudget(params, false), 300);
+  EXPECT_EQ(settings.GetTimeBudget(params, true), 150);
 }
 
 TEST(Lc5SettingsTest, TimeBudgetOptionsAreConfigurable) {
@@ -64,10 +64,10 @@ TEST(Lc5SettingsTest, IncludesOnlyActiveSideIncrement) {
   Settings settings(parser.GetOptionsDict());
   GoParams params{.wtime = 10200, .btime = 5200, .winc = 100, .binc = 200};
 
-  EXPECT_EQ(settings.GetTimeBudget(params, false), 1288);
-  EXPECT_EQ(settings.GetTimeBudget(params, true), 776);
+  EXPECT_EQ(settings.GetTimeBudget(params, false), 397);
+  EXPECT_EQ(settings.GetTimeBudget(params, true), 344);
   params.winc = -100;
-  EXPECT_EQ(settings.GetTimeBudget(params, false), 1200);
+  EXPECT_EQ(settings.GetTimeBudget(params, false), 300);
 }
 
 TEST(Lc5SettingsTest, HonorsShorterMovesToGoHorizon) {
@@ -81,7 +81,7 @@ TEST(Lc5SettingsTest, HonorsShorterMovesToGoHorizon) {
   EXPECT_EQ(settings.GetTimeBudget(params, false), 4000);
   for (int moves : {0, -1, 100}) {
     params.movestogo = moves;
-    EXPECT_EQ(settings.GetTimeBudget(params, false), 568);
+    EXPECT_EQ(settings.GetTimeBudget(params, false), 217);
   }
 }
 

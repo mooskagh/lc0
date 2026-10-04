@@ -53,7 +53,7 @@ void Settings::Populate(OptionsParser* options) {
       "reduction";
   options->Add<FloatOption>(kFpuValue, -100.0f, 100.0f) = 0.33f;
   options->Add<IntOption>(kMoveOverhead, 0, 100000000) = 200;
-  options->Add<FloatOption>(kAlphazeroTimePct, 0.0f, 100.0f) = 12.0f;
+  options->Add<FloatOption>(kAlphazeroTimePct, 0.0f, 100.0f) = 3.0f;
 }
 
 Settings::Settings(const OptionsDict& options)
