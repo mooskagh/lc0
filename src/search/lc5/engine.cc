@@ -61,7 +61,6 @@ void Lc5Engine::StartSearch(const GoParams& params) {
   Settings settings(*options_);
   root_key_ = MakeNodeKey(*root_history_, settings.history_key_length());
   const auto resolved = settings.Resolve(backend_->GetAttributes());
-  const bool clock_was_missing = !clock_start_.has_value();
   const auto start = clock_start_.value_or(std::chrono::steady_clock::now());
   clock_start_.reset();
 
@@ -71,29 +70,10 @@ void Lc5Engine::StartSearch(const GoParams& params) {
         settings.GetTimeBudget(params, root_history_->Last().IsBlackToMove());
   }
 
-  if (clock_was_missing) {
-    std::vector<ThinkingInfo> infos{{
-        .comment = "lc5 StartClock was not called; using StartSearch time"}};
-    uci_responder_->OutputThinkingInfo(&infos);
-  }
-
-  std::vector<std::string> ignored;
-  if (params.depth) ignored.push_back("depth");
-  if (params.mate) ignored.push_back("mate");
-  if (!params.searchmoves.empty()) ignored.push_back("searchmoves");
-  if (!ignored.empty()) {
-    std::ostringstream warning;
-    warning << "lc5 ignored unsupported go fields:";
-    for (const auto& field : ignored) warning << ' ' << field;
-    std::vector<ThinkingInfo> infos{{.comment = warning.str()}};
-    uci_responder_->OutputThinkingInfo(&infos);
-  }
-
-  VisitOrigin root{.key = root_key_,
-                   .history = *root_history_,
-                   .backup_prefix = {}};
-  run_ = std::make_unique<SearchRun>(&graph_, nullptr, backend_,
-                                     uci_responder_, resolved, std::move(root),
+  VisitOrigin root{
+      .key = root_key_, .history = *root_history_, .backup_prefix = {}};
+  run_ = std::make_unique<SearchRun>(&graph_, nullptr, backend_, uci_responder_,
+                                     resolved, std::move(root),
                                      effective_params, start);
   run_->Start();
 }
