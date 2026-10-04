@@ -91,6 +91,8 @@ class GameGraph {
   uint64_t NextGeneration();
 
   std::array<GraphShard, kShardCount> shards_;
+  // Membership changes update this counter while holding the affected shard lock.
+  std::atomic<size_t> size_{0};
   std::atomic<uint64_t> next_generation_{1};
   std::atomic<uint64_t> access_epoch_{1};
 };

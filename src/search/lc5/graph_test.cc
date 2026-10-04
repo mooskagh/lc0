@@ -38,6 +38,131 @@ TEST(Lc5ValueTest, PerspectiveAndSumsAreExact) {
   EXPECT_FLOAT_EQ(stats.M(), 4.0f);
 }
 
+TEST(Lc5GraphTest, SizeCountsOnlyNewNodes) {
+  GameGraph graph;
+  EXPECT_EQ(graph.Size(), 0u);
+  EXPECT_TRUE(graph.FindOrCreateMaterializing(NodeKey{1}, 7).created);
+  EXPECT_EQ(graph.Size(), 1u);
+  EXPECT_FALSE(graph.FindOrCreateMaterializing(NodeKey{1}, 8).created);
+  EXPECT_EQ(graph.Size(), 1u);
+  EXPECT_TRUE(graph.FindOrCreateMaterializing(NodeKey{2}, 9).created);
+  EXPECT_EQ(graph.Size(), 2u);
+
+  ExpansionPayload payload{.moves = {M(kFileA, kFileA)}, .priors = {1.0f}};
+  graph.InstallPayload(NodeKey{1}, 8, payload);
+  EXPECT_EQ(graph.SnapshotNode(NodeKey{1})->lifecycle,
+            NodeLifecycle::kMaterializing);
+  EXPECT_EQ(graph.Size(), 2u);
+  graph.InstallPayload(NodeKey{1}, 7, payload);
+  EXPECT_EQ(graph.SnapshotNode(NodeKey{1})->lifecycle,
+            NodeLifecycle::kExpanded);
+  EXPECT_EQ(graph.Size(), 2u);
+  graph.InstallPayload(NodeKey{1}, 7, payload);
+  EXPECT_EQ(graph.Size(), 2u);
+  EXPECT_FALSE(graph.FindOrCreateMaterializing(NodeKey{1}, 10).created);
+  EXPECT_EQ(graph.Size(), 2u);
+}
+
+TEST(Lc5GraphTest, SizeCountsPayloadInsertionAndSuccessfulErasure) {
+  GameGraph graph;
+  NodeKey key{123};
+  ExpansionPayload payload{.moves = {M(kFileA, kFileA)}, .priors = {1.0f}};
+  const auto generation = graph.InstallPayload(key, 7, payload);
+  EXPECT_EQ(graph.Size(), 1u);
+  EXPECT_EQ(graph.InstallPayload(key, 7, payload), generation);
+  EXPECT_EQ(graph.Size(), 1u);
+  EXPECT_FALSE(graph.Erase(NodeKey{456}));
+  EXPECT_EQ(graph.Size(), 1u);
+  EXPECT_TRUE(graph.Erase(key));
+  EXPECT_EQ(graph.Size(), 0u);
+  EXPECT_FALSE(graph.Erase(key));
+  EXPECT_EQ(graph.Size(), 0u);
+  EXPECT_NE(graph.InstallPayload(key, 8, payload), generation);
+  EXPECT_EQ(graph.Size(), 1u);
+  EXPECT_TRUE(graph.FindOrCreateMaterializing(NodeKey{456}, 9).created);
+  EXPECT_EQ(graph.Size(), 2u);
+  EXPECT_TRUE(graph.Erase(NodeKey{456}));
+  EXPECT_EQ(graph.Size(), 1u);
+}
+
+TEST(Lc5GraphTest, ClearResetsSizeAndAllowsReuse) {
+  GameGraph graph;
+  graph.Clear();
+  EXPECT_EQ(graph.Size(), 0u);
+  ExpansionPayload payload{.moves = {M(kFileA, kFileA)}, .priors = {1.0f}};
+  // Populate multiple shards with both materializing and expanded nodes.
+  for (uint64_t hash = 0; hash < 32; ++hash) {
+    if (hash % 2 == 0) {
+      graph.FindOrCreateMaterializing(NodeKey{hash}, hash + 1);
+    } else {
+      graph.InstallPayload(NodeKey{hash}, hash + 1, payload);
+    }
+  }
+  EXPECT_EQ(graph.Size(), 32u);
+  EXPECT_EQ(graph.Size(), graph.SnapshotAllForTesting().size());
+  graph.Clear();
+  EXPECT_EQ(graph.Size(), 0u);
+  EXPECT_TRUE(graph.SnapshotAllForTesting().empty());
+  graph.Clear();
+  EXPECT_EQ(graph.Size(), 0u);
+  EXPECT_TRUE(graph.FindOrCreateMaterializing(NodeKey{0}, 33).created);
+  EXPECT_EQ(graph.Size(), 1u);
+  graph.InstallPayload(NodeKey{1}, 34, payload);
+  EXPECT_EQ(graph.Size(), 2u);
+  EXPECT_TRUE(graph.Erase(NodeKey{0}));
+  EXPECT_EQ(graph.Size(), 1u);
+  graph.Clear();
+  EXPECT_EQ(graph.Size(), 0u);
+}
+
+TEST(Lc5GraphTest, LateMaterializationPreservesPublishedEdges) {
+  GameGraph graph;
+  const NodeKey key{123};
+  const auto created = graph.FindOrCreateMaterializing(key, 7);
+  ASSERT_TRUE(created.created);
+  const auto stale_snapshot = graph.SnapshotNode(key);
+  ASSERT_TRUE(stale_snapshot);
+  ASSERT_EQ(stale_snapshot->lifecycle, NodeLifecycle::kMaterializing);
+
+  const Move move = M(kFileA, kFileA);
+  const ExpansionPayload payload{.moves = {move}, .priors = {1.0f}};
+  graph.InstallPayload(key, 7, payload);
+  ASSERT_EQ(graph.SelectAndReserve(key, created.generation, TestSettings()).status,
+            SelectStatus::kSelected);
+  ASSERT_EQ(graph.CompleteEdge(key, created.generation, move,
+                               SearchValue{0.4f, 0.2f, 2.0f}),
+            UpdateResult::kApplied);
+  ASSERT_EQ(graph.UpdateNodeValue(key, created.generation,
+                                  SearchValue{0.4f, 0.2f, 2.0f}),
+            UpdateResult::kApplied);
+  ASSERT_EQ(graph.SelectAndReserve(key, created.generation, TestSettings()).status,
+            SelectStatus::kSelected);
+
+  // A caller with the old materializing snapshot must observe publication,
+  // not create a second materialization. Even a late payload cannot reset it.
+  const auto late = graph.FindOrCreateMaterializing(key, 8);
+  EXPECT_FALSE(late.created);
+  EXPECT_EQ(late.lifecycle, NodeLifecycle::kExpanded);
+  EXPECT_EQ(late.ticket, 0u);
+  EXPECT_EQ(late.generation, created.generation);
+  const ExpansionPayload replacement{.moves = {M(kFileB, kFileB)},
+                                     .priors = {1.0f}};
+  for (const auto ticket : {7u, 8u}) {
+    EXPECT_EQ(graph.InstallPayload(key, ticket, replacement), created.generation);
+    const auto node = graph.SnapshotNode(key);
+    ASSERT_TRUE(node);
+    ASSERT_EQ(node->edges.size(), 1u);
+    EXPECT_EQ(node->edges[0].move, move);
+    EXPECT_FLOAT_EQ(node->edges[0].prior, 1.0f);
+    EXPECT_EQ(node->edges[0].visits, 1u);
+    EXPECT_EQ(node->edges[0].in_flight, 1u);
+    EXPECT_FLOAT_EQ(node->edges[0].Q(), 0.4f);
+    EXPECT_EQ(node->value.visits, 1u);
+  }
+  EXPECT_EQ(graph.CancelEdge(key, created.generation, move),
+            UpdateResult::kApplied);
+}
+
 TEST(Lc5GraphTest, GenerationChecksProtectRecreatedNodes) {
   GameGraph graph;
   NodeKey key{123};

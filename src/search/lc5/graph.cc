@@ -30,6 +30,7 @@ FindOrCreateResult GameGraph::FindOrCreateMaterializing(
   state.last_access_epoch = access_epoch_.fetch_add(1);
   const uint64_t generation = state.generation;
   shard.nodes.emplace(key, std::move(state));
+  size_.fetch_add(1, std::memory_order_relaxed);
   return {generation, true, NodeLifecycle::kMaterializing, ticket};
 }
 
@@ -46,10 +47,12 @@ uint64_t GameGraph::InstallPayload(NodeKey key, MaterializationTicketId ticket,
     state.generation = NextGeneration();
     state.ticket = ticket;
     it = shard.nodes.emplace(key, std::move(state)).first;
+    size_.fetch_add(1, std::memory_order_relaxed);
   }
   NodeState& node = it->second;
-  // A newer ticket owns a recreated materializing node. Do not overwrite it.
-  if (node.lifecycle == NodeLifecycle::kMaterializing && node.ticket != ticket) {
+  // Publication is one-shot for each generation. Late or duplicate completions
+  // must not reset expanded edges, including their reservations and statistics.
+  if (node.lifecycle == NodeLifecycle::kExpanded || node.ticket != ticket) {
     return node.generation;
   }
   node.lifecycle = NodeLifecycle::kExpanded;
@@ -183,23 +186,23 @@ std::optional<NodeSnapshot> GameGraph::SnapshotNode(NodeKey key) const {
 bool GameGraph::Erase(NodeKey key) {
   auto& shard = shards_[ShardIndex(key)];
   std::lock_guard lock(shard.mutex);
-  return shard.nodes.erase(key) != 0;
+  if (shard.nodes.erase(key) == 0) return false;
+  size_.fetch_sub(1, std::memory_order_relaxed);
+  return true;
 }
 
 void GameGraph::Clear() {
   for (auto& shard : shards_) {
     std::lock_guard lock(shard.mutex);
+    const size_t removed = shard.nodes.size();
     shard.nodes.clear();
+    // Preserve concurrent insertions into shards that have already been cleared.
+    size_.fetch_sub(removed, std::memory_order_relaxed);
   }
 }
 
 size_t GameGraph::Size() const {
-  size_t size = 0;
-  for (const auto& shard : shards_) {
-    std::lock_guard lock(shard.mutex);
-    size += shard.nodes.size();
-  }
-  return size;
+  return size_.load(std::memory_order_relaxed);
 }
 
 std::vector<std::pair<NodeKey, NodeSnapshot>>

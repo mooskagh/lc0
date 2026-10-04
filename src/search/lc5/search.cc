@@ -1,6 +1,7 @@
 #include "search/lc5/search.h"
 
 #include <algorithm>
+#include <cassert>
 #include <cmath>
 #include <sstream>
 #include <unordered_set>
@@ -214,49 +215,43 @@ void SearchRun::AdvanceVisit(VisitId id) {
 
 bool SearchRun::SuspendForMaterialization(VisitPool::Slot& slot) {
   Visit& visit = slot.visit;
-  MaterializationTicketId ticket_id = 0;
-  bool owner = false;
-  {
-    std::lock_guard tickets_lock(tickets_mutex_);
-    auto existing = ticket_by_key_.find(visit.current_key);
-    if (existing != ticket_by_key_.end()) {
-      ticket_id = existing->second;
-      auto ticket = tickets_.find(ticket_id);
-      if (ticket == tickets_.end()) return false;
-      ticket->second.waiters.push_back(visit.id);
-      metrics_.ticket_waiters.fetch_add(1);
-      RaiseHighWater(metrics_.maximum_waiters_per_ticket,
-                     static_cast<uint64_t>(ticket->second.waiters.size()));
-    } else {
-      ticket_id = next_ticket_.fetch_add(1);
-      Ticket ticket{.id = ticket_id,
-                    .key = visit.current_key,
-                    .owner = visit.id,
-                    .waiters = {},
-                    .owner_history = visit.history,
-                    .created_at = std::chrono::steady_clock::now()};
-      tickets_.emplace(ticket_id, std::move(ticket));
-      ticket_by_key_.emplace(visit.current_key, ticket_id);
-      owner = true;
-      metrics_.tickets_created.fetch_add(1);
-    }
-  }
-  FindOrCreateResult graph_result =
+  // Serialize graph reconciliation and waiter registration with publication.
+  // The caller holds slot.mutex; completion releases tickets_mutex_ before wakeup.
+  std::lock_guard tickets_lock(tickets_mutex_);
+  auto existing = ticket_by_key_.find(visit.current_key);
+  const bool owner = existing == ticket_by_key_.end();
+  const MaterializationTicketId ticket_id =
+      owner ? next_ticket_.fetch_add(1) : existing->second;
+  const FindOrCreateResult graph_result =
       graph_->FindOrCreateMaterializing(visit.current_key, ticket_id);
   if (graph_result.created) metrics_.graph_nodes_created.fetch_add(1);
   if (graph_result.lifecycle == NodeLifecycle::kExpanded) {
-    // Expansion won the race. Remove only the unused ticket we just created.
-    if (owner) {
-      std::lock_guard tickets_lock(tickets_mutex_);
-      tickets_.erase(ticket_id);
-      ticket_by_key_.erase(visit.current_key);
-    }
+    // The selection snapshot predates publication. No ticket or store request
+    // is needed; select again from the published graph.
     visit.state = VisitState::kReadySelect;
     ready_visits_.Push(visit.id);
     return false;
   }
+  assert(graph_result.ticket == ticket_id);
+  if (owner) {
+    Ticket ticket{.id = ticket_id,
+                  .key = visit.current_key,
+                  .owner = visit.id,
+                  .waiters = {},
+                  .owner_history = visit.history,
+                  .created_at = std::chrono::steady_clock::now()};
+    tickets_.emplace(ticket_id, std::move(ticket));
+    ticket_by_key_.emplace(visit.current_key, ticket_id);
+    metrics_.tickets_created.fetch_add(1);
+  } else {
+    auto& ticket = tickets_.at(ticket_id);
+    ticket.waiters.push_back(visit.id);
+    metrics_.ticket_waiters.fetch_add(1);
+    RaiseHighWater(metrics_.maximum_waiters_per_ticket,
+                   static_cast<uint64_t>(ticket.waiters.size()));
+  }
   visit.path.back().generation = graph_result.generation;
-  visit.waiting_ticket = graph_result.ticket;
+  visit.waiting_ticket = ticket_id;
   visit.state = VisitState::kWaitingMaterialization;
   metrics_.visits_suspended.fetch_add(1);
   if (owner) store_requests_.Push({ticket_id, visit.current_key});
@@ -424,15 +419,17 @@ void SearchRun::CompleteMaterialization(MaterializationTicketId ticket_id,
                                         ExpansionPayload payload,
                                         bool store_payload) {
   Ticket ticket;
+  uint64_t generation;
   {
     std::lock_guard lock(tickets_mutex_);
     auto it = tickets_.find(ticket_id);
     if (it == tickets_.end()) return;
+    // Keep the ticket discoverable until the expanded graph is published.
+    generation = graph_->InstallPayload(it->second.key, ticket_id, payload);
     ticket = std::move(it->second);
     tickets_.erase(it);
     ticket_by_key_.erase(ticket.key);
   }
-  const uint64_t generation = graph_->InstallPayload(ticket.key, ticket.id, payload);
   RaiseHighWater(metrics_.graph_size_high_water,
                  static_cast<uint64_t>(graph_->Size()));
   auto wake = [&](VisitId id, bool owner) {
