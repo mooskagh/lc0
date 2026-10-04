@@ -2,6 +2,8 @@ ifndef EXE
 	EXE = $(CURDIR)/lc0
 endif
 
+SEARCH ?= lc5
+
 BUILD_FLAGS =
 ifdef EVALFILE
 	BUILD_FLAGS += -Dembed=true
