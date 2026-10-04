@@ -66,6 +66,12 @@ struct SelectResult {
 
 enum class UpdateResult { kApplied, kMissing, kStale, kEdgeMissing, kUnderflow };
 
+struct BackupResult {
+  UpdateResult node;
+  // kApplied when no edge completion was requested.
+  UpdateResult edge;
+};
+
 class GameGraph {
  public:
   static constexpr size_t kShardCount = 1024;
@@ -76,6 +82,9 @@ class GameGraph {
                           const ExpansionPayload& payload);
   SelectResult SelectAndReserve(NodeKey key, uint64_t expected_generation,
                                 const Settings::Resolved& settings);
+  // Commits the node value even if the optional edge completion fails.
+  BackupResult BackupNode(NodeKey key, uint64_t expected_generation,
+                          SearchValue value, std::optional<Move> move);
   UpdateResult UpdateNodeValue(NodeKey key, uint64_t expected_generation,
                                SearchValue value);
   UpdateResult CompleteEdge(NodeKey key, uint64_t expected_generation,

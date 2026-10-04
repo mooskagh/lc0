@@ -263,11 +263,6 @@ ExpansionPayload SearchRun::DetectTerminal(
   ExpansionPayload payload;
   const Position& position = history.Last();
   const auto legal = position.GetBoard().GenerateLegalMoves();
-  const GameResult result = history.ComputeGameResult();
-  if (result == GameResult::UNDECIDED) {
-    payload.moves.assign(legal.begin(), legal.end());
-    return payload;
-  }
   if (legal.empty()) {
     payload.terminal = position.GetBoard().IsUnderCheck()
                            ? TerminalKind::kCheckmate
@@ -278,15 +273,16 @@ ExpansionPayload SearchRun::DetectTerminal(
     payload.terminal = TerminalKind::kRule50;
   } else if (position.GetRepetitions() >= 2) {
     payload.terminal = TerminalKind::kRepetition;
+  } else {
+    payload.moves.assign(legal.begin(), legal.end());
+    return payload;
   }
-  if (result == GameResult::DRAW) {
+  if (payload.terminal == TerminalKind::kCheckmate) {
+    payload.leaf_q = -1.0f;
+    payload.leaf_d = 0.0f;
+  } else {
     payload.leaf_q = 0.0f;
     payload.leaf_d = 1.0f;
-  } else {
-    const bool side_to_move_won =
-        (result == GameResult::WHITE_WON) != position.IsBlackToMove();
-    payload.leaf_q = side_to_move_won ? 1.0f : -1.0f;
-    payload.leaf_d = 0.0f;
   }
   payload.leaf_m = 0.0f;
   return payload;
@@ -299,20 +295,23 @@ void SearchRun::StoreWorker() {
     StoreRequest next;
     while (requests.size() < 256 && store_requests_.TryPop(&next))
       requests.push_back(next);
-    std::vector<NodeKey> keys;
-    keys.reserve(requests.size());
-    for (const auto& request : requests) keys.push_back(request.key);
-    metrics_.node_store_load_batches.fetch_add(1);
-    metrics_.node_store_load_keys.fetch_add(keys.size());
-    auto loaded = store_->LoadBatch(keys);
+    std::vector<std::optional<ExpansionPayload>> loaded;
+    if (store_) {
+      std::vector<NodeKey> keys;
+      keys.reserve(requests.size());
+      for (const auto& request : requests) keys.push_back(request.key);
+      metrics_.node_store_load_batches.fetch_add(1);
+      metrics_.node_store_load_keys.fetch_add(keys.size());
+      loaded = store_->LoadBatch(keys);
+    }
     for (size_t i = 0; i < requests.size(); ++i) {
-      if (loaded[i]) {
+      if (store_ && loaded[i]) {
         metrics_.node_store_hits.fetch_add(1);
         metrics_.graph_nodes_rehydrated.fetch_add(1);
         CompleteMaterialization(requests[i].ticket, std::move(*loaded[i]), false);
         continue;
       }
-      metrics_.node_store_misses.fetch_add(1);
+      if (store_) metrics_.node_store_misses.fetch_add(1);
       PositionHistory history;
       {
         std::lock_guard lock(tickets_mutex_);
@@ -458,7 +457,7 @@ void SearchRun::CompleteMaterialization(MaterializationTicketId ticket_id,
   wake(ticket.owner, true);
   for (VisitId waiter : ticket.waiters) wake(waiter, false);
   // Store only immutable payload, after Visits have been made runnable.
-  if (store_payload) {
+  if (store_ && store_payload) {
     StoredExpansion entry{ticket.key, payload};
     store_->StoreBatch(std::span<const StoredExpansion>(&entry, 1));
     metrics_.node_store_store_batches.fetch_add(1);
@@ -472,24 +471,22 @@ void SearchRun::Backup(VisitPool::Slot& slot) {
   SearchValue value = visit.result;
   for (size_t i = visit.path.size(); i-- > 0;) {
     const PathStep& step = visit.path[i];
-    UpdateResult node_result =
-        graph_->UpdateNodeValue(step.key, step.generation, value);
-    if (node_result == UpdateResult::kStale ||
-        node_result == UpdateResult::kMissing)
+    const auto move =
+        i + 1 < visit.path.size() ? step.selected_move : std::nullopt;
+    const BackupResult result =
+        graph_->BackupNode(step.key, step.generation, value, move);
+    if (result.node == UpdateResult::kStale ||
+        result.node == UpdateResult::kMissing)
       metrics_.stale_generation_node_updates.fetch_add(1);
     metrics_.backup_node_steps.fetch_add(1);
-    if (i == 0) break;
-    SearchValue parent_value = value.Parent();
-    const PathStep& parent = visit.path[i - 1];
-    if (parent.selected_move) {
-      UpdateResult edge_result = graph_->CompleteEdge(
-          parent.key, parent.generation, *parent.selected_move, parent_value);
-      if (edge_result == UpdateResult::kUnderflow)
+    if (move) {
+      if (result.edge == UpdateResult::kUnderflow)
         metrics_.invariant_underflow_prevented.fetch_add(1);
-      else if (edge_result != UpdateResult::kApplied)
+      else if (result.edge != UpdateResult::kApplied)
         metrics_.stale_generation_edge_updates.fetch_add(1);
     }
-    value = parent_value;
+    if (i == 0) break;
+    value = value.Parent();
   }
   RaiseHighWater(metrics_.max_depth, static_cast<uint64_t>(visit.path.size()));
   FinishVisit(slot, true);

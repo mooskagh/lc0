@@ -262,6 +262,102 @@ TEST(Lc5GraphTest, GenerationChecksProtectRecreatedNodes) {
             UpdateResult::kApplied);
 }
 
+TEST(Lc5GraphTest, BackupCommitsNodeAndOptionalEdgeSums) {
+  GameGraph graph;
+  NodeKey key{456};
+  Move move = M(kFileA, kFileA);
+  auto created = graph.FindOrCreateMaterializing(key, 1);
+  graph.InstallPayload(key, 1, {.moves = {move}, .priors = {1.0f}});
+  auto result = graph.BackupNode(key, created.generation,
+                                 {0.25f, 0.5f, 3.0f}, std::nullopt);
+  EXPECT_EQ(result.node, UpdateResult::kApplied);
+  EXPECT_EQ(result.edge, UpdateResult::kApplied);
+  auto node = graph.SnapshotNode(key);
+  ASSERT_TRUE(node);
+  EXPECT_EQ(node->value.visits, 1u);
+  EXPECT_DOUBLE_EQ(node->value.q_sum, 0.25);
+  EXPECT_DOUBLE_EQ(node->value.d_sum, 0.5);
+  EXPECT_DOUBLE_EQ(node->value.m_sum, 3.0);
+  EXPECT_EQ(node->edges[0].visits, 0u);
+  ASSERT_EQ(graph.SelectAndReserve(key, created.generation, TestSettings()).status,
+            SelectStatus::kSelected);
+  result = graph.BackupNode(key, created.generation, {-0.5f, 0.25f, 4.0f}, move);
+  EXPECT_EQ(result.node, UpdateResult::kApplied);
+  EXPECT_EQ(result.edge, UpdateResult::kApplied);
+  node = graph.SnapshotNode(key);
+  ASSERT_TRUE(node);
+  EXPECT_EQ(node->value.visits, 2u);
+  EXPECT_DOUBLE_EQ(node->value.q_sum, -0.25);
+  EXPECT_DOUBLE_EQ(node->value.d_sum, 0.75);
+  EXPECT_DOUBLE_EQ(node->value.m_sum, 7.0);
+  EXPECT_EQ(node->edges[0].visits, 1u);
+  EXPECT_EQ(node->edges[0].in_flight, 0u);
+  EXPECT_DOUBLE_EQ(node->edges[0].q_sum, -0.5);
+  EXPECT_DOUBLE_EQ(node->edges[0].d_sum, 0.25);
+  EXPECT_DOUBLE_EQ(node->edges[0].m_sum, 4.0);
+}
+
+TEST(Lc5GraphTest, BackupRejectsMissingAndStaleGenerations) {
+  GameGraph graph;
+  NodeKey key{456};
+  Move move = M(kFileA, kFileA);
+  auto first = graph.FindOrCreateMaterializing(key, 1);
+  ASSERT_TRUE(graph.Erase(key));
+  auto result = graph.BackupNode(key, first.generation, {0.25f, 0.5f, 3.0f}, move);
+  EXPECT_EQ(result.node, UpdateResult::kMissing);
+  EXPECT_EQ(result.edge, UpdateResult::kMissing);
+  EXPECT_FALSE(graph.SnapshotNode(key));
+  auto second = graph.FindOrCreateMaterializing(key, 2);
+  ASSERT_NE(first.generation, second.generation);
+  graph.InstallPayload(key, 2, {.moves = {move}, .priors = {1.0f}});
+  ASSERT_EQ(graph.SelectAndReserve(key, second.generation, TestSettings()).status,
+            SelectStatus::kSelected);
+  result = graph.BackupNode(key, first.generation, {0.25f, 0.5f, 3.0f}, move);
+  EXPECT_EQ(result.node, UpdateResult::kStale);
+  EXPECT_EQ(result.edge, UpdateResult::kStale);
+  result = graph.BackupNode(key, first.generation, {}, std::nullopt);
+  EXPECT_EQ(result.node, UpdateResult::kStale);
+  EXPECT_EQ(result.edge, UpdateResult::kApplied);
+  auto node = graph.SnapshotNode(key);
+  ASSERT_TRUE(node);
+  EXPECT_EQ(node->value.visits, 0u);
+  EXPECT_DOUBLE_EQ(node->value.q_sum, 0.0);
+  EXPECT_DOUBLE_EQ(node->value.d_sum, 0.0);
+  EXPECT_DOUBLE_EQ(node->value.m_sum, 0.0);
+  EXPECT_EQ(node->edges[0].visits, 0u);
+  EXPECT_EQ(node->edges[0].in_flight, 1u);
+  EXPECT_DOUBLE_EQ(node->edges[0].q_sum, 0.0);
+  EXPECT_DOUBLE_EQ(node->edges[0].d_sum, 0.0);
+  EXPECT_DOUBLE_EQ(node->edges[0].m_sum, 0.0);
+}
+
+TEST(Lc5GraphTest, BackupCommitsNodeDespiteEdgeFailure) {
+  GameGraph graph;
+  NodeKey key{456};
+  Move move = M(kFileA, kFileA);
+  auto created = graph.FindOrCreateMaterializing(key, 1);
+  graph.InstallPayload(key, 1, {.moves = {move}, .priors = {1.0f}});
+  auto result = graph.BackupNode(key, created.generation,
+                                 {0.25f, 0.5f, 3.0f}, move);
+  EXPECT_EQ(result.node, UpdateResult::kApplied);
+  EXPECT_EQ(result.edge, UpdateResult::kUnderflow);
+  result = graph.BackupNode(key, created.generation, {0.25f, 0.5f, 3.0f},
+                            M(kFileB, kFileB));
+  EXPECT_EQ(result.node, UpdateResult::kApplied);
+  EXPECT_EQ(result.edge, UpdateResult::kEdgeMissing);
+  auto node = graph.SnapshotNode(key);
+  ASSERT_TRUE(node);
+  EXPECT_EQ(node->value.visits, 2u);
+  EXPECT_DOUBLE_EQ(node->value.q_sum, 0.5);
+  EXPECT_DOUBLE_EQ(node->value.d_sum, 1.0);
+  EXPECT_DOUBLE_EQ(node->value.m_sum, 6.0);
+  EXPECT_EQ(node->edges[0].visits, 0u);
+  EXPECT_EQ(node->edges[0].in_flight, 0u);
+  EXPECT_DOUBLE_EQ(node->edges[0].q_sum, 0.0);
+  EXPECT_DOUBLE_EQ(node->edges[0].d_sum, 0.0);
+  EXPECT_DOUBLE_EQ(node->edges[0].m_sum, 0.0);
+}
+
 TEST(Lc5GraphTest, ReservationsAreExactAndCancellationDoesNotCommit) {
   GameGraph graph;
   NodeKey key{456};

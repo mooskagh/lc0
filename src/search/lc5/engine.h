@@ -6,7 +6,6 @@
 
 #include "chess/gamestate.h"
 #include "search/lc5/graph.h"
-#include "search/lc5/memory_node_store.h"
 #include "search/lc5/search.h"
 #include "search/search.h"
 
@@ -32,8 +31,8 @@ class Lc5Engine final : public SearchBase {
   void ClearGame();
 
   const OptionsDict* options_;
+  // Retained without eviction until ClearGame(); no payload store is needed.
   GameGraph graph_;
-  MemoryNodeStore store_;
   std::unique_ptr<SearchRun> run_;
   std::optional<Position> game_start_;
   std::optional<PositionHistory> root_history_;

@@ -128,6 +128,34 @@ SelectResult GameGraph::SelectAndReserve(NodeKey key,
           .generation = node.generation};
 }
 
+BackupResult GameGraph::BackupNode(NodeKey key, uint64_t expected_generation,
+                                   SearchValue value, std::optional<Move> move) {
+  auto& shard = shards_[ShardIndex(key)];
+  std::lock_guard lock(shard.mutex);
+  auto it = shard.nodes.find(key);
+  const auto rejected = [move](UpdateResult result) {
+    return BackupResult{result, move ? result : UpdateResult::kApplied};
+  };
+  if (it == shard.nodes.end()) return rejected(UpdateResult::kMissing);
+  auto& node = it->second;
+  if (node.generation != expected_generation)
+    return rejected(UpdateResult::kStale);
+  node.value.Add(value.q, value.d, value.m);
+  if (!move) return {UpdateResult::kApplied, UpdateResult::kApplied};
+  auto edge = std::find_if(node.edges.begin(), node.edges.end(),
+                           [move](const EdgeState& e) { return e.move == *move; });
+  if (edge == node.edges.end())
+    return {UpdateResult::kApplied, UpdateResult::kEdgeMissing};
+  if (edge->in_flight == 0)
+    return {UpdateResult::kApplied, UpdateResult::kUnderflow};
+  --edge->in_flight;
+  ++edge->visits;
+  edge->q_sum += value.q;
+  edge->d_sum += value.d;
+  edge->m_sum += value.m;
+  return {UpdateResult::kApplied, UpdateResult::kApplied};
+}
+
 UpdateResult GameGraph::UpdateNodeValue(NodeKey key,
                                         uint64_t expected_generation,
                                         SearchValue value) {

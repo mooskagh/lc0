@@ -18,10 +18,7 @@ void Lc5Engine::AbortAndWait() {
   run_->Wait();
 }
 
-void Lc5Engine::ClearGame() {
-  graph_.Clear();
-  store_.Clear();
-}
+void Lc5Engine::ClearGame() { graph_.Clear(); }
 
 void Lc5Engine::SetBackend(Backend* backend) {
   if (backend_ == backend) return;
@@ -98,7 +95,7 @@ void Lc5Engine::StartSearch(const GoParams& params) {
   VisitOrigin root{.key = root_key_,
                    .history = *root_history_,
                    .backup_prefix = {}};
-  run_ = std::make_unique<SearchRun>(&graph_, &store_, backend_,
+  run_ = std::make_unique<SearchRun>(&graph_, nullptr, backend_,
                                      uci_responder_, resolved, std::move(root),
                                      effective_params, start);
   run_->Start();

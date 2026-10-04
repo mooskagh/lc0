@@ -3,21 +3,30 @@
 Lc5 is an experimental, game-scoped DAG search selected with `lc0 lc5`.  It
 uses key/generation paths, exact per-edge in-flight reservations, a bounded
 epoch-tagged VisitPool, deduplicated materialization tickets, and a
-value-semantic NodeStore.  Mutable search statistics never leave the hot
+value-semantic optional NodeStore. Mutable search statistics never leave the hot
 graph; immutable expansion payloads may be rehydrated after a forced erase.
 
-The initial NodeStore is memory-backed. Store loads and neural evaluations run
-away from visit workers, and the ready-evaluation queue is intentionally
-allowed to contain more than one backend batch. A non-owner visit reaching a
+The default engine retains its GameGraph without eviction across same-game
+searches and position changes. `GameGraph::Erase` has no production callers;
+previously its memory-backed payload store was cleared with the graph, so no
+stored entry could serve a graph miss. The engine therefore passes no store to
+SearchRun. Explicit non-null stores still support batched loads and immutable
+payload persistence. Without a store, materialization uses the same queues,
+tickets, terminal detection, and neural evaluation path, but does not build
+store batches or record store metrics.
+
+Store loads and neural evaluations run away from visit workers, and the
+ready-evaluation queue is intentionally allowed to contain more than one
+backend batch. A non-owner visit reaching a
 pending node suspends and, after a nonterminal expansion, resumes selection
 below that node. Stop and abort cancel every surviving reservation and retain
 epoch checks on late completions.
 
 Supported v1 limits are `nodes`, `movetime`, `infinite`, and ponder as
 infinite. Fields belonging to the classic time manager are reported as
-ignored. The hot graph and payload store survive same-game `position` changes;
+ignored. The default engine's hot graph survives same-game `position` changes;
 `ucinewgame`, an incompatible starting position, and backend replacement clear
-them.
+it.
 
 ## Verification performed during implementation
 
