@@ -32,7 +32,7 @@
         "additional_lines_rgx": [],
         "event_name": "Fastchess Tournament",
         "site": "?",
-        "file": "/home/crem/.gemini/antigravity/brain/92fc1b30-b921-4f3b-be46-d85c6f87a170/fixed_nodes.pgn",
+        "file": "/home/crem/.gemini/antigravity/brain/92fc1b30-b921-4f3b-be46-d85c6f87a170/fastchess_game3.pgn",
         "notation": 0,
         "append_file": true,
         "track_nodes": false,
@@ -60,7 +60,7 @@
     },
     "config_name": "config.json",
     "output": 0,
-    "seed": 14365474871705852286,
+    "seed": 5215883088911603273,
     "variant": 0,
     "type": 0,
     "gauntlet_seeds": 1,
@@ -80,12 +80,12 @@
     "check_mate_pvs": false,
     "show_latency": false,
     "log": {
-        "file": "",
-        "level": 3,
+        "file": "/home/crem/.gemini/antigravity/brain/92fc1b30-b921-4f3b-be46-d85c6f87a170/fastchess_game3.log",
+        "level": 1,
         "append_file": true,
         "compress": false,
         "realtime": true,
-        "engine_coms": false
+        "engine_coms": true
     },
     "engines": [
         {
@@ -102,13 +102,13 @@
             ],
             "limit": {
                 "tc": {
-                    "increment": 0,
+                    "increment": 80,
                     "fixed_time": 0,
-                    "time": 0,
+                    "time": 8000,
                     "moves": 0,
                     "timemargin": 0
                 },
-                "nodes": 2000,
+                "nodes": 0,
                 "plies": 0
             },
             "variant": 0
@@ -127,13 +127,13 @@
             ],
             "limit": {
                 "tc": {
-                    "increment": 0,
+                    "increment": 80,
                     "fixed_time": 0,
-                    "time": 0,
+                    "time": 8000,
                     "moves": 0,
                     "timemargin": 0
                 },
-                "nodes": 2000,
+                "nodes": 0,
                 "plies": 0
             },
             "variant": 0

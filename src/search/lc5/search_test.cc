@@ -28,6 +28,10 @@ Settings::Resolved TestSettings(int threads = 1, int capacity = 4) {
           .fpu_value = 0.0f};
 }
 
+TimeManager::Config TestTimeManagement() {
+  return {.move_overhead_ms = 200, .alphazero_time_pct = 3.0f};
+}
+
 VisitOrigin Origin(std::string_view fen = ChessBoard::kStartposFen) {
   PositionHistory history;
   history.Reset(Position::FromFen(fen));
@@ -284,6 +288,125 @@ void ExpectFinalOutput(const RecordingResponder& responder, uint64_t nodes) {
   EXPECT_TRUE(final.comment.ends_with(" final"));
 }
 
+void ExpectLegalBestmove(const RecordingResponder& responder,
+                         const VisitOrigin& root) {
+  ASSERT_EQ(responder.bestmoves.size(), 1u);
+  auto move = responder.bestmoves[0].bestmove;
+  if (root.history.Last().IsBlackToMove()) move.Flip();
+  const auto legal = root.history.Last().GetBoard().GenerateLegalMoves();
+  EXPECT_NE(std::find(legal.begin(), legal.end(), move), legal.end());
+}
+
+TEST(Lc5SearchTest, ExpiredTimeBudgetStopsAndDrains) {
+  for (const auto& params :
+       {GoParams{.movetime = 0}, GoParams{.movetime = -1},
+        GoParams{.wtime = 0, .btime = 0}, GoParams{.movetime = 60000}}) {
+    GameGraph graph;
+    RecordingStore store;
+    ControlledBackend backend;
+    RecordingResponder responder;
+    const auto root = Origin();
+    // A synthetic old origin also verifies that preparation time is charged.
+    SearchRun run(&graph, &store, &backend, &responder, TestSettings(),
+                  TestTimeManagement(), root, params,
+                  std::chrono::steady_clock::now() - std::chrono::minutes(2));
+    ASSERT_TRUE(run.Admit(root));
+    run.Start();
+    run.Wait();
+    // Startup can race expiration; neither completed visits nor evaluations
+    // are required to be zero. All admitted work must still drain.
+    ExpectDrained(run, graph);
+    ExpectFinalOutput(responder, run.metrics().visits_completed.load());
+    ExpectLegalBestmove(responder, root);
+    EXPECT_EQ(store.stored, run.metrics().node_store_misses.load());
+  }
+}
+
+TEST(Lc5SearchTest, AbortSuppressesOutputWithExpiredTimeBudget) {
+  GameGraph graph;
+  RecordingStore store;
+  ControlledBackend backend;
+  RecordingResponder responder;
+  const auto root = Origin();
+  SearchRun run(&graph, &store, &backend, &responder, TestSettings(),
+                TestTimeManagement(), root, GoParams{.movetime = 0},
+                std::chrono::steady_clock::now() - std::chrono::minutes(2));
+  ASSERT_TRUE(run.Admit(root));
+  // Abort before startup so output commitment cannot race the assertion.
+  run.Abort();
+  run.Start();
+  run.Wait();
+  ExpectDrained(run, graph);
+  EXPECT_TRUE(responder.bestmoves.empty());
+  EXPECT_TRUE(responder.thinking.empty());
+}
+
+TEST(Lc5SearchTest, ExplicitMovetimeAndInfiniteOverrideExhaustedClock) {
+  for (const auto& params :
+       {GoParams{.wtime = 0, .btime = 0, .nodes = 1, .movetime = 60000},
+        GoParams{.wtime = 0, .btime = 0, .nodes = 1, .infinite = true},
+        GoParams{.wtime = 0,
+                 .btime = 0,
+                 .nodes = 1,
+                 .movetime = 60000,
+                 .infinite = true}}) {
+    for (const auto* fen :
+         {ChessBoard::kStartposFen,
+          "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR b KQkq - 0 1"}) {
+      SCOPED_TRACE(fen);
+      SCOPED_TRACE(params.infinite);
+      SCOPED_TRACE(params.movetime.value_or(-1));
+      GameGraph graph;
+      ControlledBackend backend;
+      RecordingResponder responder;
+      const auto root = Origin(fen);
+      SearchRun run(&graph, nullptr, &backend, &responder, TestSettings(),
+                    TestTimeManagement(), root, params,
+                    std::chrono::steady_clock::now());
+      run.Start();
+      run.Wait();
+      ExpectDrained(run, graph);
+      EXPECT_EQ(run.metrics().visits_admitted.load(), 1u);
+      EXPECT_EQ(run.metrics().visits_completed.load(), 1u);
+      EXPECT_EQ(run.metrics().visits_cancelled.load(), 0u);
+      ExpectFinalOutput(responder, 1);
+      ExpectLegalBestmove(responder, root);
+    }
+  }
+}
+
+TEST(Lc5SearchTest, PonderIgnoresZeroNodeAndTimeLimits) {
+  GameGraph graph;
+  ControlledBackend backend(ControlledBackend::Cache::kNone, true);
+  RecordingResponder responder;
+  const auto root = Origin();
+  SearchRun run(
+      &graph, nullptr, &backend, &responder, TestSettings(1, 1),
+      TestTimeManagement(), root,
+      GoParams{
+          .wtime = 0, .btime = 0, .nodes = 0, .movetime = 0, .ponder = true},
+      std::chrono::steady_clock::now() - std::chrono::minutes(2));
+  run.Start();
+  const bool computing = backend.WaitForCompute();
+  if (computing) {
+    EXPECT_FALSE(run.Finished());
+    EXPECT_EQ(responder.bestmove_count.load(), 0u);
+  } else {
+    run.Abort();
+  }
+  // Release before fatal assertions or destruction, including failure paths.
+  backend.Release();
+  const bool continued = computing && backend.WaitForInputs(2);
+  run.Stop();
+  run.Wait();
+  ASSERT_TRUE(computing) << "Ponder must admit work despite zero limits";
+  ASSERT_TRUE(continued) << "Ponder must continue after the first evaluation";
+  ExpectDrained(run, graph);
+  EXPECT_GE(run.metrics().visits_admitted.load(), 2u);
+  ExpectFinalOutput(responder, run.metrics().visits_completed.load());
+  ExpectLegalBestmove(responder, root);
+}
+
 TEST(Lc5SearchTest, ExactNodeBudgetWithMoreWorkersThanCapacity) {
   for (const int64_t nodes : {0, 1, 7}) {
     SCOPED_TRACE(nodes);
@@ -292,7 +415,7 @@ TEST(Lc5SearchTest, ExactNodeBudgetWithMoreWorkersThanCapacity) {
     RecordingResponder responder;
     auto root = Origin();
     SearchRun run(&graph, nullptr, &backend, &responder, TestSettings(8, 2),
-                  root, GoParams{.nodes = nodes},
+                  TestTimeManagement(), root, GoParams{.nodes = nodes},
                   std::chrono::steady_clock::now());
     run.Start();
     run.Wait();
@@ -334,7 +457,7 @@ TEST(Lc5SearchTest, ReportsCentipawnsAndWdlFromRootSideToMove) {
       backend.q = test.q;
       RecordingResponder responder;
       SearchRun run(&graph, nullptr, &backend, &responder, TestSettings(),
-                    Origin(fen), GoParams{.nodes = 1},
+                    TestTimeManagement(), Origin(fen), GoParams{.nodes = 1},
                     std::chrono::steady_clock::now());
       run.Start();
       run.Wait();
@@ -356,8 +479,9 @@ TEST(Lc5SearchTest, OwnerBacksUpLeafWhileWaitersResumeSelection) {
   ControlledBackend backend;
   RecordingResponder responder;
   auto root = Origin();
-  SearchRun run(&graph, nullptr, &backend, &responder, TestSettings(), root,
-                GoParams{.nodes = 4}, std::chrono::steady_clock::now());
+  SearchRun run(&graph, nullptr, &backend, &responder, TestSettings(),
+                TestTimeManagement(), root, GoParams{.nodes = 4},
+                std::chrono::steady_clock::now());
   // One worker consumes all four admissions before submitting the root job.
   for (int i = 0; i < 4; ++i) ASSERT_TRUE(run.Admit(root));
   EXPECT_FALSE(run.Admit(root));
@@ -398,8 +522,9 @@ TEST(Lc5SearchTest, TerminalOwnerAndWaitersNeverEvaluate) {
     ControlledBackend backend;
     RecordingResponder responder;
     const auto root = Origin(test.fen);
-    SearchRun run(&graph, nullptr, &backend, &responder, TestSettings(), root,
-                  GoParams{.nodes = 4}, std::chrono::steady_clock::now());
+    SearchRun run(&graph, nullptr, &backend, &responder, TestSettings(),
+                  TestTimeManagement(), root, GoParams{.nodes = 4},
+                  std::chrono::steady_clock::now());
     for (int i = 0; i < 4; ++i) ASSERT_TRUE(run.Admit(root));
     run.Start();
     run.Wait();
@@ -436,8 +561,9 @@ TEST(Lc5SearchTest, ImmediateAndMixedResultsKeepJobStorageAlive) {
     ControlledBackend backend(cache);
     RecordingResponder responder;
     const auto root = Origin();
-    SearchRun run(&graph, nullptr, &backend, &responder, TestSettings(), root,
-                  GoParams{.nodes = 4}, std::chrono::steady_clock::now());
+    SearchRun run(&graph, nullptr, &backend, &responder, TestSettings(),
+                  TestTimeManagement(), root, GoParams{.nodes = 4},
+                  std::chrono::steady_clock::now());
     std::vector<VisitOrigin> origins;
     const auto moves = root.history.Last().GetBoard().GenerateLegalMoves();
     for (int i = 0; i < 4; ++i) {
@@ -484,8 +610,9 @@ TEST(Lc5SearchTest, BlockedBackendStopAndAbortDrainReservationsAndPersistence) {
     auto child = root;
     child.history.Append(moves[0]);
     child.key = MakeNodeKey(child.history, 7);
-    SearchRun run(&graph, &store, &backend, &responder, TestSettings(), root,
-                  GoParams{.nodes = 4}, std::chrono::steady_clock::now());
+    SearchRun run(&graph, &store, &backend, &responder, TestSettings(),
+                  TestTimeManagement(), root, GoParams{.nodes = 4},
+                  std::chrono::steady_clock::now());
     for (int i = 0; i < 4; ++i) ASSERT_TRUE(run.Admit(root));
     run.Start();
     const bool entered = backend.WaitForCompute();
@@ -536,8 +663,9 @@ TEST(Lc5SearchTest, StoreMissPersistsAndFreshGraphRehydratesWithoutEvaluation) {
     SCOPED_TRACE(hit);
     GameGraph graph;
     RecordingResponder responder;
-    SearchRun run(&graph, &store, &backend, &responder, TestSettings(), root,
-                  GoParams{.nodes = 1}, std::chrono::steady_clock::now());
+    SearchRun run(&graph, &store, &backend, &responder, TestSettings(),
+                  TestTimeManagement(), root, GoParams{.nodes = 1},
+                  std::chrono::steady_clock::now());
     run.Start();
     run.Wait();
     ExpectDrained(run, graph);
@@ -572,8 +700,9 @@ TEST(Lc5SearchTest, RootBootstrapFlushesDependencyWithoutWaitingForTimer) {
     const auto root = Origin();
     auto settings = TestSettings(4);
     settings.max_batch_delay_ms = delay;
-    SearchRun run(&graph, nullptr, &backend, &responder, settings, root,
-                  GoParams{.nodes = 1}, std::chrono::steady_clock::now());
+    SearchRun run(&graph, nullptr, &backend, &responder, settings,
+                  TestTimeManagement(), root, GoParams{.nodes = 1},
+                  std::chrono::steady_clock::now());
     run.Start();
     const bool entered = backend.WaitForCompute();
     if (entered) {
@@ -614,8 +743,9 @@ TEST(Lc5SearchTest, CollectionFlushesWhileAnotherWorkerIsBlockedInStore) {
     other.key = MakeNodeKey(other.history, 7);
     auto settings = TestSettings(2, 2);
     settings.max_batch_delay_ms = delay;
-    SearchRun run(&graph, &store, &backend, &responder, settings, root,
-                  GoParams{.nodes = 2}, std::chrono::steady_clock::now());
+    SearchRun run(&graph, &store, &backend, &responder, settings,
+                  TestTimeManagement(), root, GoParams{.nodes = 2},
+                  std::chrono::steady_clock::now());
     ASSERT_TRUE(run.Admit(root));
     ASSERT_TRUE(run.Admit(other));
     run.Start();
@@ -658,8 +788,9 @@ TEST(Lc5SearchTest, PositiveDelayCollectsAnotherWorkersStoreMissIntoSameBatch) {
   auto settings = TestSettings(2, 2);
   settings.minibatch_size = 2;
   settings.max_batch_delay_ms = 60000;
-  SearchRun run(&graph, &store, &backend, &responder, settings, root,
-                GoParams{.nodes = 2}, std::chrono::steady_clock::now());
+  SearchRun run(&graph, &store, &backend, &responder, settings,
+                TestTimeManagement(), root, GoParams{.nodes = 2},
+                std::chrono::steady_clock::now());
   ASSERT_TRUE(run.Admit(root));
   ASSERT_TRUE(run.Admit(other));
   run.Start();
@@ -709,7 +840,8 @@ TEST(Lc5SearchTest, MultiworkerMixedCacheResultsRespectBatchAndItemCredits) {
       settings.eval_threads = test.evaluators;
       settings.minibatch_size = test.batch_size;
       settings.max_batch_delay_ms = delay;
-      SearchRun run(&graph, nullptr, &backend, &responder, settings, root,
+      SearchRun run(&graph, nullptr, &backend, &responder, settings,
+                    TestTimeManagement(), root,
                     GoParams{.nodes = test.capacity},
                     std::chrono::steady_clock::now());
       std::vector<VisitOrigin> origins;
@@ -809,8 +941,9 @@ TEST(Lc5SearchTest, BlockedStoreLoadsAndPersistenceDrainAfterStopOrAbort) {
                              .priors = std::vector<float>(
                                  legal.size(), 1.0f / legal.size())});
       }
-      SearchRun run(&graph, &store, &backend, &responder, TestSettings(), root,
-                    GoParams{.nodes = 4}, std::chrono::steady_clock::now());
+      SearchRun run(&graph, &store, &backend, &responder, TestSettings(),
+                    TestTimeManagement(), root, GoParams{.nodes = 4},
+                    std::chrono::steady_clock::now());
       for (int i = 0; i < 4; ++i) ASSERT_TRUE(run.Admit(root));
       run.Start();
       const bool loading = store.load.WaitForArrival();
@@ -868,6 +1001,41 @@ TEST(Lc5SearchTest, BlockedStoreLoadsAndPersistenceDrainAfterStopOrAbort) {
       } else {
         ExpectFinalOutput(responder, 0);
       }
+    }
+  }
+}
+
+TEST(Lc5SearchTest, EnginePreservesExplicitMovetimeAndInfinitePrecedence) {
+  for (const auto& params :
+       {GoParams{.wtime = 0, .btime = 0, .nodes = 1, .movetime = 60000},
+        GoParams{.wtime = 0, .btime = 0, .nodes = 1, .infinite = true},
+        GoParams{.wtime = 0,
+                 .btime = 0,
+                 .nodes = 1,
+                 .movetime = 60000,
+                 .infinite = true}}) {
+    for (const auto* fen :
+         {ChessBoard::kStartposFen,
+          "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR b KQkq - 0 1"}) {
+      SCOPED_TRACE(fen);
+      SCOPED_TRACE(params.infinite);
+      SCOPED_TRACE(params.movetime.value_or(-1));
+      OptionsParser parser;
+      Settings::Populate(&parser);
+      parser.SetUciOption("Threads", "1");
+      parser.SetUciOption("EvalThreads", "1");
+      parser.SetUciOption("MaxActiveVisits", "1");
+      ControlledBackend backend;
+      RecordingResponder responder;
+      Lc5Engine engine(&responder, &parser.GetOptionsDict());
+      engine.SetBackend(&backend);
+      engine.SetPosition({.startpos = Position::FromFen(fen), .moves = {}});
+      engine.StartClock();
+      engine.StartSearch(params);
+      engine.WaitSearch();
+      ExpectFinalOutput(responder, 1);
+      ExpectLegalBestmove(responder, Origin(fen));
+      EXPECT_EQ(backend.inputs.load(), 1u);
     }
   }
 }

@@ -80,15 +80,62 @@ mailboxes, or I/O thread counts.
 
 ## Limits and game lifetime
 
-Supported limits include `nodes`, `movetime`, `infinite`, and ponder as infinite.
-Without explicit `movetime`, the engine derives a budget from the side-to-move's
-`wtime`/`btime` and `winc`/`binc`. It reserves `MoveOverheadMs` and uses
-`AlphaZeroTimePct` as the clock fraction, raised to `1 / movestogo` when a
-positive `movestogo` implies a shorter horizon. The budget is
-`usable_clock * fraction + increment * (1 - fraction)`, capped at the usable
-clock with a 1 ms floor when usable time remains. Clocks at or below overhead
-receive a zero budget; infinite/ponder suppress clock-derived budgets.
-Only `depth`, `mate`, and `searchmoves` are reported as ignored.
+Each `SearchRun` owns a value-semantic `TimeManager`. The engine passes the
+original UCI `GoParams`, `Settings::time_management()` configuration (separate
+from backend-dependent `Settings::Resolved`), and the existing start timestamp;
+it does not rewrite clock allocation into `movetime`. The manager uses the root
+side-to-move and stores only an optional fixed deadline. It neither reads the
+clock internally nor owns workers, node accounting, or output.
+
+Limit precedence is unchanged:
+
+- Ponder suppresses all time and node limits, including explicit limits. The
+  outer engine handles `ponderhit` by aborting/draining and starting a fresh run
+  with ponder cleared and a new clock origin.
+- Otherwise, explicit `movetime` wins over clock allocation and is used
+  literally, without subtracting `MoveOverheadMs`. Zero or negative values are
+  already due.
+- Otherwise, `infinite` suppresses clock allocation. Explicit `movetime` and
+  node limits still apply under `infinite` and can produce bestmove.
+- Otherwise, allocation requires the active side's `wtime`/`btime`; a missing
+  active-side clock means no time limit, even if an increment is supplied.
+
+Clock allocation reserves `MoveOverheadMs` (default 200 ms) and uses
+`AlphaZeroTimePct` (default 3%) as the fraction, raised to `1 / movestogo` when a
+positive `movestogo` implies a shorter horizon. With
+`usable_clock = remaining_clock - overhead`, the budget is
+`usable_clock * fraction + increment * (1 - fraction)`. Only the active side's
+`winc`/`binc` is used; absent or negative increments contribute zero. Calculation
+uses long-double precision, clamps to a 1 ms floor and the usable-clock cap,
+then truncates to whole milliseconds. Clocks at or below overhead receive a
+zero budget.
+
+Nonnegative `nodes` limits remain exact admission caps enforced by search,
+independently of the manager; negative node limits are ignored. UCI nodes count
+completed visits, not backend evaluations, and stopping early may complete fewer
+visits than the cap.
+
+The deadline is relative to the existing `StartClock()` steady-clock origin, so
+preparation after that origin is charged before search initialization. The outer
+engine retains its position/go timing rules; if no origin was set, `StartSearch`
+uses its current time. On each running controller iteration,
+`TimeManager::Evaluate(now)` requests stop at/after the deadline; before it, the
+manager returns the deadline as `next_check`. With no time limit it requests
+neither stop nor a timed check. The controller calls the existing `Stop()` when
+requested and waits until the earlier of periodic info and `next_check`, or an
+enabling notification. During stop/abort drain it uses lifecycle notifications,
+not an expired policy wakeup.
+
+A time decision requests stopping, not a hard bestmove response deadline:
+outstanding backend/store work still drains before final output. Visit workers
+start before the controller, so an already-expired budget can race with initial
+admission and does not guarantee zero visits or evaluations.
+
+This is a concrete policy seam, not the classical time manager or an adaptive
+algorithm. A future policy could extend `Evaluate` with a small
+controller-supplied statistics snapshot and request earlier reevaluation; today
+allocation stays fixed, with no extra threads or persistent cross-move state.
+
 Thinking output includes a centipawn score converted from root Q, from the
 side-to-move's perspective, alongside WDL when root value visits are available.
 The default engine's hot graph survives same-game `position` changes;

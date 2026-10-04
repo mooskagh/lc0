@@ -15,7 +15,8 @@ namespace lczero::lc5 {
 
 SearchRun::SearchRun(GameGraph* graph, NodeStore* store, Backend* backend,
                      UciResponder* responder, Settings::Resolved settings,
-                     VisitOrigin root, GoParams go_params,
+                     TimeManager::Config time_management, VisitOrigin root,
+                     GoParams go_params,
                      std::chrono::steady_clock::time_point start_time)
     : graph_(graph),
       store_(store),
@@ -23,15 +24,14 @@ SearchRun::SearchRun(GameGraph* graph, NodeStore* store, Backend* backend,
       responder_(responder),
       settings_(settings),
       root_(std::move(root)),
-      go_params_(std::move(go_params)),
       start_time_(start_time),
+      time_manager_(time_management, go_params,
+                    root_.history.Last().IsBlackToMove(), start_time_),
       visits_(settings_.max_active_visits) {
   for (int i = 0; i < settings_.threads; ++i)
     workers_.push_back(std::make_unique<Worker>(i));
-  if (!go_params_.ponder && go_params_.nodes && *go_params_.nodes >= 0)
-    node_limit_ = static_cast<uint64_t>(*go_params_.nodes);
-  if (!go_params_.ponder && go_params_.movetime)
-    deadline_ = start_time_ + std::chrono::milliseconds(*go_params_.movetime);
+  if (!go_params.ponder && go_params.nodes && *go_params.nodes >= 0)
+    node_limit_ = static_cast<uint64_t>(*go_params.nodes);
 }
 
 SearchRun::~SearchRun() {
@@ -102,9 +102,12 @@ void SearchRun::Controller() {
       generation = controller_generation_;
     }
     const auto now = std::chrono::steady_clock::now();
-    if (stop_mode_.load() == StopMode::kRunning && deadline_ &&
-        now >= *deadline_)
-      Stop();
+    std::optional<std::chrono::steady_clock::time_point> next_check;
+    if (stop_mode_.load() == StopMode::kRunning) {
+      const auto decision = time_manager_.Evaluate(now);
+      next_check = decision.next_check;
+      if (decision.should_stop) Stop();
+    }
     if (stop_mode_.load() == StopMode::kRunning && node_limit_ &&
         metrics_.visits_completed.load() >= *node_limit_)
       Stop();
@@ -134,7 +137,7 @@ void SearchRun::Controller() {
     auto wake_at = std::chrono::steady_clock::time_point::max();
     if (stop_mode_.load() == StopMode::kRunning) {
       wake_at = next_info;
-      if (deadline_) wake_at = std::min(wake_at, *deadline_);
+      if (next_check) wake_at = std::min(wake_at, *next_check);
     }
     std::unique_lock lock(controller_mutex_);
     controller_cv_.wait_until(

@@ -64,17 +64,11 @@ void Lc5Engine::StartSearch(const GoParams& params) {
   const auto start = clock_start_.value_or(std::chrono::steady_clock::now());
   clock_start_.reset();
 
-  GoParams effective_params = params;
-  if (!effective_params.movetime) {
-    effective_params.movetime =
-        settings.GetTimeBudget(params, root_history_->Last().IsBlackToMove());
-  }
-
   VisitOrigin root{
       .key = root_key_, .history = *root_history_, .backup_prefix = {}};
   run_ = std::make_unique<SearchRun>(&graph_, nullptr, backend_, uci_responder_,
-                                     resolved, std::move(root),
-                                     effective_params, start);
+                                     resolved, settings.time_management(),
+                                     std::move(root), params, start);
   run_->Start();
 }
 

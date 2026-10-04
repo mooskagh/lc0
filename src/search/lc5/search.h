@@ -21,6 +21,7 @@
 #include "search/lc5/metrics.h"
 #include "search/lc5/node_store.h"
 #include "search/lc5/search_internal.h"
+#include "search/lc5/time_manager.h"
 #include "search/lc5/visit.h"
 
 namespace lczero::lc5 {
@@ -29,7 +30,8 @@ class SearchRun {
  public:
   SearchRun(GameGraph* graph, NodeStore* store, Backend* backend,
             UciResponder* responder, Settings::Resolved settings,
-            VisitOrigin root, GoParams go_params,
+            TimeManager::Config time_management, VisitOrigin root,
+            GoParams go_params,
             std::chrono::steady_clock::time_point start_time);
   ~SearchRun();
 
@@ -150,8 +152,8 @@ class SearchRun {
   UciResponder* responder_;
   const Settings::Resolved settings_;
   const VisitOrigin root_;
-  const GoParams go_params_;
   const std::chrono::steady_clock::time_point start_time_;
+  const TimeManager time_manager_;
   VisitPool visits_;
   Metrics metrics_;
 
@@ -173,7 +175,6 @@ class SearchRun {
   size_t next_owner_ = 0;
   size_t next_admission_waiter_ = 0;
   std::optional<uint64_t> node_limit_;
-  std::optional<std::chrono::steady_clock::time_point> deadline_;
 
   std::atomic<StopMode> stop_mode_{StopMode::kRunning};
   std::atomic<bool> started_{false};

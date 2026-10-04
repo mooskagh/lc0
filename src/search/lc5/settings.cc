@@ -70,29 +70,9 @@ Settings::Settings(const OptionsDict& options)
                         ? FpuStrategy::kAbsolute
                         : FpuStrategy::kReduction),
       fpu_value_(options.Get<float>(kFpuValue)),
-      move_overhead_ms_(options.Get<int>(kMoveOverhead)),
-      alphazero_time_pct_(options.Get<float>(kAlphazeroTimePct)) {}
-
-std::optional<int64_t> Settings::GetTimeBudget(const GoParams& params,
-                                               bool black_to_move) const {
-  if (params.infinite || params.ponder) return std::nullopt;
-  const auto& remaining = black_to_move ? params.btime : params.wtime;
-  if (!remaining) return std::nullopt;
-  if (*remaining <= move_overhead_ms_) return 0;
-
-  const int64_t usable = *remaining - move_overhead_ms_;
-  const int64_t increment = std::max<int64_t>(
-      0, (black_to_move ? params.binc : params.winc).value_or(0));
-  long double fraction = alphazero_time_pct_ / 100.0L;
-  if (params.movestogo && *params.movestogo > 0) {
-    fraction = std::max(fraction, 1.0L / *params.movestogo);
-  }
-  // Divide the clock and future increments over the implied move horizon.
-  // The current move's increment is only received after we finish searching.
-  const long double budget = usable * fraction + increment * (1 - fraction);
-  return static_cast<int64_t>(
-      std::clamp(budget, 1.0L, static_cast<long double>(usable)));
-}
+      time_management_{
+          .move_overhead_ms = options.Get<int>(kMoveOverhead),
+          .alphazero_time_pct = options.Get<float>(kAlphazeroTimePct)} {}
 
 Settings::Resolved Settings::Resolve(const BackendAttributes& backend) const {
   const int automatic_evaluators =

@@ -229,6 +229,7 @@ if get_option('lc5')
     'src/search/lc5/search_visits.cc',
     'src/search/lc5/search_materialization.cc',
     'src/search/lc5/settings.cc',
+    'src/search/lc5/time_manager.cc',
   ]
 endif
 #############################################################################
@@ -1215,11 +1216,21 @@ if get_option('gtest')
         'src/search/lc5/graph.cc',
         'src/search/lc5/metrics.cc',
         'src/search/lc5/settings.cc',
+        'src/search/lc5/time_manager.cc',
         'src/search/register.cc',
         pb_files,
         include_directories: includes, link_with: lc0_lib,
         dependencies: [gtest, absl_flat_hash_map_dep]),
       args: '--gtest_output=xml:lc5_search_test.xml', timeout: 90)
+
+    test('Lc5TimeManager',
+      executable('lc5_time_manager_test',
+        'src/search/lc5/time_manager_test.cc',
+        'src/search/lc5/time_manager.cc',
+        pb_files,
+        include_directories: includes, link_with: lc0_lib,
+        dependencies: [gtest, absl_flat_hash_map_dep]),
+      args: '--gtest_output=xml:lc5_time_manager_test.xml', timeout: 90)
 
     test('Lc5Settings',
       executable('lc5_settings_test',

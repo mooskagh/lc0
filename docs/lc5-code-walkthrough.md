@@ -24,17 +24,47 @@ backend attributes and constructs a fresh `SearchRun`.
 [`settings.h`](../src/search/lc5/settings.h) declares `Settings::Resolved` and
 `FpuStrategy`. Thread counts, batch size
 and visit capacity have backend-dependent defaults; explicit oversized batches
-are rejected. PUCT/FPU settings are resolved here too. Time management is a
-percentage of remaining time after overhead, not the classical stopper/time
-manager. Increment, moves-to-go, depth, mate and searchmoves are ignored with
-warnings. Ponder suppresses node/time limits; infinite suppresses clock-derived
-time allocation, not explicit node or movetime limits. The outer engine handles
-ponderhit by aborting and starting another run.
+are rejected. PUCT/FPU settings are resolved here too. Timing configuration is
+separate: `Settings::time_management()` returns `TimeManager::Config`, with
+`MoveOverheadMs` (default 200 ms) and `AlphaZeroTimePct` (default 3%). The engine
+passes this configuration, the original `GoParams` (no `movetime` rewrite), and
+the existing `StartClock()` timestamp to the run. Preparation after that origin
+is charged before search initialization; without a saved origin, `StartSearch`
+uses its current time. The outer engine's position/go clock-origin rules remain
+unchanged.
 
-In [`search.cc`](../src/search/lc5/search.cc), the constructor records the limits
-and creates worker state. `Start` launches evaluators, optional store workers,
-visit workers and the controller. The graph, backend and responder are borrowed;
-visits, tickets, queues, counters and threads belong to this run.
+Read [`time_manager.h`](../src/search/lc5/time_manager.h) and
+[`time_manager.cc`](../src/search/lc5/time_manager.cc). Each `SearchRun` owns a
+concrete, value-owned `TimeManager`, initialized from configuration, original
+parameters, root side-to-move and start time. It stores only an optional fixed
+deadline, does not read the clock internally, and has no worker or output duties.
+Ponder suppresses all time and node limits, including explicit ones. Otherwise,
+explicit `movetime` wins and is literal, with no overhead subtraction;
+zero/negative values are already due. Otherwise, `infinite` suppresses clock
+allocation, not explicit node or movetime limits, which can still produce
+bestmove. A missing active-side clock gives no time limit.
+
+For clock allocation, subtract overhead from the active side's `wtime`/`btime`.
+At or below overhead, the budget is zero. Otherwise, use
+`fraction = max(AlphaZeroTimePct / 100, 1 / movestogo)` for positive `movestogo`
+(the percentage alone otherwise), and
+`budget = usable_clock * fraction + increment * (1 - fraction)`. Only the active
+side's `winc`/`binc` contributes, with missing or negative increments treated as
+zero. Long-double calculation is clamped to [1 ms, usable clock] and truncated
+to whole milliseconds. This is fixed allocation, not classical lc0's time
+management. See [Limits and game lifetime](lc5.md#limits-and-game-lifetime) for
+the compatibility contract. The outer engine handles `ponderhit` by
+aborting/draining and starting another run with ponder cleared and a new clock
+origin.
+
+In [`search.cc`](../src/search/lc5/search.cc), the constructor creates the manager,
+records the independent node limit and creates worker state. Nonnegative node
+limits remain exact admission caps; negative limits are ignored. `Start`
+launches evaluators, optional store workers, visit workers and then the
+controller. An already-expired time budget can race with initial admission:
+zero visits or evaluations are not guaranteed. The graph, backend and responder
+are borrowed; the manager, visits, tickets, queues, counters and threads belong
+to this run.
 
 ## 2. Know what is shared
 
@@ -234,9 +264,24 @@ of a production eviction policy.
 
 Return to `Controller`, `BuildPv`, `OutputInfo` and `RequestStop` in `search.cc`.
 
-The controller checks limits and periodically reports. UCI nodes/NPS count
-completed visits in this run; EPS counts backend-used NN items, excluding
-immediate hits. Root WDL and PV use retained graph statistics. Their totals need
+On each running iteration, the controller passes its `now` to
+`time_manager_.Evaluate(now)` outside search locks. `Decision::should_stop`
+invokes the existing `Stop()`; `Decision::next_check` is the absolute deadline
+before expiry, and absent at/after expiry or without a time limit. The separate
+completed-node check follows, then periodic info while still running. The
+controller snapshots its notification generation before inspecting predicates
+and waits until the earlier of `next_info` and `next_check`, or a generation
+change, so enabling events cannot be lost between inspection and waiting.
+Stopping/aborting uses lifecycle notifications for drain, never the expired
+policy wakeup.
+
+The manager is a future adaptive-policy seam: `Evaluate` could accept a small
+controller-supplied statistics snapshot and request earlier reevaluation.
+Current allocation remains fixed; there is no interface hierarchy, extra timing
+thread or persistent cross-move state.
+
+UCI nodes/NPS count completed visits in this run; EPS counts backend-used NN
+items, excluding immediate hits. Root WDL and PV use retained graph statistics. Their totals need
 not match current-run counters. Depth metrics count path nodes, not conventionally
 just edges. PV follows completed edges, ranking visits, Q, prior and move encoding;
 it recomputes keys from history, handles output orientation, detects repeated
@@ -254,6 +299,8 @@ mailboxes, and worker acknowledgements covering their pending local requests.
 Then the controller joins visit workers, closes executor queues and joins I/O
 threads. `Wait` joins this controller.
 
+A time decision requests this same stop path, not a hard response deadline:
+final bestmove can arrive after the policy deadline because drain must finish.
 Stop requests final info/bestmove; abort can override it until output commitment
 under the admission mutex. `Finished` is published after output. Queue/mailbox
 mutex handshakes and the controller notification generation avoid lost wakeups;
@@ -263,7 +310,7 @@ available to the next run only after this drain.
 
 ## 10. Review tests and boundaries
 
-Finish with the four test files:
+Finish with the five test files:
 
 - [`graph_test.cc`](../src/search/lc5/graph_test.cc): publication, generations,
   reservations, perspective and node/edge update outcomes.
@@ -273,7 +320,10 @@ Finish with the four test files:
   behavior, terminal bypass, backend-buffer lifetime, batching/credits,
   blocked-I/O drains, store rehydration and game retention.
 - [`settings_test.cc`](../src/search/lc5/settings_test.cc): backend-dependent
-  resolution, batch rejection and clock allocation.
+  resolution, batch rejection and timing-configuration extraction.
+- [`time_manager_test.cc`](../src/search/lc5/time_manager_test.cc): allocation,
+  limit precedence, supplied clock origin and stop/next-check decisions using
+  synthetic timestamps.
 
 `ExpectDrained` in the search tests checks visit accounting, absent tickets and
 reservations, and ordinary-run rejection/underflow counters. Rehydration tests

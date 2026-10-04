@@ -2,6 +2,8 @@
 
 #include <gtest/gtest.h>
 
+#include "utils/exception.h"
+
 namespace lczero::lc5 {
 namespace {
 
@@ -37,102 +39,24 @@ TEST(Lc5SettingsTest, RejectsBatchAboveBackendMaximum) {
   EXPECT_THROW(settings.Resolve(attrs), Exception);
 }
 
-TEST(Lc5SettingsTest, ComputesBudgetFromActiveClock) {
+TEST(Lc5SettingsTest, ExtractsDefaultTimingConfiguration) {
   OptionsParser parser;
   Settings::Populate(&parser);
   Settings settings(parser.GetOptionsDict());
-  GoParams params{.wtime = 10200, .btime = 5200};
 
-  EXPECT_EQ(settings.GetTimeBudget(params, false), 300);
-  EXPECT_EQ(settings.GetTimeBudget(params, true), 150);
+  EXPECT_EQ(settings.time_management().move_overhead_ms, 200);
+  EXPECT_FLOAT_EQ(settings.time_management().alphazero_time_pct, 3.0f);
 }
 
-TEST(Lc5SettingsTest, TimeBudgetOptionsAreConfigurable) {
+TEST(Lc5SettingsTest, ExtractsCustomTimingConfiguration) {
   OptionsParser parser;
   Settings::Populate(&parser);
   parser.SetUciOption("MoveOverheadMs", "100");
   parser.SetUciOption("AlphaZeroTimePct", "25");
   Settings settings(parser.GetOptionsDict());
 
-  EXPECT_EQ(settings.GetTimeBudget(GoParams{.wtime = 4100}, false), 1000);
-  EXPECT_EQ(settings.GetTimeBudget(GoParams{.wtime = 50}, false), 0);
-}
-
-TEST(Lc5SettingsTest, IncludesOnlyActiveSideIncrement) {
-  OptionsParser parser;
-  Settings::Populate(&parser);
-  Settings settings(parser.GetOptionsDict());
-  GoParams params{.wtime = 10200, .btime = 5200, .winc = 100, .binc = 200};
-
-  EXPECT_EQ(settings.GetTimeBudget(params, false), 397);
-  EXPECT_EQ(settings.GetTimeBudget(params, true), 344);
-  params.winc = -100;
-  EXPECT_EQ(settings.GetTimeBudget(params, false), 300);
-}
-
-TEST(Lc5SettingsTest, HonorsShorterMovesToGoHorizon) {
-  OptionsParser parser;
-  Settings::Populate(&parser);
-  Settings settings(parser.GetOptionsDict());
-  GoParams params{.wtime = 4200, .winc = 100, .movestogo = 4};
-
-  EXPECT_EQ(settings.GetTimeBudget(params, false), 1075);
-  params.movestogo = 1;
-  EXPECT_EQ(settings.GetTimeBudget(params, false), 4000);
-  for (int moves : {0, -1, 100}) {
-    params.movestogo = moves;
-    EXPECT_EQ(settings.GetTimeBudget(params, false), 217);
-  }
-}
-
-TEST(Lc5SettingsTest, CapsBudgetAndPreservesOverhead) {
-  OptionsParser parser;
-  Settings::Populate(&parser);
-  Settings settings(parser.GetOptionsDict());
-
-  EXPECT_EQ(
-      settings.GetTimeBudget(GoParams{.wtime = 300, .winc = 10000}, false),
-      100);
-  EXPECT_EQ(settings.GetTimeBudget(GoParams{.wtime = 201, .winc = 80}, false),
-            1);
-  EXPECT_EQ(settings.GetTimeBudget(GoParams{.wtime = 201}, false), 1);
-  EXPECT_EQ(settings.GetTimeBudget(GoParams{.wtime = 200, .winc = 80}, false),
-            0);
-  EXPECT_EQ(settings.GetTimeBudget(GoParams{.wtime = 100, .winc = 80}, false),
-            0);
-  parser.SetUciOption("AlphaZeroTimePct", "0");
-  EXPECT_EQ(Settings(parser.GetOptionsDict())
-                .GetTimeBudget(GoParams{.wtime = 1000}, false),
-            1);
-}
-
-TEST(Lc5SettingsTest, IncrementMaintainsBudgetOverLongGame) {
-  OptionsParser parser;
-  Settings::Populate(&parser);
-  Settings settings(parser.GetOptionsDict());
-  GoParams params{.wtime = 8000, .winc = 80};
-
-  for (int move = 0; move < 200; ++move) {
-    const auto budget = settings.GetTimeBudget(params, false);
-    ASSERT_TRUE(budget.has_value());
-    EXPECT_GE(*budget, 80) << "move " << move;
-    EXPECT_LE(*budget, *params.wtime - 200);
-    *params.wtime += *params.winc - *budget;
-  }
-}
-
-TEST(Lc5SettingsTest, TimeBudgetDoesNotLimitUnclockedSearches) {
-  OptionsParser parser;
-  Settings::Populate(&parser);
-  Settings settings(parser.GetOptionsDict());
-
-  EXPECT_EQ(settings.GetTimeBudget(GoParams{}, false), std::nullopt);
-  EXPECT_EQ(
-      settings.GetTimeBudget(GoParams{.wtime = 1000, .infinite = true}, false),
-      std::nullopt);
-  EXPECT_EQ(
-      settings.GetTimeBudget(GoParams{.btime = 1000, .ponder = true}, true),
-      std::nullopt);
+  EXPECT_EQ(settings.time_management().move_overhead_ms, 100);
+  EXPECT_FLOAT_EQ(settings.time_management().alphazero_time_pct, 25.0f);
 }
 
 }  // namespace

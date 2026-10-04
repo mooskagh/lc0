@@ -1,10 +1,7 @@
 #pragma once
 
-#include <cstdint>
-#include <optional>
-
-#include "chess/uciloop.h"
 #include "neural/backend.h"
+#include "search/lc5/time_manager.h"
 #include "utils/optionsdict.h"
 #include "utils/optionsparser.h"
 
@@ -37,8 +34,9 @@ class Settings {
   int minibatch_size() const { return minibatch_size_; }
   int max_active_visits() const { return max_active_visits_; }
   int history_key_length() const { return history_key_length_; }
-  std::optional<int64_t> GetTimeBudget(const GoParams& params,
-                                       bool black_to_move) const;
+  const TimeManager::Config& time_management() const {
+    return time_management_;
+  }
 
  private:
   int threads_;
@@ -52,8 +50,7 @@ class Settings {
   float cpuct_factor_;
   FpuStrategy fpu_strategy_;
   float fpu_value_;
-  int64_t move_overhead_ms_;
-  float alphazero_time_pct_;
+  TimeManager::Config time_management_;
 };
 
 }  // namespace lczero::lc5
