@@ -1,3 +1,30 @@
+/*
+  This file is part of Leela Chess Zero.
+  Copyright (C) 2026 The LCZero Authors
+
+  Leela Chess is free software: you can redistribute it and/or modify
+  it under the terms of the GNU General Public License as published by
+  the Free Software Foundation, either version 3 of the License, or
+  (at your option) any later version.
+
+  Leela Chess is distributed in the hope that it will be useful,
+  but WITHOUT ANY WARRANTY; without even the implied warranty of
+  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+  GNU General Public License for more details.
+
+  You should have received a copy of the GNU General Public License
+  along with Leela Chess.  If not, see <http://www.gnu.org/licenses/>.
+
+  Additional permission under GNU GPL version 3 section 7
+
+  If you modify this Program, or any covered work, by linking or
+  combining it with NVIDIA Corporation's libraries from the NVIDIA CUDA
+  Toolkit and the NVIDIA CUDA Deep Neural Network library (or a
+  modified version of those libraries), containing parts covered by the
+  terms of the respective license agreement, the licensors of this
+  Program grant you additional permission to convey the resulting work.
+*/
+
 #include <algorithm>
 #include <cassert>
 #include <chrono>
@@ -98,8 +125,9 @@ bool SearchRun::SuspendForMaterialization(Worker& worker,
   metrics_.visits_suspended.fetch_add(1);
   if (owner) {
     // Preparation and publication happen later, outside this slot's lock.
-    Request request{
-        .ticket = ticket_id, .key = visit.current_key, .history = visit.history};
+    Request request{.ticket = ticket_id,
+                    .key = visit.current_key,
+                    .history = visit.history};
     (store_ ? worker.loads : worker.unprepared).push_back(std::move(request));
   }
   return true;
@@ -206,7 +234,8 @@ void SearchRun::SubmitJobs(Worker& worker) {
     if (!job) break;
     ++worker.outstanding;
     worker.outstanding_items += job->items();
-    RaiseHighWater(metrics_.io_jobs_high_water, jobs_in_flight_.fetch_add(1) + 1);
+    RaiseHighWater(metrics_.io_jobs_high_water,
+                   jobs_in_flight_.fetch_add(1) + 1);
     if (job->kind == JobKind::kEval) {
       eval_jobs_.Push(std::move(job));
       RaiseHighWater(metrics_.ready_eval_high_water, eval_jobs_.Size());
@@ -372,13 +401,13 @@ void SearchRun::AddInputs(BackendComputation& computation, Job& job) {
   for (auto& request : job.requests) {
     if (Stopping()) break;
     auto& payload = request.payload;
-    const auto result = computation.AddInput(
-        EvalPosition{.pos = request.history.GetPositions(),
-                     .legal_moves = payload.moves},
-        EvalResultPtr{.q = &payload.leaf.q,
-                      .d = &payload.leaf.d,
-                      .m = &payload.leaf.m,
-                      .p = payload.priors});
+    const auto result =
+        computation.AddInput(EvalPosition{.pos = request.history.GetPositions(),
+                                          .legal_moves = payload.moves},
+                             EvalResultPtr{.q = &payload.leaf.q,
+                                           .d = &payload.leaf.d,
+                                           .m = &payload.leaf.m,
+                                           .p = payload.priors});
     if (result == BackendComputation::FETCHED_IMMEDIATELY) {
       request.state = Request::State::kEvaluated;
       metrics_.cache_hits.fetch_add(1);

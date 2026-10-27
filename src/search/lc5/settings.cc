@@ -1,3 +1,30 @@
+/*
+  This file is part of Leela Chess Zero.
+  Copyright (C) 2026 The LCZero Authors
+
+  Leela Chess is free software: you can redistribute it and/or modify
+  it under the terms of the GNU General Public License as published by
+  the Free Software Foundation, either version 3 of the License, or
+  (at your option) any later version.
+
+  Leela Chess is distributed in the hope that it will be useful,
+  but WITHOUT ANY WARRANTY; without even the implied warranty of
+  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+  GNU General Public License for more details.
+
+  You should have received a copy of the GNU General Public License
+  along with Leela Chess.  If not, see <http://www.gnu.org/licenses/>.
+
+  Additional permission under GNU GPL version 3 section 7
+
+  If you modify this Program, or any covered work, by linking or
+  combining it with NVIDIA Corporation's libraries from the NVIDIA CUDA
+  Toolkit and the NVIDIA CUDA Deep Neural Network library (or a
+  modified version of those libraries), containing parts covered by the
+  terms of the respective license agreement, the licensors of this
+  Program grant you additional permission to convey the resulting work.
+*/
+
 #include "search/lc5/settings.h"
 
 #include <algorithm>
@@ -10,23 +37,23 @@ namespace {
 
 const OptionId kThreads{"threads", "Threads", "Lc5 visit worker threads."};
 const OptionId kEvalThreads{"eval-threads", "EvalThreads",
-                             "Lc5 concurrent backend evaluators."};
+                            "Lc5 concurrent backend evaluators."};
 const OptionId kMinibatchSize{"minibatch-size", "MinibatchSize",
-                               "Lc5 neural evaluation batch target."};
+                              "Lc5 neural evaluation batch target."};
 const OptionId kMaxActiveVisits{"max-active-visits", "MaxActiveVisits",
-                                 "Hard bound on live Lc5 logical visits."};
+                                "Hard bound on live Lc5 logical visits."};
 const OptionId kHistoryKeyLength{
     "history-key-length", "HistoryKeyLength",
     "History positions beyond current used in Lc5 keys; shorter keys merge "
     "more histories and reuse the first canonical expansion."};
 const OptionId kMaxBatchDelay{"max-batch-delay-ms", "MaxBatchDelayMs",
-                               "Maximum Lc5 partial-batch delay in ms."};
+                              "Maximum Lc5 partial-batch delay in ms."};
 const OptionId kCpuct{"cpuct", "CPuct", "Lc5 PUCT initial constant."};
 const OptionId kCpuctBase{"cpuct-base", "CPuctBase", "Lc5 PUCT growth base."};
 const OptionId kCpuctFactor{"cpuct-factor", "CPuctFactor",
-                             "Lc5 PUCT growth multiplier."};
+                            "Lc5 PUCT growth multiplier."};
 const OptionId kFpuStrategy{"fpu-strategy", "FpuStrategy",
-                             "Lc5 first-play urgency strategy."};
+                            "Lc5 first-play urgency strategy."};
 const OptionId kFpuValue{"fpu-value", "FpuValue",
                          "Lc5 absolute FPU value or FPU reduction."};
 const OptionId kMoveOverhead{"move-overhead", "MoveOverheadMs",
@@ -48,8 +75,8 @@ void Settings::Populate(OptionsParser* options) {
   options->Add<FloatOption>(kCpuct, 0.0f, 100.0f) = 1.745f;
   options->Add<FloatOption>(kCpuctBase, 1.0f, 1.0e9f) = 38739.0f;
   options->Add<FloatOption>(kCpuctFactor, 0.0f, 1000.0f) = 3.894f;
-  options->Add<ChoiceOption>(kFpuStrategy,
-                             std::vector<std::string>{"absolute", "reduction"}) =
+  options->Add<ChoiceOption>(
+      kFpuStrategy, std::vector<std::string>{"absolute", "reduction"}) =
       "reduction";
   options->Add<FloatOption>(kFpuValue, -100.0f, 100.0f) = 0.33f;
   options->Add<IntOption>(kMoveOverhead, 0, 100000000) = 200;
@@ -57,20 +84,20 @@ void Settings::Populate(OptionsParser* options) {
 }
 
 Settings::Settings(const OptionsDict& options)
-    : configured_{.threads = options.Get<int>(kThreads),
-                  .eval_threads = options.Get<int>(kEvalThreads),
-                  .minibatch_size = options.Get<int>(kMinibatchSize),
-                  .max_active_visits = options.Get<int>(kMaxActiveVisits),
-                  .history_key_length = options.Get<int>(kHistoryKeyLength),
-                  .max_batch_delay_ms = options.Get<int>(kMaxBatchDelay),
-                  .cpuct = options.Get<float>(kCpuct),
-                  .cpuct_base = options.Get<float>(kCpuctBase),
-                  .cpuct_factor = options.Get<float>(kCpuctFactor),
-                  .fpu_strategy =
-                      options.Get<std::string>(kFpuStrategy) == "absolute"
-                          ? FpuStrategy::kAbsolute
-                          : FpuStrategy::kReduction,
-                  .fpu_value = options.Get<float>(kFpuValue)},
+    : configured_{
+          .threads = options.Get<int>(kThreads),
+          .eval_threads = options.Get<int>(kEvalThreads),
+          .minibatch_size = options.Get<int>(kMinibatchSize),
+          .max_active_visits = options.Get<int>(kMaxActiveVisits),
+          .history_key_length = options.Get<int>(kHistoryKeyLength),
+          .max_batch_delay_ms = options.Get<int>(kMaxBatchDelay),
+          .cpuct = options.Get<float>(kCpuct),
+          .cpuct_base = options.Get<float>(kCpuctBase),
+          .cpuct_factor = options.Get<float>(kCpuctFactor),
+          .fpu_strategy = options.Get<std::string>(kFpuStrategy) == "absolute"
+                              ? FpuStrategy::kAbsolute
+                              : FpuStrategy::kReduction,
+          .fpu_value = options.Get<float>(kFpuValue)},
       time_management_{
           .move_overhead_ms = options.Get<int>(kMoveOverhead),
           .alphazero_time_pct = options.Get<float>(kAlphazeroTimePct)} {}
@@ -90,8 +117,7 @@ Settings::Resolved Settings::Resolve(const BackendAttributes& backend) const {
         std::clamp(backend.recommended_batch_size, 1, backend_max);
   }
   if (resolved.threads == 0) {
-    const int hardware =
-        std::max(1u, std::thread::hardware_concurrency());
+    const int hardware = std::max(1u, std::thread::hardware_concurrency());
     resolved.threads =
         backend.runs_on_cpu
             ? std::max(1, backend.suggested_num_search_threads)

@@ -1,3 +1,30 @@
+/*
+  This file is part of Leela Chess Zero.
+  Copyright (C) 2026 The LCZero Authors
+
+  Leela Chess is free software: you can redistribute it and/or modify
+  it under the terms of the GNU General Public License as published by
+  the Free Software Foundation, either version 3 of the License, or
+  (at your option) any later version.
+
+  Leela Chess is distributed in the hope that it will be useful,
+  but WITHOUT ANY WARRANTY; without even the implied warranty of
+  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+  GNU General Public License for more details.
+
+  You should have received a copy of the GNU General Public License
+  along with Leela Chess.  If not, see <http://www.gnu.org/licenses/>.
+
+  Additional permission under GNU GPL version 3 section 7
+
+  If you modify this Program, or any covered work, by linking or
+  combining it with NVIDIA Corporation's libraries from the NVIDIA CUDA
+  Toolkit and the NVIDIA CUDA Deep Neural Network library (or a
+  modified version of those libraries), containing parts covered by the
+  terms of the respective license agreement, the licensors of this
+  Program grant you additional permission to convey the resulting work.
+*/
+
 #include "search/lc5/graph.h"
 
 #include <gtest/gtest.h>
@@ -32,7 +59,8 @@ TEST(Lc5GraphTest, CancellationOnlyErasesMatchingPlaceholder) {
   EXPECT_EQ(graph.Size(), 0u);
   graph.FindOrCreateMaterializing(key, 8);
   EXPECT_FALSE(graph.CancelMaterialization(key, 7));
-  graph.InstallPayload(key, 8, {.moves = {M(kFileA, kFileA)}, .priors = {1.0f}});
+  graph.InstallPayload(key, 8,
+                       {.moves = {M(kFileA, kFileA)}, .priors = {1.0f}});
   EXPECT_FALSE(graph.CancelMaterialization(key, 8));
   ASSERT_TRUE(graph.SnapshotNode(key));
   EXPECT_EQ(graph.SnapshotNode(key)->lifecycle, NodeLifecycle::kExpanded);
@@ -293,15 +321,17 @@ TEST(Lc5GraphTest, LateMaterializationPreservesPublishedEdges) {
   const Move move = M(kFileA, kFileA);
   const ExpansionPayload payload{.moves = {move}, .priors = {1.0f}};
   graph.InstallPayload(key, 7, payload);
-  ASSERT_EQ(graph.SelectAndReserve(key, created.generation, TestSettings()).status,
-            SelectStatus::kSelected);
+  ASSERT_EQ(
+      graph.SelectAndReserve(key, created.generation, TestSettings()).status,
+      SelectStatus::kSelected);
   ASSERT_EQ(graph
                 .BackupNode(key, created.generation,
                             SearchValue{0.4f, 0.2f, 2.0f}, move)
                 .edge,
             UpdateResult::kApplied);
-  ASSERT_EQ(graph.SelectAndReserve(key, created.generation, TestSettings()).status,
-            SelectStatus::kSelected);
+  ASSERT_EQ(
+      graph.SelectAndReserve(key, created.generation, TestSettings()).status,
+      SelectStatus::kSelected);
 
   // A caller with the old materializing snapshot must observe publication,
   // not create a second materialization. Even a late payload cannot reset it.
@@ -351,8 +381,8 @@ TEST(Lc5GraphTest, BackupCommitsNodeAndOptionalEdgeSums) {
   Move move = M(kFileA, kFileA);
   auto created = graph.FindOrCreateMaterializing(key, 1);
   graph.InstallPayload(key, 1, {.moves = {move}, .priors = {1.0f}});
-  auto result = graph.BackupNode(key, created.generation,
-                                 {0.25f, 0.5f, 3.0f}, std::nullopt);
+  auto result = graph.BackupNode(key, created.generation, {0.25f, 0.5f, 3.0f},
+                                 std::nullopt);
   EXPECT_EQ(result.node, UpdateResult::kApplied);
   EXPECT_EQ(result.edge, UpdateResult::kApplied);
   auto node = graph.SnapshotNode(key);
@@ -362,9 +392,11 @@ TEST(Lc5GraphTest, BackupCommitsNodeAndOptionalEdgeSums) {
   EXPECT_DOUBLE_EQ(node->value.d_sum, 0.5);
   EXPECT_DOUBLE_EQ(node->value.m_sum, 3.0);
   EXPECT_EQ(node->edges[0].value.visits, 0u);
-  ASSERT_EQ(graph.SelectAndReserve(key, created.generation, TestSettings()).status,
-            SelectStatus::kSelected);
-  result = graph.BackupNode(key, created.generation, {-0.5f, 0.25f, 4.0f}, move);
+  ASSERT_EQ(
+      graph.SelectAndReserve(key, created.generation, TestSettings()).status,
+      SelectStatus::kSelected);
+  result =
+      graph.BackupNode(key, created.generation, {-0.5f, 0.25f, 4.0f}, move);
   EXPECT_EQ(result.node, UpdateResult::kApplied);
   EXPECT_EQ(result.edge, UpdateResult::kApplied);
   node = graph.SnapshotNode(key);
@@ -386,15 +418,17 @@ TEST(Lc5GraphTest, BackupRejectsMissingAndStaleGenerations) {
   Move move = M(kFileA, kFileA);
   auto first = graph.FindOrCreateMaterializing(key, 1);
   ASSERT_TRUE(graph.Erase(key));
-  auto result = graph.BackupNode(key, first.generation, {0.25f, 0.5f, 3.0f}, move);
+  auto result =
+      graph.BackupNode(key, first.generation, {0.25f, 0.5f, 3.0f}, move);
   EXPECT_EQ(result.node, UpdateResult::kMissing);
   EXPECT_EQ(result.edge, UpdateResult::kMissing);
   EXPECT_FALSE(graph.SnapshotNode(key));
   auto second = graph.FindOrCreateMaterializing(key, 2);
   ASSERT_NE(first.generation, second.generation);
   graph.InstallPayload(key, 2, {.moves = {move}, .priors = {1.0f}});
-  ASSERT_EQ(graph.SelectAndReserve(key, second.generation, TestSettings()).status,
-            SelectStatus::kSelected);
+  ASSERT_EQ(
+      graph.SelectAndReserve(key, second.generation, TestSettings()).status,
+      SelectStatus::kSelected);
   result = graph.BackupNode(key, first.generation, {0.25f, 0.5f, 3.0f}, move);
   EXPECT_EQ(result.node, UpdateResult::kStale);
   EXPECT_EQ(result.edge, UpdateResult::kStale);
@@ -420,8 +454,8 @@ TEST(Lc5GraphTest, BackupCommitsNodeDespiteEdgeFailure) {
   Move move = M(kFileA, kFileA);
   auto created = graph.FindOrCreateMaterializing(key, 1);
   graph.InstallPayload(key, 1, {.moves = {move}, .priors = {1.0f}});
-  auto result = graph.BackupNode(key, created.generation,
-                                 {0.25f, 0.5f, 3.0f}, move);
+  auto result =
+      graph.BackupNode(key, created.generation, {0.25f, 0.5f, 3.0f}, move);
   EXPECT_EQ(result.node, UpdateResult::kApplied);
   EXPECT_EQ(result.edge, UpdateResult::kUnderflow);
   result = graph.BackupNode(key, created.generation, {0.25f, 0.5f, 3.0f},
@@ -447,14 +481,11 @@ TEST(Lc5GraphTest, ReservationsAreExactAndCancellationDoesNotCommit) {
   auto created = graph.FindOrCreateMaterializing(key, 1);
   Move first = M(kFileA, kFileA);
   Move second = M(kFileB, kFileB);
-  ExpansionPayload payload{.moves = {first, second},
-                           .priors = {0.5f, 0.5f}};
+  ExpansionPayload payload{.moves = {first, second}, .priors = {0.5f, 0.5f}};
   graph.InstallPayload(key, 1, payload);
   auto settings = TestSettings();
-  auto selection1 =
-      graph.SelectAndReserve(key, created.generation, settings);
-  auto selection2 =
-      graph.SelectAndReserve(key, created.generation, settings);
+  auto selection1 = graph.SelectAndReserve(key, created.generation, settings);
+  auto selection2 = graph.SelectAndReserve(key, created.generation, settings);
   EXPECT_EQ(selection1.move, first);
   EXPECT_EQ(selection2.move, second);
   EXPECT_EQ(graph.CancelEdge(key, created.generation, first),

@@ -1,3 +1,30 @@
+/*
+  This file is part of Leela Chess Zero.
+  Copyright (C) 2026 The LCZero Authors
+
+  Leela Chess is free software: you can redistribute it and/or modify
+  it under the terms of the GNU General Public License as published by
+  the Free Software Foundation, either version 3 of the License, or
+  (at your option) any later version.
+
+  Leela Chess is distributed in the hope that it will be useful,
+  but WITHOUT ANY WARRANTY; without even the implied warranty of
+  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+  GNU General Public License for more details.
+
+  You should have received a copy of the GNU General Public License
+  along with Leela Chess.  If not, see <http://www.gnu.org/licenses/>.
+
+  Additional permission under GNU GPL version 3 section 7
+
+  If you modify this Program, or any covered work, by linking or
+  combining it with NVIDIA Corporation's libraries from the NVIDIA CUDA
+  Toolkit and the NVIDIA CUDA Deep Neural Network library (or a
+  modified version of those libraries), containing parts covered by the
+  terms of the respective license agreement, the licensors of this
+  Program grant you additional permission to convey the resulting work.
+*/
+
 #include "search/lc5/graph.h"
 
 #include <algorithm>
@@ -92,7 +119,8 @@ InstallResult GameGraph::InstallPayload(NodeKey key,
   node.edges.clear();
   node.edges.reserve(payload.moves.size());
   for (size_t i = 0; i < payload.moves.size(); ++i) {
-    node.edges.push_back({.move = payload.moves[i], .prior = payload.priors[i]});
+    node.edges.push_back(
+        {.move = payload.moves[i], .prior = payload.priors[i]});
   }
   return {node.generation, true};
 }
@@ -127,10 +155,9 @@ SelectResult GameGraph::SelectAndReserve(NodeKey key,
     if (started(edge) > 0) visited_policy += edge.prior;
   }
   const float cpuct =
-      settings.cpuct +
-      settings.cpuct_factor *
-          std::log((node->value.visits + settings.cpuct_base) /
-                   settings.cpuct_base);
+      settings.cpuct + settings.cpuct_factor *
+                           std::log((node->value.visits + settings.cpuct_base) /
+                                    settings.cpuct_base);
   const float scale =
       std::sqrt(static_cast<float>(std::max<uint64_t>(1, children_started)));
   const float fpu =
@@ -185,8 +212,7 @@ UpdateResult GameGraph::CancelEdge(NodeKey key, uint64_t expected_generation,
   return ReleaseEdge(FindEdge(*node, move));
 }
 
-std::optional<NodeMetadata> GameGraph::SnapshotNodeMetadata(
-    NodeKey key) const {
+std::optional<NodeMetadata> GameGraph::SnapshotNodeMetadata(NodeKey key) const {
   const auto& shard = ShardFor(key);
   std::lock_guard lock(shard.mutex);
   const NodeState* node = FindNode(shard.nodes, key);
