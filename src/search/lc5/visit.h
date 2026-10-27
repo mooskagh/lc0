@@ -26,7 +26,7 @@ struct VisitId {
 struct PathStep {
   NodeKey key;
   uint64_t generation = 0;
-  std::optional<Move> selected_move;  // The reserved outgoing edge, if any.
+  std::optional<Move> selected_move{};  // The reserved outgoing edge, if any.
 };
 
 // Where a visit starts selecting. `backup_prefix` lists the steps above `key`

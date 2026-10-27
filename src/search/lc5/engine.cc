@@ -1,7 +1,5 @@
 #include "search/lc5/engine.h"
 
-#include <sstream>
-
 #include "chess/callbacks.h"
 #include "chess/uciloop.h"
 #include "search/lc5/settings.h"
@@ -18,31 +16,27 @@ void Lc5Engine::AbortAndWait() {
   run_->Wait();
 }
 
-void Lc5Engine::ClearGame() { graph_.Clear(); }
-
 void Lc5Engine::SetBackend(Backend* backend) {
   if (backend_ == backend) return;
   AbortAndWait();
   backend_ = backend;
-  ClearGame();
+  graph_.Clear();
 }
 
 void Lc5Engine::SetPosition(const GameState& state) {
   AbortAndWait();
-  if (!game_start_ || *game_start_ != state.startpos) ClearGame();
+  // The graph survives position changes within the same game.
+  if (game_start_ != state.startpos) graph_.Clear();
   game_start_ = state.startpos;
-  PositionHistory history;
-  history.Reset(state.startpos);
-  for (Move move : state.moves) history.Append(move);
-  root_history_ = std::move(history);
-  Settings settings(*options_);
-  root_key_ = MakeNodeKey(*root_history_, settings.history_key_length());
+  root_history_.emplace();
+  root_history_->Reset(state.startpos);
+  for (Move move : state.moves) root_history_->Append(move);
 }
 
 void Lc5Engine::NewGame() {
   AbortAndWait();
   run_.reset();
-  ClearGame();
+  graph_.Clear();
   game_start_.reset();
   root_history_.reset();
   clock_start_.reset();
@@ -58,17 +52,17 @@ void Lc5Engine::StartSearch(const GoParams& params) {
   if (!backend_) throw Exception("Lc5 requires a backend");
   if (!root_history_) throw Exception("Lc5 position was not set");
 
-  Settings settings(*options_);
-  root_key_ = MakeNodeKey(*root_history_, settings.history_key_length());
-  const auto resolved = settings.Resolve(backend_->GetAttributes());
+  const Settings settings(*options_);
+  VisitOrigin root{
+      .key = MakeNodeKey(*root_history_, settings.history_key_length()),
+      .history = *root_history_,
+      .backup_prefix = {}};
   const auto start = clock_start_.value_or(std::chrono::steady_clock::now());
   clock_start_.reset();
-
-  VisitOrigin root{
-      .key = root_key_, .history = *root_history_, .backup_prefix = {}};
-  run_ = std::make_unique<SearchRun>(&graph_, nullptr, backend_, uci_responder_,
-                                     resolved, settings.time_management(),
-                                     std::move(root), params, start);
+  run_ = std::make_unique<SearchRun>(
+      &graph_, /*store=*/nullptr, backend_, uci_responder_,
+      settings.Resolve(backend_->GetAttributes()), settings.time_management(),
+      std::move(root), params, start);
   run_->Start();
 }
 

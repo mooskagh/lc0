@@ -57,56 +57,55 @@ void Settings::Populate(OptionsParser* options) {
 }
 
 Settings::Settings(const OptionsDict& options)
-    : threads_(options.Get<int>(kThreads)),
-      eval_threads_(options.Get<int>(kEvalThreads)),
-      minibatch_size_(options.Get<int>(kMinibatchSize)),
-      max_active_visits_(options.Get<int>(kMaxActiveVisits)),
-      history_key_length_(options.Get<int>(kHistoryKeyLength)),
-      max_batch_delay_ms_(options.Get<int>(kMaxBatchDelay)),
-      cpuct_(options.Get<float>(kCpuct)),
-      cpuct_base_(options.Get<float>(kCpuctBase)),
-      cpuct_factor_(options.Get<float>(kCpuctFactor)),
-      fpu_strategy_(options.Get<std::string>(kFpuStrategy) == "absolute"
-                        ? FpuStrategy::kAbsolute
-                        : FpuStrategy::kReduction),
-      fpu_value_(options.Get<float>(kFpuValue)),
+    : configured_{.threads = options.Get<int>(kThreads),
+                  .eval_threads = options.Get<int>(kEvalThreads),
+                  .minibatch_size = options.Get<int>(kMinibatchSize),
+                  .max_active_visits = options.Get<int>(kMaxActiveVisits),
+                  .history_key_length = options.Get<int>(kHistoryKeyLength),
+                  .max_batch_delay_ms = options.Get<int>(kMaxBatchDelay),
+                  .cpuct = options.Get<float>(kCpuct),
+                  .cpuct_base = options.Get<float>(kCpuctBase),
+                  .cpuct_factor = options.Get<float>(kCpuctFactor),
+                  .fpu_strategy =
+                      options.Get<std::string>(kFpuStrategy) == "absolute"
+                          ? FpuStrategy::kAbsolute
+                          : FpuStrategy::kReduction,
+                  .fpu_value = options.Get<float>(kFpuValue)},
       time_management_{
           .move_overhead_ms = options.Get<int>(kMoveOverhead),
           .alphazero_time_pct = options.Get<float>(kAlphazeroTimePct)} {}
 
 Settings::Resolved Settings::Resolve(const BackendAttributes& backend) const {
-  const int automatic_evaluators =
-      std::clamp(backend.suggested_num_search_threads, 1, 128);
-  const int evaluators = eval_threads_ == 0 ? automatic_evaluators : eval_threads_;
+  Resolved resolved = configured_;
   const int backend_max = std::max(1, backend.maximum_batch_size);
-  const int recommended = std::clamp(backend.recommended_batch_size, 1, backend_max);
-  if (minibatch_size_ > backend_max) {
+  if (resolved.minibatch_size > backend_max) {
     throw Exception("Lc5 MinibatchSize exceeds backend maximum batch size");
   }
-  const int batch = minibatch_size_ == 0 ? recommended : minibatch_size_;
-  const unsigned hardware = std::max(1u, std::thread::hardware_concurrency());
-  const int automatic_workers =
-      backend.runs_on_cpu
-          ? std::max(1, backend.suggested_num_search_threads)
-          : std::min<int>(hardware, std::max(2, 4 * evaluators));
-  const int workers = threads_ == 0 ? automatic_workers : threads_;
-  const int active = max_active_visits_ == 0
-                         ? std::max(1024, 4 * evaluators * batch)
-                         : max_active_visits_;
-  if (active < evaluators) {
-    throw Exception("Lc5 MaxActiveVisits must allow at least one visit per evaluator");
+  if (resolved.eval_threads == 0) {
+    resolved.eval_threads =
+        std::clamp(backend.suggested_num_search_threads, 1, 128);
   }
-  return {.threads = workers,
-          .eval_threads = evaluators,
-          .minibatch_size = batch,
-          .max_active_visits = active,
-          .history_key_length = history_key_length_,
-          .max_batch_delay_ms = max_batch_delay_ms_,
-          .cpuct = cpuct_,
-          .cpuct_base = cpuct_base_,
-          .cpuct_factor = cpuct_factor_,
-          .fpu_strategy = fpu_strategy_,
-          .fpu_value = fpu_value_};
+  if (resolved.minibatch_size == 0) {
+    resolved.minibatch_size =
+        std::clamp(backend.recommended_batch_size, 1, backend_max);
+  }
+  if (resolved.threads == 0) {
+    const int hardware =
+        std::max(1u, std::thread::hardware_concurrency());
+    resolved.threads =
+        backend.runs_on_cpu
+            ? std::max(1, backend.suggested_num_search_threads)
+            : std::min(hardware, std::max(2, 4 * resolved.eval_threads));
+  }
+  if (resolved.max_active_visits == 0) {
+    resolved.max_active_visits =
+        std::max(1024, 4 * resolved.eval_threads * resolved.minibatch_size);
+  }
+  if (resolved.max_active_visits < resolved.eval_threads) {
+    throw Exception(
+        "Lc5 MaxActiveVisits must allow at least one visit per evaluator");
+  }
+  return resolved;
 }
 
 }  // namespace lczero::lc5

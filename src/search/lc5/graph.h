@@ -25,7 +25,7 @@ struct EdgeState {
   Move move;
   float prior = 0.0f;
   uint32_t in_flight = 0;  // Virtual loss.
-  ValueStats value;
+  ValueStats value{};
   float Q() const { return value.Q(); }
 };
 
@@ -42,8 +42,8 @@ struct NodeState {
   NodeLifecycle lifecycle = NodeLifecycle::kMaterializing;
   MaterializationTicketId ticket = 0;  // Zero once expanded.
   TerminalKind terminal = TerminalKind::kNonTerminal;
-  ValueStats value;
-  std::vector<EdgeState> edges;
+  ValueStats value{};
+  std::vector<EdgeState> edges{};
 };
 
 // Lightweight snapshot without edges or value stats, used during selection.

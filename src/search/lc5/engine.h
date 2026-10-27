@@ -29,15 +29,13 @@ class Lc5Engine final : public SearchBase {
  private:
   friend class SearchRunTestPeer;
   void AbortAndWait();
-  void ClearGame();
 
   const OptionsDict* options_;
-  // Retained without eviction until ClearGame(); no payload store is needed.
+  // Retained without eviction for the whole game, so no NodeStore is needed.
   GameGraph graph_;
   std::unique_ptr<SearchRun> run_;
   std::optional<Position> game_start_;
   std::optional<PositionHistory> root_history_;
-  NodeKey root_key_;
   std::optional<std::chrono::steady_clock::time_point> clock_start_;
 };
 

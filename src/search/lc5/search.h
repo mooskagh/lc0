@@ -71,7 +71,7 @@ class SearchRun {
     Kind kind = Kind::kAdmit;
     MaterializationTicketId ticket = 0;
     uint64_t generation = 0;
-    SearchValue value;
+    SearchValue value{};
     bool terminal = false;
   };
   struct Ticket {
@@ -91,7 +91,7 @@ class SearchRun {
     MaterializationTicketId ticket;
     NodeKey key;
     PositionHistory history;
-    ExpansionPayload payload;
+    ExpansionPayload payload{};
     State state = State::kPending;
   };
   enum class JobKind { kEval, kLoad, kPersist };
@@ -156,7 +156,7 @@ class SearchRun {
   };
   struct Batch {
     std::unique_ptr<BackendComputation> computation;
-    std::vector<std::unique_ptr<Job>> jobs;
+    std::vector<std::unique_ptr<Job>> jobs{};
     bool timed_out = false;
   };
   // Cap on whole jobs in flight per worker; items are capped separately at

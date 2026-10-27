@@ -27,29 +27,16 @@ class Settings {
 
   explicit Settings(const OptionsDict& options);
   static void Populate(OptionsParser* options);
+  // Fills automatic (zero) sizes from the backend and validates them.
   Resolved Resolve(const BackendAttributes& backend) const;
 
-  int threads() const { return threads_; }
-  int eval_threads() const { return eval_threads_; }
-  int minibatch_size() const { return minibatch_size_; }
-  int max_active_visits() const { return max_active_visits_; }
-  int history_key_length() const { return history_key_length_; }
+  int history_key_length() const { return configured_.history_key_length; }
   const TimeManager::Config& time_management() const {
     return time_management_;
   }
 
  private:
-  int threads_;
-  int eval_threads_;
-  int minibatch_size_;
-  int max_active_visits_;
-  int history_key_length_;
-  int max_batch_delay_ms_;
-  float cpuct_;
-  float cpuct_base_;
-  float cpuct_factor_;
-  FpuStrategy fpu_strategy_;
-  float fpu_value_;
+  Resolved configured_;  // As set by the user; zero sizes are automatic.
   TimeManager::Config time_management_;
 };
 

@@ -30,7 +30,7 @@ inline SearchValue TerminalValue(TerminalKind terminal) {
 // with priors and the network's leaf value.
 struct ExpansionPayload {
   TerminalKind terminal = TerminalKind::kNonTerminal;
-  SearchValue leaf;
+  SearchValue leaf{};
   std::vector<Move> moves;
   std::vector<float> priors;
 };
