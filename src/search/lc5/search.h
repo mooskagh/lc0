@@ -67,7 +67,8 @@ class SearchRun {
             UciResponder* responder, Settings::Resolved settings,
             TimeManager::Config time_management, VisitOrigin root,
             GoParams go_params,
-            std::chrono::steady_clock::time_point start_time);
+            std::chrono::steady_clock::time_point start_time,
+            int64_t saved_ms = 0);
   ~SearchRun();
 
   void Start();
@@ -76,6 +77,8 @@ class SearchRun {
   void Wait();
   bool Finished() const { return finished_.load(std::memory_order_acquire); }
   const Metrics& metrics() const { return metrics_; }
+  // Time budget left unused because the search stopped early.
+  int64_t unused_time_ms() const { return unused_time_ms_.load(); }
 
   // Admits a visit from an arbitrary origin, sharing the node budget with
   // root visits. May be called before Start(). Returns false if admission is
@@ -196,6 +199,7 @@ class SearchRun {
 
   // Controller.
   void Controller();
+  bool BestMoveDecided(std::chrono::steady_clock::time_point now) const;
   void Respond();
   bool FullyDrained();
   void Shutdown();
@@ -222,6 +226,8 @@ class SearchRun {
   void AdvanceVisit(Worker& worker, VisitId id);
   void Backup(Worker& worker, VisitPool::Slot& slot);
   void Cancel(Worker& worker, VisitPool::Slot& slot);
+  // Releases the visit's reservations and returns it to its origin.
+  void Restart(VisitPool::Slot& slot);
   void FinishVisit(Worker& worker, VisitPool::Slot& slot, bool completed);
   void Resume(Worker& worker, const Continuation& continuation);
   void Deliver(Worker& worker, const Continuation& continuation);
@@ -283,6 +289,7 @@ class SearchRun {
   std::atomic<bool> finished_{false};
   std::atomic<bool> output_committed_{false};
   std::atomic<bool> shutdown_{false};
+  std::atomic<int64_t> unused_time_ms_{0};
   // Includes queued, executing, and returned-but-unconsumed jobs.
   std::atomic<size_t> jobs_in_flight_{0};
   // Jobs held by collectors (including retained whole jobs), not computing or

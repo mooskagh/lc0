@@ -38,7 +38,8 @@ std::string Metrics::Format(size_t graph_size, size_t active,
       << " batches=" << evaluation_batches.load()
       << " cache=" << cache_hits.load()
       << " store_hit=" << node_store_hits.load()
-      << " suspended=" << visits_suspended.load() << " active=" << active
+      << " suspended=" << visits_suspended.load()
+      << " restarted=" << visits_restarted.load() << " active=" << active
       << " ready_eval=" << ready_eval << " graph=" << graph_size
       << " mailbox=" << mailbox_notifications.load()
       << " io_high=" << io_jobs_high_water.load()

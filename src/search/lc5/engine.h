@@ -64,6 +64,8 @@ class Lc5Engine final : public SearchBase {
   std::optional<Position> game_start_;
   std::optional<PositionHistory> root_history_;
   std::optional<std::chrono::steady_clock::time_point> clock_start_;
+  // Time a previous search left unused by stopping early.
+  int64_t saved_time_ms_ = 0;
 };
 
 }  // namespace lczero::lc5

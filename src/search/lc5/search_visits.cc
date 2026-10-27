@@ -155,6 +155,10 @@ void SearchRun::Resume(Worker& worker, const Continuation& event) {
     visit.result = event.value;
     if (event.kind == Continuation::Kind::kBackup) {
       visit.state = VisitState::kReadyBackup;
+    } else if (settings_.restart_waiters) {
+      // Like a collision: select again from the root with the new value
+      // known, rather than committing this visit to the subtree.
+      Restart(*slot);
     } else {
       visit.state = VisitState::kReadySelect;
       metrics_.visits_resumed.fetch_add(1);
@@ -317,6 +321,20 @@ void SearchRun::AdvanceVisit(Worker& worker, VisitId id) {
     visit.history.Append(selected.move);
     visit.current_key =
         MakeNodeKey(visit.history, settings_.history_key_length);
+    // A two-fold repetition whose cycle lies within this search is scored as
+    // a draw. Whether that holds depends on the root, so the graph node is
+    // left untouched and the leaf is backed up from a step that is not in the
+    // graph (generation 0).
+    const Position& position = visit.history.Last();
+    const int ply = static_cast<int>(visit.path.size());
+    if (position.GetRepetitions() == 1 && ply >= 4 &&
+        ply >= position.GetPliesSincePrevRepetition()) {
+      visit.path.push_back({.key = visit.current_key});
+      visit.result = TerminalValue(TerminalKind::kRepetition);
+      metrics_.terminal_visits.fetch_add(1);
+      Backup(worker, *slot);
+      return;
+    }
   }
 }
 
@@ -326,6 +344,8 @@ void SearchRun::Backup(Worker& worker, VisitPool::Slot& slot) {
   SearchValue value = visit.result;
   for (size_t i = visit.path.size(); i-- > 0; value = value.Parent()) {
     const PathStep& step = visit.path[i];
+    // An in-search repetition leaf has no graph node.
+    if (step.generation == 0) continue;
     // The leaf commits only its node value; ancestors complete their edges.
     const auto move =
         i + 1 < visit.path.size() ? step.selected_move : std::nullopt;
@@ -354,6 +374,22 @@ void SearchRun::Cancel(Worker& worker, VisitPool::Slot& slot) {
     }
   }
   FinishVisit(worker, slot, false);
+}
+
+void SearchRun::Restart(VisitPool::Slot& slot) {
+  Visit& visit = slot.visit;
+  for (const PathStep& step : visit.path) {
+    if (step.selected_move &&
+        graph_->CancelEdge(step.key, step.generation, *step.selected_move) ==
+            UpdateResult::kUnderflow) {
+      metrics_.invariant_underflow_prevented.fetch_add(1);
+    }
+  }
+  visit.history = visit.origin.history;
+  visit.current_key = visit.origin.key;
+  visit.path = visit.origin.backup_prefix;
+  visit.state = VisitState::kReadySelect;
+  metrics_.visits_restarted.fetch_add(1);
 }
 
 void SearchRun::FinishVisit(Worker& worker, VisitPool::Slot& slot,

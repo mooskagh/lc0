@@ -107,7 +107,8 @@ Settings::Resolved TestSettings(int threads = 1, int capacity = 4) {
           .cpuct_base = 100.0f,
           .cpuct_factor = 0.0f,
           .fpu_strategy = FpuStrategy::kAbsolute,
-          .fpu_value = 0.0f};
+          .fpu_value = 0.0f,
+          .restart_waiters = false};
 }
 
 TimeManager::Config TestTimeManagement() {

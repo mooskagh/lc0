@@ -42,18 +42,31 @@ class TimeManager {
   struct Config {
     int64_t move_overhead_ms;
     float alphazero_time_pct;
+    // Remaining visits are divided by this when deciding whether the best
+    // root move can still be overtaken; 0 disables early stopping.
+    float smart_pruning_factor = 1.33f;
   };
   struct Decision {
     bool should_stop;
     std::optional<std::chrono::steady_clock::time_point> next_check;
   };
 
+  // `saved_ms` is time left unused by earlier early stops; it extends a
+  // clock-based budget.
   TimeManager(Config config, const GoParams& params, bool black_to_move,
-              std::chrono::steady_clock::time_point start_time);
+              std::chrono::steady_clock::time_point start_time,
+              int64_t saved_ms = 0);
   Decision Evaluate(std::chrono::steady_clock::time_point now) const;
+
+  const std::optional<std::chrono::steady_clock::time_point>& deadline() const {
+    return deadline_;
+  }
+  // Early stopping applies only to budgets allocated from the clock.
+  float smart_pruning_factor() const { return smart_pruning_factor_; }
 
  private:
   std::optional<std::chrono::steady_clock::time_point> deadline_;
+  float smart_pruning_factor_ = 0.0f;
 };
 
 }  // namespace lc5

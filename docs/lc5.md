@@ -86,6 +86,17 @@ A rejected publication resumes everyone in selection and is neither backed up
 nor persisted. Accepted fresh payloads are queued for persistence when a store
 exists.
 
+**Two-fold repetition.** After each selected move, a position that repeats
+one seen at most `ply` plies earlier, where `ply` (at least 4) is its distance
+from the root, is scored as a draw. The cycle then lies within the search, as
+in classic search. Because this depends on the root, the graph node is left
+alone: the visit backs up from a path step with generation 0, which `Backup`
+skips. Threefold repetition is still detected when a node is materialized.
+
+**Restarting waiters.** With `RestartWaiters`, a waiter woken by a nonterminal
+publication releases its reservations and selects again from its origin, like
+a classic collision, instead of continuing below the new node.
+
 **Backup and cancel.** `Backup` walks the path from the leaf, adding the value
 to each node and completing each ancestor's reserved edge, with the
 perspective flipped at every step. A stale node, missing edge or reservation
@@ -159,11 +170,18 @@ returns the deadline as the next time to check. Precedence:
    time limit.
 
 The allocation is
-`(clock - MoveOverheadMs) * f + increment * (1 - f)`, where
+`(clock - MoveOverheadMs) * f + increment * (1 - f) + saved`, where
 `f = max(AlphaZeroTimePct / 100, 1 / movestogo)`. Defaults are 200 ms of
 overhead and 3%. The result is clamped to [1 ms, usable clock], and a clock at
 or below the overhead gets zero. Nonnegative `nodes` limits are exact
 admission caps.
+
+For clock-based budgets (not `movetime`) the controller also checks every
+10 ms whether the most visited root edge can still be overtaken: it estimates
+the remaining visits from this run's rate, divides them by
+`SmartPruningFactor` and stops when the lead is larger. A root with a single
+legal move stops at once. Time left unused this way is kept by `Lc5Engine` as
+`saved` and added to the next move's budget.
 
 ## Options
 
@@ -172,19 +190,21 @@ admission caps.
 | `Threads` | auto | Visit workers. |
 | `EvalThreads` | auto | Concurrent evaluators (and store workers). |
 | `MinibatchSize` | backend | Neural batch target. |
-| `MaxActiveVisits` | auto | Live visit bound. |
+| `MaxActiveVisits` | auto | Live visit bound; auto is `max(256, 1.5 * EvalThreads * MinibatchSize)`. |
 | `HistoryKeyLength` | 7 | Positions beyond the current one in node keys. |
 | `MaxBatchDelayMs` | 2 | Partial batch deadline; 0 disables it. |
 | `CPuct`, `CPuctBase`, `CPuctFactor` | 1.745, 38739, 3.894 | PUCT. |
 | `FpuStrategy`, `FpuValue` | reduction, 0.33 | First-play urgency. |
+| `RestartWaiters` | false | Woken waiters select again from the root. |
 | `MoveOverheadMs`, `AlphaZeroTimePct` | 200, 3 | Time allocation. |
+| `SmartPruningFactor` | 1.33 | Early stop when the best move is decided; 0 disables. |
 
 ## Known limitations
 
 - If no root edge has a completed visit (e.g. `go nodes 1` on a fresh root, or
   an exhausted clock), `bestmove` is the legal move with the lowest encoding,
   not the highest-prior one, even when the root has already been evaluated.
-- Not implemented: classical time management, Syzygy, MultiPV, training data,
+- Not implemented: classical time management (beyond early stopping), Syzygy, MultiPV, training data,
   tree pruning, mate bounds and eviction. Selection (`SelectAndReserve`) and
   backup (`Backup`/`BackupNode`) are concrete functions, not a pluggable policy
   API.

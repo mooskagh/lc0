@@ -50,6 +50,7 @@ class Settings {
     float cpuct_factor;
     FpuStrategy fpu_strategy;
     float fpu_value;
+    bool restart_waiters;
   };
 
   explicit Settings(const OptionsDict& options);

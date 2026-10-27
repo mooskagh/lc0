@@ -35,8 +35,8 @@ namespace lczero::lc5 {
 namespace {
 
 std::optional<int64_t> GetTimeBudget(TimeManager::Config config,
-                                     const GoParams& params,
-                                     bool black_to_move) {
+                                     const GoParams& params, bool black_to_move,
+                                     int64_t saved_ms) {
   if (params.ponder) return std::nullopt;
   if (params.movetime) return params.movetime;
   if (params.infinite) return std::nullopt;
@@ -53,7 +53,8 @@ std::optional<int64_t> GetTimeBudget(TimeManager::Config config,
   }
   // Divide the clock and future increments over the implied move horizon.
   // The current move's increment is only received after we finish searching.
-  const long double budget = usable * fraction + increment * (1 - fraction);
+  const long double budget = usable * fraction + increment * (1 - fraction) +
+                             std::max<int64_t>(0, saved_ms);
   return static_cast<int64_t>(
       std::clamp(budget, 1.0L, static_cast<long double>(usable)));
 }
@@ -62,9 +63,12 @@ std::optional<int64_t> GetTimeBudget(TimeManager::Config config,
 
 TimeManager::TimeManager(Config config, const GoParams& params,
                          bool black_to_move,
-                         std::chrono::steady_clock::time_point start_time) {
-  if (const auto budget = GetTimeBudget(config, params, black_to_move)) {
+                         std::chrono::steady_clock::time_point start_time,
+                         int64_t saved_ms) {
+  if (const auto budget =
+          GetTimeBudget(config, params, black_to_move, saved_ms)) {
     deadline_ = start_time + std::chrono::milliseconds(*budget);
+    if (!params.movetime) smart_pruning_factor_ = config.smart_pruning_factor;
   }
 }
 

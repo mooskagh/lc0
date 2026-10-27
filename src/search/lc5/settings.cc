@@ -56,11 +56,20 @@ const OptionId kFpuStrategy{"fpu-strategy", "FpuStrategy",
                             "Lc5 first-play urgency strategy."};
 const OptionId kFpuValue{"fpu-value", "FpuValue",
                          "Lc5 absolute FPU value or FPU reduction."};
+const OptionId kRestartWaiters{
+    "restart-waiters", "RestartWaiters",
+    "Visits that waited for a node's evaluation select again from the root "
+    "instead of continuing below that node."};
 const OptionId kMoveOverhead{"move-overhead", "MoveOverheadMs",
                              "Time reserved for communication overhead."};
 const OptionId kAlphazeroTimePct{
     "alphazero-time-pct", "AlphaZeroTimePct",
     "Percentage of the remaining clock allocated to each Lc5 move."};
+const OptionId kSmartPruningFactor{
+    "smart-pruning-factor", "SmartPruningFactor",
+    "Stop early once the best root move cannot be overtaken by the remaining "
+    "visits divided by this factor; the unused time is spent on the next "
+    "move. 0 disables it."};
 
 }  // namespace
 
@@ -79,8 +88,10 @@ void Settings::Populate(OptionsParser* options) {
       kFpuStrategy, std::vector<std::string>{"absolute", "reduction"}) =
       "reduction";
   options->Add<FloatOption>(kFpuValue, -100.0f, 100.0f) = 0.33f;
+  options->Add<BoolOption>(kRestartWaiters) = false;
   options->Add<IntOption>(kMoveOverhead, 0, 100000000) = 200;
   options->Add<FloatOption>(kAlphazeroTimePct, 0.0f, 100.0f) = 3.0f;
+  options->Add<FloatOption>(kSmartPruningFactor, 0.0f, 10.0f) = 1.33f;
 }
 
 Settings::Settings(const OptionsDict& options)
@@ -97,10 +108,12 @@ Settings::Settings(const OptionsDict& options)
           .fpu_strategy = options.Get<std::string>(kFpuStrategy) == "absolute"
                               ? FpuStrategy::kAbsolute
                               : FpuStrategy::kReduction,
-          .fpu_value = options.Get<float>(kFpuValue)},
+          .fpu_value = options.Get<float>(kFpuValue),
+          .restart_waiters = options.Get<bool>(kRestartWaiters)},
       time_management_{
           .move_overhead_ms = options.Get<int>(kMoveOverhead),
-          .alphazero_time_pct = options.Get<float>(kAlphazeroTimePct)} {}
+          .alphazero_time_pct = options.Get<float>(kAlphazeroTimePct),
+          .smart_pruning_factor = options.Get<float>(kSmartPruningFactor)} {}
 
 Settings::Resolved Settings::Resolve(const BackendAttributes& backend) const {
   Resolved resolved = configured_;
@@ -124,8 +137,10 @@ Settings::Resolved Settings::Resolve(const BackendAttributes& backend) const {
             : std::min(hardware, std::max(2, 4 * resolved.eval_threads));
   }
   if (resolved.max_active_visits == 0) {
+    // Visits in flight dilute small searches, so keep only enough to fill
+    // the evaluators.
     resolved.max_active_visits =
-        std::max(1024, 4 * resolved.eval_threads * resolved.minibatch_size);
+        std::max(256, 3 * resolved.eval_threads * resolved.minibatch_size / 2);
   }
   if (resolved.max_active_visits < resolved.eval_threads) {
     throw Exception(

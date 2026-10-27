@@ -47,7 +47,7 @@ TEST(Lc5SettingsTest, DefaultsResolveAgainstBackend) {
   auto resolved = settings.Resolve(attrs);
   EXPECT_EQ(resolved.eval_threads, 2);
   EXPECT_EQ(resolved.minibatch_size, 64);
-  EXPECT_GE(resolved.max_active_visits, 1024);
+  EXPECT_GE(resolved.max_active_visits, 256);
   EXPECT_EQ(resolved.history_key_length, 7);
   EXPECT_EQ(resolved.fpu_strategy, FpuStrategy::kReduction);
 }

@@ -40,6 +40,7 @@ struct Metrics {
   std::atomic<uint64_t> visits_ready_high_water{0};
   std::atomic<uint64_t> visits_suspended{0};
   std::atomic<uint64_t> visits_resumed{0};
+  std::atomic<uint64_t> visits_restarted{0};
   std::atomic<uint64_t> terminal_visits{0};
   std::atomic<uint64_t> selection_node_steps{0};
   std::atomic<uint64_t> backup_node_steps{0};

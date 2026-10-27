@@ -27,6 +27,8 @@
 
 #include "search/lc5/engine.h"
 
+#include <utility>
+
 #include "chess/callbacks.h"
 #include "chess/uciloop.h"
 #include "search/lc5/settings.h"
@@ -67,6 +69,7 @@ void Lc5Engine::NewGame() {
   game_start_.reset();
   root_history_.reset();
   clock_start_.reset();
+  saved_time_ms_ = 0;
 }
 
 void Lc5Engine::StartClock() {
@@ -75,6 +78,7 @@ void Lc5Engine::StartClock() {
 
 void Lc5Engine::StartSearch(const GoParams& params) {
   AbortAndWait();
+  if (run_) saved_time_ms_ += run_->unused_time_ms();
   run_.reset();
   if (!backend_) throw Exception("Lc5 requires a backend");
   if (!root_history_) throw Exception("Lc5 position was not set");
@@ -89,7 +93,7 @@ void Lc5Engine::StartSearch(const GoParams& params) {
   run_ = std::make_unique<SearchRun>(
       &graph_, /*store=*/nullptr, backend_, uci_responder_,
       settings.Resolve(backend_->GetAttributes()), settings.time_management(),
-      std::move(root), params, start);
+      std::move(root), params, start, std::exchange(saved_time_ms_, 0));
   run_->Start();
 }
 

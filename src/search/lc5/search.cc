@@ -37,6 +37,9 @@ namespace {
 
 using std::chrono::steady_clock;
 constexpr auto kInfoInterval = std::chrono::seconds(1);
+constexpr auto kSmartPruningInterval = std::chrono::milliseconds(10);
+// Visits to complete before the visit rate is trusted for early stopping.
+constexpr uint64_t kSmartPruningMinVisits = 100;
 
 // Moves in the graph are from the side to move's perspective; UCI is not.
 Move ToUci(Move move, const Position& position) {
@@ -77,7 +80,8 @@ int CentipawnsFromQ(float q) {
 SearchRun::SearchRun(GameGraph* graph, NodeStore* store, Backend* backend,
                      UciResponder* responder, Settings::Resolved settings,
                      TimeManager::Config time_management, VisitOrigin root,
-                     GoParams go_params, steady_clock::time_point start_time)
+                     GoParams go_params, steady_clock::time_point start_time,
+                     int64_t saved_ms)
     : graph_(graph),
       store_(store),
       backend_(backend),
@@ -86,7 +90,8 @@ SearchRun::SearchRun(GameGraph* graph, NodeStore* store, Backend* backend,
       root_(std::move(root)),
       start_time_(start_time),
       time_manager_(time_management, go_params,
-                    root_.history.Last().IsBlackToMove(), start_time_),
+                    root_.history.Last().IsBlackToMove(), start_time_,
+                    saved_ms),
       visits_(settings_.max_active_visits) {
   for (int i = 0; i < settings_.threads; ++i) {
     workers_.push_back(std::make_unique<Worker>(i));
@@ -167,6 +172,16 @@ void SearchRun::Controller() {
       if (decision.should_stop ||
           (node_limit_ && metrics_.visits_completed.load() >= *node_limit_)) {
         Stop();
+      } else if (time_manager_.smart_pruning_factor() > 0.0f) {
+        if (BestMoveDecided(now)) {
+          unused_time_ms_.store(
+              std::chrono::duration_cast<std::chrono::milliseconds>(
+                  *time_manager_.deadline() - now)
+                  .count());
+          Stop();
+        } else {
+          next_check = std::min(*next_check, now + kSmartPruningInterval);
+        }
       }
     }
     if (!Stopping() && now >= next_info) {
@@ -190,6 +205,31 @@ void SearchRun::Controller() {
         lock, wake_at, [&] { return controller_generation_ != generation; });
   }
   Shutdown();
+}
+
+// Whether the most visited root edge stays ahead even if all remaining visits,
+// estimated from this run's rate so far, go to the runner-up.
+bool SearchRun::BestMoveDecided(steady_clock::time_point now) const {
+  const auto root = graph_->SnapshotNode(root_.key);
+  if (!root || root->lifecycle != NodeLifecycle::kExpanded) return false;
+  if (root->edges.size() == 1) return true;
+  const uint64_t visits = metrics_.visits_completed.load();
+  const auto elapsed = now - start_time_;
+  if (visits < kSmartPruningMinVisits || elapsed.count() <= 0) return false;
+  const double remaining =
+      static_cast<double>(visits) * (*time_manager_.deadline() - now).count() /
+      elapsed.count() / time_manager_.smart_pruning_factor();
+  uint64_t best = 0;
+  uint64_t second = 0;
+  for (const auto& edge : root->edges) {
+    if (edge.value.visits > best) {
+      second = best;
+      best = edge.value.visits;
+    } else {
+      second = std::max(second, edge.value.visits);
+    }
+  }
+  return best - second > remaining;
 }
 
 void SearchRun::Respond() {
