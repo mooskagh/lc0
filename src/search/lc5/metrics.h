@@ -29,7 +29,6 @@ struct Metrics {
   std::atomic<uint64_t> node_store_store_batches{0};
   std::atomic<uint64_t> graph_nodes_created{0};
   std::atomic<uint64_t> graph_nodes_rehydrated{0};
-  std::atomic<uint64_t> graph_nodes_evicted{0};
   std::atomic<uint64_t> graph_size_high_water{0};
   std::atomic<uint64_t> eval_requests{0};
   std::atomic<uint64_t> cache_hits{0};
@@ -37,7 +36,6 @@ struct Metrics {
   std::atomic<uint64_t> evaluation_batches{0};
   std::atomic<uint64_t> partial_starvation_flushes{0};
   std::atomic<uint64_t> partial_timeout_flushes{0};
-  std::atomic<uint64_t> partial_drain_flushes{0};
   std::atomic<uint64_t> max_depth{0};
   std::atomic<uint64_t> max_selected_depth{0};
   std::atomic<uint64_t> ready_eval_high_water{0};
@@ -48,5 +46,14 @@ struct Metrics {
 
   std::string Format(size_t graph_size, size_t active, size_t ready_eval) const;
 };
+
+template <typename T, typename U>
+void RaiseHighWater(std::atomic<T>& target, U value) {
+  T old = target.load(std::memory_order_relaxed);
+  while (old < static_cast<T>(value) &&
+         !target.compare_exchange_weak(old, static_cast<T>(value),
+                                       std::memory_order_relaxed)) {
+  }
+}
 
 }  // namespace lczero::lc5

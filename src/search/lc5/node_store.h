@@ -7,6 +7,7 @@
 
 #include "chess/types.h"
 #include "search/lc5/key.h"
+#include "search/lc5/value.h"
 
 namespace lczero::lc5 {
 
@@ -19,11 +20,17 @@ enum class TerminalKind : uint8_t {
   kInsufficientMaterial,
 };
 
+// Value of a terminal position for its side to move.
+inline SearchValue TerminalValue(TerminalKind terminal) {
+  return terminal == TerminalKind::kCheckmate ? SearchValue{-1.0f, 0.0f, 0.0f}
+                                              : SearchValue{0.0f, 1.0f, 0.0f};
+}
+
+// Immutable result of expanding a node: either a terminal kind, or legal moves
+// with priors and the network's leaf value.
 struct ExpansionPayload {
   TerminalKind terminal = TerminalKind::kNonTerminal;
-  float leaf_q = 0.0f;
-  float leaf_d = 0.0f;
-  float leaf_m = 0.0f;
+  SearchValue leaf;
   std::vector<Move> moves;
   std::vector<float> priors;
 };
@@ -33,6 +40,7 @@ struct StoredExpansion {
   ExpansionPayload payload;
 };
 
+// Optional batched backing store for expansion payloads.
 class NodeStore {
  public:
   virtual ~NodeStore() = default;

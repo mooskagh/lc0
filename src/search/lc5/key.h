@@ -1,7 +1,6 @@
 #pragma once
 
 #include <compare>
-#include <cstddef>
 #include <cstdint>
 #include <utility>
 
@@ -19,12 +18,7 @@ struct NodeKey {
   }
 };
 
-struct NodeKeyHash {
-  constexpr size_t operator()(NodeKey key) const noexcept {
-    return static_cast<size_t>(key.hash ^ (key.hash >> 32));
-  }
-};
-
+// Keys the last position plus `history_key_length` preceding ones.
 inline NodeKey MakeNodeKey(const PositionHistory& history,
                            int history_key_length) {
   return NodeKey{history.HashLast(history_key_length + 1)};

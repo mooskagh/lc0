@@ -45,6 +45,7 @@ class SearchRunTestPeer {
       EXPECT_TRUE(worker->drained.load());
       EXPECT_TRUE(worker->active.empty());
       EXPECT_TRUE(worker->runnable.empty());
+      EXPECT_TRUE(worker->unprepared.empty());
       EXPECT_TRUE(worker->loads.empty());
       EXPECT_TRUE(worker->evals.empty());
       EXPECT_TRUE(worker->persistence.empty());
@@ -300,7 +301,7 @@ class RecordingStore final : public NodeStore {
     entries.clear();
   }
   // Seed before Start(), inspect after Wait().
-  std::unordered_map<NodeKey, ExpansionPayload, NodeKeyHash> entries;
+  absl::flat_hash_map<NodeKey, ExpansionPayload> entries;
   size_t stored = 0;
 
  private:
@@ -569,7 +570,7 @@ TEST(Lc5SearchTest, OwnerBacksUpLeafWhileWaitersResumeSelection) {
   ASSERT_TRUE(node);
   EXPECT_EQ(node->value.visits, 4u);
   uint64_t edge_visits = 0;
-  for (const auto& edge : node->edges) edge_visits += edge.visits;
+  for (const auto& edge : node->edges) edge_visits += edge.value.visits;
   // Only the owner backs up at the root leaf. Each waiter must traverse an
   // edge.
   EXPECT_EQ(edge_visits, 3u);
@@ -718,7 +719,7 @@ TEST(Lc5SearchTest, BlockedBackendStopAndAbortDrainReservationsAndPersistence) {
     EXPECT_EQ(run.metrics().node_store_misses.load(), 1u);
     EXPECT_EQ(store.stored, 1u);
     ASSERT_TRUE(store.entries.contains(child.key));
-    EXPECT_FLOAT_EQ(store.entries.at(child.key).leaf_q, 0.25f);
+    EXPECT_FLOAT_EQ(store.entries.at(child.key).leaf.q, 0.25f);
     EXPECT_EQ(graph.SnapshotNode(root.key)->value.visits, 0u);
     if (abort) {
       EXPECT_TRUE(responder.bestmoves.empty());
@@ -758,7 +759,7 @@ TEST(Lc5SearchTest, StoreMissPersistsAndFreshGraphRehydratesWithoutEvaluation) {
     auto node = graph.SnapshotNode(root.key);
     ASSERT_TRUE(node);
     EXPECT_EQ(node->value.visits, 1u);
-    EXPECT_FLOAT_EQ(node->value.Q(), store.entries.at(root.key).leaf_q);
+    EXPECT_FLOAT_EQ(node->value.Q(), store.entries.at(root.key).leaf.q);
     ASSERT_EQ(node->edges.size(), store.entries.at(root.key).moves.size());
     for (size_t i = 0; i < node->edges.size(); ++i) {
       EXPECT_EQ(node->edges[i].move, store.entries.at(root.key).moves[i]);
@@ -789,7 +790,6 @@ TEST(Lc5SearchTest, RootBootstrapFlushesDependencyWithoutWaitingForTimer) {
       EXPECT_EQ(run.metrics().nn_evaluations.load(), 1u);
       EXPECT_EQ(run.metrics().partial_starvation_flushes.load(), 1u);
       EXPECT_EQ(run.metrics().partial_timeout_flushes.load(), 0u);
-      EXPECT_EQ(run.metrics().partial_drain_flushes.load(), 0u);
       EXPECT_EQ(responder.bestmove_count.load(), 0u);
     } else {
       run.Abort();
@@ -835,7 +835,6 @@ TEST(Lc5SearchTest, CollectionFlushesWhileAnotherWorkerIsBlockedInStore) {
       EXPECT_EQ(run.metrics().partial_timeout_flushes.load(), delay ? 1u : 0u);
       EXPECT_EQ(run.metrics().partial_starvation_flushes.load(),
                 delay ? 0u : 1u);
-      EXPECT_EQ(run.metrics().partial_drain_flushes.load(), 0u);
     }
     // This also exercises waking collectors and finishing returned store work
     // after stop. Never leave either executor blocked on a failed assertion.
@@ -893,7 +892,6 @@ TEST(Lc5SearchTest, PositiveDelayCollectsAnotherWorkersStoreMissIntoSameBatch) {
   EXPECT_EQ(run.metrics().evaluation_batches.load(), 1u);
   EXPECT_EQ(run.metrics().partial_timeout_flushes.load(), 0u);
   EXPECT_EQ(run.metrics().partial_starvation_flushes.load(), 0u);
-  EXPECT_EQ(run.metrics().partial_drain_flushes.load(), 0u);
   EXPECT_EQ(store.recording.stored, 2u);
 }
 
@@ -1013,9 +1011,7 @@ TEST(Lc5SearchTest, BlockedStoreLoadsAndPersistenceDrainAfterStopOrAbort) {
         const auto legal = child.history.Last().GetBoard().GenerateLegalMoves();
         store.recording.entries.emplace(
             child.key,
-            ExpansionPayload{.leaf_q = 0.75f,
-                             .leaf_d = 0.25f,
-                             .leaf_m = 7.0f,
+            ExpansionPayload{.leaf = {0.75f, 0.25f, 7.0f},
                              .moves = {legal.begin(), legal.end()},
                              .priors = std::vector<float>(
                                  legal.size(), 1.0f / legal.size())});

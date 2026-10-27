@@ -26,9 +26,11 @@ struct VisitId {
 struct PathStep {
   NodeKey key;
   uint64_t generation = 0;
-  std::optional<Move> selected_move;
+  std::optional<Move> selected_move;  // The reserved outgoing edge, if any.
 };
 
+// Where a visit starts selecting. `backup_prefix` lists the steps above `key`
+// that its value is also backed up through.
 struct VisitOrigin {
   NodeKey key;
   PositionHistory history;
@@ -88,8 +90,8 @@ class VisitPool {
       // Count reservations too, so admission cannot overfill the pool.
       ++active_;
     }
-    // Never hold pool_mutex_ while waiting for a slot: release takes slot ->
-    // pool.
+    // Never hold pool_mutex_ while waiting for a slot: release locks
+    // slot -> pool.
     Slot& slot = *slots_[i];
     std::lock_guard slot_lock(slot.mutex);
     uint32_t epoch = slot.epoch.load(std::memory_order_relaxed) + 1;
@@ -112,6 +114,20 @@ class VisitPool {
     Slot* slot = slots_[id.slot()].get();
     return slot->epoch.load(std::memory_order_acquire) == id.epoch() ? slot
                                                                      : nullptr;
+  }
+
+  // Returns the slot of live visit `id`, locked by `lock`, or nullptr if the
+  // visit has finished or the slot was reused.
+  Slot* LockLive(VisitId id, std::unique_lock<std::mutex>& lock) {
+    Slot* slot = Lookup(id);
+    if (!slot) return nullptr;
+    lock = std::unique_lock(slot->mutex);
+    if (slot->epoch.load(std::memory_order_relaxed) != id.epoch() ||
+        slot->visit.state == VisitState::kFree) {
+      lock.unlock();
+      return nullptr;
+    }
+    return slot;
   }
 
   bool ReleaseLocked(Slot& slot, VisitId id) {

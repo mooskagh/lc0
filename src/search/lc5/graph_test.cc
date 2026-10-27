@@ -45,8 +45,8 @@ TEST(Lc5ValueTest, PerspectiveAndSumsAreExact) {
   EXPECT_FLOAT_EQ(parent.d, 0.5f);
   EXPECT_FLOAT_EQ(parent.m, 4.0f);
   ValueStats stats;
-  stats.Add(0.25f, 0.5f, 3.0f);
-  stats.Add(-0.25f, 0.25f, 5.0f);
+  stats.Add({0.25f, 0.5f, 3.0f});
+  stats.Add({-0.25f, 0.25f, 5.0f});
   EXPECT_EQ(stats.visits, 2u);
   EXPECT_FLOAT_EQ(stats.Q(), 0.0f);
   EXPECT_FLOAT_EQ(stats.D(), 0.375f);
@@ -62,19 +62,18 @@ TEST(Lc5GraphTest, PublicationAcceptanceIsIndependentOfReturnedGeneration) {
                                      .priors = {0.5f}};
   const auto created = graph.FindOrCreateMaterializing(key, 7);
 
-  bool accepted = true;
-  EXPECT_EQ(graph.InstallPayload(key, 8, replacement, &accepted),
-            created.generation);
-  EXPECT_FALSE(accepted);
+  auto installed = graph.InstallPayload(key, 8, replacement);
+  EXPECT_EQ(installed.generation, created.generation);
+  EXPECT_FALSE(installed.accepted);
   auto node = graph.SnapshotNode(key);
   ASSERT_TRUE(node);
   EXPECT_EQ(node->lifecycle, NodeLifecycle::kMaterializing);
   EXPECT_EQ(node->ticket, 7u);
   EXPECT_TRUE(node->edges.empty());
 
-  EXPECT_EQ(graph.InstallPayload(key, 7, payload, &accepted),
-            created.generation);
-  EXPECT_TRUE(accepted);
+  installed = graph.InstallPayload(key, 7, payload);
+  EXPECT_EQ(installed.generation, created.generation);
+  EXPECT_TRUE(installed.accepted);
   ASSERT_EQ(
       graph.SelectAndReserve(key, created.generation, TestSettings()).status,
       SelectStatus::kSelected);
@@ -85,13 +84,12 @@ TEST(Lc5GraphTest, PublicationAcceptanceIsIndependentOfReturnedGeneration) {
       graph.SelectAndReserve(key, created.generation, TestSettings()).status,
       SelectStatus::kSelected);
   // Both duplicate and wrong-ticket publications return the same generation
-  // as success; only the out-parameter distinguishes them. It must be reset
-  // on every rejection, without disturbing statistics or live reservations.
+  // as success; only `accepted` distinguishes them. Rejection must not
+  // disturb statistics or live reservations.
   for (const auto ticket : {7u, 8u}) {
-    accepted = true;
-    EXPECT_EQ(graph.InstallPayload(key, ticket, replacement, &accepted),
-              created.generation);
-    EXPECT_FALSE(accepted);
+    installed = graph.InstallPayload(key, ticket, replacement);
+    EXPECT_EQ(installed.generation, created.generation);
+    EXPECT_FALSE(installed.accepted);
     node = graph.SnapshotNode(key);
     ASSERT_TRUE(node);
     EXPECT_EQ(node->lifecycle, NodeLifecycle::kExpanded);
@@ -99,7 +97,7 @@ TEST(Lc5GraphTest, PublicationAcceptanceIsIndependentOfReturnedGeneration) {
     ASSERT_EQ(node->edges.size(), 1u);
     EXPECT_EQ(node->edges[0].move, move);
     EXPECT_FLOAT_EQ(node->edges[0].prior, 1.0f);
-    EXPECT_EQ(node->edges[0].visits, 1u);
+    EXPECT_EQ(node->edges[0].value.visits, 1u);
     EXPECT_EQ(node->edges[0].in_flight, 1u);
     EXPECT_FLOAT_EQ(node->edges[0].Q(), 0.25f);
     EXPECT_EQ(node->value.visits, 1u);
@@ -110,19 +108,16 @@ TEST(Lc5GraphTest, PublicationAcceptanceIsIndependentOfReturnedGeneration) {
   ASSERT_TRUE(graph.Erase(key));
   const auto recreated = graph.FindOrCreateMaterializing(key, 9);
   ASSERT_NE(recreated.generation, created.generation);
-  accepted = true;
-  EXPECT_EQ(graph.InstallPayload(key, 7, payload, &accepted),
-            recreated.generation);
-  EXPECT_FALSE(accepted);
+  installed = graph.InstallPayload(key, 7, payload);
+  EXPECT_EQ(installed.generation, recreated.generation);
+  EXPECT_FALSE(installed.accepted);
   EXPECT_EQ(graph.SnapshotNode(key)->ticket, 9u);
-  EXPECT_EQ(graph.InstallPayload(key, 9, replacement, &accepted),
-            recreated.generation);
-  EXPECT_TRUE(accepted);
+  installed = graph.InstallPayload(key, 9, replacement);
+  EXPECT_EQ(installed.generation, recreated.generation);
+  EXPECT_TRUE(installed.accepted);
 
   // The insertion path also reports acceptance, not just existing tickets.
-  accepted = false;
-  graph.InstallPayload(NodeKey{456}, 10, payload, &accepted);
-  EXPECT_TRUE(accepted);
+  EXPECT_TRUE(graph.InstallPayload(NodeKey{456}, 10, payload).accepted);
   EXPECT_EQ(graph.Size(), 2u);
 }
 
@@ -238,9 +233,9 @@ TEST(Lc5GraphTest, SizeCountsPayloadInsertionAndSuccessfulErasure) {
   GameGraph graph;
   NodeKey key{123};
   ExpansionPayload payload{.moves = {M(kFileA, kFileA)}, .priors = {1.0f}};
-  const auto generation = graph.InstallPayload(key, 7, payload);
+  const auto generation = graph.InstallPayload(key, 7, payload).generation;
   EXPECT_EQ(graph.Size(), 1u);
-  EXPECT_EQ(graph.InstallPayload(key, 7, payload), generation);
+  EXPECT_EQ(graph.InstallPayload(key, 7, payload).generation, generation);
   EXPECT_EQ(graph.Size(), 1u);
   EXPECT_FALSE(graph.Erase(NodeKey{456}));
   EXPECT_EQ(graph.Size(), 1u);
@@ -248,7 +243,7 @@ TEST(Lc5GraphTest, SizeCountsPayloadInsertionAndSuccessfulErasure) {
   EXPECT_EQ(graph.Size(), 0u);
   EXPECT_FALSE(graph.Erase(key));
   EXPECT_EQ(graph.Size(), 0u);
-  EXPECT_NE(graph.InstallPayload(key, 8, payload), generation);
+  EXPECT_NE(graph.InstallPayload(key, 8, payload).generation, generation);
   EXPECT_EQ(graph.Size(), 1u);
   EXPECT_TRUE(graph.FindOrCreateMaterializing(NodeKey{456}, 9).created);
   EXPECT_EQ(graph.Size(), 2u);
@@ -300,11 +295,10 @@ TEST(Lc5GraphTest, LateMaterializationPreservesPublishedEdges) {
   graph.InstallPayload(key, 7, payload);
   ASSERT_EQ(graph.SelectAndReserve(key, created.generation, TestSettings()).status,
             SelectStatus::kSelected);
-  ASSERT_EQ(graph.CompleteEdge(key, created.generation, move,
-                               SearchValue{0.4f, 0.2f, 2.0f}),
-            UpdateResult::kApplied);
-  ASSERT_EQ(graph.UpdateNodeValue(key, created.generation,
-                                  SearchValue{0.4f, 0.2f, 2.0f}),
+  ASSERT_EQ(graph
+                .BackupNode(key, created.generation,
+                            SearchValue{0.4f, 0.2f, 2.0f}, move)
+                .edge,
             UpdateResult::kApplied);
   ASSERT_EQ(graph.SelectAndReserve(key, created.generation, TestSettings()).status,
             SelectStatus::kSelected);
@@ -319,13 +313,14 @@ TEST(Lc5GraphTest, LateMaterializationPreservesPublishedEdges) {
   const ExpansionPayload replacement{.moves = {M(kFileB, kFileB)},
                                      .priors = {1.0f}};
   for (const auto ticket : {7u, 8u}) {
-    EXPECT_EQ(graph.InstallPayload(key, ticket, replacement), created.generation);
+    EXPECT_EQ(graph.InstallPayload(key, ticket, replacement).generation,
+              created.generation);
     const auto node = graph.SnapshotNode(key);
     ASSERT_TRUE(node);
     ASSERT_EQ(node->edges.size(), 1u);
     EXPECT_EQ(node->edges[0].move, move);
     EXPECT_FLOAT_EQ(node->edges[0].prior, 1.0f);
-    EXPECT_EQ(node->edges[0].visits, 1u);
+    EXPECT_EQ(node->edges[0].value.visits, 1u);
     EXPECT_EQ(node->edges[0].in_flight, 1u);
     EXPECT_FLOAT_EQ(node->edges[0].Q(), 0.4f);
     EXPECT_EQ(node->value.visits, 1u);
@@ -340,13 +335,13 @@ TEST(Lc5GraphTest, GenerationChecksProtectRecreatedNodes) {
   auto first = graph.FindOrCreateMaterializing(key, 7);
   ASSERT_TRUE(first.created);
   ExpansionPayload payload{.moves = {M(kFileA, kFileA)}, .priors = {1.0f}};
-  EXPECT_EQ(graph.InstallPayload(key, 7, payload), first.generation);
+  EXPECT_EQ(graph.InstallPayload(key, 7, payload).generation, first.generation);
   EXPECT_TRUE(graph.Erase(key));
   auto second = graph.FindOrCreateMaterializing(key, 8);
   EXPECT_NE(first.generation, second.generation);
-  EXPECT_EQ(graph.UpdateNodeValue(key, first.generation, {}),
+  EXPECT_EQ(graph.BackupNode(key, first.generation, {}, std::nullopt).node,
             UpdateResult::kStale);
-  EXPECT_EQ(graph.UpdateNodeValue(key, second.generation, {}),
+  EXPECT_EQ(graph.BackupNode(key, second.generation, {}, std::nullopt).node,
             UpdateResult::kApplied);
 }
 
@@ -366,7 +361,7 @@ TEST(Lc5GraphTest, BackupCommitsNodeAndOptionalEdgeSums) {
   EXPECT_DOUBLE_EQ(node->value.q_sum, 0.25);
   EXPECT_DOUBLE_EQ(node->value.d_sum, 0.5);
   EXPECT_DOUBLE_EQ(node->value.m_sum, 3.0);
-  EXPECT_EQ(node->edges[0].visits, 0u);
+  EXPECT_EQ(node->edges[0].value.visits, 0u);
   ASSERT_EQ(graph.SelectAndReserve(key, created.generation, TestSettings()).status,
             SelectStatus::kSelected);
   result = graph.BackupNode(key, created.generation, {-0.5f, 0.25f, 4.0f}, move);
@@ -378,11 +373,11 @@ TEST(Lc5GraphTest, BackupCommitsNodeAndOptionalEdgeSums) {
   EXPECT_DOUBLE_EQ(node->value.q_sum, -0.25);
   EXPECT_DOUBLE_EQ(node->value.d_sum, 0.75);
   EXPECT_DOUBLE_EQ(node->value.m_sum, 7.0);
-  EXPECT_EQ(node->edges[0].visits, 1u);
+  EXPECT_EQ(node->edges[0].value.visits, 1u);
   EXPECT_EQ(node->edges[0].in_flight, 0u);
-  EXPECT_DOUBLE_EQ(node->edges[0].q_sum, -0.5);
-  EXPECT_DOUBLE_EQ(node->edges[0].d_sum, 0.25);
-  EXPECT_DOUBLE_EQ(node->edges[0].m_sum, 4.0);
+  EXPECT_DOUBLE_EQ(node->edges[0].value.q_sum, -0.5);
+  EXPECT_DOUBLE_EQ(node->edges[0].value.d_sum, 0.25);
+  EXPECT_DOUBLE_EQ(node->edges[0].value.m_sum, 4.0);
 }
 
 TEST(Lc5GraphTest, BackupRejectsMissingAndStaleGenerations) {
@@ -412,11 +407,11 @@ TEST(Lc5GraphTest, BackupRejectsMissingAndStaleGenerations) {
   EXPECT_DOUBLE_EQ(node->value.q_sum, 0.0);
   EXPECT_DOUBLE_EQ(node->value.d_sum, 0.0);
   EXPECT_DOUBLE_EQ(node->value.m_sum, 0.0);
-  EXPECT_EQ(node->edges[0].visits, 0u);
+  EXPECT_EQ(node->edges[0].value.visits, 0u);
   EXPECT_EQ(node->edges[0].in_flight, 1u);
-  EXPECT_DOUBLE_EQ(node->edges[0].q_sum, 0.0);
-  EXPECT_DOUBLE_EQ(node->edges[0].d_sum, 0.0);
-  EXPECT_DOUBLE_EQ(node->edges[0].m_sum, 0.0);
+  EXPECT_DOUBLE_EQ(node->edges[0].value.q_sum, 0.0);
+  EXPECT_DOUBLE_EQ(node->edges[0].value.d_sum, 0.0);
+  EXPECT_DOUBLE_EQ(node->edges[0].value.m_sum, 0.0);
 }
 
 TEST(Lc5GraphTest, BackupCommitsNodeDespiteEdgeFailure) {
@@ -439,11 +434,11 @@ TEST(Lc5GraphTest, BackupCommitsNodeDespiteEdgeFailure) {
   EXPECT_DOUBLE_EQ(node->value.q_sum, 0.5);
   EXPECT_DOUBLE_EQ(node->value.d_sum, 1.0);
   EXPECT_DOUBLE_EQ(node->value.m_sum, 6.0);
-  EXPECT_EQ(node->edges[0].visits, 0u);
+  EXPECT_EQ(node->edges[0].value.visits, 0u);
   EXPECT_EQ(node->edges[0].in_flight, 0u);
-  EXPECT_DOUBLE_EQ(node->edges[0].q_sum, 0.0);
-  EXPECT_DOUBLE_EQ(node->edges[0].d_sum, 0.0);
-  EXPECT_DOUBLE_EQ(node->edges[0].m_sum, 0.0);
+  EXPECT_DOUBLE_EQ(node->edges[0].value.q_sum, 0.0);
+  EXPECT_DOUBLE_EQ(node->edges[0].value.d_sum, 0.0);
+  EXPECT_DOUBLE_EQ(node->edges[0].value.m_sum, 0.0);
 }
 
 TEST(Lc5GraphTest, ReservationsAreExactAndCancellationDoesNotCommit) {
@@ -464,14 +459,16 @@ TEST(Lc5GraphTest, ReservationsAreExactAndCancellationDoesNotCommit) {
   EXPECT_EQ(selection2.move, second);
   EXPECT_EQ(graph.CancelEdge(key, created.generation, first),
             UpdateResult::kApplied);
-  EXPECT_EQ(graph.CompleteEdge(key, created.generation, second,
-                               SearchValue{0.4f, 0.2f, 2.0f}),
+  EXPECT_EQ(graph
+                .BackupNode(key, created.generation,
+                            SearchValue{0.4f, 0.2f, 2.0f}, second)
+                .edge,
             UpdateResult::kApplied);
   auto node = graph.SnapshotNode(key);
   ASSERT_TRUE(node);
-  EXPECT_EQ(node->edges[0].visits, 0u);
+  EXPECT_EQ(node->edges[0].value.visits, 0u);
   EXPECT_EQ(node->edges[0].in_flight, 0u);
-  EXPECT_EQ(node->edges[1].visits, 1u);
+  EXPECT_EQ(node->edges[1].value.visits, 1u);
   EXPECT_FLOAT_EQ(node->edges[1].Q(), 0.4f);
   EXPECT_EQ(graph.CancelEdge(key, created.generation, first),
             UpdateResult::kUnderflow);
@@ -487,9 +484,9 @@ TEST(Lc5GraphTest, IncomingParentsKeepIndependentEdgeStatistics) {
   graph.InstallPayload(NodeKey{2}, 2, payload);
   auto settings = TestSettings();
   graph.SelectAndReserve(NodeKey{1}, p1.generation, settings);
-  graph.CompleteEdge(NodeKey{1}, p1.generation, move, {});
-  EXPECT_EQ(graph.SnapshotNode(NodeKey{1})->edges[0].visits, 1u);
-  EXPECT_EQ(graph.SnapshotNode(NodeKey{2})->edges[0].visits, 0u);
+  graph.BackupNode(NodeKey{1}, p1.generation, {}, move);
+  EXPECT_EQ(graph.SnapshotNode(NodeKey{1})->edges[0].value.visits, 1u);
+  EXPECT_EQ(graph.SnapshotNode(NodeKey{2})->edges[0].value.visits, 0u);
 }
 
 }  // namespace
