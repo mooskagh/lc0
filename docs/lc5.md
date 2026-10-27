@@ -1,219 +1,196 @@
 # Lc5 search
 
-Lc5 is an experimental search selected with `lc0 lc5`. It searches a
-game-scoped DAG keyed by recent position history, runs many independent
-*visits* concurrently on visit-worker threads, and decouples neural evaluation
-(and an optional payload store) behind whole-job I/O queues. Sources live in
-`src/search/lc5/`; this document follows the code from the outside in.
+Lc5 is an experimental search, started with `lc0 lc5`. PUCT, FPU and their
+defaults match classic; what differs is how the work is organized. Code is in
+`src/search/lc5/`.
 
-## Engine and lifetime
+## Differences from classic
 
-`Lc5Engine` (`engine.cc`) implements `SearchBase`. It keeps one `GameGraph`
-for the whole game: same-game `position` commands keep it (the new root is just
-a history and a key; nothing is promoted or pruned), while `ucinewgame`, a
-different starting position, or a different backend clear it. There is no
-eviction, so the engine passes no `NodeStore`. `MaxActiveVisits` bounds live
-visits, not graph memory.
+- **No gather/evaluate/backup loop.** Many independent **visits** are in
+  flight at once. Each visit walks root→leaf, waits for the network if
+  needed, backs up and finishes. Worker threads advance visits; evaluator
+  threads batch whatever positions are pending.
+- **A graph, not a tree.** Nodes live in a hash map keyed by the position
+  plus the 7 before it, so transpositions with the same recent history share
+  a node. Shorter keys
+  (`HistoryKeyLength`) merge more transpositions.
+- **Kept for the whole game.** The graph survives from move to move. On a new
+  `position` the root is simply looked up again; nothing is promoted or
+  pruned. It is cleared on `ucinewgame`, a different start position, or a
+  backend change. There is no eviction, so memory grows over the game.
+- **Statistics on edges.** Each edge records its own visits and value. When
+  two parents lead into the same node, each parent's edge keeps its own
+  numbers, so a transposition does not distort the other parent's view.
+- **Collisions wait instead of being discarded.** If a visit reaches a node
+  that is already waiting for the network, it waits too. When the evaluation
+  arrives, it carries on selecting below that node (see "Waiting" below).
 
-Each `go` creates a `SearchRun` (`search.h`) with resolved `Settings`, the
-original `GoParams`, a `TimeManager`, and the `StartClock()` origin (or the
-current time if none was set). Preparation after that origin is charged to
-the move. `Wait`, `Finished` and destruction are full drain/join barriers;
-receiving `bestmove` alone does not make the graph reusable yet.
+## Following one visit
 
-## Data model
+Code: `search_visits.cc`, `search_materialization.cc`.
 
-**Keys.** `MakeNodeKey` (`key.h`) hashes the last position plus
-`HistoryKeyLength` (default 7) preceding ones via `HashLast`, so rule-50 and
-repetition state are included. Shorter windows merge more histories. Hash
-collisions are not verified.
+1. **Admission.** A worker lets a new visit in at the root, if limits allow
+   (see "How many visits are in flight"). Under `go nodes N`, at most N
+   visits are ever admitted.
 
-**Graph.** `GameGraph` (`graph.h`) is a 1024-shard map from key to
-`NodeState`: generation, lifecycle (`kMaterializing`/`kExpanded`), ticket,
-terminal kind, value stats and outgoing `EdgeState`s (move, prior, `in_flight`
-reservations, value stats). Edges hold no child pointers; a visit derives the
-child key from its own history. Transpositions share a node and its outgoing
-edges, while incoming edges from different parents keep separate statistics.
-Every mutation names the generation it expects, so updates computed against
-an erased and recreated node are rejected (`Erase` is currently test-only).
+2. **Selection.** At each node the visit picks a move by PUCT
+   (`GameGraph::SelectAndReserve`) and reserves the edge (`in_flight`, which
+   counts toward started visits, as in classic). Each step goes into the
+   visit's `path` for backup or cancel.
 
-**Values.** `SearchValue` (`value.h`) is from the side to move at its node;
-`Parent()` negates Q, keeps D and adds one to M. Sums are doubles, means
-floats.
+3. **Reaching a leaf.** Selection ends in one of four ways:
+   - The node is **terminal** (mate, stalemate, insufficient material,
+     rule 50, threefold): back up its fixed value.
+   - The position is a **two-fold repetition** whose cycle lies within this
+     search (at least 4 plies from the root): back up a draw. This depends on
+     the root, so the graph node itself is not marked terminal.
+   - The node **doesn't exist yet**: create it in a "materializing" state,
+     become its owner and queue the position for the network.
+   - The node is **already materializing**: become a waiter on it.
 
-**Visits.** `VisitPool` (`visit.h`) is a fixed pool of slots. A `VisitId` packs
-slot index and epoch, so continuations for a finished visit are ignored even
-after the slot is reused. A visit owns its history, current key, and a path of
-`(key, generation, selected move)` steps that identify the reservations to
-complete or release. `VisitOrigin::backup_prefix` lets callers start visits
-below the root.
+4. **Evaluation.** Evaluator threads gather queued positions from all workers
+   into one backend call. When results return, the owning worker installs the
+   node: its legal moves, priors and value.
 
-## Visit lifecycle
+5. **Waiting.** When a node is installed, its owner backs up the network's
+   value. Its waiters do not back anything up; they continue selecting
+   *below* the new node and end up at some other leaf. (With
+   `RestartWaiters` they restart from the root instead; in testing that was
+   worse, so it is off.)
 
-**Admission.** `AdmitMore` and `Admit` allocate under `admission_mutex_`,
-which also serializes stop requests. Admission consumes the node budget, so a
-`go nodes N` run never starts more than N visits. Each worker refills root
-visits in chunks of up to 32, up to a rounded-up share of the pool. When the
-pool is full, a worker registers as waiting and is woken when another worker
-releases capacity.
+6. **Backup.** Along the path, add the value to each node and edge and
+   release the reservations. Node values are from the side to move at that
+   node; edge values from the parent's side to move.
 
-With `ActiveVisitsRatio` set, admission also stops while live visits reach
-`16 + ActiveVisitsRatio * N`, where `N` is the root's visits at the start of
-the run plus the visits completed since. Small trees then start with few
-visits in flight, which grows with the tree, much like classic search's
-collision limit.
+If the search stops, a visit that hasn't finished is **cancelled**: its
+reservations are released and nothing is added.
 
-**Worker loop.** `VisitWorker` processes its mailbox (continuations and job
-completions), advances up to 32 runnable visits, refills, submits I/O jobs,
-delivers cross-worker continuations, and sleeps only when it has nothing left
-to do locally. Only the owning worker ever mutates a visit.
+## How many visits are in flight
 
-**Selection.** `AdvanceVisit` walks down the graph. At each node it takes a
-metadata snapshot. A missing or materializing node suspends the visit, a
-terminal node backs up its fixed value, and an expanded node goes through
-`GameGraph::SelectAndReserve`: PUCT with logarithmic CPuct growth, started
-counts (`visits + in_flight`) in the exploration term, absolute or reduction
-FPU for unvisited edges, and ties broken by prior and then move encoding.
-Reserving an edge adds exploration pressure but no virtual-loss sample.
+This matters a lot for strength. At 10+0.1 a move is ~5k visits; with 1024 in
+flight lc5 was ~100 Elo behind classic.
 
-**Materialization.** `SuspendForMaterialization` locks slot → tickets → graph
-shard. The first visit at a key creates a ticket and a `Request`; later visits
-join as waiters. Without a store the request waits in the worker's
-`unprepared` queue. With one it goes to `loads` first, and store misses are
-prepared afterwards. Preparation (`DetectTerminal`) runs outside slot locks:
-no legal moves, insufficient material, rule 50 and repetition are terminal and
-publish immediately. Otherwise the legal moves are kept for the network.
+Two limits apply:
 
-**Publication.** `CompleteMaterialization` installs the payload only if the
-node is still materializing under the same ticket (`InstallResult::accepted`).
-On acceptance the owner backs up the leaf value. Waiters select below the new
-node instead, except at terminal nodes, where they back up the terminal value.
-A rejected publication resumes everyone in selection and is neither backed up
-nor persisted. Accepted fresh payloads are queued for persistence when a store
-exists.
+- `MaxActiveVisits`: a hard cap. By default
+  `max(256, 1.5 × EvalThreads × MinibatchSize)`, enough to keep the GPU fed.
+- `ActiveVisitsRatio` (default 0.25): at most `16 + 0.25 × N` visits are live,
+  where N is the root's visit count. A fresh search starts with only a few
+  visits in flight, and more are allowed as the tree grows. Classic search
+  scales its collision limit with tree size in the same way.
 
-**Two-fold repetition.** After each selected move, a position that repeats
-one seen at most `ply` plies earlier, where `ply` (at least 4) is its distance
-from the root, is scored as a draw. The cycle then lies within the search, as
-in classic search. Because this depends on the root, the graph node is left
-alone: the visit backs up from a path step with generation 0, which `Backup`
-skips. Threefold repetition is still detected when a node is materialized.
+## Threads
 
-**Restarting waiters.** With `RestartWaiters`, a waiter woken by a nonterminal
-publication releases its reservations and selects again from its origin, like
-a classic collision, instead of continuing below the new node.
+- **Visit workers** (`Threads`) move visits forward. Each visit belongs to
+  one worker, and only that worker touches it. Workers talk to each other
+  through mailboxes.
+- **Evaluators** (`EvalThreads`) build and run backend batches.
+- **The controller** (one thread per search) watches the clock, prints `info`
+  once a second, and handles stopping.
 
-**Backup and cancel.** `Backup` walks the path from the leaf, adding the value
-to each node and completing each ancestor's reserved edge, with the
-perspective flipped at every step. A stale node, missing edge or reservation
-underflow is skipped and counted in metrics without undoing the other updates.
-`Cancel` releases reservations without adding samples.
+A worker's loop: read its mailbox (evaluation results, visits handed over by
+other workers), advance up to 32 visits, admit new ones, send queued
+positions to the evaluators, and sleep only when there is nothing to do.
 
-## I/O scheduling
+## Batching
 
-Requests travel in whole `Job`s (`kPersist`, `kLoad`, `kEval`) of at most
-`ceil(MinibatchSize / 4)` items, submitted in that priority order. Per worker,
-in-flight I/O is bounded by 16 jobs and two minibatches of items. Credits cover
-queued, executing and returned-but-unconsumed jobs and are released only when
-the owner consumes the completion. A full minibatch of pending writes pauses
-selection until persistence catches up.
+Workers hand positions to evaluators in small **jobs** (about a quarter of a
+minibatch each). An evaluator packs jobs into one backend call until the
+batch target (`MinibatchSize`) is reached. It also sends a partial batch
+early when:
 
-`EvaluatorWorker` combines jobs from all owners into one backend computation
-(`CollectBatch`), adding a job only if its size still fits the batch target.
-A job that doesn't fit is kept for the next batch. Cache hits
-(`FETCHED_IMMEDIATELY`) complete without computing. A partial batch is flushed
-when:
+- `MaxBatchDelayMs` (default 2 ms) has passed since the first job arrived,
+- no worker can produce more work, so waiting longer is pointless, or
+- every position was a cache hit, so no GPU work is needed.
 
-- the deadline passes: `MaxBatchDelayMs` (default 2) after the first job was
-  enqueued; `0` disables the deadline;
-- the batch is *starved*: no worker can produce more work, and (with a
-  positive delay) every outstanding job is already held by a collector;
-- it holds only cache hits, which return at once instead of waiting.
+The NN cache is keyed on the last position only, so transpositions with a
+different history (separate lc5 nodes) show up as cache hits.
 
-Store threads only call `LoadBatch`/`StoreBatch`. Evaluators only add inputs
-and compute. All results return to the owning worker's mailbox, and that worker
-publishes, prepares store misses and queues persistence. Each `Request` carries
-one `State` (pending, store hit/miss, queued, evaluated), so an abandoned
-output is never mistaken for a result. A computation is destroyed before its
-jobs are returned.
-
-## Stop, abort and output
-
-`Stop` and `Abort` set the stop mode under `admission_mutex_`, closing
-admission atomically, and wake the controller. On stop, the controller builds
-the final info and `bestmove` from a single root snapshot, without waiting for
-outstanding work, and commits it under the same mutex. An `Abort` that arrives
-before that commit suppresses the output; after it, the output cannot be
-retracted. Only then are workers and collectors woken to drain.
-
-Every nonempty backend computation is authorized under `admission_mutex_` just
-before it runs, so after a stop each evaluator has at most the one computation
-it had already authorized. Workers cancel their visits and pending requests.
-Authorized results, store hits and accepted payloads still publish and persist.
-Blocking backend and store calls are not interrupted. Once no visits, tickets,
-jobs or mailbox items remain and every worker has acknowledged that it is
-idle, the controller joins the visit workers, closes the I/O queues and joins
-the I/O threads.
-
-UCI `nodes`/`nps` count completed visits in this run, and `eps` counts backend
-evaluations, excluding cache hits. Score (centipawns from root Q) and WDL come
-from the retained root statistics. The PV follows completed edges by visits,
-then Q, then the tie-break. `Metrics` (`metrics.h`) holds diagnostic counters,
-and a subset goes into the info `comment`.
+There is also an optional **node store** for persisting evaluated nodes, with
+its own load/store jobs. The engine doesn't use it yet; it exists for future
+eviction.
 
 ## Time management
 
-`TimeManager` (`time_manager.h`) turns `GoParams` into an optional fixed
-deadline. The controller calls `Evaluate(now)`, which either requests a stop or
-returns the deadline as the next time to check. Precedence:
+Under a clock, a move gets
+`(time left − MoveOverheadMs) × 3% + increment × 97%`, plus any time saved
+earlier (below). `movetime` is used as given; `infinite` and `ponder` have no
+deadline. `AlphaZeroTimePct` sets the 3%.
 
-1. `ponder` disables all time and node limits. `ponderhit` restarts the search
-   without ponder and with a new clock origin.
-2. An explicit `movetime` is used as is, without subtracting overhead.
-3. `infinite` disables clock allocation, but `movetime` and `nodes` still
-   apply.
-4. Otherwise, the active side's clock is required; without it there is no
-   time limit.
+**Early stop.** Classic-style smart pruning, checked every 10 ms against the
+run's visit rate (`SmartPruningFactor`, 1.33). Unused time goes to the next
+move.
 
-The allocation is
-`(clock - MoveOverheadMs) * f + increment * (1 - f) + saved`, where
-`f = max(AlphaZeroTimePct / 100, 1 / movestogo)`. Defaults are 200 ms of
-overhead and 3%. The result is clamped to [1 ms, usable clock], and a clock at
-or below the overhead gets zero. Nonnegative `nodes` limits are exact
-admission caps.
+## Stopping and output
 
-For clock-based budgets (not `movetime`) the controller also checks every
-10 ms whether the most visited root edge can still be overtaken: it estimates
-the remaining visits from this run's rate, divides them by
-`SmartPruningFactor` and stops when the lead is larger. A root with a single
-legal move stops at once. Time left unused this way is kept by `Lc5Engine` as
-`saved` and added to the next move's budget.
+On a stop (deadline, node limit or UCI `stop`), the controller takes one
+snapshot of the root and prints the final `info` and `bestmove` immediately.
+It does not wait for in-flight work. After that, workers cancel their visits
+and the run drains; any batch already sent to the GPU still finishes and is
+installed. Only when everything has drained is the graph safe for the next
+search.
+
+`abort` (e.g. a new `position` during search) suppresses `bestmove` if it
+arrives before the move was printed.
+
+Reading the `info` line:
+
+- `nodes`/`nps`: visits completed in this search.
+- `eps`: network evaluations, excluding cache hits.
+- `depth` = `seldepth` = the longest path. Not comparable to classic.
+- `string lc5 ...`: debug counters. `cache` counts NN cache hits,
+  `suspended` counts visits that had to wait for the network, `active` is
+  the number of live visits, and `graph` is the node count.
+
+## Code map
+
+| File | What's there |
+|---|---|
+| `engine.cc` | UCI glue: keeps the graph, starts a `SearchRun` per `go`, carries saved time. |
+| `search.cc` | `SearchRun`: setup, controller, early stop, `info`/`bestmove`. |
+| `search_visits.cc` | Admission, worker loop, selection, two-fold check, backup. |
+| `search_materialization.cc` | Creating nodes, terminal detection, jobs, evaluator batching. |
+| `graph.h/.cc` | `GameGraph`: sharded node map, PUCT selection, per-node updates. |
+| `visit.h` | Visit state and the fixed pool of visit slots. |
+| `key.h`, `value.h` | Node keys; value sums and perspective flips. |
+| `time_manager.cc` | Per-move deadline. |
+| `settings.cc` | Options and their automatic values. |
+| `node_store.h`, `memory_node_store.cc` | Optional persistence (unused by the engine). |
+| `metrics.h` | Debug counters. |
+
+Things that look odd but are deliberate:
+
+- **Generations.** Every node has a generation number, and updates name the
+  generation they expect. An update meant for a node that was erased and
+  recreated is then ignored instead of corrupting the new one.
+- **Tickets.** A materializing node has a ticket listing its owner and
+  waiters. A result is only installed if the ticket still matches.
+- **Visit IDs.** A visit ID includes an epoch, so a late message for a
+  finished visit is ignored even after its slot is reused.
 
 ## Options
 
 | Option | Default | Meaning |
 |---|---|---|
-| `Threads` | auto | Visit workers. |
-| `EvalThreads` | auto | Concurrent evaluators (and store workers). |
-| `MinibatchSize` | backend | Neural batch target. |
-| `MaxActiveVisits` | auto | Live visit bound; auto is `max(256, 1.5 * EvalThreads * MinibatchSize)`. |
-| `HistoryKeyLength` | 7 | Positions beyond the current one in node keys. |
-| `MaxBatchDelayMs` | 2 | Partial batch deadline; 0 disables it. |
-| `CPuct`, `CPuctBase`, `CPuctFactor` | 1.745, 38739, 3.894 | PUCT. |
-| `FpuStrategy`, `FpuValue` | reduction, 0.33 | First-play urgency. |
+| `Threads` | auto | Visit worker threads. |
+| `EvalThreads` | auto | Evaluator threads. |
+| `MinibatchSize` | backend | Target batch size. |
+| `MaxActiveVisits` | auto | Hard cap on live visits. |
 | `ActiveVisitsRatio` | 0.25 | Live visits ≤ 16 + ratio × root visits; 0 disables. |
-| `RestartWaiters` | false | Woken waiters select again from the root. |
-| `MoveOverheadMs`, `AlphaZeroTimePct` | 200, 3 | Time allocation. |
-| `SmartPruningFactor` | 1.33 | Early stop when the best move is decided; 0 disables. |
+| `RestartWaiters` | false | Waiters restart from the root instead of continuing. |
+| `HistoryKeyLength` | 7 | Earlier positions included in node keys. |
+| `MaxBatchDelayMs` | 2 | Max wait before sending a partial batch; 0 disables. |
+| `CPuct`, `CPuctBase`, `CPuctFactor` | 1.745, 38739, 3.894 | As classic. |
+| `FpuStrategy`, `FpuValue` | reduction, 0.33 | As classic. |
+| `MoveOverheadMs` | 200 | As classic. |
+| `AlphaZeroTimePct` | 3 | Share of the clock spent per move. |
+| `SmartPruningFactor` | 1.33 | Early stop aggressiveness; 0 disables. |
 
-## Known limitations
+## Not done yet
 
-- If no root edge has a completed visit (e.g. `go nodes 1` on a fresh root, or
-  an exhausted clock), `bestmove` is the legal move with the lowest encoding,
-  not the highest-prior one, even when the root has already been evaluated.
-- Not implemented: classical time management (beyond early stopping), Syzygy, MultiPV, training data,
-  tree pruning, mate bounds and eviction. Selection (`SelectAndReserve`) and
-  backup (`Backup`/`BackupNode`) are concrete functions, not a pluggable policy
-  API.
-- `scripts/benchmark_lc5.py` is the benchmark harness. No strength or
-  performance claims are made here.
+- Moves-left utility, mate propagation, Syzygy, MultiPV, training data
+  output, memory limits and eviction.
+- If no root move has a finished visit (e.g. `go nodes 1`), `bestmove` is an
+  arbitrary legal move rather than the top policy move.
+
+`scripts/benchmark_lc5.py` is a speed benchmark harness.
