@@ -57,6 +57,12 @@ visits in chunks of up to 32, up to a rounded-up share of the pool. When the
 pool is full, a worker registers as waiting and is woken when another worker
 releases capacity.
 
+With `ActiveVisitsRatio` set, admission also stops while live visits reach
+`16 + ActiveVisitsRatio * N`, where `N` is the root's visits at the start of
+the run plus the visits completed since. Small trees then start with few
+visits in flight, which grows with the tree, much like classic search's
+collision limit.
+
 **Worker loop.** `VisitWorker` processes its mailbox (continuations and job
 completions), advances up to 32 runnable visits, refills, submits I/O jobs,
 delivers cross-worker continuations, and sleeps only when it has nothing left
@@ -195,6 +201,7 @@ legal move stops at once. Time left unused this way is kept by `Lc5Engine` as
 | `MaxBatchDelayMs` | 2 | Partial batch deadline; 0 disables it. |
 | `CPuct`, `CPuctBase`, `CPuctFactor` | 1.745, 38739, 3.894 | PUCT. |
 | `FpuStrategy`, `FpuValue` | reduction, 0.33 | First-play urgency. |
+| `ActiveVisitsRatio` | 0.25 | Live visits ≤ 16 + ratio × root visits; 0 disables. |
 | `RestartWaiters` | false | Woken waiters select again from the root. |
 | `MoveOverheadMs`, `AlphaZeroTimePct` | 200, 3 | Time allocation. |
 | `SmartPruningFactor` | 1.33 | Early stop when the best move is decided; 0 disables. |

@@ -60,6 +60,10 @@ const OptionId kRestartWaiters{
     "restart-waiters", "RestartWaiters",
     "Visits that waited for a node's evaluation select again from the root "
     "instead of continuing below that node."};
+const OptionId kActiveVisitsRatio{
+    "active-visits-ratio", "ActiveVisitsRatio",
+    "Live visits are limited to 16 plus this fraction of the root's visits "
+    "(and to MaxActiveVisits); 0 disables the limit."};
 const OptionId kMoveOverhead{"move-overhead", "MoveOverheadMs",
                              "Time reserved for communication overhead."};
 const OptionId kAlphazeroTimePct{
@@ -89,6 +93,7 @@ void Settings::Populate(OptionsParser* options) {
       "reduction";
   options->Add<FloatOption>(kFpuValue, -100.0f, 100.0f) = 0.33f;
   options->Add<BoolOption>(kRestartWaiters) = false;
+  options->Add<FloatOption>(kActiveVisitsRatio, 0.0f, 100.0f) = 0.25f;
   options->Add<IntOption>(kMoveOverhead, 0, 100000000) = 200;
   options->Add<FloatOption>(kAlphazeroTimePct, 0.0f, 100.0f) = 3.0f;
   options->Add<FloatOption>(kSmartPruningFactor, 0.0f, 10.0f) = 1.33f;
@@ -109,7 +114,8 @@ Settings::Settings(const OptionsDict& options)
                               ? FpuStrategy::kAbsolute
                               : FpuStrategy::kReduction,
           .fpu_value = options.Get<float>(kFpuValue),
-          .restart_waiters = options.Get<bool>(kRestartWaiters)},
+          .restart_waiters = options.Get<bool>(kRestartWaiters),
+          .active_visits_ratio = options.Get<float>(kActiveVisitsRatio)},
       time_management_{
           .move_overhead_ms = options.Get<int>(kMoveOverhead),
           .alphazero_time_pct = options.Get<float>(kAlphazeroTimePct),

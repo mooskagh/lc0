@@ -48,7 +48,8 @@ Settings::Resolved TestSettings() {
           .cpuct_factor = 0.0f,
           .fpu_strategy = FpuStrategy::kAbsolute,
           .fpu_value = 0.0f,
-          .restart_waiters = false};
+          .restart_waiters = false,
+          .active_visits_ratio = 0.0f};
 }
 
 TEST(Lc5GraphTest, CancellationOnlyErasesMatchingPlaceholder) {

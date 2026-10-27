@@ -193,6 +193,7 @@ class SearchRun {
   // two minibatches.
   static constexpr size_t kBatchCredits = 16;
   static constexpr size_t kWorkChunk = 32;
+  static constexpr size_t kMinActiveVisits = 16;
 
   bool Stopping() const { return stop_mode_.load() != StopMode::kRunning; }
   void RequestStop(StopMode mode);
@@ -211,6 +212,9 @@ class SearchRun {
 
   // Admission (search_visits.cc).
   bool AdmissionClosed() const;  // Requires admission_mutex_.
+  // Live visits allowed now: grows with the root's visits, as classic search
+  // grows its collision limit, so small trees are not flooded.
+  size_t ActiveLimit() const;
   std::optional<VisitId> Allocate(const VisitOrigin& origin, size_t worker);
   void AdmitMore(Worker& worker);
   void WakeAdmissionWaiters();
@@ -259,6 +263,7 @@ class SearchRun {
   UciResponder* const responder_;
   const Settings::Resolved settings_;
   const VisitOrigin root_;
+  uint64_t root_visits_at_start_ = 0;
   const std::chrono::steady_clock::time_point start_time_;
   const TimeManager time_manager_;
   VisitPool visits_;

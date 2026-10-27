@@ -96,6 +96,9 @@ SearchRun::SearchRun(GameGraph* graph, NodeStore* store, Backend* backend,
   for (int i = 0; i < settings_.threads; ++i) {
     workers_.push_back(std::make_unique<Worker>(i));
   }
+  if (const auto node = graph_->SnapshotNode(root_.key)) {
+    root_visits_at_start_ = node->value.visits;
+  }
   if (!go_params.ponder && go_params.nodes && *go_params.nodes >= 0) {
     node_limit_ = static_cast<uint64_t>(*go_params.nodes);
   }

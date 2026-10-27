@@ -51,6 +51,7 @@ class Settings {
     FpuStrategy fpu_strategy;
     float fpu_value;
     bool restart_waiters;
+    float active_visits_ratio;
   };
 
   explicit Settings(const OptionsDict& options);

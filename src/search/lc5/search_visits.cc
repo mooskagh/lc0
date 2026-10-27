@@ -46,13 +46,24 @@ bool SearchRun::AdmissionClosed() const {
 std::optional<VisitId> SearchRun::Allocate(const VisitOrigin& origin,
                                            size_t worker) {
   // admission_mutex_ is held by the caller. Allocate never holds pool -> slot.
-  if (AdmissionClosed()) return std::nullopt;
+  if (AdmissionClosed() || visits_.active() >= ActiveLimit()) {
+    return std::nullopt;
+  }
   const auto id = visits_.Allocate(origin, worker);
   if (!id) return std::nullopt;
   ++admitted_;
   metrics_.visits_admitted.fetch_add(1);
   RaiseHighWater(metrics_.active_visits_high_water, visits_.active());
   return id;
+}
+
+size_t SearchRun::ActiveLimit() const {
+  if (settings_.active_visits_ratio <= 0.0f) return visits_.capacity();
+  const double tree = static_cast<double>(root_visits_at_start_ +
+                                          metrics_.visits_completed.load());
+  return std::min(visits_.capacity(),
+                  kMinActiveVisits + static_cast<size_t>(
+                                         tree * settings_.active_visits_ratio));
 }
 
 bool SearchRun::Admit(const VisitOrigin& origin) {
@@ -96,7 +107,9 @@ void SearchRun::WakeAdmissionWaiters() {
   {
     std::lock_guard lock(admission_mutex_);
     if (AdmissionClosed()) return;
-    size_t available = visits_.capacity() - visits_.active();
+    const size_t limit = ActiveLimit();
+    const size_t active = visits_.active();
+    size_t available = limit > active ? limit - active : 0;
     for (size_t n = 0; n < workers_.size() && available > 0; ++n) {
       const size_t index = (next_admission_waiter_ + n) % workers_.size();
       if (!workers_[index]->admission_waiting) continue;
