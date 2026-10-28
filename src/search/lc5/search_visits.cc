@@ -388,7 +388,6 @@ void SearchRun::Backup(Worker& worker, VisitPool::Slot& slot) {
     }
   }
   RaiseHighWater(metrics_.max_depth, visit.path.size());
-  metrics_.cumulative_depth.fetch_add(visit.path.size());
   FinishVisit(worker, slot, true);
 }
 
@@ -425,12 +424,6 @@ void SearchRun::FinishVisit(Worker& worker, VisitPool::Slot& slot,
   if (completed) {
     const uint64_t count = metrics_.visits_completed.fetch_add(1) + 1;
     if (node_limit_ == count) worker.controller_event = true;
-    if (count == 1) {
-      first_visit_ms_.store(
-          std::chrono::duration_cast<std::chrono::milliseconds>(
-              std::chrono::steady_clock::now() - start_time_)
-              .count());
-    }
   } else {
     metrics_.visits_cancelled.fetch_add(1);
   }

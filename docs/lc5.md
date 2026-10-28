@@ -112,30 +112,18 @@ eviction.
 
 ## Time management
 
-lc5 uses classic's time managers and stoppers, with the same options
-(`TimeManager`, default `legacy`; `MoveOverheadMs`, `SmartPruningFactor`,
-`Slowmover`, `RamLimitMb` and so on). The engine keeps one time manager per
-game, so `legacy` carries its first-move bonus and its bank of saved time
-from move to move. It is created at the first `go` after `ucinewgame` or a
-new start position, so changed options take effect there.
+Under a clock, a move gets
+`(time left − MoveOverheadMs) × 3% + increment × 97%`, plus any time saved
+earlier (below). `movetime` minus `MoveOverheadMs` is used, as in classic;
+`infinite` and `ponder` have no deadline. `AlphaZeroTimePct` sets the 3%.
 
-For each `go`, the time manager builds a chain of stoppers: the clock budget,
-`movetime` minus `MoveOverheadMs`, `go depth`, the RAM limit and smart
-pruning. The controller asks the chain whether to stop as soon as the root
-has been evaluated, and then at least every 10 ms. It passes the stoppers
-classic's statistics: root visits per move, visits and batches in this run,
-and average depth. lc5 has no proven results yet, so stoppers never see a
-mate or a won position. When `bestmove` is sent, the chain is told the search
-is done, which is how `legacy` banks unused time; an aborted search is not
-reported.
-
-`go nodes` is not passed to the stoppers. It stays exact: the run completes
-exactly that many visits, smart pruning does not stop it early, and visits
-reused from earlier searches do not count.
+**Early stop.** Classic-style smart pruning, checked every 10 ms against the
+run's visit rate (`SmartPruningFactor`, 1.33). Unused time goes to the next
+move.
 
 ## Stopping and output
 
-On a stop (a stopper, the node limit or UCI `stop`), the controller takes one
+On a stop (deadline, node limit or UCI `stop`), the controller takes one
 snapshot of the root and prints the final `info` and `bestmove` immediately.
 It does not wait for in-flight work. After that, workers cancel their visits
 and the run drains; any batch already sent to the GPU still finishes and is
@@ -158,13 +146,14 @@ Reading the `info` line:
 
 | File | What's there |
 |---|---|
-| `engine.cc` | UCI glue: keeps the graph and the time manager, starts a `SearchRun` per `go`. |
-| `search.cc` | `SearchRun`: setup, controller, stopper checks, `info`/`bestmove`. |
+| `engine.cc` | UCI glue: keeps the graph, starts a `SearchRun` per `go`, carries saved time. |
+| `search.cc` | `SearchRun`: setup, controller, early stop, `info`/`bestmove`. |
 | `search_visits.cc` | Admission, worker loop, selection, two-fold check, backup. |
 | `search_materialization.cc` | Creating nodes, terminal detection, jobs, evaluator batching. |
 | `graph.h/.cc` | `GameGraph`: sharded node map, PUCT selection, per-node updates. |
 | `visit.h` | Visit state and the fixed pool of visit slots. |
 | `key.h`, `value.h` | Node keys; value sums and perspective flips. |
+| `time_manager.cc` | Per-move deadline. |
 | `settings.cc` | Options and their automatic values. |
 | `node_store.h`, `memory_node_store.cc` | Optional persistence (unused by the engine). |
 | `metrics.h` | Debug counters. |
@@ -193,7 +182,9 @@ Things that look odd but are deliberate:
 | `MaxBatchDelayMs` | 2 | Max wait before sending a partial batch; 0 disables. |
 | `CPuct`, `CPuctBase`, `CPuctFactor` | 1.745, 38739, 3.894 | As classic. |
 | `FpuStrategy`, `FpuValue` | reduction, 0.33 | As classic. |
-| `TimeManager`, `MoveOverheadMs`, `SmartPruningFactor`, … | legacy, 200, 1.33 | Classic's time management options. |
+| `MoveOverheadMs` | 200 | As classic. |
+| `AlphaZeroTimePct` | 3 | Share of the clock spent per move. |
+| `SmartPruningFactor` | 1.33 | Early stop aggressiveness; 0 disables. |
 
 ## Not done yet
 

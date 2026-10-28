@@ -33,7 +33,6 @@
 
 #include "chess/gamestate.h"
 #include "search/lc5/graph.h"
-#include "search/classic/stoppers/timemgr.h"
 #include "search/lc5/search.h"
 #include "search/search.h"
 
@@ -61,14 +60,12 @@ class Lc5Engine final : public SearchBase {
   const OptionsDict* options_;
   // Retained without eviction for the whole game, so no NodeStore is needed.
   GameGraph graph_;
-  // Kept across the moves of a game (legacy keeps a piggy bank of saved
-  // time); created lazily so that `setoption` after `ucinewgame` applies.
-  // Declared before run_, whose stopper may refer to it.
-  std::unique_ptr<classic::TimeManager> time_manager_;
   std::unique_ptr<SearchRun> run_;
   std::optional<Position> game_start_;
   std::optional<PositionHistory> root_history_;
   std::optional<std::chrono::steady_clock::time_point> clock_start_;
+  // Time a previous search left unused by stopping early.
+  int64_t saved_time_ms_ = 0;
 };
 
 }  // namespace lczero::lc5
