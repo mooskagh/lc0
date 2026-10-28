@@ -114,8 +114,8 @@ eviction.
 
 Under a clock, a move gets
 `(time left − MoveOverheadMs) × 3% + increment × 97%`, plus any time saved
-earlier (below). `movetime` is used as given; `infinite` and `ponder` have no
-deadline. `AlphaZeroTimePct` sets the 3%.
+earlier (below). `movetime` minus `MoveOverheadMs` is used, as in classic;
+`infinite` and `ponder` have no deadline. `AlphaZeroTimePct` sets the 3%.
 
 **Early stop.** Classic-style smart pruning, checked every 10 ms against the
 run's visit rate (`SmartPruningFactor`, 1.33). Unused time goes to the next

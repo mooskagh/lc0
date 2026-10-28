@@ -38,7 +38,9 @@ std::optional<int64_t> GetTimeBudget(TimeManager::Config config,
                                      const GoParams& params, bool black_to_move,
                                      int64_t saved_ms) {
   if (params.ponder) return std::nullopt;
-  if (params.movetime) return params.movetime;
+  if (params.movetime) {
+    return std::max<int64_t>(0, *params.movetime - config.move_overhead_ms);
+  }
   if (params.infinite) return std::nullopt;
   const auto& remaining = black_to_move ? params.btime : params.wtime;
   if (!remaining) return std::nullopt;

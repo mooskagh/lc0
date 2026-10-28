@@ -29,6 +29,8 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
+
 #include "chess/uciloop.h"
 
 namespace lczero::lc5 {
@@ -152,19 +154,23 @@ TEST(Lc5TimeManagerTest, RequiresActiveSideClock) {
   ExpectNoDeadline(GoParams{.wtime = 1000, .binc = 100}, true);
 }
 
-TEST(Lc5TimeManagerTest, ExplicitMovetimeIsLiteralAndWinsOverClocks) {
+TEST(Lc5TimeManagerTest, ExplicitMovetimeMinusOverheadWinsOverClocks) {
   for (bool black_to_move : {false, true}) {
-    for (int64_t movetime : {500, 1, 0, -1, -500}) {
+    for (int64_t movetime : {500, 201, 200, 1, 0, -1, -500}) {
       SCOPED_TRACE(black_to_move);
       SCOPED_TRACE(movetime);
-      ExpectDeadline(GoParams{.movetime = movetime}, black_to_move, movetime);
+      const int64_t budget = std::max<int64_t>(0, movetime - 200);
+      ExpectDeadline(GoParams{.movetime = movetime}, black_to_move, budget);
       ExpectDeadline(GoParams{.wtime = 0,
                               .btime = 0,
                               .winc = 10000,
                               .binc = 10000,
                               .movestogo = 1,
                               .movetime = movetime},
-                     black_to_move, movetime);
+                     black_to_move, budget);
+      ExpectDeadline(GoParams{.movetime = movetime}, black_to_move,
+                     std::max<int64_t>(0, movetime),
+                     {.move_overhead_ms = 0, .alphazero_time_pct = 3.0f});
     }
   }
 }
@@ -179,7 +185,8 @@ TEST(Lc5TimeManagerTest, InfiniteSuppressesOnlyClockAllocation) {
       for (int64_t movetime : {500, 0, -1}) {
         SCOPED_TRACE(movetime);
         params.movetime = movetime;
-        ExpectDeadline(params, black_to_move, movetime);
+        ExpectDeadline(params, black_to_move,
+                       std::max<int64_t>(0, movetime - 200));
       }
     }
   }
@@ -213,12 +220,12 @@ TEST(Lc5TimeManagerTest, NodeParametersDoNotAffectTimePolicy) {
     SCOPED_TRACE(nodes);
     ExpectNoDeadline(GoParams{.nodes = nodes}, false);
     ExpectDeadline(GoParams{.wtime = 10200, .nodes = nodes}, false, 300);
-    ExpectDeadline(GoParams{.nodes = nodes, .movetime = 500}, false, 500);
+    ExpectDeadline(GoParams{.nodes = nodes, .movetime = 500}, false, 300);
     ExpectNoDeadline(GoParams{.wtime = 0, .nodes = nodes, .infinite = true},
                      false);
     ExpectDeadline(
         GoParams{.wtime = 0, .nodes = nodes, .movetime = 500, .infinite = true},
-        false, 500);
+        false, 300);
     ExpectNoDeadline(
         GoParams{.wtime = 0, .nodes = nodes, .movetime = 0, .ponder = true},
         false);
@@ -226,7 +233,7 @@ TEST(Lc5TimeManagerTest, NodeParametersDoNotAffectTimePolicy) {
 }
 
 TEST(Lc5TimeManagerTest, SuppliedStartTimeChargesPreparation) {
-  const TimeManager manager(kConfig, GoParams{.movetime = 500}, false, kStart);
+  const TimeManager manager(kConfig, GoParams{.movetime = 700}, false, kStart);
   const auto preparing = manager.Evaluate(kStart + milliseconds(499));
   EXPECT_FALSE(preparing.should_stop);
   EXPECT_EQ(preparing.next_check, kStart + milliseconds(500));
