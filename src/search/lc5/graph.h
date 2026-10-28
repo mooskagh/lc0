@@ -73,13 +73,6 @@ struct NodeState {
   std::vector<EdgeState> edges{};
 };
 
-// Lightweight snapshot without edges or value stats, used during selection.
-struct NodeMetadata {
-  uint64_t generation;
-  NodeLifecycle lifecycle;
-  TerminalKind terminal;
-};
-
 struct FindOrCreateResult {
   uint64_t generation;
   bool created;
@@ -92,18 +85,13 @@ struct InstallResult {
   bool accepted;
 };
 
-enum class SelectStatus {
-  kSelected,
-  kMissing,
-  kStale,
-  kMaterializing,
-  kTerminal
-};
+enum class SelectStatus { kSelected, kMissing, kMaterializing, kTerminal };
 
 struct SelectResult {
   SelectStatus status = SelectStatus::kMissing;
   Move move{};
   uint64_t generation = 0;
+  TerminalKind terminal = TerminalKind::kNonTerminal;
 };
 
 enum class UpdateResult {
@@ -141,8 +129,10 @@ class GameGraph {
   InstallResult InstallPayload(NodeKey key, MaterializationTicketId ticket,
                                const ExpansionPayload& payload);
 
-  // Selects the best edge by PUCT and reserves it (in_flight += 1).
-  SelectResult SelectAndReserve(NodeKey key, uint64_t expected_generation,
+  // Selects the best edge by PUCT and reserves it (in_flight += 1); otherwise
+  // reports why the node can't be selected from. Every result but kMissing
+  // carries the node's generation, and kTerminal also its terminal kind.
+  SelectResult SelectAndReserve(NodeKey key,
                                 const Settings::Resolved& settings);
 
   // Adds `value` to the node and, if `move` is given, completes that edge's
@@ -153,7 +143,6 @@ class GameGraph {
   // Releases an edge reservation without committing a visit.
   UpdateResult CancelEdge(NodeKey key, uint64_t expected_generation, Move move);
 
-  std::optional<NodeMetadata> SnapshotNodeMetadata(NodeKey key) const;
   std::optional<NodeState> SnapshotNode(NodeKey key) const;
 
   bool Erase(NodeKey key);

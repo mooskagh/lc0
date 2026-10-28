@@ -129,23 +129,19 @@ InstallResult GameGraph::InstallPayload(NodeKey key,
 }
 
 SelectResult GameGraph::SelectAndReserve(NodeKey key,
-                                         uint64_t expected_generation,
                                          const Settings::Resolved& settings) {
   auto& shard = ShardFor(key);
   std::lock_guard lock(shard.mutex);
   NodeState* node = FindNode(shard.nodes, key);
   if (!node) return {.status = SelectStatus::kMissing};
-  const auto reject = [&](SelectStatus status) {
-    return SelectResult{.status = status, .generation = node->generation};
-  };
-  if (node->generation != expected_generation) {
-    return reject(SelectStatus::kStale);
-  }
   if (node->lifecycle == NodeLifecycle::kMaterializing) {
-    return reject(SelectStatus::kMaterializing);
+    return {.status = SelectStatus::kMaterializing,
+            .generation = node->generation};
   }
   if (node->terminal != TerminalKind::kNonTerminal || node->edges.empty()) {
-    return reject(SelectStatus::kTerminal);
+    return {.status = SelectStatus::kTerminal,
+            .generation = node->generation,
+            .terminal = node->terminal};
   }
 
   const auto started = [](const EdgeState& edge) {
@@ -213,14 +209,6 @@ UpdateResult GameGraph::CancelEdge(NodeKey key, uint64_t expected_generation,
     return check;
   }
   return ReleaseEdge(FindEdge(*node, move));
-}
-
-std::optional<NodeMetadata> GameGraph::SnapshotNodeMetadata(NodeKey key) const {
-  const auto& shard = ShardFor(key);
-  std::lock_guard lock(shard.mutex);
-  const NodeState* node = FindNode(shard.nodes, key);
-  if (!node) return std::nullopt;
-  return NodeMetadata{node->generation, node->lifecycle, node->terminal};
 }
 
 std::optional<NodeState> GameGraph::SnapshotNode(NodeKey key) const {

@@ -313,32 +313,21 @@ void SearchRun::AdvanceVisit(Worker& worker, VisitId id) {
     PathStep& step = visit.path.back();
     metrics_.selection_node_steps.fetch_add(1);
     RaiseHighWater(metrics_.max_selected_depth, visit.path.size());
-    const auto node = graph_->SnapshotNodeMetadata(visit.current_key);
-    if (!node || node->lifecycle == NodeLifecycle::kMaterializing) {
-      if (SuspendForMaterialization(worker, *slot)) return;
-      continue;
-    }
-    step.generation = node->generation;
-    if (node->terminal != TerminalKind::kNonTerminal) {
-      visit.result = TerminalValue(node->terminal);
-      metrics_.terminal_visits.fetch_add(1);
-      Backup(worker, *slot);
-      return;
-    }
     const SelectResult selected =
-        graph_->SelectAndReserve(visit.current_key, step.generation, settings_);
+        graph_->SelectAndReserve(visit.current_key, settings_);
     switch (selected.status) {
-      case SelectStatus::kStale:
       case SelectStatus::kMissing:
-        continue;
       case SelectStatus::kMaterializing:
         if (SuspendForMaterialization(worker, *slot)) return;
         continue;
       case SelectStatus::kTerminal:
-        visit.result = TerminalValue(node->terminal);
+        step.generation = selected.generation;
+        visit.result = TerminalValue(selected.terminal);
+        metrics_.terminal_visits.fetch_add(1);
         Backup(worker, *slot);
         return;
       case SelectStatus::kSelected:
+        step.generation = selected.generation;
         break;
     }
     step.selected_move = selected.move;
