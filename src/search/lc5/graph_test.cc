@@ -130,7 +130,7 @@ TEST(Lc5GraphTest, PublicationAcceptanceIsIndependentOfReturnedGeneration) {
     EXPECT_EQ(node->edges[0].value.visits, 1u);
     EXPECT_EQ(node->edges[0].in_flight, 1u);
     EXPECT_FLOAT_EQ(node->edges[0].Q(), 0.25f);
-    EXPECT_EQ(node->value.visits, 1u);
+    EXPECT_EQ(node->value.visits, 2u);
   }
   EXPECT_EQ(graph.CancelEdge(key, created.generation, move),
             UpdateResult::kApplied);
@@ -355,10 +355,40 @@ TEST(Lc5GraphTest, LateMaterializationPreservesPublishedEdges) {
     EXPECT_EQ(node->edges[0].value.visits, 1u);
     EXPECT_EQ(node->edges[0].in_flight, 1u);
     EXPECT_FLOAT_EQ(node->edges[0].Q(), 0.4f);
-    EXPECT_EQ(node->value.visits, 1u);
+    EXPECT_EQ(node->value.visits, 2u);
   }
   EXPECT_EQ(graph.CancelEdge(key, created.generation, move),
             UpdateResult::kApplied);
+}
+
+TEST(Lc5GraphTest, AcceptedInstallCountsLeafValueOnce) {
+  GameGraph graph;
+  const NodeKey key{321};
+  const ExpansionPayload payload{.leaf = {0.5f, 0.25f, 6.0f},
+                                 .moves = {M(kFileA, kFileA)},
+                                 .priors = {1.0f}};
+  graph.FindOrCreateMaterializing(key, 7);
+  EXPECT_FALSE(graph.InstallPayload(key, 8, payload).accepted);
+  auto node = graph.SnapshotNode(key);
+  ASSERT_TRUE(node);
+  EXPECT_EQ(node->value.visits, 0u);
+
+  EXPECT_TRUE(graph.InstallPayload(key, 7, payload).accepted);
+  node = graph.SnapshotNode(key);
+  ASSERT_TRUE(node);
+  EXPECT_EQ(node->value.visits, 1u);
+  EXPECT_DOUBLE_EQ(node->value.q_sum, 0.5);
+  EXPECT_DOUBLE_EQ(node->value.d_sum, 0.25);
+  EXPECT_DOUBLE_EQ(node->value.m_sum, 6.0);
+
+  // Duplicate and wrong-ticket publications do not count the leaf again.
+  for (const auto ticket : {7u, 8u}) {
+    EXPECT_FALSE(graph.InstallPayload(key, ticket, payload).accepted);
+    node = graph.SnapshotNode(key);
+    ASSERT_TRUE(node);
+    EXPECT_EQ(node->value.visits, 1u);
+    EXPECT_DOUBLE_EQ(node->value.q_sum, 0.5);
+  }
 }
 
 TEST(Lc5GraphTest, GenerationChecksProtectRecreatedNodes) {
@@ -389,7 +419,7 @@ TEST(Lc5GraphTest, BackupCommitsNodeAndOptionalEdgeSums) {
   EXPECT_EQ(result.edge, UpdateResult::kApplied);
   auto node = graph.SnapshotNode(key);
   ASSERT_TRUE(node);
-  EXPECT_EQ(node->value.visits, 1u);
+  EXPECT_EQ(node->value.visits, 2u);
   EXPECT_DOUBLE_EQ(node->value.q_sum, 0.25);
   EXPECT_DOUBLE_EQ(node->value.d_sum, 0.5);
   EXPECT_DOUBLE_EQ(node->value.m_sum, 3.0);
@@ -403,7 +433,7 @@ TEST(Lc5GraphTest, BackupCommitsNodeAndOptionalEdgeSums) {
   EXPECT_EQ(result.edge, UpdateResult::kApplied);
   node = graph.SnapshotNode(key);
   ASSERT_TRUE(node);
-  EXPECT_EQ(node->value.visits, 2u);
+  EXPECT_EQ(node->value.visits, 3u);
   EXPECT_DOUBLE_EQ(node->value.q_sum, -0.25);
   EXPECT_DOUBLE_EQ(node->value.d_sum, 0.75);
   EXPECT_DOUBLE_EQ(node->value.m_sum, 7.0);
@@ -439,7 +469,7 @@ TEST(Lc5GraphTest, BackupRejectsMissingAndStaleGenerations) {
   EXPECT_EQ(result.edge, UpdateResult::kApplied);
   auto node = graph.SnapshotNode(key);
   ASSERT_TRUE(node);
-  EXPECT_EQ(node->value.visits, 0u);
+  EXPECT_EQ(node->value.visits, 1u);
   EXPECT_DOUBLE_EQ(node->value.q_sum, 0.0);
   EXPECT_DOUBLE_EQ(node->value.d_sum, 0.0);
   EXPECT_DOUBLE_EQ(node->value.m_sum, 0.0);
@@ -466,7 +496,7 @@ TEST(Lc5GraphTest, BackupCommitsNodeDespiteEdgeFailure) {
   EXPECT_EQ(result.edge, UpdateResult::kEdgeMissing);
   auto node = graph.SnapshotNode(key);
   ASSERT_TRUE(node);
-  EXPECT_EQ(node->value.visits, 2u);
+  EXPECT_EQ(node->value.visits, 3u);
   EXPECT_DOUBLE_EQ(node->value.q_sum, 0.5);
   EXPECT_DOUBLE_EQ(node->value.d_sum, 1.0);
   EXPECT_DOUBLE_EQ(node->value.m_sum, 6.0);

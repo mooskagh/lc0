@@ -166,7 +166,9 @@ void SearchRun::Resume(Worker& worker, const Continuation& event) {
     visit.path.back().generation = event.generation;
     visit.path.back().selected_move.reset();
     visit.result = event.value;
-    if (event.kind == Continuation::Kind::kBackup) {
+    if (event.kind == Continuation::Kind::kBackup ||
+        event.kind == Continuation::Kind::kBackupAbove) {
+      visit.leaf_counted = event.kind == Continuation::Kind::kBackupAbove;
       visit.state = VisitState::kReadyBackup;
     } else if (settings_.restart_waiters) {
       // Like a collision: select again from the root with the new value
@@ -359,6 +361,8 @@ void SearchRun::Backup(Worker& worker, VisitPool::Slot& slot) {
     const PathStep& step = visit.path[i];
     // An in-search repetition leaf has no graph node.
     if (step.generation == 0) continue;
+    const bool leaf = i + 1 == visit.path.size();
+    if (leaf && visit.leaf_counted) continue;
     // The leaf commits only its node value; ancestors complete their edges.
     const auto move =
         i + 1 < visit.path.size() ? step.selected_move : std::nullopt;

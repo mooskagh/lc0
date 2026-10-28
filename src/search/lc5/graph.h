@@ -136,6 +136,8 @@ class GameGraph {
 
   // Expands the node with `payload` if it is still materializing under
   // `ticket`, creating it if absent. Publication is one-shot per generation.
+  // An accepted install also adds `payload.leaf` to the node's value as its
+  // first visit.
   InstallResult InstallPayload(NodeKey key, MaterializationTicketId ticket,
                                const ExpansionPayload& payload);
 

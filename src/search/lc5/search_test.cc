@@ -536,6 +536,10 @@ TEST(Lc5SearchTest, ExactNodeBudgetWithMoreWorkersThanCapacity) {
     EXPECT_NE(
         std::find(legal.begin(), legal.end(), responder.bestmoves[0].bestmove),
         legal.end());
+    // Each completed visit counts once at the root, including the one that
+    // expanded it.
+    const auto node = graph.SnapshotNode(root.key);
+    EXPECT_EQ(node ? node->value.visits : 0u, static_cast<uint64_t>(nodes));
   }
 }
 
@@ -748,7 +752,8 @@ TEST(Lc5SearchTest, BlockedBackendStopAndAbortDrainReservationsAndPersistence) {
     EXPECT_EQ(store.stored, 1u);
     ASSERT_TRUE(store.entries.contains(child.key));
     EXPECT_FLOAT_EQ(store.entries.at(child.key).leaf.q, 0.25f);
-    EXPECT_EQ(graph.SnapshotNode(root.key)->value.visits, 0u);
+    // Only the setup install counted at the root.
+    EXPECT_EQ(graph.SnapshotNode(root.key)->value.visits, 1u);
     if (abort) {
       EXPECT_TRUE(responder.bestmoves.empty());
       EXPECT_TRUE(std::none_of(responder.thinking.begin(),
@@ -1078,7 +1083,8 @@ TEST(Lc5SearchTest, BlockedStoreLoadsAndPersistenceDrainAfterStopOrAbort) {
       EXPECT_EQ(backend.computes.load(), 0u);
       EXPECT_EQ(store.recording.entries.contains(child.key), hit);
       EXPECT_EQ(graph.SnapshotNode(child.key).has_value(), hit);
-      EXPECT_EQ(graph.SnapshotNode(root.key)->value.visits, 0u);
+      // Only the setup install counted at the root.
+      EXPECT_EQ(graph.SnapshotNode(root.key)->value.visits, 1u);
       if (abort) {
         EXPECT_TRUE(responder.bestmoves.empty());
         EXPECT_TRUE(std::none_of(responder.thinking.begin(),
@@ -1174,7 +1180,9 @@ TEST(Lc5SearchTest, StopDuringAddInputKeepsOnlyImmediateResults) {
   EXPECT_EQ(graph.Size(), 1u);
   auto hit = graph.SnapshotNode(origins[0].key);
   ASSERT_TRUE(hit);
-  EXPECT_EQ(hit->value.visits, 0u);
+  // The install counted the leaf even though its visit was cancelled.
+  EXPECT_EQ(hit->value.visits, 1u);
+  EXPECT_FLOAT_EQ(hit->value.Q(), backend.q);
   for (const auto& edge : hit->edges)
     EXPECT_FLOAT_EQ(edge.prior, 1.0f / hit->edges.size());
   for (size_t i = 1; i < origins.size(); ++i)

@@ -95,6 +95,9 @@ class SearchRun {
       kAdmit,   // Newly admitted visit.
       kSelect,  // Materialization finished; select below the node.
       kBackup,  // Materialization finished; back up `value`.
+      // Materialization finished and the node already holds `value`; back
+      // up through the steps above it.
+      kBackupAbove,
     };
     VisitId id;
     size_t worker;

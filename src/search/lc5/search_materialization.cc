@@ -168,14 +168,17 @@ void SearchRun::CompleteMaterialization(Worker& worker,
   }
   RaiseHighWater(metrics_.graph_size_high_water, graph_->Size());
   if (!installed.accepted) metrics_.publications_rejected.fetch_add(1);
-  // The owner backs up the new leaf value; waiters select below the node
-  // unless it is terminal. A rejected publication resumes selection only.
+  // The install already counted the leaf value on the node, so the owner
+  // backs it up only through the steps above. Waiters select below the node
+  // unless it is terminal, in which case they back up the whole path like a
+  // later visit to a terminal. A rejected publication resumes selection only.
   const bool terminal =
       installed.accepted && payload.terminal != TerminalKind::kNonTerminal;
   const auto wake = [&](Continuation event, bool owner) {
-    event.kind = installed.accepted && (owner || terminal)
-                     ? Continuation::Kind::kBackup
-                     : Continuation::Kind::kSelect;
+    event.kind = !installed.accepted ? Continuation::Kind::kSelect
+                 : owner             ? Continuation::Kind::kBackupAbove
+                 : terminal          ? Continuation::Kind::kBackup
+                                     : Continuation::Kind::kSelect;
     event.generation = installed.generation;
     event.value = payload.leaf;
     event.terminal = terminal;

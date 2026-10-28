@@ -122,6 +122,9 @@ InstallResult GameGraph::InstallPayload(NodeKey key,
     node.edges.push_back(
         {.move = payload.moves[i], .prior = payload.priors[i]});
   }
+  // The leaf value counts as the node's first visit, so a node keeps it even
+  // if the visit that materialized it is cancelled before backing up.
+  node.value.Add(payload.leaf);
   return {node.generation, true};
 }
 
