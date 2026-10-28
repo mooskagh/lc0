@@ -30,6 +30,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <limits>
 #include <utility>
 
 namespace lczero::lc5 {
@@ -37,9 +38,8 @@ namespace {
 
 using std::chrono::steady_clock;
 constexpr auto kInfoInterval = std::chrono::seconds(1);
-constexpr auto kSmartPruningInterval = std::chrono::milliseconds(10);
-// Visits to complete before the visit rate is trusted for early stopping.
-constexpr uint64_t kSmartPruningMinVisits = 100;
+// Longest wait between stopper checks.
+constexpr int64_t kMaxStopperIntervalMs = 10;
 
 // Moves in the graph are from the side to move's perspective; UCI is not.
 Move ToUci(Move move, const Position& position) {
@@ -79,9 +79,9 @@ int CentipawnsFromQ(float q) {
 
 SearchRun::SearchRun(GameGraph* graph, NodeStore* store, Backend* backend,
                      UciResponder* responder, Settings::Resolved settings,
-                     TimeManager::Config time_management, VisitOrigin root,
-                     GoParams go_params, steady_clock::time_point start_time,
-                     int64_t saved_ms)
+                     std::unique_ptr<classic::SearchStopper> stopper,
+                     VisitOrigin root, GoParams go_params,
+                     steady_clock::time_point start_time)
     : graph_(graph),
       store_(store),
       backend_(backend),
@@ -89,9 +89,7 @@ SearchRun::SearchRun(GameGraph* graph, NodeStore* store, Backend* backend,
       settings_(settings),
       root_(std::move(root)),
       start_time_(start_time),
-      time_manager_(time_management, go_params,
-                    root_.history.Last().IsBlackToMove(), start_time_,
-                    saved_ms),
+      stopper_(std::move(stopper)),
       visits_(settings_.max_active_visits) {
   for (int i = 0; i < settings_.threads; ++i) {
     workers_.push_back(std::make_unique<Worker>(i));
@@ -170,21 +168,22 @@ void SearchRun::Controller() {
     const auto now = steady_clock::now();
     std::optional<steady_clock::time_point> next_check;
     if (!Stopping()) {
-      const auto decision = time_manager_.Evaluate(now);
-      next_check = decision.next_check;
-      if (decision.should_stop ||
-          (node_limit_ && metrics_.visits_completed.load() >= *node_limit_)) {
+      if (node_limit_ && metrics_.visits_completed.load() >= *node_limit_) {
         Stop();
-      } else if (time_manager_.smart_pruning_factor() > 0.0f) {
-        if (BestMoveDecided(now)) {
-          unused_time_ms_.store(
-              std::chrono::duration_cast<std::chrono::milliseconds>(
-                  *time_manager_.deadline() - now)
-                  .count());
-          Stop();
-        } else {
-          next_check = std::min(*next_check, now + kSmartPruningInterval);
+      } else if (stopper_) {
+        const auto stats = PopulateIterationStats(now);
+        // As in classic, stoppers wait until the root has been evaluated.
+        int64_t wait_ms = kMaxStopperIntervalMs;
+        if (stats.total_nodes > 0) {
+          hints_.Reset();
+          if (stopper_->ShouldStop(stats, &hints_)) {
+            Stop();
+          } else {
+            wait_ms = std::clamp<int64_t>(hints_.GetEstimatedRemainingTimeMs(),
+                                          1, kMaxStopperIntervalMs);
+          }
         }
+        next_check = now + std::chrono::milliseconds(wait_ms);
       }
     }
     if (!Stopping() && now >= next_info) {
@@ -210,29 +209,43 @@ void SearchRun::Controller() {
   Shutdown();
 }
 
-// Whether the most visited root edge stays ahead even if all remaining visits,
-// estimated from this run's rate so far, go to the runner-up.
-bool SearchRun::BestMoveDecided(steady_clock::time_point now) const {
+classic::IterationStats SearchRun::PopulateIterationStats(
+    steady_clock::time_point now) const {
+  classic::IterationStats stats;
+  stats.time_since_movestart =
+      std::chrono::duration_cast<std::chrono::milliseconds>(now - start_time_)
+          .count();
+  const int64_t first_visit_ms = first_visit_ms_.load();
+  if (first_visit_ms >= 0) {
+    stats.time_since_first_batch =
+        std::max<int64_t>(0, stats.time_since_movestart - first_visit_ms);
+  }
+  const uint64_t completed = metrics_.visits_completed.load();
+  stats.nodes_since_movestart = completed;
+  stats.batches_since_movestart = metrics_.evaluation_batches.load();
+  stats.average_depth = static_cast<int>(metrics_.cumulative_depth.load() /
+                                         std::max<uint64_t>(1, completed));
+  // No proven results yet, so no mates, wins or losing edges are reported.
   const auto root = graph_->SnapshotNode(root_.key);
-  if (!root || root->lifecycle != NodeLifecycle::kExpanded) return false;
-  if (root->edges.size() == 1) return true;
-  const uint64_t visits = metrics_.visits_completed.load();
-  const auto elapsed = now - start_time_;
-  if (visits < kSmartPruningMinVisits || elapsed.count() <= 0) return false;
-  const double remaining =
-      static_cast<double>(visits) * (*time_manager_.deadline() - now).count() /
-      elapsed.count() / time_manager_.smart_pruning_factor();
-  uint64_t best = 0;
-  uint64_t second = 0;
+  if (!root) return stats;
+  stats.total_nodes = root->value.visits;
+  stats.edge_n.reserve(root->edges.size());
   for (const auto& edge : root->edges) {
-    if (edge.value.visits > best) {
-      second = best;
-      best = edge.value.visits;
-    } else {
-      second = std::max(second, edge.value.visits);
+    stats.edge_n.push_back(
+        static_cast<uint32_t>(std::min<uint64_t>(
+        edge.value.visits, std::numeric_limits<uint32_t>::max())));
+  }
+  // Ask for more time while the most visited move is not the best by Q.
+  if (const EdgeState* pv = PvEdge(*root)) {
+    for (const auto& edge : root->edges) {
+      if (edge.value.visits > 0 && edge.Q() > pv->Q()) {
+        stats.time_usage_hint_ =
+            classic::IterationStats::TimeUsageHint::kNeedMoreTime;
+        break;
+      }
     }
   }
-  return best - second > remaining;
+  return stats;
 }
 
 void SearchRun::Respond() {
@@ -252,6 +265,8 @@ void SearchRun::Respond() {
     if (respond) {
       responder_->OutputThinkingInfo(&infos);
       responder_->OutputBestMove(&best);
+      // Lets the time manager bank the time this move left unused.
+      if (stopper_) stopper_->OnSearchDone(PopulateIterationStats(steady_clock::now()));
     }
   }
   // Synchronize the stop transition with sleepers only after the response.

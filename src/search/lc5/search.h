@@ -44,10 +44,10 @@
 #include "chess/callbacks.h"
 #include "chess/uciloop.h"
 #include "neural/backend.h"
+#include "search/classic/stoppers/timemgr.h"
 #include "search/lc5/graph.h"
 #include "search/lc5/metrics.h"
 #include "search/lc5/node_store.h"
-#include "search/lc5/time_manager.h"
 #include "search/lc5/visit.h"
 #include "search/lc5/work_queue.h"
 
@@ -65,10 +65,9 @@ class SearchRun {
  public:
   SearchRun(GameGraph* graph, NodeStore* store, Backend* backend,
             UciResponder* responder, Settings::Resolved settings,
-            TimeManager::Config time_management, VisitOrigin root,
+            std::unique_ptr<classic::SearchStopper> stopper, VisitOrigin root,
             GoParams go_params,
-            std::chrono::steady_clock::time_point start_time,
-            int64_t saved_ms = 0);
+            std::chrono::steady_clock::time_point start_time);
   ~SearchRun();
 
   void Start();
@@ -77,8 +76,6 @@ class SearchRun {
   void Wait();
   bool Finished() const { return finished_.load(std::memory_order_acquire); }
   const Metrics& metrics() const { return metrics_; }
-  // Time budget left unused because the search stopped early.
-  int64_t unused_time_ms() const { return unused_time_ms_.load(); }
 
   // Admits a visit from an arbitrary origin, sharing the node budget with
   // root visits. May be called before Start(). Returns false if admission is
@@ -205,7 +202,8 @@ class SearchRun {
 
   // Controller.
   void Controller();
-  bool BestMoveDecided(std::chrono::steady_clock::time_point now) const;
+  classic::IterationStats PopulateIterationStats(
+      std::chrono::steady_clock::time_point now) const;
   void Respond();
   bool FullyDrained();
   void Shutdown();
@@ -270,7 +268,9 @@ class SearchRun {
   const VisitOrigin root_;
   uint64_t root_visits_at_start_ = 0;
   const std::chrono::steady_clock::time_point start_time_;
-  const TimeManager time_manager_;
+  // Null when the run never stops by itself. Used by the controller only.
+  const std::unique_ptr<classic::SearchStopper> stopper_;
+  classic::StoppersHints hints_;
   VisitPool visits_;
   Metrics metrics_;
 
@@ -299,7 +299,8 @@ class SearchRun {
   std::atomic<bool> finished_{false};
   std::atomic<bool> output_committed_{false};
   std::atomic<bool> shutdown_{false};
-  std::atomic<int64_t> unused_time_ms_{0};
+  // Milliseconds from start_time_ to the first completed visit; -1 before.
+  std::atomic<int64_t> first_visit_ms_{-1};
   // Includes queued, executing, and returned-but-unconsumed jobs.
   std::atomic<size_t> jobs_in_flight_{0};
   // Jobs held by collectors (including retained whole jobs), not computing or

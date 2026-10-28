@@ -27,10 +27,14 @@
 
 #include "search/lc5/engine.h"
 
+#include <algorithm>
+#include <limits>
 #include <utility>
 
 #include "chess/callbacks.h"
 #include "chess/uciloop.h"
+#include "search/classic/stoppers/factory.h"
+#include "search/classic/stoppers/stoppers.h"
 #include "search/lc5/settings.h"
 #include "search/register.h"
 #include "utils/exception.h"
@@ -54,8 +58,12 @@ void Lc5Engine::SetBackend(Backend* backend) {
 
 void Lc5Engine::SetPosition(const GameState& state) {
   AbortAndWait();
-  // The graph survives position changes within the same game.
-  if (game_start_ != state.startpos) graph_.Clear();
+  // The graph and time manager survive position changes within the same game.
+  if (game_start_ != state.startpos) {
+    run_.reset();
+    time_manager_.reset();
+    graph_.Clear();
+  }
   game_start_ = state.startpos;
   root_history_.emplace();
   root_history_->Reset(state.startpos);
@@ -65,11 +73,11 @@ void Lc5Engine::SetPosition(const GameState& state) {
 void Lc5Engine::NewGame() {
   AbortAndWait();
   run_.reset();
+  time_manager_.reset();
   graph_.Clear();
   game_start_.reset();
   root_history_.reset();
   clock_start_.reset();
-  saved_time_ms_ = 0;
 }
 
 void Lc5Engine::StartClock() {
@@ -78,7 +86,6 @@ void Lc5Engine::StartClock() {
 
 void Lc5Engine::StartSearch(const GoParams& params) {
   AbortAndWait();
-  if (run_) saved_time_ms_ += run_->unused_time_ms();
   run_.reset();
   if (!backend_) throw Exception("Lc5 requires a backend");
   if (!root_history_) throw Exception("Lc5 position was not set");
@@ -90,10 +97,25 @@ void Lc5Engine::StartSearch(const GoParams& params) {
       .backup_prefix = {}};
   const auto start = clock_start_.value_or(std::chrono::steady_clock::now());
   clock_start_.reset();
+  if (!time_manager_) time_manager_ = classic::MakeTimeManager(*options_);
+  // `go nodes` stays exact through the run's own limit; classic's stoppers
+  // must neither stop on it nor smart-prune against it.
+  GoParams stopper_params = params;
+  stopper_params.nodes.reset();
+  const auto root_node = graph_.SnapshotNode(root.key);
+  constexpr size_t kAvgNodeSize =
+      sizeof(NodeState) + classic::MemoryWatchingStopper::kAvgMovesPerPosition *
+                              sizeof(EdgeState);
+  auto stopper = time_manager_->GetStopper(
+      stopper_params, root_history_->Last(), graph_.Size() * kAvgNodeSize,
+      kAvgNodeSize,
+      static_cast<uint32_t>(std::min<uint64_t>(
+          root_node ? root_node->value.visits : 0,
+          std::numeric_limits<uint32_t>::max())));
   run_ = std::make_unique<SearchRun>(
       &graph_, /*store=*/nullptr, backend_, uci_responder_,
-      settings.Resolve(backend_->GetAttributes()), settings.time_management(),
-      std::move(root), params, start, std::exchange(saved_time_ms_, 0));
+      settings.Resolve(backend_->GetAttributes()), std::move(stopper),
+      std::move(root), params, start);
   run_->Start();
 }
 

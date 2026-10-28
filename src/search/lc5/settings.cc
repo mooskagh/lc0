@@ -30,6 +30,7 @@
 #include <algorithm>
 #include <thread>
 
+#include "search/classic/stoppers/factory.h"
 #include "utils/exception.h"
 
 namespace lczero::lc5 {
@@ -64,16 +65,6 @@ const OptionId kActiveVisitsRatio{
     "active-visits-ratio", "ActiveVisitsRatio",
     "Live visits are limited to 16 plus this fraction of the root's visits "
     "(and to MaxActiveVisits); 0 disables the limit."};
-const OptionId kMoveOverhead{"move-overhead", "MoveOverheadMs",
-                             "Time reserved for communication overhead."};
-const OptionId kAlphazeroTimePct{
-    "alphazero-time-pct", "AlphaZeroTimePct",
-    "Percentage of the remaining clock allocated to each Lc5 move."};
-const OptionId kSmartPruningFactor{
-    "smart-pruning-factor", "SmartPruningFactor",
-    "Stop early once the best root move cannot be overtaken by the remaining "
-    "visits divided by this factor; the unused time is spent on the next "
-    "move. 0 disables it."};
 
 }  // namespace
 
@@ -94,9 +85,8 @@ void Settings::Populate(OptionsParser* options) {
   options->Add<FloatOption>(kFpuValue, -100.0f, 100.0f) = 0.33f;
   options->Add<BoolOption>(kRestartWaiters) = false;
   options->Add<FloatOption>(kActiveVisitsRatio, 0.0f, 100.0f) = 0.25f;
-  options->Add<IntOption>(kMoveOverhead, 0, 100000000) = 200;
-  options->Add<FloatOption>(kAlphazeroTimePct, 0.0f, 100.0f) = 3.0f;
-  options->Add<FloatOption>(kSmartPruningFactor, 0.0f, 10.0f) = 1.33f;
+  // Time management and stoppers are classic's, with the same options.
+  classic::PopulateTimeManagementOptions(classic::RunType::kUci, options);
 }
 
 Settings::Settings(const OptionsDict& options)
@@ -115,11 +105,7 @@ Settings::Settings(const OptionsDict& options)
                               : FpuStrategy::kReduction,
           .fpu_value = options.Get<float>(kFpuValue),
           .restart_waiters = options.Get<bool>(kRestartWaiters),
-          .active_visits_ratio = options.Get<float>(kActiveVisitsRatio)},
-      time_management_{
-          .move_overhead_ms = options.Get<int>(kMoveOverhead),
-          .alphazero_time_pct = options.Get<float>(kAlphazeroTimePct),
-          .smart_pruning_factor = options.Get<float>(kSmartPruningFactor)} {}
+          .active_visits_ratio = options.Get<float>(kActiveVisitsRatio)} {}
 
 Settings::Resolved Settings::Resolve(const BackendAttributes& backend) const {
   Resolved resolved = configured_;

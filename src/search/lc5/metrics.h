@@ -65,6 +65,8 @@ struct Metrics {
   std::atomic<uint64_t> partial_starvation_flushes{0};
   std::atomic<uint64_t> partial_timeout_flushes{0};
   std::atomic<uint64_t> max_depth{0};
+  // Sum of the path lengths of completed visits.
+  std::atomic<uint64_t> cumulative_depth{0};
   std::atomic<uint64_t> max_selected_depth{0};
   std::atomic<uint64_t> ready_eval_high_water{0};
   std::atomic<uint64_t> active_visits_high_water{0};

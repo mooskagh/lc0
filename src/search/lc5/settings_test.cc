@@ -29,6 +29,9 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
+#include <string>
+
 #include "utils/exception.h"
 
 namespace lczero::lc5 {
@@ -66,24 +69,18 @@ TEST(Lc5SettingsTest, RejectsBatchAboveBackendMaximum) {
   EXPECT_THROW(settings.Resolve(attrs), Exception);
 }
 
-TEST(Lc5SettingsTest, ExtractsDefaultTimingConfiguration) {
+TEST(Lc5SettingsTest, RegistersClassicTimeManagementOptions) {
   OptionsParser parser;
   Settings::Populate(&parser);
-  Settings settings(parser.GetOptionsDict());
-
-  EXPECT_EQ(settings.time_management().move_overhead_ms, 200);
-  EXPECT_FLOAT_EQ(settings.time_management().alphazero_time_pct, 3.0f);
-}
-
-TEST(Lc5SettingsTest, ExtractsCustomTimingConfiguration) {
-  OptionsParser parser;
-  Settings::Populate(&parser);
-  parser.SetUciOption("MoveOverheadMs", "100");
-  parser.SetUciOption("AlphaZeroTimePct", "25");
-  Settings settings(parser.GetOptionsDict());
-
-  EXPECT_EQ(settings.time_management().move_overhead_ms, 100);
-  EXPECT_FLOAT_EQ(settings.time_management().alphazero_time_pct, 25.0f);
+  const auto options = parser.ListOptionsUci();
+  for (const std::string expected :
+       {"option name TimeManager type string default legacy",
+        "option name MoveOverheadMs type spin default 200 ",
+        "option name SmartPruningFactor type string default 1.33"}) {
+    EXPECT_TRUE(std::ranges::any_of(options, [&](const std::string& option) {
+      return option.starts_with(expected);
+    })) << expected;
+  }
 }
 
 }  // namespace

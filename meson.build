@@ -157,6 +157,17 @@ common_files += [
   'src/version.cc',
 ]
 
+classic_stopper_files = [
+  'src/search/classic/stoppers/alphazero.cc',
+  'src/search/classic/stoppers/common.cc',
+  'src/search/classic/stoppers/factory.cc',
+  'src/search/classic/stoppers/legacy.cc',
+  'src/search/classic/stoppers/simple.cc',
+  'src/search/classic/stoppers/smooth.cc',
+  'src/search/classic/stoppers/stoppers.cc',
+  'src/search/classic/stoppers/timemgr.cc',
+]
+
 files += [
   'src/engine_loop.cc',
   'src/engine.cc',
@@ -178,14 +189,7 @@ files += [
   'src/neural/xla/xla_tensor.cc',
   'src/search/classic/params.cc',
   'src/search/classic/search.cc',
-  'src/search/classic/stoppers/alphazero.cc',
-  'src/search/classic/stoppers/common.cc',
-  'src/search/classic/stoppers/factory.cc',
-  'src/search/classic/stoppers/legacy.cc',
-  'src/search/classic/stoppers/simple.cc',
-  'src/search/classic/stoppers/smooth.cc',
-  'src/search/classic/stoppers/stoppers.cc',
-  'src/search/classic/stoppers/timemgr.cc',
+  classic_stopper_files,
   'src/search/classic/wrapper.cc',
   'src/search/register.cc',
   'src/selfplay/game.cc',
@@ -229,7 +233,6 @@ if get_option('lc5')
     'src/search/lc5/search_visits.cc',
     'src/search/lc5/search_materialization.cc',
     'src/search/lc5/settings.cc',
-    'src/search/lc5/time_manager.cc',
   ]
 endif
 #############################################################################
@@ -1216,26 +1219,18 @@ if get_option('gtest')
         'src/search/lc5/graph.cc',
         'src/search/lc5/metrics.cc',
         'src/search/lc5/settings.cc',
-        'src/search/lc5/time_manager.cc',
         'src/search/register.cc',
+        classic_stopper_files,
         pb_files,
         include_directories: includes, link_with: lc0_lib,
         dependencies: [gtest, absl_flat_hash_map_dep]),
       args: '--gtest_output=xml:lc5_search_test.xml', timeout: 90)
 
-    test('Lc5TimeManager',
-      executable('lc5_time_manager_test',
-        'src/search/lc5/time_manager_test.cc',
-        'src/search/lc5/time_manager.cc',
-        pb_files,
-        include_directories: includes, link_with: lc0_lib,
-        dependencies: [gtest, absl_flat_hash_map_dep]),
-      args: '--gtest_output=xml:lc5_time_manager_test.xml', timeout: 90)
-
     test('Lc5Settings',
       executable('lc5_settings_test',
         'src/search/lc5/settings_test.cc',
         'src/search/lc5/settings.cc',
+        classic_stopper_files,
         pb_files,
         include_directories: includes, link_with: lc0_lib,
         dependencies: [gtest, absl_flat_hash_map_dep]),

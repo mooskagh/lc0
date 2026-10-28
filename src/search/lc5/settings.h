@@ -28,7 +28,6 @@
 #pragma once
 
 #include "neural/backend.h"
-#include "search/lc5/time_manager.h"
 #include "utils/optionsdict.h"
 #include "utils/optionsparser.h"
 
@@ -60,13 +59,9 @@ class Settings {
   Resolved Resolve(const BackendAttributes& backend) const;
 
   int history_key_length() const { return configured_.history_key_length; }
-  const TimeManager::Config& time_management() const {
-    return time_management_;
-  }
 
  private:
   Resolved configured_;  // As set by the user; zero sizes are automatic.
-  TimeManager::Config time_management_;
 };
 
 }  // namespace lczero::lc5
