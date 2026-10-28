@@ -163,6 +163,12 @@ void SearchRun::Resume(Worker& worker, const Continuation& event) {
       return;
     }
     visit.waiting_ticket = 0;
+    // On stop, visits finish only when their evaluation already exists.
+    if (event.kind == Continuation::Kind::kCancel ||
+        (Stopping() && event.kind == Continuation::Kind::kSelect)) {
+      Cancel(worker, *slot);
+      return;
+    }
     visit.path.back().generation = event.generation;
     visit.path.back().selected_move.reset();
     visit.result = event.value;
@@ -242,7 +248,9 @@ void SearchRun::AdvanceRunnable(Worker& worker, size_t limit) {
 
 void SearchRun::CancelVisits(Worker& worker) {
   // Only the owner ever cancels or mutates a visit. Epochs make later ticket
-  // completions harmless even after the slot has been reused.
+  // completions harmless even after the slot has been reused. Ready backups
+  // finish; waiting visits stay until their ticket completes or is cancelled,
+  // and come back through Resume.
   if (!worker.cancelled) {
     const std::vector<uint64_t> active(worker.active.begin(),
                                        worker.active.end());
@@ -284,12 +292,13 @@ void SearchRun::AdvanceVisit(Worker& worker, VisitId id) {
   if (!slot) return;
   Visit& visit = slot->visit;
   assert(visit.worker == worker.index);
-  if (Stopping()) {
-    Cancel(worker, *slot);
-    return;
-  }
   if (visit.state == VisitState::kReadyBackup) {
     Backup(worker, *slot);
+    return;
+  }
+  if (visit.state == VisitState::kWaitingMaterialization) return;
+  if (Stopping()) {
+    Cancel(worker, *slot);
     return;
   }
   if (visit.state != VisitState::kReadySelect) return;

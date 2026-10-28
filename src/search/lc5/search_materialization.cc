@@ -135,7 +135,7 @@ bool SearchRun::SuspendForMaterialization(Worker& worker,
 
 void SearchRun::PrepareEvaluation(Worker& worker, Request request) {
   if (Stopping()) {
-    CancelMaterialization(request.ticket);
+    CancelMaterialization(worker, request.ticket);
     return;
   }
   request.payload = DetectTerminal(request.history);
@@ -192,20 +192,33 @@ void SearchRun::CompleteMaterialization(Worker& worker,
   }
 }
 
-void SearchRun::CancelMaterialization(MaterializationTicketId ticket_id) {
-  // Owner requests retire tickets even if suspension raced with stop. Visits
-  // cancel their own reservations; no waiter needs resuming on whole-run stop.
-  std::lock_guard lock(tickets_mutex_);
-  const auto it = tickets_.find(ticket_id);
-  if (it == tickets_.end()) return;
-  graph_->CancelMaterialization(it->second.key, ticket_id);
-  ticket_by_key_.erase(it->second.key);
-  tickets_.erase(it);
+void SearchRun::CancelMaterialization(Worker& worker,
+                                      MaterializationTicketId ticket_id) {
+  // Only called on stop, for evaluations that will never be computed. The
+  // owner and waiters are still alive and must be woken to cancel.
+  Ticket ticket;
+  {
+    std::lock_guard lock(tickets_mutex_);
+    const auto it = tickets_.find(ticket_id);
+    if (it == tickets_.end()) return;
+    graph_->CancelMaterialization(it->second.key, ticket_id);
+    ticket = std::move(it->second);
+    tickets_.erase(it);
+    ticket_by_key_.erase(ticket.key);
+  }
+  const auto wake = [&](Continuation event) {
+    event.kind = Continuation::Kind::kCancel;
+    Deliver(worker, event);
+  };
+  wake(ticket.owner);
+  for (const auto& event : ticket.waiters) wake(event);
 }
 
 void SearchRun::CancelPendingRequests(Worker& worker) {
   for (auto* requests : {&worker.unprepared, &worker.loads, &worker.evals}) {
-    for (const auto& request : *requests) CancelMaterialization(request.ticket);
+    for (const auto& request : *requests) {
+      CancelMaterialization(worker, request.ticket);
+    }
     requests->clear();
   }
 }
@@ -301,7 +314,7 @@ void SearchRun::ConsumeJob(Worker& worker, std::unique_ptr<Job> job) {
         break;
       case Request::State::kPending:
       case Request::State::kQueued:
-        CancelMaterialization(request.ticket);
+        CancelMaterialization(worker, request.ticket);
         break;
     }
   }

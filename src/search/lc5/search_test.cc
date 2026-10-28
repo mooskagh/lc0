@@ -745,15 +745,20 @@ TEST(Lc5SearchTest, BlockedBackendStopAndAbortDrainReservationsAndPersistence) {
     backend.Release();
     run.Wait();
     ExpectDrained(run, graph);
+    // The evaluation was authorized before stop, so the owner backs up when
+    // it returns. The waiters would select below the child and cancel.
     EXPECT_EQ(run.metrics().visits_admitted.load(), 4u);
-    EXPECT_EQ(run.metrics().visits_completed.load(), 0u);
-    EXPECT_EQ(run.metrics().visits_cancelled.load(), 4u);
+    EXPECT_EQ(run.metrics().visits_completed.load(), 1u);
+    EXPECT_EQ(run.metrics().visits_cancelled.load(), 3u);
     EXPECT_EQ(run.metrics().node_store_misses.load(), 1u);
     EXPECT_EQ(store.stored, 1u);
     ASSERT_TRUE(store.entries.contains(child.key));
     EXPECT_FLOAT_EQ(store.entries.at(child.key).leaf.q, 0.25f);
-    // Only the setup install counted at the root.
-    EXPECT_EQ(graph.SnapshotNode(root.key)->value.visits, 1u);
+    // The setup install plus the owner's late backup.
+    const auto root_node = graph.SnapshotNode(root.key);
+    EXPECT_EQ(root_node->value.visits, 2u);
+    EXPECT_EQ(root_node->edges[0].value.visits, 1u);
+    EXPECT_EQ(root_node->edges[0].in_flight, 0u);
     if (abort) {
       EXPECT_TRUE(responder.bestmoves.empty());
       EXPECT_TRUE(std::none_of(responder.thinking.begin(),
@@ -871,16 +876,21 @@ TEST(Lc5SearchTest, CollectionFlushesWhileAnotherWorkerIsBlockedInStore) {
     }
     // This also exercises waking collectors and finishing returned store work
     // after stop. Never leave either executor blocked on a failed assertion.
+    // The final info precedes release, so the late backup is not counted.
     run.Stop();
+    const bool responding = responder.WaitForBestmove();
     store.Release();
     backend.Release();
     run.Wait();
     ASSERT_TRUE(loading);
     ASSERT_TRUE(computing)
         << "Collection depended on the blocked store returning";
+    ASSERT_TRUE(responding);
     ExpectDrained(run, graph);
     ExpectFinalOutput(responder, 0);
-    EXPECT_EQ(run.metrics().visits_cancelled.load(), 2u);
+    // The computed evaluation backs up; the other store miss is cancelled.
+    EXPECT_EQ(run.metrics().visits_completed.load(), 1u);
+    EXPECT_EQ(run.metrics().visits_cancelled.load(), 1u);
     EXPECT_EQ(run.metrics().node_store_misses.load(), 2u);
     EXPECT_EQ(store.recording.stored, 1u);
     EXPECT_EQ(backend.computes.load(), 1u);
@@ -1073,9 +1083,11 @@ TEST(Lc5SearchTest, BlockedStoreLoadsAndPersistenceDrainAfterStopOrAbort) {
       run.Wait();
       ASSERT_TRUE(loading);
       ExpectDrained(run, graph);
+      // A load already running at stop completes: on a hit, the owner backs
+      // up and the waiters cancel. A miss is never evaluated.
       EXPECT_EQ(run.metrics().visits_admitted.load(), 4u);
-      EXPECT_EQ(run.metrics().visits_completed.load(), 0u);
-      EXPECT_EQ(run.metrics().visits_cancelled.load(), 4u);
+      EXPECT_EQ(run.metrics().visits_completed.load(), hit ? 1u : 0u);
+      EXPECT_EQ(run.metrics().visits_cancelled.load(), hit ? 3u : 4u);
       EXPECT_EQ(run.metrics().node_store_hits.load(), hit ? 1u : 0u);
       EXPECT_EQ(run.metrics().node_store_misses.load(), hit ? 0u : 1u);
       EXPECT_EQ(store.recording.stored, 0u);
@@ -1083,8 +1095,9 @@ TEST(Lc5SearchTest, BlockedStoreLoadsAndPersistenceDrainAfterStopOrAbort) {
       EXPECT_EQ(backend.computes.load(), 0u);
       EXPECT_EQ(store.recording.entries.contains(child.key), hit);
       EXPECT_EQ(graph.SnapshotNode(child.key).has_value(), hit);
-      // Only the setup install counted at the root.
-      EXPECT_EQ(graph.SnapshotNode(root.key)->value.visits, 1u);
+      // The setup install, plus the owner's backup on a hit.
+      EXPECT_EQ(graph.SnapshotNode(root.key)->value.visits, hit ? 2u : 1u);
+      EXPECT_EQ(graph.SnapshotNode(root.key)->edges[0].value.visits, hit ? 1u : 0u);
       if (abort) {
         EXPECT_TRUE(responder.bestmoves.empty());
         EXPECT_TRUE(std::none_of(responder.thinking.begin(),
@@ -1146,10 +1159,50 @@ TEST(Lc5SearchTest, QueuedBacklogCannotComputeAgainAfterStop) {
       EXPECT_EQ(calls, 1u);
     EXPECT_EQ(backend.inputs.load(), 4u * evaluators);
     EXPECT_EQ(graph.Size(), 4u * evaluators);
-    EXPECT_EQ(run.metrics().visits_completed.load(), 0u);
+    // Authorized batches back up their visits; the queued backlog cancels.
+    EXPECT_EQ(run.metrics().visits_completed.load(), 4u * evaluators);
     ExpectDrained(run, graph);
     ExpectLegalBestmove(responder, root);
   }
+}
+
+TEST(Lc5SearchTest, AuthorizedEvaluationsBackUpToRootAfterStop) {
+  GameGraph graph;
+  ControlledBackend backend(ControlledBackend::Cache::kNone, true);
+  RecordingResponder responder;
+  const auto root = Origin();
+  const auto legal = root.history.Last().GetBoard().GenerateLegalMoves();
+  graph.InstallPayload(root.key, 1,
+                       {.moves = {legal.begin(), legal.end()},
+                        .priors = std::vector<float>(legal.size(),
+                                                     1.0f / legal.size())});
+  SearchRun run(&graph, nullptr, &backend, &responder, TestSettings(4, 20),
+                TestTimeManagement(), root, GoParams{.nodes = 20},
+                std::chrono::steady_clock::now());
+  for (int i = 0; i < 20; ++i) ASSERT_TRUE(run.Admit(root));
+  run.Start();
+  // One authorized batch of four children is computing; the other visits wait
+  // on tickets of any worker, or are still queued, and must cancel.
+  const bool computing = backend.WaitForCompute();
+  run.Stop();
+  const bool responding = responder.WaitForBestmove();
+  EXPECT_FALSE(run.Finished());
+  backend.Release();
+  run.Wait();
+  ASSERT_TRUE(computing);
+  ASSERT_TRUE(responding);
+  ExpectDrained(run, graph);
+  EXPECT_EQ(backend.computes.load(), 1u);
+  EXPECT_EQ(backend.inputs.load(), 4u);
+  // Each computed ticket's owner backs up through the root after stop.
+  EXPECT_EQ(run.metrics().visits_completed.load(), 4u);
+  const auto node = graph.SnapshotNode(root.key);
+  ASSERT_TRUE(node);
+  EXPECT_EQ(node->value.visits, 5u);
+  uint64_t edge_visits = 0;
+  for (const auto& edge : node->edges) edge_visits += edge.value.visits;
+  EXPECT_EQ(edge_visits, 4u);
+  ExpectFinalOutput(responder, 20);
 }
 
 TEST(Lc5SearchTest, StopDuringAddInputKeepsOnlyImmediateResults) {
@@ -1180,8 +1233,10 @@ TEST(Lc5SearchTest, StopDuringAddInputKeepsOnlyImmediateResults) {
   EXPECT_EQ(graph.Size(), 1u);
   auto hit = graph.SnapshotNode(origins[0].key);
   ASSERT_TRUE(hit);
-  // The install counted the leaf even though its visit was cancelled.
+  // The install counted the leaf; its owner completes with nothing above it.
   EXPECT_EQ(hit->value.visits, 1u);
+  EXPECT_EQ(run.metrics().visits_completed.load(), 1u);
+  EXPECT_EQ(run.metrics().visits_cancelled.load(), 3u);
   EXPECT_FLOAT_EQ(hit->value.Q(), backend.q);
   for (const auto& edge : hit->edges)
     EXPECT_FLOAT_EQ(edge.prior, 1.0f / hit->edges.size());

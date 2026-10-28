@@ -98,6 +98,8 @@ class SearchRun {
       // Materialization finished and the node already holds `value`; back
       // up through the steps above it.
       kBackupAbove,
+      // Materialization was cancelled on stop; cancel the visit.
+      kCancel,
     };
     VisitId id;
     size_t worker;
@@ -245,7 +247,7 @@ class SearchRun {
   void PrepareEvaluation(Worker& worker, Request request);
   void CompleteMaterialization(Worker& worker, MaterializationTicketId ticket,
                                ExpansionPayload payload, bool store_payload);
-  void CancelMaterialization(MaterializationTicketId ticket);
+  void CancelMaterialization(Worker& worker, MaterializationTicketId ticket);
   void CancelPendingRequests(Worker& worker);
   void SubmitJobs(Worker& worker);
   std::unique_ptr<Job> TakeJob(Worker& worker) const;
