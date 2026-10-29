@@ -253,7 +253,8 @@ void SearchRun::Shutdown() {
   finished_.store(true, std::memory_order_release);
 }
 
-// Deterministic legal move for when no root edge has completed a visit.
+// Deterministic legal move for when the root has no PV: it was never
+// expanded, or it is terminal.
 Move SearchRun::FallbackMove() const {
   const Position& position = root_.history.Last();
   const auto legal = position.GetBoard().GenerateLegalMoves();

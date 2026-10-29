@@ -205,7 +205,5 @@ Options of the `puct` policy:
 
 - Moves-left utility, mate propagation, Syzygy, MultiPV, training data
   output, memory limits and eviction.
-- If no root move has a finished visit (e.g. `go nodes 1`), `bestmove` is an
-  arbitrary legal move rather than the top policy move.
 
 `scripts/benchmark_lc5.py` is a speed benchmark harness.

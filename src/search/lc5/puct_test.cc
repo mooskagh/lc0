@@ -161,6 +161,19 @@ TEST(Lc5PuctTest, ChooseEdgeRanksVisitsThenQThenPrior) {
   EXPECT_EQ(PuctAveraging::ChooseEdge(node), &node.edges[0]);
 }
 
+TEST(Lc5PuctTest, ChooseMoveFallsBackToTopPrior) {
+  Node node{.lifecycle = NodeLifecycle::kExpanded};
+  EXPECT_EQ(PuctAveraging::ChooseMove(node), nullptr);
+
+  node.edges = {MakeEdge(kFileC, 0.5f), MakeEdge(kFileA, 0.3f),
+                MakeEdge(kFileB, 0.2f)};
+  EXPECT_EQ(PuctAveraging::ChooseEdge(node), nullptr);
+  EXPECT_EQ(PuctAveraging::ChooseMove(node), &node.edges[0]);
+
+  node.edges[2].stats = {.visits = 1};
+  EXPECT_EQ(PuctAveraging::ChooseMove(node), &node.edges[2]);
+}
+
 TEST(Lc5PuctTest, DescribeNeedsVisits) {
   ThinkingInfo info;
   PuctAveraging::Describe(ValueStats{}, info);

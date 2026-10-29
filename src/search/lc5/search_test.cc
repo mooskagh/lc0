@@ -1356,6 +1356,32 @@ TEST(Lc5SearchTest, RespondsBeforeBlockedPersistenceDrains) {
   ExpectFinalOutput(responder, 1);
 }
 
+TEST(Lc5SearchTest, SingleNodeSearchPlaysTopPriorMove) {
+  PolicyEngine<PuctAveraging> engine(TestParams());
+  auto& graph = engine.graph();
+  ControlledBackend backend;
+  RecordingResponder responder;
+  // Black to move, so the PV move is flipped back for UCI.
+  const auto root =
+      Origin("rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1");
+  SearchRun run(&engine, nullptr, &backend, &responder, TestSettings(),
+                TestTimeManagement(), root, GoParams{.nodes = 1},
+                std::chrono::steady_clock::now());
+  run.Start();
+  run.Wait();
+  ExpectDrained(run, graph);
+  ExpectFinalOutput(responder, 1);
+  const auto node = graph.SnapshotNode(root.key);
+  ASSERT_TRUE(node);
+  ASSERT_FALSE(node->edges.empty());
+  for (const auto& edge : node->edges) EXPECT_EQ(edge.stats.visits, 0u);
+  Move expected = node->edges[0].move;
+  expected.Flip();
+  ASSERT_EQ(responder.thinking.back().pv.size(), 1u);
+  EXPECT_EQ(responder.thinking.back().pv[0], expected);
+  EXPECT_EQ(responder.bestmoves[0].bestmove, expected);
+}
+
 TEST(Lc5SearchTest,
      FreshRootStoppedBeforeStartUsesLegalFallbackWithoutEvaluation) {
   PolicyEngine<PuctAveraging> engine(TestParams());

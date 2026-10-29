@@ -86,6 +86,13 @@ struct PuctAveraging {
   // nullptr if no edge has a visit.
   static const EdgeState<PuctAveraging>* ChooseEdge(
       const NodeState<PuctAveraging>& node);
+  // The bestmove edge: ChooseEdge, or before any edge has a visit the
+  // highest-prior one (edges are sorted by PreferOnTie); nullptr if no edges.
+  static const EdgeState<PuctAveraging>* ChooseMove(
+      const NodeState<PuctAveraging>& node) {
+    const auto* edge = ChooseEdge(node);
+    return edge || node.edges.empty() ? edge : &node.edges.front();
+  }
   // Fills the score and WDL of `info` if the node has visits.
   static void Describe(const NodeStats& node, ThinkingInfo& info);
 

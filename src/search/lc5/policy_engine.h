@@ -190,7 +190,10 @@ void PolicyEngine<P>::Report(const VisitOrigin& root, const VisitContext& ctx,
   while (node && pv.size() < kMaxPvLength &&
          node->lifecycle == NodeLifecycle::kExpanded &&
          node->terminal == TerminalKind::kNonTerminal) {
-    const EdgeState<P>* edge = P::ChooseEdge(*node);
+    // The root's move is the bestmove, so it is chosen even before any of its
+    // edges has a visit.
+    const EdgeState<P>* edge =
+        pv.empty() ? P::ChooseMove(*node) : P::ChooseEdge(*node);
     if (!edge) break;
     pv.push_back(ToUci(edge->move, history.Last()));
     history.Append(edge->move);
