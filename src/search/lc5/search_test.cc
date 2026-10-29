@@ -1051,7 +1051,9 @@ TEST(Lc5SearchTest, BlockedStoreLoadsAndPersistenceDrainAfterStopOrAbort) {
       child.history.Append(move);
       child.key = MakeNodeKey(child.history, 7);
       if (hit) {
-        const auto legal = child.history.Last().GetBoard().GenerateLegalMoves();
+        // Uniform priors, so edge order is by move encoding.
+        auto legal = child.history.Last().GetBoard().GenerateLegalMoves();
+        std::ranges::sort(legal, {}, &Move::raw_data);
         store.recording.entries.emplace(
             child.key,
             ExpansionPayload{.leaf = {0.75f, 0.25f, 7.0f},
@@ -1171,7 +1173,9 @@ TEST(Lc5SearchTest, AuthorizedEvaluationsBackUpToRootAfterStop) {
   ControlledBackend backend(ControlledBackend::Cache::kNone, true);
   RecordingResponder responder;
   const auto root = Origin();
-  const auto legal = root.history.Last().GetBoard().GenerateLegalMoves();
+  // Uniform priors, so edge order is by move encoding.
+  auto legal = root.history.Last().GetBoard().GenerateLegalMoves();
+  std::ranges::sort(legal, {}, &Move::raw_data);
   graph.InstallPayload(root.key, 1,
                        {.moves = {legal.begin(), legal.end()},
                         .priors = std::vector<float>(legal.size(),

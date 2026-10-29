@@ -516,6 +516,76 @@ TEST(Lc5GraphTest, ReservationsAreExactAndCancellationDoesNotCommit) {
             UpdateResult::kUnderflow);
 }
 
+// Priors in descending order, with moves out of encoding order.
+ExpansionPayload FourEdges() {
+  return {.moves = {M(kFileD, kFileD), M(kFileA, kFileA), M(kFileC, kFileC),
+                    M(kFileB, kFileB)},
+          .priors = {0.4f, 0.3f, 0.2f, 0.1f}};
+}
+
+TEST(Lc5GraphTest, StartedPrefixGrowsInPriorOrder) {
+  GameGraph graph;
+  const NodeKey key{456};
+  const auto created = graph.FindOrCreateMaterializing(key, 1);
+  const auto payload = FourEdges();
+  graph.InstallPayload(key, 1, payload);
+  // Untried edges score above every tried one, so each is tried in turn.
+  auto settings = TestSettings();
+  settings.fpu_value = 1.0f;
+  for (uint32_t i = 0; i < 4; ++i) {
+    EXPECT_EQ(graph.SnapshotNode(key)->started_end, i);
+    const auto selection = graph.SelectAndReserve(key, settings);
+    EXPECT_EQ(selection.move, payload.moves[i]);
+    EXPECT_EQ(graph.SnapshotNode(key)->started_end, i + 1);
+    graph.BackupNode(key, created.generation, {}, selection.move);
+    graph.BackupNode(key, created.generation, {}, std::nullopt);
+    EXPECT_EQ(graph.SnapshotNode(key)->started_end, i + 1);
+  }
+  EXPECT_EQ(graph.SelectAndReserve(key, settings).move, payload.moves[0]);
+  EXPECT_EQ(graph.SnapshotNode(key)->started_end, 4u);
+}
+
+TEST(Lc5GraphTest, CancelledEdgeBelowStartedEndIsStillSelectable) {
+  GameGraph graph;
+  const NodeKey key{456};
+  const auto created = graph.FindOrCreateMaterializing(key, 1);
+  const auto payload = FourEdges();
+  graph.InstallPayload(key, 1, payload);
+  auto settings = TestSettings();
+  settings.fpu_value = 1.0f;
+  EXPECT_EQ(graph.SelectAndReserve(key, settings).move, payload.moves[0]);
+  EXPECT_EQ(graph.SelectAndReserve(key, settings).move, payload.moves[1]);
+  EXPECT_EQ(graph.CancelEdge(key, created.generation, payload.moves[0]),
+            UpdateResult::kApplied);
+  EXPECT_EQ(graph.SnapshotNode(key)->started_end, 2u);
+  EXPECT_EQ(graph.SelectAndReserve(key, settings).move, payload.moves[0]);
+  const auto node = graph.SnapshotNode(key);
+  EXPECT_EQ(node->started_end, 2u);
+  EXPECT_EQ(node->edges[0].in_flight, 1u);
+}
+
+TEST(Lc5GraphTest, FirstUntriedEdgeCompetesWithTriedOnes) {
+  for (const float q : {0.5f, -0.5f}) {
+    SCOPED_TRACE(q);
+    GameGraph graph;
+    const NodeKey key{456};
+    const auto created = graph.FindOrCreateMaterializing(key, 1);
+    const ExpansionPayload payload{
+        .moves = {M(kFileA, kFileA), M(kFileB, kFileB), M(kFileC, kFileC)},
+        .priors = {0.5f, 0.3f, 0.2f}};
+    graph.InstallPayload(key, 1, payload);
+    const auto settings = TestSettings();
+    ASSERT_EQ(graph.SelectAndReserve(key, settings).move, payload.moves[0]);
+    graph.BackupNode(key, created.generation, {q, 0.0f, 0.0f},
+                     payload.moves[0]);
+    // The tried edge scores q + 0.25 and the first untried one 0.3.
+    const bool tried_wins = q > 0.05f;
+    EXPECT_EQ(graph.SelectAndReserve(key, settings).move,
+              payload.moves[tried_wins ? 0 : 1]);
+    EXPECT_EQ(graph.SnapshotNode(key)->started_end, tried_wins ? 1u : 2u);
+  }
+}
+
 TEST(Lc5GraphTest, IncomingParentsKeepIndependentEdgeStatistics) {
   GameGraph graph;
   Move move = M(kFileC, kFileC);

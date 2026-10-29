@@ -34,8 +34,9 @@ Code: `search_visits.cc`, `search_materialization.cc`.
    visits are ever admitted.
 
 2. **Selection.** At each node the visit picks a move by PUCT
-   (`GameGraph::SelectAndReserve`) and reserves the edge (`in_flight`, which
-   counts toward started visits, as in classic). Each step goes into the
+   (`GameGraph::SelectAndReserve`) over the edges tried so far plus the best
+   untried one, and reserves the edge (`in_flight`, which counts toward
+   started visits, as in classic). Each step goes into the
    visit's `path` for backup or cancel.
 
 3. **Reaching a leaf.** Selection ends in one of four ways:

@@ -30,7 +30,6 @@
 #include <algorithm>
 #include <cassert>
 #include <cmath>
-#include <limits>
 
 namespace lczero::lc5 {
 namespace {
@@ -122,6 +121,7 @@ InstallResult GameGraph::InstallPayload(NodeKey key,
     node.edges.push_back(
         {.move = payload.moves[i], .prior = payload.priors[i]});
   }
+  assert(std::ranges::is_sorted(node.edges, PreferOnTie));
   // The leaf value counts as the node's first visit, so a node keeps it even
   // if the visit that materialized it is cancelled before backing up.
   node.value.Add(payload.leaf);
@@ -147,9 +147,11 @@ SelectResult GameGraph::SelectAndReserve(NodeKey key,
   const auto started = [](const EdgeState& edge) {
     return edge.value.visits + edge.in_flight;
   };
+  // Started edges all lie below started_end, so the sums only need that prefix.
   uint64_t children_started = 0;
   float visited_policy = 0.0f;
-  for (const auto& edge : node->edges) {
+  for (uint32_t i = 0; i < node->started_end; ++i) {
+    const auto& edge = node->edges[i];
     children_started += started(edge);
     if (started(edge) > 0) visited_policy += edge.prior;
   }
@@ -163,18 +165,36 @@ SelectResult GameGraph::SelectAndReserve(NodeKey key,
       settings.fpu_strategy == FpuStrategy::kAbsolute
           ? settings.fpu_value
           : node->value.Q() - settings.fpu_value * std::sqrt(visited_policy);
-
-  EdgeState* best = nullptr;
-  float best_score = -std::numeric_limits<float>::infinity();
-  for (auto& edge : node->edges) {
+  const auto score = [&](const EdgeState& edge) {
     const float q = edge.value.visits ? edge.Q() : fpu;
-    const float score = q + cpuct * edge.prior * scale / (1.0f + started(edge));
-    if (!best || score > best_score ||
-        (score == best_score && PreferOnTie(edge, *best))) {
-      best = &edge;
-      best_score = score;
+    return q + cpuct * edge.prior * scale / (1.0f + started(edge));
+  };
+  const auto pick_best = [&](size_t end) {
+    size_t best = 0;
+    float best_score = score(node->edges[0]);
+    for (size_t i = 1; i < end; ++i) {
+      const float s = score(node->edges[i]);
+      if (s > best_score ||
+          (s == best_score && PreferOnTie(node->edges[i], node->edges[best]))) {
+        best = i;
+        best_score = s;
+      }
     }
+    return best;
+  };
+
+  // Unstarted edges share the FPU and are sorted by PreferOnTie, so the first
+  // one beats or ties all later ones and wins the tie.
+  const size_t best_index =
+      pick_best(std::min<size_t>(node->started_end + 1, node->edges.size()));
+#ifndef NDEBUG
+  for (size_t i = node->started_end; i < node->edges.size(); ++i) {
+    assert(started(node->edges[i]) == 0);
   }
+  assert(pick_best(node->edges.size()) == best_index);
+#endif
+  if (best_index == node->started_end) ++node->started_end;
+  EdgeState* best = &node->edges[best_index];
   ++best->in_flight;
   return {.status = SelectStatus::kSelected,
           .move = best->move,

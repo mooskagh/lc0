@@ -57,7 +57,8 @@ struct EdgeState {
 };
 
 // Deterministic tie-break between equally ranked edges: higher prior first,
-// then the lower move encoding.
+// then the lower move encoding. A node's edges are sorted in this order, and
+// selection relies on it.
 inline bool PreferOnTie(const EdgeState& a, const EdgeState& b) {
   if (a.prior != b.prior) return a.prior > b.prior;
   return a.move.raw_data() < b.move.raw_data();
@@ -71,6 +72,7 @@ struct NodeState {
   TerminalKind terminal = TerminalKind::kNonTerminal;
   ValueStats value{};
   std::vector<EdgeState> edges{};
+  uint32_t started_end = 0;  // Edges from here on have never been started.
 };
 
 struct FindOrCreateResult {
