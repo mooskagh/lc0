@@ -49,7 +49,6 @@ TEST(Lc5SettingsTest, DefaultsResolveAgainstBackend) {
   EXPECT_EQ(resolved.minibatch_size, 64);
   EXPECT_GE(resolved.max_active_visits, 256);
   EXPECT_EQ(resolved.history_key_length, 7);
-  EXPECT_EQ(resolved.fpu_strategy, FpuStrategy::kReduction);
 }
 
 TEST(Lc5SettingsTest, CapsDefaultMaxActiveVisits) {

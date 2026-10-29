@@ -29,6 +29,8 @@
 
 #include <gtest/gtest.h>
 
+#include "search/lc5/puct.h"
+
 namespace lczero::lc5 {
 namespace {
 
@@ -36,24 +38,19 @@ Move M(File from, File to) {
   return Move::White(Square(from, kRank2), Square(to, kRank3));
 }
 
-Settings::Resolved TestSettings() {
-  return {.threads = 1,
-          .eval_threads = 1,
-          .minibatch_size = 1,
-          .max_active_visits = 8,
-          .history_key_length = 7,
-          .max_batch_delay_ms = 2,
-          .cpuct = 1.0f,
+using Graph = GameGraph<PuctAveraging>;
+
+PuctAveraging::Params TestParams() {
+  return {.cpuct = 1.0f,
           .cpuct_base = 100.0f,
           .cpuct_factor = 0.0f,
           .fpu_strategy = FpuStrategy::kAbsolute,
           .fpu_value = 0.0f,
-          .restart_waiters = false,
-          .active_visits_ratio = 0.0f};
+          .restart_waiters = false};
 }
 
 TEST(Lc5GraphTest, CancellationOnlyErasesMatchingPlaceholder) {
-  GameGraph graph;
+  Graph graph;
   const NodeKey key{123};
   graph.FindOrCreateMaterializing(key, 7);
   EXPECT_FALSE(graph.CancelMaterialization(key, 8));
@@ -106,7 +103,7 @@ TEST(Lc5ValueTest, RunningMeansStayAccurate) {
 }
 
 TEST(Lc5GraphTest, PublicationAcceptanceIsIndependentOfReturnedGeneration) {
-  GameGraph graph;
+  Graph graph;
   const NodeKey key{123};
   const Move move = M(kFileA, kFileA);
   const ExpansionPayload payload{.moves = {move}, .priors = {1.0f}};
@@ -126,12 +123,12 @@ TEST(Lc5GraphTest, PublicationAcceptanceIsIndependentOfReturnedGeneration) {
   installed = graph.InstallPayload(key, 7, payload);
   EXPECT_EQ(installed.generation, created.generation);
   EXPECT_TRUE(installed.accepted);
-  ASSERT_EQ(graph.SelectAndReserve(key, TestSettings()).status,
+  ASSERT_EQ(graph.SelectAndReserve(key, TestParams()).status,
             SelectStatus::kSelected);
   ASSERT_EQ(
       graph.BackupNode(key, created.generation, {0.25f, 0.5f, 3.0f}, move).edge,
       UpdateResult::kApplied);
-  ASSERT_EQ(graph.SelectAndReserve(key, TestSettings()).status,
+  ASSERT_EQ(graph.SelectAndReserve(key, TestParams()).status,
             SelectStatus::kSelected);
   // Both duplicate and wrong-ticket publications return the same generation
   // as success; only `accepted` distinguishes them. Rejection must not
@@ -147,10 +144,10 @@ TEST(Lc5GraphTest, PublicationAcceptanceIsIndependentOfReturnedGeneration) {
     ASSERT_EQ(node->edges.size(), 1u);
     EXPECT_EQ(node->edges[0].move, move);
     EXPECT_FLOAT_EQ(node->edges[0].prior, 1.0f);
-    EXPECT_EQ(node->edges[0].value.visits, 1u);
+    EXPECT_EQ(node->edges[0].stats.visits, 1u);
     EXPECT_EQ(node->edges[0].in_flight, 1u);
-    EXPECT_FLOAT_EQ(node->edges[0].Q(), 0.25f);
-    EXPECT_EQ(node->value.visits, 2u);
+    EXPECT_FLOAT_EQ(node->edges[0].stats.Q(), 0.25f);
+    EXPECT_EQ(node->stats.visits, 2u);
   }
   EXPECT_EQ(graph.CancelEdge(key, created.generation, move),
             UpdateResult::kApplied);
@@ -172,13 +169,13 @@ TEST(Lc5GraphTest, PublicationAcceptanceIsIndependentOfReturnedGeneration) {
 }
 
 TEST(Lc5GraphTest, SelectionReportsLifecycleAndGeneration) {
-  GameGraph graph;
+  Graph graph;
   const NodeKey key{123};
-  EXPECT_EQ(graph.SelectAndReserve(key, TestSettings()).status,
+  EXPECT_EQ(graph.SelectAndReserve(key, TestParams()).status,
             SelectStatus::kMissing);
 
   const auto created = graph.FindOrCreateMaterializing(key, 7);
-  const auto materializing = graph.SelectAndReserve(key, TestSettings());
+  const auto materializing = graph.SelectAndReserve(key, TestParams());
   EXPECT_EQ(materializing.status, SelectStatus::kMaterializing);
   EXPECT_EQ(materializing.generation, created.generation);
   EXPECT_EQ(materializing.terminal, TerminalKind::kNonTerminal);
@@ -186,7 +183,7 @@ TEST(Lc5GraphTest, SelectionReportsLifecycleAndGeneration) {
   const ExpansionPayload payload{.moves = {M(kFileA, kFileA)},
                                  .priors = {1.0f}};
   graph.InstallPayload(key, 7, payload);
-  const auto selected = graph.SelectAndReserve(key, TestSettings());
+  const auto selected = graph.SelectAndReserve(key, TestParams());
   EXPECT_EQ(selected.status, SelectStatus::kSelected);
   EXPECT_EQ(selected.move, M(kFileA, kFileA));
   EXPECT_EQ(selected.generation, created.generation);
@@ -200,7 +197,7 @@ TEST(Lc5GraphTest, SelectionReportsLifecycleAndGeneration) {
 }
 
 TEST(Lc5GraphTest, SelectionReportsExpandedTerminalKind) {
-  GameGraph graph;
+  Graph graph;
   const NodeKey key{123};
   const auto created = graph.FindOrCreateMaterializing(key, 7);
   graph.InstallPayload(
@@ -211,14 +208,14 @@ TEST(Lc5GraphTest, SelectionReportsExpandedTerminalKind) {
   ASSERT_TRUE(node);
   EXPECT_EQ(node->lifecycle, NodeLifecycle::kExpanded);
   EXPECT_EQ(node->terminal, TerminalKind::kCheckmate);
-  const auto terminal = graph.SelectAndReserve(key, TestSettings());
+  const auto terminal = graph.SelectAndReserve(key, TestParams());
   EXPECT_EQ(terminal.status, SelectStatus::kTerminal);
   EXPECT_EQ(terminal.generation, created.generation);
   EXPECT_EQ(terminal.terminal, TerminalKind::kCheckmate);
 }
 
 TEST(Lc5GraphTest, SelectionReturnsNewGenerationAfterRecreation) {
-  GameGraph graph;
+  Graph graph;
   const NodeKey key{123};
   const auto created = graph.FindOrCreateMaterializing(key, 7);
   const ExpansionPayload payload{.moves = {M(kFileA, kFileA)},
@@ -230,7 +227,7 @@ TEST(Lc5GraphTest, SelectionReturnsNewGenerationAfterRecreation) {
   const auto recreated = graph.FindOrCreateMaterializing(key, 8);
   ASSERT_NE(recreated.generation, created.generation);
   graph.InstallPayload(key, 8, payload);
-  const auto selected = graph.SelectAndReserve(key, TestSettings());
+  const auto selected = graph.SelectAndReserve(key, TestParams());
   EXPECT_EQ(selected.status, SelectStatus::kSelected);
   EXPECT_EQ(selected.generation, recreated.generation);
   // Updates computed against the erased node are still rejected.
@@ -240,7 +237,7 @@ TEST(Lc5GraphTest, SelectionReturnsNewGenerationAfterRecreation) {
 }
 
 TEST(Lc5GraphTest, SizeCountsOnlyNewNodes) {
-  GameGraph graph;
+  Graph graph;
   EXPECT_EQ(graph.Size(), 0u);
   EXPECT_TRUE(graph.FindOrCreateMaterializing(NodeKey{1}, 7).created);
   EXPECT_EQ(graph.Size(), 1u);
@@ -265,7 +262,7 @@ TEST(Lc5GraphTest, SizeCountsOnlyNewNodes) {
 }
 
 TEST(Lc5GraphTest, SizeCountsPayloadInsertionAndSuccessfulErasure) {
-  GameGraph graph;
+  Graph graph;
   NodeKey key{123};
   ExpansionPayload payload{.moves = {M(kFileA, kFileA)}, .priors = {1.0f}};
   const auto generation = graph.InstallPayload(key, 7, payload).generation;
@@ -287,7 +284,7 @@ TEST(Lc5GraphTest, SizeCountsPayloadInsertionAndSuccessfulErasure) {
 }
 
 TEST(Lc5GraphTest, ClearResetsSizeAndAllowsReuse) {
-  GameGraph graph;
+  Graph graph;
   graph.Clear();
   EXPECT_EQ(graph.Size(), 0u);
   ExpansionPayload payload{.moves = {M(kFileA, kFileA)}, .priors = {1.0f}};
@@ -317,7 +314,7 @@ TEST(Lc5GraphTest, ClearResetsSizeAndAllowsReuse) {
 }
 
 TEST(Lc5GraphTest, LateMaterializationPreservesPublishedEdges) {
-  GameGraph graph;
+  Graph graph;
   const NodeKey key{123};
   const auto created = graph.FindOrCreateMaterializing(key, 7);
   ASSERT_TRUE(created.created);
@@ -328,14 +325,14 @@ TEST(Lc5GraphTest, LateMaterializationPreservesPublishedEdges) {
   const Move move = M(kFileA, kFileA);
   const ExpansionPayload payload{.moves = {move}, .priors = {1.0f}};
   graph.InstallPayload(key, 7, payload);
-  ASSERT_EQ(graph.SelectAndReserve(key, TestSettings()).status,
+  ASSERT_EQ(graph.SelectAndReserve(key, TestParams()).status,
             SelectStatus::kSelected);
   ASSERT_EQ(graph
                 .BackupNode(key, created.generation,
                             SearchValue{0.4f, 0.2f, 2.0f}, move)
                 .edge,
             UpdateResult::kApplied);
-  ASSERT_EQ(graph.SelectAndReserve(key, TestSettings()).status,
+  ASSERT_EQ(graph.SelectAndReserve(key, TestParams()).status,
             SelectStatus::kSelected);
 
   // A caller with the old materializing snapshot must observe publication,
@@ -355,17 +352,17 @@ TEST(Lc5GraphTest, LateMaterializationPreservesPublishedEdges) {
     ASSERT_EQ(node->edges.size(), 1u);
     EXPECT_EQ(node->edges[0].move, move);
     EXPECT_FLOAT_EQ(node->edges[0].prior, 1.0f);
-    EXPECT_EQ(node->edges[0].value.visits, 1u);
+    EXPECT_EQ(node->edges[0].stats.visits, 1u);
     EXPECT_EQ(node->edges[0].in_flight, 1u);
-    EXPECT_FLOAT_EQ(node->edges[0].Q(), 0.4f);
-    EXPECT_EQ(node->value.visits, 2u);
+    EXPECT_FLOAT_EQ(node->edges[0].stats.Q(), 0.4f);
+    EXPECT_EQ(node->stats.visits, 2u);
   }
   EXPECT_EQ(graph.CancelEdge(key, created.generation, move),
             UpdateResult::kApplied);
 }
 
 TEST(Lc5GraphTest, AcceptedInstallCountsLeafValueOnce) {
-  GameGraph graph;
+  Graph graph;
   const NodeKey key{321};
   const ExpansionPayload payload{.leaf = {0.5f, 0.25f, 6.0f},
                                  .moves = {M(kFileA, kFileA)},
@@ -374,28 +371,28 @@ TEST(Lc5GraphTest, AcceptedInstallCountsLeafValueOnce) {
   EXPECT_FALSE(graph.InstallPayload(key, 8, payload).accepted);
   auto node = graph.SnapshotNode(key);
   ASSERT_TRUE(node);
-  EXPECT_EQ(node->value.visits, 0u);
+  EXPECT_EQ(node->stats.visits, 0u);
 
   EXPECT_TRUE(graph.InstallPayload(key, 7, payload).accepted);
   node = graph.SnapshotNode(key);
   ASSERT_TRUE(node);
-  EXPECT_EQ(node->value.visits, 1u);
-  EXPECT_FLOAT_EQ(node->value.Q(), 0.5f);
-  EXPECT_FLOAT_EQ(node->value.D(), 0.25f);
-  EXPECT_FLOAT_EQ(node->value.M(), 6.0f);
+  EXPECT_EQ(node->stats.visits, 1u);
+  EXPECT_FLOAT_EQ(node->stats.Q(), 0.5f);
+  EXPECT_FLOAT_EQ(node->stats.D(), 0.25f);
+  EXPECT_FLOAT_EQ(node->stats.M(), 6.0f);
 
   // Duplicate and wrong-ticket publications do not count the leaf again.
   for (const auto ticket : {7u, 8u}) {
     EXPECT_FALSE(graph.InstallPayload(key, ticket, payload).accepted);
     node = graph.SnapshotNode(key);
     ASSERT_TRUE(node);
-    EXPECT_EQ(node->value.visits, 1u);
-    EXPECT_FLOAT_EQ(node->value.Q(), 0.5f);
+    EXPECT_EQ(node->stats.visits, 1u);
+    EXPECT_FLOAT_EQ(node->stats.Q(), 0.5f);
   }
 }
 
 TEST(Lc5GraphTest, GenerationChecksProtectRecreatedNodes) {
-  GameGraph graph;
+  Graph graph;
   NodeKey key{123};
   auto first = graph.FindOrCreateMaterializing(key, 7);
   ASSERT_TRUE(first.created);
@@ -412,7 +409,7 @@ TEST(Lc5GraphTest, GenerationChecksProtectRecreatedNodes) {
 }
 
 TEST(Lc5GraphTest, BackupCommitsNodeAndOptionalEdgeSums) {
-  GameGraph graph;
+  Graph graph;
   NodeKey key{456};
   Move move = M(kFileA, kFileA);
   auto created = graph.FindOrCreateMaterializing(key, 1);
@@ -423,12 +420,12 @@ TEST(Lc5GraphTest, BackupCommitsNodeAndOptionalEdgeSums) {
   EXPECT_EQ(result.edge, UpdateResult::kApplied);
   auto node = graph.SnapshotNode(key);
   ASSERT_TRUE(node);
-  EXPECT_EQ(node->value.visits, 2u);
-  EXPECT_FLOAT_EQ(node->value.Q(), 0.125f);
-  EXPECT_FLOAT_EQ(node->value.D(), 0.25f);
-  EXPECT_FLOAT_EQ(node->value.M(), 1.5f);
-  EXPECT_EQ(node->edges[0].value.visits, 0u);
-  ASSERT_EQ(graph.SelectAndReserve(key, TestSettings()).status,
+  EXPECT_EQ(node->stats.visits, 2u);
+  EXPECT_FLOAT_EQ(node->stats.Q(), 0.125f);
+  EXPECT_FLOAT_EQ(node->stats.D(), 0.25f);
+  EXPECT_FLOAT_EQ(node->stats.M(), 1.5f);
+  EXPECT_EQ(node->edges[0].stats.visits, 0u);
+  ASSERT_EQ(graph.SelectAndReserve(key, TestParams()).status,
             SelectStatus::kSelected);
   result =
       graph.BackupNode(key, created.generation, {-0.5f, 0.25f, 4.0f}, move);
@@ -440,19 +437,19 @@ TEST(Lc5GraphTest, BackupCommitsNodeAndOptionalEdgeSums) {
   EXPECT_FLOAT_EQ(result.to_parent->m, 5.0f);
   node = graph.SnapshotNode(key);
   ASSERT_TRUE(node);
-  EXPECT_EQ(node->value.visits, 3u);
-  EXPECT_FLOAT_EQ(node->value.Q(), -0.25f / 3);
-  EXPECT_FLOAT_EQ(node->value.D(), 0.25f);
-  EXPECT_FLOAT_EQ(node->value.M(), 7.0f / 3);
-  EXPECT_EQ(node->edges[0].value.visits, 1u);
+  EXPECT_EQ(node->stats.visits, 3u);
+  EXPECT_FLOAT_EQ(node->stats.Q(), -0.25f / 3);
+  EXPECT_FLOAT_EQ(node->stats.D(), 0.25f);
+  EXPECT_FLOAT_EQ(node->stats.M(), 7.0f / 3);
+  EXPECT_EQ(node->edges[0].stats.visits, 1u);
   EXPECT_EQ(node->edges[0].in_flight, 0u);
-  EXPECT_FLOAT_EQ(node->edges[0].value.Q(), -0.5f);
-  EXPECT_FLOAT_EQ(node->edges[0].value.D(), 0.25f);
-  EXPECT_FLOAT_EQ(node->edges[0].value.M(), 4.0f);
+  EXPECT_FLOAT_EQ(node->edges[0].stats.Q(), -0.5f);
+  EXPECT_FLOAT_EQ(node->edges[0].stats.D(), 0.25f);
+  EXPECT_FLOAT_EQ(node->edges[0].stats.M(), 4.0f);
 }
 
 TEST(Lc5GraphTest, BackupRejectsMissingAndStaleGenerations) {
-  GameGraph graph;
+  Graph graph;
   NodeKey key{456};
   Move move = M(kFileA, kFileA);
   auto first = graph.FindOrCreateMaterializing(key, 1);
@@ -465,7 +462,7 @@ TEST(Lc5GraphTest, BackupRejectsMissingAndStaleGenerations) {
   auto second = graph.FindOrCreateMaterializing(key, 2);
   ASSERT_NE(first.generation, second.generation);
   graph.InstallPayload(key, 2, {.moves = {move}, .priors = {1.0f}});
-  ASSERT_EQ(graph.SelectAndReserve(key, TestSettings()).status,
+  ASSERT_EQ(graph.SelectAndReserve(key, TestParams()).status,
             SelectStatus::kSelected);
   result = graph.BackupNode(key, first.generation, {0.25f, 0.5f, 3.0f}, move);
   EXPECT_EQ(result.node, UpdateResult::kStale);
@@ -475,19 +472,19 @@ TEST(Lc5GraphTest, BackupRejectsMissingAndStaleGenerations) {
   EXPECT_EQ(result.edge, UpdateResult::kApplied);
   auto node = graph.SnapshotNode(key);
   ASSERT_TRUE(node);
-  EXPECT_EQ(node->value.visits, 1u);
-  EXPECT_FLOAT_EQ(node->value.Q(), 0.0f);
-  EXPECT_FLOAT_EQ(node->value.D(), 0.0f);
-  EXPECT_FLOAT_EQ(node->value.M(), 0.0f);
-  EXPECT_EQ(node->edges[0].value.visits, 0u);
+  EXPECT_EQ(node->stats.visits, 1u);
+  EXPECT_FLOAT_EQ(node->stats.Q(), 0.0f);
+  EXPECT_FLOAT_EQ(node->stats.D(), 0.0f);
+  EXPECT_FLOAT_EQ(node->stats.M(), 0.0f);
+  EXPECT_EQ(node->edges[0].stats.visits, 0u);
   EXPECT_EQ(node->edges[0].in_flight, 1u);
-  EXPECT_FLOAT_EQ(node->edges[0].value.Q(), 0.0f);
-  EXPECT_FLOAT_EQ(node->edges[0].value.D(), 0.0f);
-  EXPECT_FLOAT_EQ(node->edges[0].value.M(), 0.0f);
+  EXPECT_FLOAT_EQ(node->edges[0].stats.Q(), 0.0f);
+  EXPECT_FLOAT_EQ(node->edges[0].stats.D(), 0.0f);
+  EXPECT_FLOAT_EQ(node->edges[0].stats.M(), 0.0f);
 }
 
 TEST(Lc5GraphTest, BackupCommitsNodeDespiteEdgeFailure) {
-  GameGraph graph;
+  Graph graph;
   NodeKey key{456};
   Move move = M(kFileA, kFileA);
   auto created = graph.FindOrCreateMaterializing(key, 1);
@@ -503,28 +500,28 @@ TEST(Lc5GraphTest, BackupCommitsNodeDespiteEdgeFailure) {
   EXPECT_EQ(result.edge, UpdateResult::kEdgeMissing);
   auto node = graph.SnapshotNode(key);
   ASSERT_TRUE(node);
-  EXPECT_EQ(node->value.visits, 3u);
-  EXPECT_FLOAT_EQ(node->value.Q(), 0.5f / 3);
-  EXPECT_FLOAT_EQ(node->value.D(), 1.0f / 3);
-  EXPECT_FLOAT_EQ(node->value.M(), 2.0f);
-  EXPECT_EQ(node->edges[0].value.visits, 0u);
+  EXPECT_EQ(node->stats.visits, 3u);
+  EXPECT_FLOAT_EQ(node->stats.Q(), 0.5f / 3);
+  EXPECT_FLOAT_EQ(node->stats.D(), 1.0f / 3);
+  EXPECT_FLOAT_EQ(node->stats.M(), 2.0f);
+  EXPECT_EQ(node->edges[0].stats.visits, 0u);
   EXPECT_EQ(node->edges[0].in_flight, 0u);
-  EXPECT_FLOAT_EQ(node->edges[0].value.Q(), 0.0f);
-  EXPECT_FLOAT_EQ(node->edges[0].value.D(), 0.0f);
-  EXPECT_FLOAT_EQ(node->edges[0].value.M(), 0.0f);
+  EXPECT_FLOAT_EQ(node->edges[0].stats.Q(), 0.0f);
+  EXPECT_FLOAT_EQ(node->edges[0].stats.D(), 0.0f);
+  EXPECT_FLOAT_EQ(node->edges[0].stats.M(), 0.0f);
 }
 
 TEST(Lc5GraphTest, ReservationsAreExactAndCancellationDoesNotCommit) {
-  GameGraph graph;
+  Graph graph;
   NodeKey key{456};
   auto created = graph.FindOrCreateMaterializing(key, 1);
   Move first = M(kFileA, kFileA);
   Move second = M(kFileB, kFileB);
   ExpansionPayload payload{.moves = {first, second}, .priors = {0.5f, 0.5f}};
   graph.InstallPayload(key, 1, payload);
-  auto settings = TestSettings();
-  auto selection1 = graph.SelectAndReserve(key, settings);
-  auto selection2 = graph.SelectAndReserve(key, settings);
+  auto params = TestParams();
+  auto selection1 = graph.SelectAndReserve(key, params);
+  auto selection2 = graph.SelectAndReserve(key, params);
   EXPECT_EQ(selection1.move, first);
   EXPECT_EQ(selection2.move, second);
   EXPECT_EQ(graph.CancelEdge(key, created.generation, first),
@@ -536,10 +533,10 @@ TEST(Lc5GraphTest, ReservationsAreExactAndCancellationDoesNotCommit) {
             UpdateResult::kApplied);
   auto node = graph.SnapshotNode(key);
   ASSERT_TRUE(node);
-  EXPECT_EQ(node->edges[0].value.visits, 0u);
+  EXPECT_EQ(node->edges[0].stats.visits, 0u);
   EXPECT_EQ(node->edges[0].in_flight, 0u);
-  EXPECT_EQ(node->edges[1].value.visits, 1u);
-  EXPECT_FLOAT_EQ(node->edges[1].Q(), 0.4f);
+  EXPECT_EQ(node->edges[1].stats.visits, 1u);
+  EXPECT_FLOAT_EQ(node->edges[1].stats.Q(), 0.4f);
   EXPECT_EQ(graph.CancelEdge(key, created.generation, first),
             UpdateResult::kUnderflow);
 }
@@ -552,41 +549,41 @@ ExpansionPayload FourEdges() {
 }
 
 TEST(Lc5GraphTest, StartedPrefixGrowsInPriorOrder) {
-  GameGraph graph;
+  Graph graph;
   const NodeKey key{456};
   const auto created = graph.FindOrCreateMaterializing(key, 1);
   const auto payload = FourEdges();
   graph.InstallPayload(key, 1, payload);
   // Untried edges score above every tried one, so each is tried in turn.
-  auto settings = TestSettings();
-  settings.fpu_value = 1.0f;
+  auto params = TestParams();
+  params.fpu_value = 1.0f;
   for (uint32_t i = 0; i < 4; ++i) {
     EXPECT_EQ(graph.SnapshotNode(key)->started_end, i);
-    const auto selection = graph.SelectAndReserve(key, settings);
+    const auto selection = graph.SelectAndReserve(key, params);
     EXPECT_EQ(selection.move, payload.moves[i]);
     EXPECT_EQ(graph.SnapshotNode(key)->started_end, i + 1);
     graph.BackupNode(key, created.generation, {}, selection.move);
     graph.BackupNode(key, created.generation, {}, std::nullopt);
     EXPECT_EQ(graph.SnapshotNode(key)->started_end, i + 1);
   }
-  EXPECT_EQ(graph.SelectAndReserve(key, settings).move, payload.moves[0]);
+  EXPECT_EQ(graph.SelectAndReserve(key, params).move, payload.moves[0]);
   EXPECT_EQ(graph.SnapshotNode(key)->started_end, 4u);
 }
 
 TEST(Lc5GraphTest, CancelledEdgeBelowStartedEndIsStillSelectable) {
-  GameGraph graph;
+  Graph graph;
   const NodeKey key{456};
   const auto created = graph.FindOrCreateMaterializing(key, 1);
   const auto payload = FourEdges();
   graph.InstallPayload(key, 1, payload);
-  auto settings = TestSettings();
-  settings.fpu_value = 1.0f;
-  EXPECT_EQ(graph.SelectAndReserve(key, settings).move, payload.moves[0]);
-  EXPECT_EQ(graph.SelectAndReserve(key, settings).move, payload.moves[1]);
+  auto params = TestParams();
+  params.fpu_value = 1.0f;
+  EXPECT_EQ(graph.SelectAndReserve(key, params).move, payload.moves[0]);
+  EXPECT_EQ(graph.SelectAndReserve(key, params).move, payload.moves[1]);
   EXPECT_EQ(graph.CancelEdge(key, created.generation, payload.moves[0]),
             UpdateResult::kApplied);
   EXPECT_EQ(graph.SnapshotNode(key)->started_end, 2u);
-  EXPECT_EQ(graph.SelectAndReserve(key, settings).move, payload.moves[0]);
+  EXPECT_EQ(graph.SelectAndReserve(key, params).move, payload.moves[0]);
   const auto node = graph.SnapshotNode(key);
   EXPECT_EQ(node->started_end, 2u);
   EXPECT_EQ(node->edges[0].in_flight, 1u);
@@ -595,38 +592,38 @@ TEST(Lc5GraphTest, CancelledEdgeBelowStartedEndIsStillSelectable) {
 TEST(Lc5GraphTest, FirstUntriedEdgeCompetesWithTriedOnes) {
   for (const float q : {0.5f, -0.5f}) {
     SCOPED_TRACE(q);
-    GameGraph graph;
+    Graph graph;
     const NodeKey key{456};
     const auto created = graph.FindOrCreateMaterializing(key, 1);
     const ExpansionPayload payload{
         .moves = {M(kFileA, kFileA), M(kFileB, kFileB), M(kFileC, kFileC)},
         .priors = {0.5f, 0.3f, 0.2f}};
     graph.InstallPayload(key, 1, payload);
-    const auto settings = TestSettings();
-    ASSERT_EQ(graph.SelectAndReserve(key, settings).move, payload.moves[0]);
+    const auto params = TestParams();
+    ASSERT_EQ(graph.SelectAndReserve(key, params).move, payload.moves[0]);
     graph.BackupNode(key, created.generation, {q, 0.0f, 0.0f},
                      payload.moves[0]);
     // The tried edge scores q + 0.25 and the first untried one 0.3.
     const bool tried_wins = q > 0.05f;
-    EXPECT_EQ(graph.SelectAndReserve(key, settings).move,
+    EXPECT_EQ(graph.SelectAndReserve(key, params).move,
               payload.moves[tried_wins ? 0 : 1]);
     EXPECT_EQ(graph.SnapshotNode(key)->started_end, tried_wins ? 1u : 2u);
   }
 }
 
 TEST(Lc5GraphTest, IncomingParentsKeepIndependentEdgeStatistics) {
-  GameGraph graph;
+  Graph graph;
   Move move = M(kFileC, kFileC);
   ExpansionPayload payload{.moves = {move}, .priors = {1.0f}};
   auto p1 = graph.FindOrCreateMaterializing(NodeKey{1}, 1);
   graph.FindOrCreateMaterializing(NodeKey{2}, 2);
   graph.InstallPayload(NodeKey{1}, 1, payload);
   graph.InstallPayload(NodeKey{2}, 2, payload);
-  auto settings = TestSettings();
-  graph.SelectAndReserve(NodeKey{1}, settings);
+  auto params = TestParams();
+  graph.SelectAndReserve(NodeKey{1}, params);
   graph.BackupNode(NodeKey{1}, p1.generation, {}, move);
-  EXPECT_EQ(graph.SnapshotNode(NodeKey{1})->edges[0].value.visits, 1u);
-  EXPECT_EQ(graph.SnapshotNode(NodeKey{2})->edges[0].value.visits, 0u);
+  EXPECT_EQ(graph.SnapshotNode(NodeKey{1})->edges[0].stats.visits, 1u);
+  EXPECT_EQ(graph.SnapshotNode(NodeKey{2})->edges[0].stats.visits, 0u);
 }
 
 }  // namespace

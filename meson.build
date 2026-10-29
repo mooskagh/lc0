@@ -222,10 +222,10 @@ deps += dependency('threads')
 if get_option('lc5')
   files += [
     'src/search/lc5/engine.cc',
-    'src/search/lc5/graph.cc',
     'src/search/lc5/memory_node_store.cc',
     'src/search/lc5/metrics.cc',
-    'src/search/lc5/policy_engine.cc',
+    'src/search/lc5/policies.cc',
+    'src/search/lc5/puct.cc',
     'src/search/lc5/search.cc',
     'src/search/lc5/search_visits.cc',
     'src/search/lc5/search_materialization.cc',
@@ -1201,7 +1201,7 @@ if get_option('gtest')
     test('Lc5Graph',
       executable('lc5_graph_test',
         'src/search/lc5/graph_test.cc',
-        'src/search/lc5/graph.cc',
+        'src/search/lc5/puct.cc',
         pb_files,
         include_directories: includes, link_with: lc0_lib,
         dependencies: [gtest, absl_flat_hash_map_dep]),
@@ -1214,9 +1214,9 @@ if get_option('gtest')
         'src/search/lc5/search_visits.cc',
         'src/search/lc5/search_materialization.cc',
         'src/search/lc5/engine.cc',
-        'src/search/lc5/graph.cc',
         'src/search/lc5/metrics.cc',
-        'src/search/lc5/policy_engine.cc',
+        'src/search/lc5/policies.cc',
+        'src/search/lc5/puct.cc',
         'src/search/lc5/settings.cc',
         'src/search/lc5/time_manager.cc',
         'src/search/register.cc',
@@ -1242,6 +1242,16 @@ if get_option('gtest')
         include_directories: includes, link_with: lc0_lib,
         dependencies: [gtest, absl_flat_hash_map_dep]),
       args: '--gtest_output=xml:lc5_settings_test.xml', timeout: 90)
+
+    test('Lc5Puct',
+      executable('lc5_puct_test',
+        'src/search/lc5/puct_test.cc',
+        'src/search/lc5/puct.cc',
+        'src/search/lc5/policies.cc',
+        pb_files,
+        include_directories: includes, link_with: lc0_lib,
+        dependencies: [gtest, absl_flat_hash_map_dep]),
+      args: '--gtest_output=xml:lc5_puct_test.xml', timeout: 90)
   endif
 endif
 

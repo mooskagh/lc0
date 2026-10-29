@@ -37,8 +37,6 @@
 
 namespace lczero::lc5 {
 
-enum class FpuStrategy { kAbsolute, kReduction };
-
 // Each live visit holds at most one unit of an edge's 16-bit in_flight.
 inline constexpr int kMaxActiveVisitsLimit =
     std::numeric_limits<uint16_t>::max();
@@ -52,12 +50,6 @@ class Settings {
     int max_active_visits;
     int history_key_length;
     int max_batch_delay_ms;
-    float cpuct;
-    float cpuct_base;
-    float cpuct_factor;
-    FpuStrategy fpu_strategy;
-    float fpu_value;
-    bool restart_waiters;
     float active_visits_ratio;
   };
 

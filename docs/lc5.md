@@ -27,7 +27,7 @@ defaults match classic; what differs is how the work is organized. Code is in
 
 ## Following one visit
 
-Code: `search_visits.cc`, `policy_engine.cc`, `search_materialization.cc`.
+Code: `search_visits.cc`, `policy_engine.h`, `puct.cc`, `search_materialization.cc`.
 
 1. **Admission.** A worker lets a new visit in at the root, if limits allow
    (see "How many visits are in flight"). Under `go nodes N`, at most N
@@ -151,16 +151,19 @@ Reading the `info` line:
 
 | File | What's there |
 |---|---|
-| `engine.cc` | UCI glue: keeps the graph, starts a `SearchRun` per `go`, carries saved time. |
+| `engine.cc` | UCI glue: keeps the visit engine (and its graph), starts a `SearchRun` per `go`, carries saved time. |
 | `search.cc` | `SearchRun`: setup, controller, early stop, `info`/`bestmove`. |
 | `search_visits.cc` | Admission, worker loop, driving each visit through the engine. |
-| `visit_engine.h`, `policy_engine.cc` | `VisitEngine` interface: descent, backup, cancel, report. `PolicyEngine` implements it on `GameGraph`: selection, two-fold check, backup, PV. |
+| `visit_engine.h` | `VisitEngine` interface: descent, backup, cancel, report. |
+| `policy_engine.h` | `PolicyEngine<P>` implements it on a `GameGraph<P>` it owns: descent, two-fold check, backup, PV walk. |
+| `puct.h/.cc` | `PuctAveraging`, the policy: PUCT selection, averaging backup, its options, PV edge, score/WDL. |
+| `policies.cc` | Policy table and the `Lc5Policy` option; a new policy is one row. |
 | `search_materialization.cc` | Creating nodes, terminal detection, jobs, evaluator batching. |
-| `graph.h/.cc` | `GameGraph`: sharded node map, PUCT selection, per-node updates. |
+| `graph.h` | `GameGraph<P>`: sharded node map, reservations, per-node updates; node and edge stats belong to the policy. |
 | `visit.h` | Visit state and the fixed pool of visit slots. |
 | `key.h`, `value.h` | Node keys; value sums and perspective flips. |
 | `time_manager.cc` | Per-move deadline. |
-| `settings.cc` | Options and their automatic values. |
+| `settings.cc` | Machinery options and their automatic values. |
 | `node_store.h`, `memory_node_store.cc` | Optional persistence (unused by the engine). |
 | `metrics.h` | Debug counters. |
 
@@ -183,14 +186,20 @@ Things that look odd but are deliberate:
 | `MinibatchSize` | backend | Target batch size. |
 | `MaxActiveVisits` | auto | Hard cap on live visits (at most 65535). |
 | `ActiveVisitsRatio` | 0.25 | Live visits ≤ 16 + ratio × root visits; 0 disables. |
-| `RestartWaiters` | false | Waiters restart from the root instead of continuing. |
 | `HistoryKeyLength` | 7 | Earlier positions included in node keys. |
 | `MaxBatchDelayMs` | 2 | Max wait before sending a partial batch; 0 disables. |
-| `CPuct`, `CPuctBase`, `CPuctFactor` | 1.745, 38739, 3.894 | As classic. |
-| `FpuStrategy`, `FpuValue` | reduction, 0.33 | As classic. |
 | `MoveOverheadMs` | 200 | As classic. |
 | `AlphaZeroTimePct` | 3 | Share of the clock spent per move. |
 | `SmartPruningFactor` | 1.33 | Early stop aggressiveness; 0 disables. |
+| `Lc5Policy` | puct | Search policy; only `puct` for now. |
+
+Options of the `puct` policy:
+
+| Option | Default | Meaning |
+|---|---|---|
+| `CPuct`, `CPuctBase`, `CPuctFactor` | 1.745, 38739, 3.894 | As classic. |
+| `FpuStrategy`, `FpuValue` | reduction, 0.33 | As classic. |
+| `RestartWaiters` | false | Waiters restart from the root instead of continuing. |
 
 ## Not done yet
 

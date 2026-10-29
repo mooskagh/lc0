@@ -37,6 +37,9 @@
 #include <unordered_set>
 
 #include "search/lc5/engine.h"
+#include "search/lc5/policies.h"
+#include "search/lc5/policy_engine.h"
+#include "search/lc5/puct.h"
 
 namespace lczero::lc5 {
 
@@ -86,7 +89,11 @@ class SearchRunTestPeer {
     ASSERT_TRUE(engine.run_);
     ASSERT_TRUE(engine.run_->Finished());
     ExpectDrained(*engine.run_);
-    for (const auto& [key, node] : engine.graph_.SnapshotAllForTesting()) {
+    ASSERT_TRUE(engine.visit_engine_);
+    for (const auto& [key, node] :
+         static_cast<PolicyEngine<PuctAveraging>&>(*engine.visit_engine_)
+             .graph()
+             .SnapshotAllForTesting()) {
       EXPECT_EQ(node.lifecycle, NodeLifecycle::kExpanded);
       EXPECT_EQ(node.ticket, 0u);
       for (const auto& edge : node.edges) EXPECT_EQ(edge.in_flight, 0u);
@@ -103,13 +110,16 @@ Settings::Resolved TestSettings(int threads = 1, int capacity = 4) {
           .max_active_visits = capacity,
           .history_key_length = 7,
           .max_batch_delay_ms = 0,
-          .cpuct = 1.0f,
+          .active_visits_ratio = 0.0f};
+}
+
+PuctAveraging::Params TestParams() {
+  return {.cpuct = 1.0f,
           .cpuct_base = 100.0f,
           .cpuct_factor = 0.0f,
           .fpu_strategy = FpuStrategy::kAbsolute,
           .fpu_value = 0.0f,
-          .restart_waiters = false,
-          .active_visits_ratio = 0.0f};
+          .restart_waiters = false};
 }
 
 TimeManager::Config TestTimeManagement() {
@@ -364,7 +374,8 @@ class BlockingStore final : public NodeStore {
   std::atomic<size_t> load_calls_{0};
 };
 
-void ExpectDrained(const SearchRun& run, const GameGraph& graph) {
+void ExpectDrained(const SearchRun& run,
+                   const GameGraph<PuctAveraging>& graph) {
   ASSERT_TRUE(run.Finished());
   SearchRunTestPeer::ExpectDrained(run);
   const auto& m = run.metrics();
@@ -403,8 +414,8 @@ TEST(Lc5SearchTest, ExpiredTimeBudgetStopsAndDrains) {
   for (const auto& params :
        {GoParams{.movetime = 0}, GoParams{.movetime = -1},
         GoParams{.wtime = 0, .btime = 0}, GoParams{.movetime = 60000}}) {
-    GameGraph graph;
-    PolicyEngine engine(&graph);
+    PolicyEngine<PuctAveraging> engine(TestParams());
+    auto& graph = engine.graph();
     RecordingStore store;
     ControlledBackend backend;
     RecordingResponder responder;
@@ -426,8 +437,8 @@ TEST(Lc5SearchTest, ExpiredTimeBudgetStopsAndDrains) {
 }
 
 TEST(Lc5SearchTest, AbortSuppressesOutputWithExpiredTimeBudget) {
-  GameGraph graph;
-  PolicyEngine engine(&graph);
+  PolicyEngine<PuctAveraging> engine(TestParams());
+  auto& graph = engine.graph();
   RecordingStore store;
   ControlledBackend backend;
   RecordingResponder responder;
@@ -460,8 +471,8 @@ TEST(Lc5SearchTest, ExplicitMovetimeAndInfiniteOverrideExhaustedClock) {
       SCOPED_TRACE(fen);
       SCOPED_TRACE(params.infinite);
       SCOPED_TRACE(params.movetime.value_or(-1));
-      GameGraph graph;
-      PolicyEngine engine(&graph);
+      PolicyEngine<PuctAveraging> engine(TestParams());
+      auto& graph = engine.graph();
       ControlledBackend backend;
       RecordingResponder responder;
       const auto root = Origin(fen);
@@ -481,8 +492,8 @@ TEST(Lc5SearchTest, ExplicitMovetimeAndInfiniteOverrideExhaustedClock) {
 }
 
 TEST(Lc5SearchTest, PonderIgnoresZeroNodeAndTimeLimits) {
-  GameGraph graph;
-  PolicyEngine engine(&graph);
+  PolicyEngine<PuctAveraging> engine(TestParams());
+  auto& graph = engine.graph();
   ControlledBackend backend(ControlledBackend::Cache::kNone, true);
   RecordingResponder responder;
   const auto root = Origin();
@@ -516,8 +527,8 @@ TEST(Lc5SearchTest, PonderIgnoresZeroNodeAndTimeLimits) {
 TEST(Lc5SearchTest, ExactNodeBudgetWithMoreWorkersThanCapacity) {
   for (const int64_t nodes : {0, 1, 7}) {
     SCOPED_TRACE(nodes);
-    GameGraph graph;
-    PolicyEngine engine(&graph);
+    PolicyEngine<PuctAveraging> engine(TestParams());
+    auto& graph = engine.graph();
     ControlledBackend backend;
     RecordingResponder responder;
     auto root = Origin();
@@ -544,7 +555,7 @@ TEST(Lc5SearchTest, ExactNodeBudgetWithMoreWorkersThanCapacity) {
     // Each completed visit counts once at the root, including the one that
     // expanded it.
     const auto node = graph.SnapshotNode(root.key);
-    EXPECT_EQ(node ? node->value.visits : 0u, static_cast<uint64_t>(nodes));
+    EXPECT_EQ(node ? node->stats.visits : 0u, static_cast<uint64_t>(nodes));
   }
 }
 
@@ -563,8 +574,8 @@ TEST(Lc5SearchTest, ReportsCentipawnsAndWdlFromRootSideToMove) {
          {Case{0.25f, 37, 375, 125}, Case{-0.25f, -37, 125, 375},
           Case{0.0f, 0, 250, 250}}) {
       SCOPED_TRACE(test.q);
-      GameGraph graph;
-      PolicyEngine engine(&graph);
+      PolicyEngine<PuctAveraging> engine(TestParams());
+      auto& graph = engine.graph();
       ControlledBackend backend;
       backend.q = test.q;
       RecordingResponder responder;
@@ -587,8 +598,8 @@ TEST(Lc5SearchTest, ReportsCentipawnsAndWdlFromRootSideToMove) {
 }
 
 TEST(Lc5SearchTest, OwnerBacksUpLeafWhileWaitersResumeSelection) {
-  GameGraph graph;
-  PolicyEngine engine(&graph);
+  PolicyEngine<PuctAveraging> engine(TestParams());
+  auto& graph = engine.graph();
   ControlledBackend backend;
   RecordingResponder responder;
   auto root = Origin();
@@ -607,9 +618,9 @@ TEST(Lc5SearchTest, OwnerBacksUpLeafWhileWaitersResumeSelection) {
   EXPECT_GE(run.metrics().visits_resumed.load(), 3u);
   const auto node = graph.SnapshotNode(root.key);
   ASSERT_TRUE(node);
-  EXPECT_EQ(node->value.visits, 4u);
+  EXPECT_EQ(node->stats.visits, 4u);
   uint64_t edge_visits = 0;
-  for (const auto& edge : node->edges) edge_visits += edge.value.visits;
+  for (const auto& edge : node->edges) edge_visits += edge.stats.visits;
   // Only the owner backs up at the root leaf. Each waiter must traverse an
   // edge.
   EXPECT_EQ(edge_visits, 3u);
@@ -631,8 +642,8 @@ TEST(Lc5SearchTest, TerminalOwnerAndWaitersNeverEvaluate) {
                            Case{"8/8/8/8/8/6q1/5k2/7K w - - 0 1",
                                 TerminalKind::kStalemate, 0.0f, 1.0f}}) {
     SCOPED_TRACE(test.fen);
-    GameGraph graph;
-    PolicyEngine engine(&graph);
+    PolicyEngine<PuctAveraging> engine(TestParams());
+    auto& graph = engine.graph();
     ControlledBackend backend;
     RecordingResponder responder;
     const auto root = Origin(test.fen);
@@ -654,9 +665,9 @@ TEST(Lc5SearchTest, TerminalOwnerAndWaitersNeverEvaluate) {
     auto node = graph.SnapshotNode(root.key);
     ASSERT_TRUE(node);
     EXPECT_EQ(node->terminal, test.kind);
-    EXPECT_EQ(node->value.visits, 4u);
-    EXPECT_FLOAT_EQ(node->value.Q(), test.q);
-    EXPECT_FLOAT_EQ(node->value.D(), test.d);
+    EXPECT_EQ(node->stats.visits, 4u);
+    EXPECT_FLOAT_EQ(node->stats.Q(), test.q);
+    EXPECT_FLOAT_EQ(node->stats.D(), test.d);
     const auto& final = responder.thinking.back();
     ASSERT_TRUE(final.score.has_value());
     EXPECT_EQ(*final.score, test.kind == TerminalKind::kCheckmate ? -12780 : 0);
@@ -671,8 +682,8 @@ TEST(Lc5SearchTest, ImmediateAndMixedResultsKeepJobStorageAlive) {
   for (const auto cache : {ControlledBackend::Cache::kAll,
                            ControlledBackend::Cache::kAlternating}) {
     SCOPED_TRACE(static_cast<int>(cache));
-    GameGraph graph;
-    PolicyEngine engine(&graph);
+    PolicyEngine<PuctAveraging> engine(TestParams());
+    auto& graph = engine.graph();
     ControlledBackend backend(cache);
     RecordingResponder responder;
     const auto root = Origin();
@@ -701,10 +712,10 @@ TEST(Lc5SearchTest, ImmediateAndMixedResultsKeepJobStorageAlive) {
     for (const auto& origin : origins) {
       const auto node = graph.SnapshotNode(origin.key);
       ASSERT_TRUE(node);
-      EXPECT_EQ(node->value.visits, 1u);
-      EXPECT_FLOAT_EQ(node->value.Q(), 0.25f);
-      EXPECT_FLOAT_EQ(node->value.D(), 0.5f);
-      EXPECT_FLOAT_EQ(node->value.M(), 3.0f);
+      EXPECT_EQ(node->stats.visits, 1u);
+      EXPECT_FLOAT_EQ(node->stats.Q(), 0.25f);
+      EXPECT_FLOAT_EQ(node->stats.D(), 0.5f);
+      EXPECT_FLOAT_EQ(node->stats.M(), 3.0f);
       for (const auto& edge : node->edges)
         EXPECT_FLOAT_EQ(edge.prior, 1.0f / node->edges.size());
     }
@@ -714,8 +725,8 @@ TEST(Lc5SearchTest, ImmediateAndMixedResultsKeepJobStorageAlive) {
 TEST(Lc5SearchTest, BlockedBackendStopAndAbortDrainReservationsAndPersistence) {
   for (const bool abort : {false, true}) {
     SCOPED_TRACE(abort);
-    GameGraph graph;
-    PolicyEngine engine(&graph);
+    PolicyEngine<PuctAveraging> engine(TestParams());
+    auto& graph = engine.graph();
     RecordingStore store;
     ControlledBackend backend(ControlledBackend::Cache::kNone, true);
     RecordingResponder responder;
@@ -766,8 +777,8 @@ TEST(Lc5SearchTest, BlockedBackendStopAndAbortDrainReservationsAndPersistence) {
     EXPECT_FLOAT_EQ(store.entries.at(child.key).leaf.q, 0.25f);
     // The setup install plus the owner's late backup.
     const auto root_node = graph.SnapshotNode(root.key);
-    EXPECT_EQ(root_node->value.visits, 2u);
-    EXPECT_EQ(root_node->edges[0].value.visits, 1u);
+    EXPECT_EQ(root_node->stats.visits, 2u);
+    EXPECT_EQ(root_node->edges[0].stats.visits, 1u);
     EXPECT_EQ(root_node->edges[0].in_flight, 0u);
     if (abort) {
       EXPECT_TRUE(responder.bestmoves.empty());
@@ -788,8 +799,8 @@ TEST(Lc5SearchTest, StoreMissPersistsAndFreshGraphRehydratesWithoutEvaluation) {
   const auto root = Origin();
   for (const bool hit : {false, true}) {
     SCOPED_TRACE(hit);
-    GameGraph graph;
-    PolicyEngine engine(&graph);
+    PolicyEngine<PuctAveraging> engine(TestParams());
+    auto& graph = engine.graph();
     RecordingResponder responder;
     SearchRun run(&engine, &store, &backend, &responder, TestSettings(),
                   TestTimeManagement(), root, GoParams{.nodes = 1},
@@ -807,8 +818,8 @@ TEST(Lc5SearchTest, StoreMissPersistsAndFreshGraphRehydratesWithoutEvaluation) {
     ASSERT_TRUE(store.entries.contains(root.key));
     auto node = graph.SnapshotNode(root.key);
     ASSERT_TRUE(node);
-    EXPECT_EQ(node->value.visits, 1u);
-    EXPECT_FLOAT_EQ(node->value.Q(), store.entries.at(root.key).leaf.q);
+    EXPECT_EQ(node->stats.visits, 1u);
+    EXPECT_FLOAT_EQ(node->stats.Q(), store.entries.at(root.key).leaf.q);
     ASSERT_EQ(node->edges.size(), store.entries.at(root.key).moves.size());
     for (size_t i = 0; i < node->edges.size(); ++i) {
       EXPECT_EQ(node->edges[i].move, store.entries.at(root.key).moves[i]);
@@ -822,8 +833,8 @@ TEST(Lc5SearchTest, RootBootstrapFlushesDependencyWithoutWaitingForTimer) {
   // A positive one-minute delay cannot be the reason this bootstrap flushes.
   for (const int delay : {0, 60000}) {
     SCOPED_TRACE(delay);
-    GameGraph graph;
-    PolicyEngine engine(&graph);
+    PolicyEngine<PuctAveraging> engine(TestParams());
+    auto& graph = engine.graph();
     ControlledBackend backend(ControlledBackend::Cache::kNone, true);
     RecordingResponder responder;
     const auto root = Origin();
@@ -857,8 +868,8 @@ TEST(Lc5SearchTest, RootBootstrapFlushesDependencyWithoutWaitingForTimer) {
 TEST(Lc5SearchTest, CollectionFlushesWhileAnotherWorkerIsBlockedInStore) {
   for (const int delay : {0, 1}) {
     SCOPED_TRACE(delay);
-    GameGraph graph;
-    PolicyEngine engine(&graph);
+    PolicyEngine<PuctAveraging> engine(TestParams());
+    auto& graph = engine.graph();
     // First load misses; the other worker's load remains executing. With a
     // positive delay it prevents dependency-starvation detection, so the
     // collector must actually time out. Zero must flush without that timer.
@@ -911,8 +922,8 @@ TEST(Lc5SearchTest, CollectionFlushesWhileAnotherWorkerIsBlockedInStore) {
 }
 
 TEST(Lc5SearchTest, PositiveDelayCollectsAnotherWorkersStoreMissIntoSameBatch) {
-  GameGraph graph;
-  PolicyEngine engine(&graph);
+  PolicyEngine<PuctAveraging> engine(TestParams());
+  auto& graph = engine.graph();
   BlockingStore store(2, false);
   ControlledBackend backend(ControlledBackend::Cache::kNone, true);
   RecordingResponder responder;
@@ -965,8 +976,8 @@ TEST(Lc5SearchTest, MultiworkerMixedCacheResultsRespectBatchAndItemCredits) {
     SCOPED_TRACE(test.batch_size);
     for (const int delay : {0, 10}) {
       SCOPED_TRACE(delay);
-      GameGraph graph;
-      PolicyEngine engine(&graph);
+      PolicyEngine<PuctAveraging> engine(TestParams());
+      auto& graph = engine.graph();
       ControlledBackend backend(ControlledBackend::Cache::kAlternating, true,
                                 test.batch_size, test.evaluators);
       RecordingResponder responder;
@@ -1039,10 +1050,10 @@ TEST(Lc5SearchTest, MultiworkerMixedCacheResultsRespectBatchAndItemCredits) {
       for (const auto& origin : origins) {
         const auto node = graph.SnapshotNode(origin.key);
         ASSERT_TRUE(node);
-        EXPECT_EQ(node->value.visits, 1u);
-        EXPECT_FLOAT_EQ(node->value.Q(), 0.25f);
-        EXPECT_FLOAT_EQ(node->value.D(), 0.5f);
-        EXPECT_FLOAT_EQ(node->value.M(), 3.0f);
+        EXPECT_EQ(node->stats.visits, 1u);
+        EXPECT_FLOAT_EQ(node->stats.Q(), 0.25f);
+        EXPECT_FLOAT_EQ(node->stats.D(), 0.5f);
+        EXPECT_FLOAT_EQ(node->stats.M(), 3.0f);
         for (const auto& edge : node->edges)
           EXPECT_FLOAT_EQ(edge.prior, 1.0f / node->edges.size());
       }
@@ -1055,8 +1066,8 @@ TEST(Lc5SearchTest, BlockedStoreLoadsAndPersistenceDrainAfterStopOrAbort) {
     for (const bool abort : {false, true}) {
       SCOPED_TRACE(hit);
       SCOPED_TRACE(abort);
-      GameGraph graph;
-      PolicyEngine engine(&graph);
+      PolicyEngine<PuctAveraging> engine(TestParams());
+      auto& graph = engine.graph();
       BlockingStore store;
       ControlledBackend backend(ControlledBackend::Cache::kAll);
       RecordingResponder responder;
@@ -1114,8 +1125,8 @@ TEST(Lc5SearchTest, BlockedStoreLoadsAndPersistenceDrainAfterStopOrAbort) {
       EXPECT_EQ(store.recording.entries.contains(child.key), hit);
       EXPECT_EQ(graph.SnapshotNode(child.key).has_value(), hit);
       // The setup install, plus the owner's backup on a hit.
-      EXPECT_EQ(graph.SnapshotNode(root.key)->value.visits, hit ? 2u : 1u);
-      EXPECT_EQ(graph.SnapshotNode(root.key)->edges[0].value.visits, hit ? 1u : 0u);
+      EXPECT_EQ(graph.SnapshotNode(root.key)->stats.visits, hit ? 2u : 1u);
+      EXPECT_EQ(graph.SnapshotNode(root.key)->edges[0].stats.visits, hit ? 1u : 0u);
       if (abort) {
         EXPECT_TRUE(responder.bestmoves.empty());
         EXPECT_TRUE(std::none_of(responder.thinking.begin(),
@@ -1148,8 +1159,8 @@ std::vector<VisitOrigin> AdmitChildren(SearchRun& run, const VisitOrigin& root,
 TEST(Lc5SearchTest, QueuedBacklogCannotComputeAgainAfterStop) {
   for (const int evaluators : {1, 3}) {
     SCOPED_TRACE(evaluators);
-    GameGraph graph;
-    PolicyEngine engine(&graph);
+    PolicyEngine<PuctAveraging> engine(TestParams());
+    auto& graph = engine.graph();
     ControlledBackend backend(ControlledBackend::Cache::kNone, true, 4,
                               evaluators);
     RecordingResponder responder;
@@ -1186,8 +1197,8 @@ TEST(Lc5SearchTest, QueuedBacklogCannotComputeAgainAfterStop) {
 }
 
 TEST(Lc5SearchTest, AuthorizedEvaluationsBackUpToRootAfterStop) {
-  GameGraph graph;
-  PolicyEngine engine(&graph);
+  PolicyEngine<PuctAveraging> engine(TestParams());
+  auto& graph = engine.graph();
   ControlledBackend backend(ControlledBackend::Cache::kNone, true);
   RecordingResponder responder;
   const auto root = Origin();
@@ -1220,16 +1231,16 @@ TEST(Lc5SearchTest, AuthorizedEvaluationsBackUpToRootAfterStop) {
   EXPECT_EQ(run.metrics().visits_completed.load(), 4u);
   const auto node = graph.SnapshotNode(root.key);
   ASSERT_TRUE(node);
-  EXPECT_EQ(node->value.visits, 5u);
+  EXPECT_EQ(node->stats.visits, 5u);
   uint64_t edge_visits = 0;
-  for (const auto& edge : node->edges) edge_visits += edge.value.visits;
+  for (const auto& edge : node->edges) edge_visits += edge.stats.visits;
   EXPECT_EQ(edge_visits, 4u);
   ExpectFinalOutput(responder, 20);
 }
 
 TEST(Lc5SearchTest, StopDuringAddInputKeepsOnlyImmediateResults) {
-  GameGraph graph;
-  PolicyEngine engine(&graph);
+  PolicyEngine<PuctAveraging> engine(TestParams());
+  auto& graph = engine.graph();
   ControlledBackend backend(ControlledBackend::Cache::kAlternating, true, 8);
   backend.blocked_input = 2;
   RecordingResponder responder;
@@ -1257,10 +1268,10 @@ TEST(Lc5SearchTest, StopDuringAddInputKeepsOnlyImmediateResults) {
   auto hit = graph.SnapshotNode(origins[0].key);
   ASSERT_TRUE(hit);
   // The install counted the leaf; its owner completes with nothing above it.
-  EXPECT_EQ(hit->value.visits, 1u);
+  EXPECT_EQ(hit->stats.visits, 1u);
   EXPECT_EQ(run.metrics().visits_completed.load(), 1u);
   EXPECT_EQ(run.metrics().visits_cancelled.load(), 3u);
-  EXPECT_FLOAT_EQ(hit->value.Q(), backend.q);
+  EXPECT_FLOAT_EQ(hit->stats.Q(), backend.q);
   for (const auto& edge : hit->edges)
     EXPECT_FLOAT_EQ(edge.prior, 1.0f / hit->edges.size());
   for (size_t i = 1; i < origins.size(); ++i)
@@ -1269,8 +1280,8 @@ TEST(Lc5SearchTest, StopDuringAddInputKeepsOnlyImmediateResults) {
 }
 
 TEST(Lc5SearchTest, RetainedNonfittingJobIsCancelledAfterAuthorizedBatch) {
-  GameGraph graph;
-  PolicyEngine engine(&graph);
+  PolicyEngine<PuctAveraging> engine(TestParams());
+  auto& graph = engine.graph();
   ControlledBackend backend(ControlledBackend::Cache::kNone, true, 5);
   RecordingResponder responder;
   const auto root = Origin();
@@ -1300,8 +1311,8 @@ TEST(Lc5SearchTest, RetainedNonfittingJobIsCancelledAfterAuthorizedBatch) {
 }
 
 TEST(Lc5SearchTest, AbortOverridesRepeatedStopBeforeCommitment) {
-  GameGraph graph;
-  PolicyEngine engine(&graph);
+  PolicyEngine<PuctAveraging> engine(TestParams());
+  auto& graph = engine.graph();
   ControlledBackend backend;
   RecordingResponder responder;
   const auto root = Origin();
@@ -1325,8 +1336,8 @@ TEST(Lc5SearchTest, AbortOverridesRepeatedStopBeforeCommitment) {
 }
 
 TEST(Lc5SearchTest, RespondsBeforeBlockedPersistenceDrains) {
-  GameGraph graph;
-  PolicyEngine engine(&graph);
+  PolicyEngine<PuctAveraging> engine(TestParams());
+  auto& graph = engine.graph();
   BlockingStore store(0);
   ControlledBackend backend;
   RecordingResponder responder;
@@ -1347,8 +1358,8 @@ TEST(Lc5SearchTest, RespondsBeforeBlockedPersistenceDrains) {
 
 TEST(Lc5SearchTest,
      FreshRootStoppedBeforeStartUsesLegalFallbackWithoutEvaluation) {
-  GameGraph graph;
-  PolicyEngine engine(&graph);
+  PolicyEngine<PuctAveraging> engine(TestParams());
+  auto& graph = engine.graph();
   ControlledBackend backend;
   RecordingResponder responder;
   const auto root = Origin();
@@ -1383,6 +1394,7 @@ TEST(Lc5SearchTest, EnginePreservesExplicitMovetimeAndInfinitePrecedence) {
       SCOPED_TRACE(params.movetime.value_or(-1));
       OptionsParser parser;
       Settings::Populate(&parser);
+      PopulatePolicyOptions(&parser);
       parser.SetUciOption("Threads", "1");
       parser.SetUciOption("EvalThreads", "1");
       parser.SetUciOption("MaxActiveVisits", "1");
@@ -1404,6 +1416,7 @@ TEST(Lc5SearchTest, EnginePreservesExplicitMovetimeAndInfinitePrecedence) {
 TEST(Lc5SearchTest, EngineRetainsGraphAcrossSearchesAndResetsForNewGame) {
   OptionsParser parser;
   Settings::Populate(&parser);
+  PopulatePolicyOptions(&parser);
   parser.SetUciOption("Threads", "1");
   parser.SetUciOption("EvalThreads", "1");
   parser.SetUciOption("MaxActiveVisits", "1");

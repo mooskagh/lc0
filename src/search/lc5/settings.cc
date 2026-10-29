@@ -48,18 +48,6 @@ const OptionId kHistoryKeyLength{
     "more histories and reuse the first canonical expansion."};
 const OptionId kMaxBatchDelay{"max-batch-delay-ms", "MaxBatchDelayMs",
                               "Maximum Lc5 partial-batch delay in ms."};
-const OptionId kCpuct{"cpuct", "CPuct", "Lc5 PUCT initial constant."};
-const OptionId kCpuctBase{"cpuct-base", "CPuctBase", "Lc5 PUCT growth base."};
-const OptionId kCpuctFactor{"cpuct-factor", "CPuctFactor",
-                            "Lc5 PUCT growth multiplier."};
-const OptionId kFpuStrategy{"fpu-strategy", "FpuStrategy",
-                            "Lc5 first-play urgency strategy."};
-const OptionId kFpuValue{"fpu-value", "FpuValue",
-                         "Lc5 absolute FPU value or FPU reduction."};
-const OptionId kRestartWaiters{
-    "restart-waiters", "RestartWaiters",
-    "Visits that waited for a node's evaluation select again from the root "
-    "instead of continuing below that node."};
 const OptionId kActiveVisitsRatio{
     "active-visits-ratio", "ActiveVisitsRatio",
     "Live visits are limited to 16 plus this fraction of the root's visits "
@@ -85,14 +73,6 @@ void Settings::Populate(OptionsParser* options) {
   options->Add<IntOption>(kMaxActiveVisits, 0, kMaxActiveVisitsLimit) = 0;
   options->Add<IntOption>(kHistoryKeyLength, 0, 7) = 7;
   options->Add<IntOption>(kMaxBatchDelay, 0, 100) = 2;
-  options->Add<FloatOption>(kCpuct, 0.0f, 100.0f) = 1.745f;
-  options->Add<FloatOption>(kCpuctBase, 1.0f, 1.0e9f) = 38739.0f;
-  options->Add<FloatOption>(kCpuctFactor, 0.0f, 1000.0f) = 3.894f;
-  options->Add<ChoiceOption>(
-      kFpuStrategy, std::vector<std::string>{"absolute", "reduction"}) =
-      "reduction";
-  options->Add<FloatOption>(kFpuValue, -100.0f, 100.0f) = 0.33f;
-  options->Add<BoolOption>(kRestartWaiters) = false;
   options->Add<FloatOption>(kActiveVisitsRatio, 0.0f, 100.0f) = 0.25f;
   options->Add<IntOption>(kMoveOverhead, 0, 100000000) = 200;
   options->Add<FloatOption>(kAlphazeroTimePct, 0.0f, 100.0f) = 3.0f;
@@ -107,14 +87,6 @@ Settings::Settings(const OptionsDict& options)
           .max_active_visits = options.Get<int>(kMaxActiveVisits),
           .history_key_length = options.Get<int>(kHistoryKeyLength),
           .max_batch_delay_ms = options.Get<int>(kMaxBatchDelay),
-          .cpuct = options.Get<float>(kCpuct),
-          .cpuct_base = options.Get<float>(kCpuctBase),
-          .cpuct_factor = options.Get<float>(kCpuctFactor),
-          .fpu_strategy = options.Get<std::string>(kFpuStrategy) == "absolute"
-                              ? FpuStrategy::kAbsolute
-                              : FpuStrategy::kReduction,
-          .fpu_value = options.Get<float>(kFpuValue),
-          .restart_waiters = options.Get<bool>(kRestartWaiters),
           .active_visits_ratio = options.Get<float>(kActiveVisitsRatio)},
       time_management_{
           .move_overhead_ms = options.Get<int>(kMoveOverhead),

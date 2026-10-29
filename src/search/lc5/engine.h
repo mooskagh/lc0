@@ -32,9 +32,9 @@
 #include <optional>
 
 #include "chess/gamestate.h"
-#include "search/lc5/graph.h"
-#include "search/lc5/policy_engine.h"
+#include "search/lc5/policies.h"
 #include "search/lc5/search.h"
+#include "search/lc5/visit_engine.h"
 #include "search/search.h"
 
 namespace lczero::lc5 {
@@ -59,9 +59,9 @@ class Lc5Engine final : public SearchBase {
   void AbortAndWait();
 
   const OptionsDict* options_;
-  // Retained without eviction for the whole game, so no NodeStore is needed.
-  GameGraph graph_;
-  PolicyEngine visit_engine_{&graph_};
+  // Created on the first search and whenever Lc5Policy changes. Its graph is
+  // retained without eviction for the whole game, so no NodeStore is needed.
+  std::unique_ptr<VisitEngine> visit_engine_;
   std::unique_ptr<SearchRun> run_;
   std::optional<Position> game_start_;
   std::optional<PositionHistory> root_history_;

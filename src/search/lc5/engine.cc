@@ -27,6 +27,7 @@
 
 #include "search/lc5/engine.h"
 
+#include <string>
 #include <utility>
 
 #include "chess/callbacks.h"
@@ -49,13 +50,15 @@ void Lc5Engine::SetBackend(Backend* backend) {
   if (backend_ == backend) return;
   AbortAndWait();
   backend_ = backend;
-  graph_.Clear();
+  if (visit_engine_) visit_engine_->Clear();
 }
 
 void Lc5Engine::SetPosition(const GameState& state) {
   AbortAndWait();
   // The graph survives position changes within the same game.
-  if (game_start_ != state.startpos) graph_.Clear();
+  if (game_start_ != state.startpos && visit_engine_) {
+    visit_engine_->Clear();
+  }
   game_start_ = state.startpos;
   root_history_.emplace();
   root_history_->Reset(state.startpos);
@@ -65,7 +68,7 @@ void Lc5Engine::SetPosition(const GameState& state) {
 void Lc5Engine::NewGame() {
   AbortAndWait();
   run_.reset();
-  graph_.Clear();
+  if (visit_engine_) visit_engine_->Clear();
   game_start_.reset();
   root_history_.reset();
   clock_start_.reset();
@@ -83,6 +86,12 @@ void Lc5Engine::StartSearch(const GoParams& params) {
   if (!backend_) throw Exception("Lc5 requires a backend");
   if (!root_history_) throw Exception("Lc5 position was not set");
 
+  // A different policy keeps different statistics, so it starts a new graph.
+  const std::string policy = PolicyName(*options_);
+  if (!visit_engine_ || visit_engine_->name() != policy) {
+    visit_engine_ = MakeVisitEngine(policy);
+  }
+  visit_engine_->Configure(*options_);
   const Settings settings(*options_);
   VisitOrigin root{
       .key = MakeNodeKey(*root_history_, settings.history_key_length()),
@@ -91,7 +100,7 @@ void Lc5Engine::StartSearch(const GoParams& params) {
   const auto start = clock_start_.value_or(std::chrono::steady_clock::now());
   clock_start_.reset();
   run_ = std::make_unique<SearchRun>(
-      &visit_engine_, /*store=*/nullptr, backend_, uci_responder_,
+      visit_engine_.get(), /*store=*/nullptr, backend_, uci_responder_,
       settings.Resolve(backend_->GetAttributes()), settings.time_management(),
       std::move(root), params, start, std::exchange(saved_time_ms_, 0));
   run_->Start();
@@ -115,6 +124,7 @@ class Lc5Factory final : public SearchFactory {
   std::string_view GetName() const override { return "lc5"; }
   void PopulateParams(OptionsParser* options) const override {
     Settings::Populate(options);
+    PopulatePolicyOptions(options);
   }
   std::unique_ptr<SearchBase> CreateSearch(
       UciResponder* responder, const OptionsDict* options) const override {
