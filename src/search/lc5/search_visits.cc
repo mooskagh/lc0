@@ -355,12 +355,15 @@ void SearchRun::Backup(Worker& worker, VisitPool::Slot& slot) {
   Visit& visit = slot.visit;
   visit.state = VisitState::kBackingUp;
   SearchValue value = visit.result;
-  for (size_t i = visit.path.size(); i-- > 0; value = value.Parent()) {
+  for (size_t i = visit.path.size(); i-- > 0;) {
     const PathStep& step = visit.path[i];
-    // An in-search repetition leaf has no graph node.
-    if (step.generation == 0) continue;
     const bool leaf = i + 1 == visit.path.size();
-    if (leaf && visit.leaf_counted) continue;
+    // An in-search repetition leaf has no graph node, and a counted leaf took
+    // its value at install; the parent receives the plain conversion.
+    if (step.generation == 0 || (leaf && visit.leaf_counted)) {
+      value = value.Parent();
+      continue;
+    }
     // The leaf commits only its node value; ancestors complete their edges.
     const auto move =
         i + 1 < visit.path.size() ? step.selected_move : std::nullopt;
@@ -375,6 +378,8 @@ void SearchRun::Backup(Worker& worker, VisitPool::Slot& slot) {
     } else if (result.edge != UpdateResult::kApplied) {
       metrics_.stale_generation_edge_updates.fetch_add(1);
     }
+    // A stale or missing node falls back to the plain conversion.
+    value = result.to_parent ? *result.to_parent : value.Parent();
   }
   RaiseHighWater(metrics_.max_depth, visit.path.size());
   FinishVisit(worker, slot, true);

@@ -404,8 +404,9 @@ TEST(Lc5GraphTest, GenerationChecksProtectRecreatedNodes) {
   EXPECT_TRUE(graph.Erase(key));
   auto second = graph.FindOrCreateMaterializing(key, 8);
   EXPECT_NE(first.generation, second.generation);
-  EXPECT_EQ(graph.BackupNode(key, first.generation, {}, std::nullopt).node,
-            UpdateResult::kStale);
+  const auto stale = graph.BackupNode(key, first.generation, {}, std::nullopt);
+  EXPECT_EQ(stale.node, UpdateResult::kStale);
+  EXPECT_FALSE(stale.to_parent);
   EXPECT_EQ(graph.BackupNode(key, second.generation, {}, std::nullopt).node,
             UpdateResult::kApplied);
 }
@@ -433,6 +434,10 @@ TEST(Lc5GraphTest, BackupCommitsNodeAndOptionalEdgeSums) {
       graph.BackupNode(key, created.generation, {-0.5f, 0.25f, 4.0f}, move);
   EXPECT_EQ(result.node, UpdateResult::kApplied);
   EXPECT_EQ(result.edge, UpdateResult::kApplied);
+  ASSERT_TRUE(result.to_parent);
+  EXPECT_FLOAT_EQ(result.to_parent->q, 0.5f);
+  EXPECT_FLOAT_EQ(result.to_parent->d, 0.25f);
+  EXPECT_FLOAT_EQ(result.to_parent->m, 5.0f);
   node = graph.SnapshotNode(key);
   ASSERT_TRUE(node);
   EXPECT_EQ(node->value.visits, 3u);
@@ -491,6 +496,7 @@ TEST(Lc5GraphTest, BackupCommitsNodeDespiteEdgeFailure) {
       graph.BackupNode(key, created.generation, {0.25f, 0.5f, 3.0f}, move);
   EXPECT_EQ(result.node, UpdateResult::kApplied);
   EXPECT_EQ(result.edge, UpdateResult::kUnderflow);
+  EXPECT_TRUE(result.to_parent);
   result = graph.BackupNode(key, created.generation, {0.25f, 0.5f, 3.0f},
                             M(kFileB, kFileB));
   EXPECT_EQ(result.node, UpdateResult::kApplied);

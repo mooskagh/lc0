@@ -59,6 +59,15 @@ UpdateResult ReleaseEdge(EdgeState* edge) {
   return UpdateResult::kApplied;
 }
 
+// The per-node backup rule: folds `value` (from the side to move at `node`)
+// into the node and, if given, the edge the visit took, and returns what the
+// parent receives. For now this is plain averaging.
+SearchValue Update(NodeState& node, EdgeState* edge, const SearchValue& value) {
+  node.value.Add(value);
+  if (edge) edge->value.Add(value);
+  return value.Parent();
+}
+
 }  // namespace
 
 NodeState& GameGraph::InsertLocked(Shard& shard, NodeKey key,
@@ -124,7 +133,7 @@ InstallResult GameGraph::InstallPayload(NodeKey key,
   assert(std::ranges::is_sorted(node.edges, PreferOnTie));
   // The leaf value counts as the node's first visit, so a node keeps it even
   // if the visit that materialized it is cancelled before backing up.
-  node.value.Add(payload.leaf);
+  Update(node, nullptr, payload.leaf);
   return {node.generation, true};
 }
 
@@ -210,14 +219,18 @@ BackupResult GameGraph::BackupNode(NodeKey key, uint64_t expected_generation,
   NodeState* node = FindNode(shard.nodes, key);
   if (const auto check = CheckGeneration(node, expected_generation);
       check != UpdateResult::kApplied) {
-    return {check, move ? check : UpdateResult::kApplied};
+    return {check, move ? check : UpdateResult::kApplied, std::nullopt};
   }
-  node->value.Add(value);
-  if (!move) return {UpdateResult::kApplied, UpdateResult::kApplied};
-  EdgeState* edge = FindEdge(*node, *move);
-  const auto result = ReleaseEdge(edge);
-  if (result == UpdateResult::kApplied) edge->value.Add(value);
-  return {UpdateResult::kApplied, result};
+  EdgeState* edge = nullptr;
+  UpdateResult edge_result = UpdateResult::kApplied;
+  if (move) {
+    edge = FindEdge(*node, *move);
+    edge_result = ReleaseEdge(edge);
+  }
+  // The node is updated even if the edge reservation could not be released.
+  const SearchValue to_parent = Update(
+      *node, edge_result == UpdateResult::kApplied ? edge : nullptr, value);
+  return {UpdateResult::kApplied, edge_result, to_parent};
 }
 
 UpdateResult GameGraph::CancelEdge(NodeKey key, uint64_t expected_generation,

@@ -61,7 +61,9 @@ Code: `search_visits.cc`, `search_materialization.cc`.
 
 6. **Backup.** Along the path, add the value to each node and edge and
    release the reservations. Node values are from the side to move at that
-   node; edge values from the parent's side to move.
+   node; edge values from the parent's side to move. Each node's update
+   returns the value its parent receives (for now the averaged value with
+   the perspective flipped).
 
 If the search stops, a visit that hasn't finished is **cancelled**: its
 reservations are released and nothing is added.

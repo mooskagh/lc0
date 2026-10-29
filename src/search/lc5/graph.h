@@ -111,6 +111,8 @@ enum class UpdateResult {
 struct BackupResult {
   UpdateResult node;
   UpdateResult edge;
+  // What the parent receives; set only when the node update was applied.
+  std::optional<SearchValue> to_parent;
 };
 
 // Sharded map from NodeKey to node search state and outgoing edges. Edges do
@@ -141,8 +143,9 @@ class GameGraph {
   SelectResult SelectAndReserve(NodeKey key,
                                 const Settings::Resolved& settings);
 
-  // Adds `value` to the node and, if `move` is given, completes that edge's
-  // reservation with the same value.
+  // Applies the backup rule to the node and, if `move` is given, completes
+  // that edge's reservation. On success `to_parent` is the value the parent
+  // receives.
   BackupResult BackupNode(NodeKey key, uint64_t expected_generation,
                           SearchValue value, std::optional<Move> move);
 
