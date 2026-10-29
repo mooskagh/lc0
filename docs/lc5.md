@@ -75,6 +75,8 @@ Two limits apply:
 
 - `MaxActiveVisits`: a hard cap. By default
   `max(256, 1.5 × EvalThreads × MinibatchSize)`, enough to keep the GPU fed.
+  It is at most 65535, because each edge counts its in-flight visits in
+  16 bits.
 - `ActiveVisitsRatio` (default 0.25): at most `16 + 0.25 × N` visits are live,
   where N is the root's visit count. A fresh search starts with only a few
   visits in flight, and more are allowed as the tree grows. Classic search
@@ -176,7 +178,7 @@ Things that look odd but are deliberate:
 | `Threads` | auto | Visit worker threads. |
 | `EvalThreads` | auto | Evaluator threads. |
 | `MinibatchSize` | backend | Target batch size. |
-| `MaxActiveVisits` | auto | Hard cap on live visits. |
+| `MaxActiveVisits` | auto | Hard cap on live visits (at most 65535). |
 | `ActiveVisitsRatio` | 0.25 | Live visits ≤ 16 + ratio × root visits; 0 disables. |
 | `RestartWaiters` | false | Waiters restart from the root instead of continuing. |
 | `HistoryKeyLength` | 7 | Earlier positions included in node keys. |

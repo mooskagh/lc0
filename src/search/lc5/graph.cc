@@ -195,6 +195,7 @@ SelectResult GameGraph::SelectAndReserve(NodeKey key,
 #endif
   if (best_index == node->started_end) ++node->started_end;
   EdgeState* best = &node->edges[best_index];
+  assert(best->in_flight < kMaxActiveVisitsLimit);
   ++best->in_flight;
   return {.status = SelectStatus::kSelected,
           .move = best->move,

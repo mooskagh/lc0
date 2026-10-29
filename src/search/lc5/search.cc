@@ -40,6 +40,8 @@ constexpr auto kInfoInterval = std::chrono::seconds(1);
 constexpr auto kSmartPruningInterval = std::chrono::milliseconds(10);
 // Visits to complete before the visit rate is trusted for early stopping.
 constexpr uint64_t kSmartPruningMinVisits = 100;
+// Root visits are counted in uint32_t; classic caps a search the same way.
+constexpr uint64_t kMaxRootVisits = 4'000'000'000;
 
 // Moves in the graph are from the side to move's perspective; UCI is not.
 Move ToUci(Move move, const Position& position) {
@@ -99,8 +101,11 @@ SearchRun::SearchRun(GameGraph* graph, NodeStore* store, Backend* backend,
   if (const auto node = graph_->SnapshotNode(root_.key)) {
     root_visits_at_start_ = node->value.visits;
   }
+  node_limit_ =
+      kMaxRootVisits - std::min(root_visits_at_start_, kMaxRootVisits);
   if (!go_params.ponder && go_params.nodes && *go_params.nodes >= 0) {
-    node_limit_ = static_cast<uint64_t>(*go_params.nodes);
+    node_limit_ =
+        std::min(*node_limit_, static_cast<uint64_t>(*go_params.nodes));
   }
 }
 
@@ -229,7 +234,7 @@ bool SearchRun::BestMoveDecided(steady_clock::time_point now) const {
       second = best;
       best = edge.value.visits;
     } else {
-      second = std::max(second, edge.value.visits);
+      second = std::max(second, uint64_t{edge.value.visits});
     }
   }
   return best - second > remaining;

@@ -52,6 +52,21 @@ TEST(Lc5SettingsTest, DefaultsResolveAgainstBackend) {
   EXPECT_EQ(resolved.fpu_strategy, FpuStrategy::kReduction);
 }
 
+TEST(Lc5SettingsTest, CapsDefaultMaxActiveVisits) {
+  OptionsParser parser;
+  Settings::Populate(&parser);
+  parser.SetUciOption("EvalThreads", "128");
+  Settings settings(parser.GetOptionsDict());
+  BackendAttributes attrs{.has_mlh = true,
+                          .has_wdl = true,
+                          .runs_on_cpu = false,
+                          .suggested_num_search_threads = 2,
+                          .recommended_batch_size = 1024,
+                          .maximum_batch_size = 1024};
+  EXPECT_EQ(settings.Resolve(attrs).max_active_visits, kMaxActiveVisitsLimit);
+  EXPECT_EQ(kMaxActiveVisitsLimit, 65535);
+}
+
 TEST(Lc5SettingsTest, RejectsBatchAboveBackendMaximum) {
   OptionsParser parser;
   Settings::Populate(&parser);

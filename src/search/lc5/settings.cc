@@ -82,7 +82,7 @@ void Settings::Populate(OptionsParser* options) {
   options->Add<IntOption>(kEvalThreads, 0, 128) = 0;
   // Backend maximum is only known when a run starts; Resolve validates it.
   options->Add<IntOption>(kMinibatchSize, 0, 1000000) = 0;
-  options->Add<IntOption>(kMaxActiveVisits, 0, 1000000) = 0;
+  options->Add<IntOption>(kMaxActiveVisits, 0, kMaxActiveVisitsLimit) = 0;
   options->Add<IntOption>(kHistoryKeyLength, 0, 7) = 7;
   options->Add<IntOption>(kMaxBatchDelay, 0, 100) = 2;
   options->Add<FloatOption>(kCpuct, 0.0f, 100.0f) = 1.745f;
@@ -146,7 +146,8 @@ Settings::Resolved Settings::Resolve(const BackendAttributes& backend) const {
     // Visits in flight dilute small searches, so keep only enough to fill
     // the evaluators.
     resolved.max_active_visits =
-        std::max(256, 3 * resolved.eval_threads * resolved.minibatch_size / 2);
+        std::clamp(3 * resolved.eval_threads * resolved.minibatch_size / 2, 256,
+                   kMaxActiveVisitsLimit);
   }
   if (resolved.max_active_visits < resolved.eval_threads) {
     throw Exception(

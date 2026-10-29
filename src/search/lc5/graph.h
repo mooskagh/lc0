@@ -32,6 +32,7 @@
 #include <array>
 #include <atomic>
 #include <cstdint>
+#include <limits>
 #include <mutex>
 #include <optional>
 #include <utility>
@@ -50,11 +51,14 @@ enum class NodeLifecycle : uint8_t { kMaterializing, kExpanded };
 
 struct EdgeState {
   Move move;
+  uint16_t in_flight = 0;  // Virtual loss; bounded by kMaxActiveVisitsLimit.
   float prior = 0.0f;
-  uint32_t in_flight = 0;  // Virtual loss.
   ValueStats value{};
   float Q() const { return value.Q(); }
 };
+static_assert(sizeof(EdgeState) <= 24);
+static_assert(kMaxActiveVisitsLimit <=
+              std::numeric_limits<decltype(EdgeState::in_flight)>::max());
 
 // Deterministic tie-break between equally ranked edges: higher prior first,
 // then the lower move encoding. A node's edges are sorted in this order, and

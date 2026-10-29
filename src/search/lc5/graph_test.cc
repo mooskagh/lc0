@@ -68,7 +68,7 @@ TEST(Lc5GraphTest, CancellationOnlyErasesMatchingPlaceholder) {
   EXPECT_EQ(graph.SnapshotNode(key)->lifecycle, NodeLifecycle::kExpanded);
 }
 
-TEST(Lc5ValueTest, PerspectiveAndSumsAreExact) {
+TEST(Lc5ValueTest, PerspectiveAndMeans) {
   SearchValue child{0.25f, 0.5f, 3.0f};
   SearchValue parent = child.Parent();
   EXPECT_FLOAT_EQ(parent.q, -0.25f);
@@ -81,6 +81,28 @@ TEST(Lc5ValueTest, PerspectiveAndSumsAreExact) {
   EXPECT_FLOAT_EQ(stats.Q(), 0.0f);
   EXPECT_FLOAT_EQ(stats.D(), 0.375f);
   EXPECT_FLOAT_EQ(stats.M(), 4.0f);
+}
+
+TEST(Lc5ValueTest, RunningMeansStayAccurate) {
+  ValueStats empty;
+  EXPECT_EQ(empty.Q(), 0.0f);
+  EXPECT_EQ(empty.D(), 0.0f);
+  EXPECT_EQ(empty.M(), 0.0f);
+
+  ValueStats constant;
+  for (int i = 0; i < 100000; ++i) constant.Add({0.3f, 0.2f, 7.0f});
+  EXPECT_EQ(constant.visits, 100000u);
+  EXPECT_EQ(constant.Q(), 0.3f);
+  EXPECT_EQ(constant.D(), 0.2f);
+  EXPECT_EQ(constant.M(), 7.0f);
+
+  // Q cycles through -0.5, 0, 0.5, 1 with mean 0.25.
+  ValueStats sequence;
+  for (int i = 0; i < 4000; ++i) {
+    sequence.Add({-0.5f + 0.5f * (i % 4), 0.0f, static_cast<float>(i % 3)});
+  }
+  EXPECT_NEAR(sequence.Q(), 0.25f, 1e-5f);
+  EXPECT_NEAR(sequence.M(), 3999.0f / 4000.0f, 1e-5f);
 }
 
 TEST(Lc5GraphTest, PublicationAcceptanceIsIndependentOfReturnedGeneration) {
@@ -358,9 +380,9 @@ TEST(Lc5GraphTest, AcceptedInstallCountsLeafValueOnce) {
   node = graph.SnapshotNode(key);
   ASSERT_TRUE(node);
   EXPECT_EQ(node->value.visits, 1u);
-  EXPECT_DOUBLE_EQ(node->value.q_sum, 0.5);
-  EXPECT_DOUBLE_EQ(node->value.d_sum, 0.25);
-  EXPECT_DOUBLE_EQ(node->value.m_sum, 6.0);
+  EXPECT_FLOAT_EQ(node->value.Q(), 0.5f);
+  EXPECT_FLOAT_EQ(node->value.D(), 0.25f);
+  EXPECT_FLOAT_EQ(node->value.M(), 6.0f);
 
   // Duplicate and wrong-ticket publications do not count the leaf again.
   for (const auto ticket : {7u, 8u}) {
@@ -368,7 +390,7 @@ TEST(Lc5GraphTest, AcceptedInstallCountsLeafValueOnce) {
     node = graph.SnapshotNode(key);
     ASSERT_TRUE(node);
     EXPECT_EQ(node->value.visits, 1u);
-    EXPECT_DOUBLE_EQ(node->value.q_sum, 0.5);
+    EXPECT_FLOAT_EQ(node->value.Q(), 0.5f);
   }
 }
 
@@ -401,9 +423,9 @@ TEST(Lc5GraphTest, BackupCommitsNodeAndOptionalEdgeSums) {
   auto node = graph.SnapshotNode(key);
   ASSERT_TRUE(node);
   EXPECT_EQ(node->value.visits, 2u);
-  EXPECT_DOUBLE_EQ(node->value.q_sum, 0.25);
-  EXPECT_DOUBLE_EQ(node->value.d_sum, 0.5);
-  EXPECT_DOUBLE_EQ(node->value.m_sum, 3.0);
+  EXPECT_FLOAT_EQ(node->value.Q(), 0.125f);
+  EXPECT_FLOAT_EQ(node->value.D(), 0.25f);
+  EXPECT_FLOAT_EQ(node->value.M(), 1.5f);
   EXPECT_EQ(node->edges[0].value.visits, 0u);
   ASSERT_EQ(graph.SelectAndReserve(key, TestSettings()).status,
             SelectStatus::kSelected);
@@ -414,14 +436,14 @@ TEST(Lc5GraphTest, BackupCommitsNodeAndOptionalEdgeSums) {
   node = graph.SnapshotNode(key);
   ASSERT_TRUE(node);
   EXPECT_EQ(node->value.visits, 3u);
-  EXPECT_DOUBLE_EQ(node->value.q_sum, -0.25);
-  EXPECT_DOUBLE_EQ(node->value.d_sum, 0.75);
-  EXPECT_DOUBLE_EQ(node->value.m_sum, 7.0);
+  EXPECT_FLOAT_EQ(node->value.Q(), -0.25f / 3);
+  EXPECT_FLOAT_EQ(node->value.D(), 0.25f);
+  EXPECT_FLOAT_EQ(node->value.M(), 7.0f / 3);
   EXPECT_EQ(node->edges[0].value.visits, 1u);
   EXPECT_EQ(node->edges[0].in_flight, 0u);
-  EXPECT_DOUBLE_EQ(node->edges[0].value.q_sum, -0.5);
-  EXPECT_DOUBLE_EQ(node->edges[0].value.d_sum, 0.25);
-  EXPECT_DOUBLE_EQ(node->edges[0].value.m_sum, 4.0);
+  EXPECT_FLOAT_EQ(node->edges[0].value.Q(), -0.5f);
+  EXPECT_FLOAT_EQ(node->edges[0].value.D(), 0.25f);
+  EXPECT_FLOAT_EQ(node->edges[0].value.M(), 4.0f);
 }
 
 TEST(Lc5GraphTest, BackupRejectsMissingAndStaleGenerations) {
@@ -449,14 +471,14 @@ TEST(Lc5GraphTest, BackupRejectsMissingAndStaleGenerations) {
   auto node = graph.SnapshotNode(key);
   ASSERT_TRUE(node);
   EXPECT_EQ(node->value.visits, 1u);
-  EXPECT_DOUBLE_EQ(node->value.q_sum, 0.0);
-  EXPECT_DOUBLE_EQ(node->value.d_sum, 0.0);
-  EXPECT_DOUBLE_EQ(node->value.m_sum, 0.0);
+  EXPECT_FLOAT_EQ(node->value.Q(), 0.0f);
+  EXPECT_FLOAT_EQ(node->value.D(), 0.0f);
+  EXPECT_FLOAT_EQ(node->value.M(), 0.0f);
   EXPECT_EQ(node->edges[0].value.visits, 0u);
   EXPECT_EQ(node->edges[0].in_flight, 1u);
-  EXPECT_DOUBLE_EQ(node->edges[0].value.q_sum, 0.0);
-  EXPECT_DOUBLE_EQ(node->edges[0].value.d_sum, 0.0);
-  EXPECT_DOUBLE_EQ(node->edges[0].value.m_sum, 0.0);
+  EXPECT_FLOAT_EQ(node->edges[0].value.Q(), 0.0f);
+  EXPECT_FLOAT_EQ(node->edges[0].value.D(), 0.0f);
+  EXPECT_FLOAT_EQ(node->edges[0].value.M(), 0.0f);
 }
 
 TEST(Lc5GraphTest, BackupCommitsNodeDespiteEdgeFailure) {
@@ -476,14 +498,14 @@ TEST(Lc5GraphTest, BackupCommitsNodeDespiteEdgeFailure) {
   auto node = graph.SnapshotNode(key);
   ASSERT_TRUE(node);
   EXPECT_EQ(node->value.visits, 3u);
-  EXPECT_DOUBLE_EQ(node->value.q_sum, 0.5);
-  EXPECT_DOUBLE_EQ(node->value.d_sum, 1.0);
-  EXPECT_DOUBLE_EQ(node->value.m_sum, 6.0);
+  EXPECT_FLOAT_EQ(node->value.Q(), 0.5f / 3);
+  EXPECT_FLOAT_EQ(node->value.D(), 1.0f / 3);
+  EXPECT_FLOAT_EQ(node->value.M(), 2.0f);
   EXPECT_EQ(node->edges[0].value.visits, 0u);
   EXPECT_EQ(node->edges[0].in_flight, 0u);
-  EXPECT_DOUBLE_EQ(node->edges[0].value.q_sum, 0.0);
-  EXPECT_DOUBLE_EQ(node->edges[0].value.d_sum, 0.0);
-  EXPECT_DOUBLE_EQ(node->edges[0].value.m_sum, 0.0);
+  EXPECT_FLOAT_EQ(node->edges[0].value.Q(), 0.0f);
+  EXPECT_FLOAT_EQ(node->edges[0].value.D(), 0.0f);
+  EXPECT_FLOAT_EQ(node->edges[0].value.M(), 0.0f);
 }
 
 TEST(Lc5GraphTest, ReservationsAreExactAndCancellationDoesNotCommit) {

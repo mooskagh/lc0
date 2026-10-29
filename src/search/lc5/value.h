@@ -39,25 +39,22 @@ struct SearchValue {
   SearchValue Parent() const { return {-q, d, m + 1.0f}; }
 };
 
+// Running means, as in classic: each Add moves the mean towards the sample.
 struct ValueStats {
-  uint64_t visits = 0;
-  double q_sum = 0.0;
-  double d_sum = 0.0;
-  double m_sum = 0.0;
+  uint32_t visits = 0;
+  float q = 0.0f;
+  float d = 0.0f;
+  float m = 0.0f;
 
-  float Q() const { return Mean(q_sum); }
-  float D() const { return Mean(d_sum); }
-  float M() const { return Mean(m_sum); }
+  float Q() const { return q; }
+  float D() const { return d; }
+  float M() const { return m; }
   void Add(const SearchValue& value) {
     ++visits;
-    q_sum += value.q;
-    d_sum += value.d;
-    m_sum += value.m;
-  }
-
- private:
-  float Mean(double sum) const {
-    return visits ? static_cast<float>(sum / visits) : 0.0f;
+    const float n = static_cast<float>(visits);
+    q += (value.q - q) / n;
+    d += (value.d - d) / n;
+    m += (value.m - m) / n;
   }
 };
 
