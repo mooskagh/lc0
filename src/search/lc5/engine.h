@@ -33,6 +33,7 @@
 
 #include "chess/gamestate.h"
 #include "search/lc5/graph.h"
+#include "search/lc5/policy_engine.h"
 #include "search/lc5/search.h"
 #include "search/search.h"
 
@@ -60,6 +61,7 @@ class Lc5Engine final : public SearchBase {
   const OptionsDict* options_;
   // Retained without eviction for the whole game, so no NodeStore is needed.
   GameGraph graph_;
+  PolicyEngine visit_engine_{&graph_};
   std::unique_ptr<SearchRun> run_;
   std::optional<Position> game_start_;
   std::optional<PositionHistory> root_history_;

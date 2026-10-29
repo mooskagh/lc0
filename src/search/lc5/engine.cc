@@ -91,7 +91,7 @@ void Lc5Engine::StartSearch(const GoParams& params) {
   const auto start = clock_start_.value_or(std::chrono::steady_clock::now());
   clock_start_.reset();
   run_ = std::make_unique<SearchRun>(
-      &graph_, /*store=*/nullptr, backend_, uci_responder_,
+      &visit_engine_, /*store=*/nullptr, backend_, uci_responder_,
       settings.Resolve(backend_->GetAttributes()), settings.time_management(),
       std::move(root), params, start, std::exchange(saved_time_ms_, 0));
   run_->Start();

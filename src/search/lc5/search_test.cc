@@ -404,12 +404,13 @@ TEST(Lc5SearchTest, ExpiredTimeBudgetStopsAndDrains) {
        {GoParams{.movetime = 0}, GoParams{.movetime = -1},
         GoParams{.wtime = 0, .btime = 0}, GoParams{.movetime = 60000}}) {
     GameGraph graph;
+    PolicyEngine engine(&graph);
     RecordingStore store;
     ControlledBackend backend;
     RecordingResponder responder;
     const auto root = Origin();
     // A synthetic old origin also verifies that preparation time is charged.
-    SearchRun run(&graph, &store, &backend, &responder, TestSettings(),
+    SearchRun run(&engine, &store, &backend, &responder, TestSettings(),
                   TestTimeManagement(), root, params,
                   std::chrono::steady_clock::now() - std::chrono::minutes(2));
     ASSERT_TRUE(run.Admit(root));
@@ -426,11 +427,12 @@ TEST(Lc5SearchTest, ExpiredTimeBudgetStopsAndDrains) {
 
 TEST(Lc5SearchTest, AbortSuppressesOutputWithExpiredTimeBudget) {
   GameGraph graph;
+  PolicyEngine engine(&graph);
   RecordingStore store;
   ControlledBackend backend;
   RecordingResponder responder;
   const auto root = Origin();
-  SearchRun run(&graph, &store, &backend, &responder, TestSettings(),
+  SearchRun run(&engine, &store, &backend, &responder, TestSettings(),
                 TestTimeManagement(), root, GoParams{.movetime = 0},
                 std::chrono::steady_clock::now() - std::chrono::minutes(2));
   ASSERT_TRUE(run.Admit(root));
@@ -459,10 +461,11 @@ TEST(Lc5SearchTest, ExplicitMovetimeAndInfiniteOverrideExhaustedClock) {
       SCOPED_TRACE(params.infinite);
       SCOPED_TRACE(params.movetime.value_or(-1));
       GameGraph graph;
+      PolicyEngine engine(&graph);
       ControlledBackend backend;
       RecordingResponder responder;
       const auto root = Origin(fen);
-      SearchRun run(&graph, nullptr, &backend, &responder, TestSettings(),
+      SearchRun run(&engine, nullptr, &backend, &responder, TestSettings(),
                     TestTimeManagement(), root, params,
                     std::chrono::steady_clock::now());
       run.Start();
@@ -479,11 +482,12 @@ TEST(Lc5SearchTest, ExplicitMovetimeAndInfiniteOverrideExhaustedClock) {
 
 TEST(Lc5SearchTest, PonderIgnoresZeroNodeAndTimeLimits) {
   GameGraph graph;
+  PolicyEngine engine(&graph);
   ControlledBackend backend(ControlledBackend::Cache::kNone, true);
   RecordingResponder responder;
   const auto root = Origin();
   SearchRun run(
-      &graph, nullptr, &backend, &responder, TestSettings(1, 1),
+      &engine, nullptr, &backend, &responder, TestSettings(1, 1),
       TestTimeManagement(), root,
       GoParams{
           .wtime = 0, .btime = 0, .nodes = 0, .movetime = 0, .ponder = true},
@@ -513,10 +517,11 @@ TEST(Lc5SearchTest, ExactNodeBudgetWithMoreWorkersThanCapacity) {
   for (const int64_t nodes : {0, 1, 7}) {
     SCOPED_TRACE(nodes);
     GameGraph graph;
+    PolicyEngine engine(&graph);
     ControlledBackend backend;
     RecordingResponder responder;
     auto root = Origin();
-    SearchRun run(&graph, nullptr, &backend, &responder, TestSettings(8, 2),
+    SearchRun run(&engine, nullptr, &backend, &responder, TestSettings(8, 2),
                   TestTimeManagement(), root, GoParams{.nodes = nodes},
                   std::chrono::steady_clock::now());
     run.Start();
@@ -559,10 +564,11 @@ TEST(Lc5SearchTest, ReportsCentipawnsAndWdlFromRootSideToMove) {
           Case{0.0f, 0, 250, 250}}) {
       SCOPED_TRACE(test.q);
       GameGraph graph;
+      PolicyEngine engine(&graph);
       ControlledBackend backend;
       backend.q = test.q;
       RecordingResponder responder;
-      SearchRun run(&graph, nullptr, &backend, &responder, TestSettings(),
+      SearchRun run(&engine, nullptr, &backend, &responder, TestSettings(),
                     TestTimeManagement(), Origin(fen), GoParams{.nodes = 1},
                     std::chrono::steady_clock::now());
       run.Start();
@@ -582,10 +588,11 @@ TEST(Lc5SearchTest, ReportsCentipawnsAndWdlFromRootSideToMove) {
 
 TEST(Lc5SearchTest, OwnerBacksUpLeafWhileWaitersResumeSelection) {
   GameGraph graph;
+  PolicyEngine engine(&graph);
   ControlledBackend backend;
   RecordingResponder responder;
   auto root = Origin();
-  SearchRun run(&graph, nullptr, &backend, &responder, TestSettings(),
+  SearchRun run(&engine, nullptr, &backend, &responder, TestSettings(),
                 TestTimeManagement(), root, GoParams{.nodes = 4},
                 std::chrono::steady_clock::now());
   // One worker consumes all four admissions before submitting the root job.
@@ -625,10 +632,11 @@ TEST(Lc5SearchTest, TerminalOwnerAndWaitersNeverEvaluate) {
                                 TerminalKind::kStalemate, 0.0f, 1.0f}}) {
     SCOPED_TRACE(test.fen);
     GameGraph graph;
+    PolicyEngine engine(&graph);
     ControlledBackend backend;
     RecordingResponder responder;
     const auto root = Origin(test.fen);
-    SearchRun run(&graph, nullptr, &backend, &responder, TestSettings(),
+    SearchRun run(&engine, nullptr, &backend, &responder, TestSettings(),
                   TestTimeManagement(), root, GoParams{.nodes = 4},
                   std::chrono::steady_clock::now());
     for (int i = 0; i < 4; ++i) ASSERT_TRUE(run.Admit(root));
@@ -664,10 +672,11 @@ TEST(Lc5SearchTest, ImmediateAndMixedResultsKeepJobStorageAlive) {
                            ControlledBackend::Cache::kAlternating}) {
     SCOPED_TRACE(static_cast<int>(cache));
     GameGraph graph;
+    PolicyEngine engine(&graph);
     ControlledBackend backend(cache);
     RecordingResponder responder;
     const auto root = Origin();
-    SearchRun run(&graph, nullptr, &backend, &responder, TestSettings(),
+    SearchRun run(&engine, nullptr, &backend, &responder, TestSettings(),
                   TestTimeManagement(), root, GoParams{.nodes = 4},
                   std::chrono::steady_clock::now());
     std::vector<VisitOrigin> origins;
@@ -706,6 +715,7 @@ TEST(Lc5SearchTest, BlockedBackendStopAndAbortDrainReservationsAndPersistence) {
   for (const bool abort : {false, true}) {
     SCOPED_TRACE(abort);
     GameGraph graph;
+    PolicyEngine engine(&graph);
     RecordingStore store;
     ControlledBackend backend(ControlledBackend::Cache::kNone, true);
     RecordingResponder responder;
@@ -716,7 +726,7 @@ TEST(Lc5SearchTest, BlockedBackendStopAndAbortDrainReservationsAndPersistence) {
     auto child = root;
     child.history.Append(moves[0]);
     child.key = MakeNodeKey(child.history, 7);
-    SearchRun run(&graph, &store, &backend, &responder, TestSettings(),
+    SearchRun run(&engine, &store, &backend, &responder, TestSettings(),
                   TestTimeManagement(), root, GoParams{.nodes = 4},
                   std::chrono::steady_clock::now());
     for (int i = 0; i < 4; ++i) ASSERT_TRUE(run.Admit(root));
@@ -779,8 +789,9 @@ TEST(Lc5SearchTest, StoreMissPersistsAndFreshGraphRehydratesWithoutEvaluation) {
   for (const bool hit : {false, true}) {
     SCOPED_TRACE(hit);
     GameGraph graph;
+    PolicyEngine engine(&graph);
     RecordingResponder responder;
-    SearchRun run(&graph, &store, &backend, &responder, TestSettings(),
+    SearchRun run(&engine, &store, &backend, &responder, TestSettings(),
                   TestTimeManagement(), root, GoParams{.nodes = 1},
                   std::chrono::steady_clock::now());
     run.Start();
@@ -812,12 +823,13 @@ TEST(Lc5SearchTest, RootBootstrapFlushesDependencyWithoutWaitingForTimer) {
   for (const int delay : {0, 60000}) {
     SCOPED_TRACE(delay);
     GameGraph graph;
+    PolicyEngine engine(&graph);
     ControlledBackend backend(ControlledBackend::Cache::kNone, true);
     RecordingResponder responder;
     const auto root = Origin();
     auto settings = TestSettings(4);
     settings.max_batch_delay_ms = delay;
-    SearchRun run(&graph, nullptr, &backend, &responder, settings,
+    SearchRun run(&engine, nullptr, &backend, &responder, settings,
                   TestTimeManagement(), root, GoParams{.nodes = 1},
                   std::chrono::steady_clock::now());
     run.Start();
@@ -846,6 +858,7 @@ TEST(Lc5SearchTest, CollectionFlushesWhileAnotherWorkerIsBlockedInStore) {
   for (const int delay : {0, 1}) {
     SCOPED_TRACE(delay);
     GameGraph graph;
+    PolicyEngine engine(&graph);
     // First load misses; the other worker's load remains executing. With a
     // positive delay it prevents dependency-starvation detection, so the
     // collector must actually time out. Zero must flush without that timer.
@@ -859,7 +872,7 @@ TEST(Lc5SearchTest, CollectionFlushesWhileAnotherWorkerIsBlockedInStore) {
     other.key = MakeNodeKey(other.history, 7);
     auto settings = TestSettings(2, 2);
     settings.max_batch_delay_ms = delay;
-    SearchRun run(&graph, &store, &backend, &responder, settings,
+    SearchRun run(&engine, &store, &backend, &responder, settings,
                   TestTimeManagement(), root, GoParams{.nodes = 2},
                   std::chrono::steady_clock::now());
     ASSERT_TRUE(run.Admit(root));
@@ -899,6 +912,7 @@ TEST(Lc5SearchTest, CollectionFlushesWhileAnotherWorkerIsBlockedInStore) {
 
 TEST(Lc5SearchTest, PositiveDelayCollectsAnotherWorkersStoreMissIntoSameBatch) {
   GameGraph graph;
+  PolicyEngine engine(&graph);
   BlockingStore store(2, false);
   ControlledBackend backend(ControlledBackend::Cache::kNone, true);
   RecordingResponder responder;
@@ -909,7 +923,7 @@ TEST(Lc5SearchTest, PositiveDelayCollectsAnotherWorkersStoreMissIntoSameBatch) {
   auto settings = TestSettings(2, 2);
   settings.minibatch_size = 2;
   settings.max_batch_delay_ms = 60000;
-  SearchRun run(&graph, &store, &backend, &responder, settings,
+  SearchRun run(&engine, &store, &backend, &responder, settings,
                 TestTimeManagement(), root, GoParams{.nodes = 2},
                 std::chrono::steady_clock::now());
   ASSERT_TRUE(run.Admit(root));
@@ -952,6 +966,7 @@ TEST(Lc5SearchTest, MultiworkerMixedCacheResultsRespectBatchAndItemCredits) {
     for (const int delay : {0, 10}) {
       SCOPED_TRACE(delay);
       GameGraph graph;
+      PolicyEngine engine(&graph);
       ControlledBackend backend(ControlledBackend::Cache::kAlternating, true,
                                 test.batch_size, test.evaluators);
       RecordingResponder responder;
@@ -960,7 +975,7 @@ TEST(Lc5SearchTest, MultiworkerMixedCacheResultsRespectBatchAndItemCredits) {
       settings.eval_threads = test.evaluators;
       settings.minibatch_size = test.batch_size;
       settings.max_batch_delay_ms = delay;
-      SearchRun run(&graph, nullptr, &backend, &responder, settings,
+      SearchRun run(&engine, nullptr, &backend, &responder, settings,
                     TestTimeManagement(), root,
                     GoParams{.nodes = test.capacity},
                     std::chrono::steady_clock::now());
@@ -1041,6 +1056,7 @@ TEST(Lc5SearchTest, BlockedStoreLoadsAndPersistenceDrainAfterStopOrAbort) {
       SCOPED_TRACE(hit);
       SCOPED_TRACE(abort);
       GameGraph graph;
+      PolicyEngine engine(&graph);
       BlockingStore store;
       ControlledBackend backend(ControlledBackend::Cache::kAll);
       RecordingResponder responder;
@@ -1061,7 +1077,7 @@ TEST(Lc5SearchTest, BlockedStoreLoadsAndPersistenceDrainAfterStopOrAbort) {
                              .priors = std::vector<float>(
                                  legal.size(), 1.0f / legal.size())});
       }
-      SearchRun run(&graph, &store, &backend, &responder, TestSettings(),
+      SearchRun run(&engine, &store, &backend, &responder, TestSettings(),
                     TestTimeManagement(), root, GoParams{.nodes = 4},
                     std::chrono::steady_clock::now());
       for (int i = 0; i < 4; ++i) ASSERT_TRUE(run.Admit(root));
@@ -1133,13 +1149,14 @@ TEST(Lc5SearchTest, QueuedBacklogCannotComputeAgainAfterStop) {
   for (const int evaluators : {1, 3}) {
     SCOPED_TRACE(evaluators);
     GameGraph graph;
+    PolicyEngine engine(&graph);
     ControlledBackend backend(ControlledBackend::Cache::kNone, true, 4,
                               evaluators);
     RecordingResponder responder;
     const auto root = Origin();
     auto settings = TestSettings(4, 20);
     settings.eval_threads = evaluators;
-    SearchRun run(&graph, nullptr, &backend, &responder, settings,
+    SearchRun run(&engine, nullptr, &backend, &responder, settings,
                   TestTimeManagement(), root, GoParams{.nodes = 20},
                   std::chrono::steady_clock::now());
     AdmitChildren(run, root, 20);
@@ -1170,6 +1187,7 @@ TEST(Lc5SearchTest, QueuedBacklogCannotComputeAgainAfterStop) {
 
 TEST(Lc5SearchTest, AuthorizedEvaluationsBackUpToRootAfterStop) {
   GameGraph graph;
+  PolicyEngine engine(&graph);
   ControlledBackend backend(ControlledBackend::Cache::kNone, true);
   RecordingResponder responder;
   const auto root = Origin();
@@ -1180,7 +1198,7 @@ TEST(Lc5SearchTest, AuthorizedEvaluationsBackUpToRootAfterStop) {
                        {.moves = {legal.begin(), legal.end()},
                         .priors = std::vector<float>(legal.size(),
                                                      1.0f / legal.size())});
-  SearchRun run(&graph, nullptr, &backend, &responder, TestSettings(4, 20),
+  SearchRun run(&engine, nullptr, &backend, &responder, TestSettings(4, 20),
                 TestTimeManagement(), root, GoParams{.nodes = 20},
                 std::chrono::steady_clock::now());
   for (int i = 0; i < 20; ++i) ASSERT_TRUE(run.Admit(root));
@@ -1211,13 +1229,14 @@ TEST(Lc5SearchTest, AuthorizedEvaluationsBackUpToRootAfterStop) {
 
 TEST(Lc5SearchTest, StopDuringAddInputKeepsOnlyImmediateResults) {
   GameGraph graph;
+  PolicyEngine engine(&graph);
   ControlledBackend backend(ControlledBackend::Cache::kAlternating, true, 8);
   backend.blocked_input = 2;
   RecordingResponder responder;
   const auto root = Origin();
   auto settings = TestSettings(1, 4);
   settings.minibatch_size = 8;
-  SearchRun run(&graph, nullptr, &backend, &responder, settings,
+  SearchRun run(&engine, nullptr, &backend, &responder, settings,
                 TestTimeManagement(), root, GoParams{.nodes = 4},
                 std::chrono::steady_clock::now());
   const auto origins = AdmitChildren(run, root, 4);
@@ -1251,12 +1270,13 @@ TEST(Lc5SearchTest, StopDuringAddInputKeepsOnlyImmediateResults) {
 
 TEST(Lc5SearchTest, RetainedNonfittingJobIsCancelledAfterAuthorizedBatch) {
   GameGraph graph;
+  PolicyEngine engine(&graph);
   ControlledBackend backend(ControlledBackend::Cache::kNone, true, 5);
   RecordingResponder responder;
   const auto root = Origin();
   auto settings = TestSettings(1, 6);
   settings.minibatch_size = 5;
-  SearchRun run(&graph, nullptr, &backend, &responder, settings,
+  SearchRun run(&engine, nullptr, &backend, &responder, settings,
                 TestTimeManagement(), root, GoParams{.nodes = 6},
                 std::chrono::steady_clock::now());
   const auto origins = AdmitChildren(run, root, 6);
@@ -1281,10 +1301,11 @@ TEST(Lc5SearchTest, RetainedNonfittingJobIsCancelledAfterAuthorizedBatch) {
 
 TEST(Lc5SearchTest, AbortOverridesRepeatedStopBeforeCommitment) {
   GameGraph graph;
+  PolicyEngine engine(&graph);
   ControlledBackend backend;
   RecordingResponder responder;
   const auto root = Origin();
-  SearchRun run(&graph, nullptr, &backend, &responder, TestSettings(),
+  SearchRun run(&engine, nullptr, &backend, &responder, TestSettings(),
                 TestTimeManagement(), root, GoParams{.nodes = 4},
                 std::chrono::steady_clock::now());
   AdmitChildren(run, root, 4);
@@ -1305,10 +1326,11 @@ TEST(Lc5SearchTest, AbortOverridesRepeatedStopBeforeCommitment) {
 
 TEST(Lc5SearchTest, RespondsBeforeBlockedPersistenceDrains) {
   GameGraph graph;
+  PolicyEngine engine(&graph);
   BlockingStore store(0);
   ControlledBackend backend;
   RecordingResponder responder;
-  SearchRun run(&graph, &store, &backend, &responder, TestSettings(),
+  SearchRun run(&engine, &store, &backend, &responder, TestSettings(),
                 TestTimeManagement(), Origin(), GoParams{.nodes = 1},
                 std::chrono::steady_clock::now());
   run.Start();
@@ -1326,10 +1348,11 @@ TEST(Lc5SearchTest, RespondsBeforeBlockedPersistenceDrains) {
 TEST(Lc5SearchTest,
      FreshRootStoppedBeforeStartUsesLegalFallbackWithoutEvaluation) {
   GameGraph graph;
+  PolicyEngine engine(&graph);
   ControlledBackend backend;
   RecordingResponder responder;
   const auto root = Origin();
-  SearchRun run(&graph, nullptr, &backend, &responder, TestSettings(),
+  SearchRun run(&engine, nullptr, &backend, &responder, TestSettings(),
                 TestTimeManagement(), root, GoParams{},
                 std::chrono::steady_clock::now());
   ASSERT_TRUE(run.Admit(root));

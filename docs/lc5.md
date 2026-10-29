@@ -27,7 +27,7 @@ defaults match classic; what differs is how the work is organized. Code is in
 
 ## Following one visit
 
-Code: `search_visits.cc`, `search_materialization.cc`.
+Code: `search_visits.cc`, `policy_engine.cc`, `search_materialization.cc`.
 
 1. **Admission.** A worker lets a new visit in at the root, if limits allow
    (see "How many visits are in flight"). Under `go nodes N`, at most N
@@ -153,7 +153,8 @@ Reading the `info` line:
 |---|---|
 | `engine.cc` | UCI glue: keeps the graph, starts a `SearchRun` per `go`, carries saved time. |
 | `search.cc` | `SearchRun`: setup, controller, early stop, `info`/`bestmove`. |
-| `search_visits.cc` | Admission, worker loop, selection, two-fold check, backup. |
+| `search_visits.cc` | Admission, worker loop, driving each visit through the engine. |
+| `visit_engine.h`, `policy_engine.cc` | `VisitEngine` interface: descent, backup, cancel, report. `PolicyEngine` implements it on `GameGraph`: selection, two-fold check, backup, PV. |
 | `search_materialization.cc` | Creating nodes, terminal detection, jobs, evaluator batching. |
 | `graph.h/.cc` | `GameGraph`: sharded node map, PUCT selection, per-node updates. |
 | `visit.h` | Visit state and the fixed pool of visit slots. |

@@ -44,16 +44,17 @@
 #include "chess/callbacks.h"
 #include "chess/uciloop.h"
 #include "neural/backend.h"
-#include "search/lc5/graph.h"
 #include "search/lc5/metrics.h"
 #include "search/lc5/node_store.h"
 #include "search/lc5/time_manager.h"
 #include "search/lc5/visit.h"
+#include "search/lc5/visit_engine.h"
 #include "search/lc5/work_queue.h"
 
 namespace lczero::lc5 {
 
-// One `go` command's search over a shared GameGraph.
+// One `go` command's search, reaching node and edge state only through a
+// VisitEngine.
 //
 // Visit workers own their visits from admission to backup or cancellation.
 // A visit that reaches an unexpanded node suspends on a materialization
@@ -63,7 +64,7 @@ namespace lczero::lc5 {
 // limits, reports info and coordinates shutdown.
 class SearchRun {
  public:
-  SearchRun(GameGraph* graph, NodeStore* store, Backend* backend,
+  SearchRun(VisitEngine* engine, NodeStore* store, Backend* backend,
             UciResponder* responder, Settings::Resolved settings,
             TimeManager::Config time_management, VisitOrigin root,
             GoParams go_params,
@@ -212,7 +213,6 @@ class SearchRun {
   void WakeAllWorkers();
   void NotifyController();
   ThinkingInfo BuildInfo(bool final) const;
-  std::vector<Move> BuildPv(std::optional<NodeState> root) const;
   Move FallbackMove() const;
 
   // Admission (search_visits.cc).
@@ -262,7 +262,7 @@ class SearchRun {
   void RunBatch(Batch batch);
   bool EvaluationStarved() const;
 
-  GameGraph* const graph_;
+  VisitEngine* const engine_;
   NodeStore* const store_;
   Backend* const backend_;
   UciResponder* const responder_;
@@ -273,6 +273,7 @@ class SearchRun {
   const TimeManager time_manager_;
   VisitPool visits_;
   Metrics metrics_;
+  const VisitContext context_{settings_, metrics_};
 
   std::vector<std::unique_ptr<Worker>> workers_;
   WorkQueue<std::unique_ptr<Job>> store_jobs_;

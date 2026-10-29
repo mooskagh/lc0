@@ -102,7 +102,7 @@ bool SearchRun::SuspendForMaterialization(Worker& worker,
     owner = existing == ticket_by_key_.end();
     ticket_id = owner ? next_ticket_++ : existing->second;
     const auto node =
-        graph_->FindOrCreateMaterializing(visit.current_key, ticket_id);
+        engine_->FindOrCreateMaterializing(visit.current_key, ticket_id);
     if (node.created) metrics_.graph_nodes_created.fetch_add(1);
     if (node.lifecycle == NodeLifecycle::kExpanded) return false;
     assert(node.ticket == ticket_id);
@@ -161,12 +161,12 @@ void SearchRun::CompleteMaterialization(Worker& worker,
     const auto it = tickets_.find(ticket_id);
     if (it == tickets_.end()) return;
     assert(it->second.owner.worker == worker.index);
-    installed = graph_->InstallPayload(it->second.key, ticket_id, payload);
+    installed = engine_->Install(it->second.key, ticket_id, payload);
     ticket = std::move(it->second);
     tickets_.erase(it);
     ticket_by_key_.erase(ticket.key);
   }
-  RaiseHighWater(metrics_.graph_size_high_water, graph_->Size());
+  RaiseHighWater(metrics_.graph_size_high_water, engine_->GraphSize());
   if (!installed.accepted) metrics_.publications_rejected.fetch_add(1);
   // The install already counted the leaf value on the node, so the owner
   // backs it up only through the steps above. Waiters select below the node
@@ -201,7 +201,7 @@ void SearchRun::CancelMaterialization(Worker& worker,
     std::lock_guard lock(tickets_mutex_);
     const auto it = tickets_.find(ticket_id);
     if (it == tickets_.end()) return;
-    graph_->CancelMaterialization(it->second.key, ticket_id);
+    engine_->CancelMaterialization(it->second.key, ticket_id);
     ticket = std::move(it->second);
     tickets_.erase(it);
     ticket_by_key_.erase(ticket.key);

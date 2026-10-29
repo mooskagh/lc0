@@ -176,9 +176,8 @@ void SearchRun::Resume(Worker& worker, const Continuation& event) {
         event.kind == Continuation::Kind::kBackupAbove) {
       visit.leaf_counted = event.kind == Continuation::Kind::kBackupAbove;
       visit.state = VisitState::kReadyBackup;
-    } else if (settings_.restart_waiters) {
-      // Like a collision: select again from the root with the new value
-      // known, rather than committing this visit to the subtree.
+    } else if (engine_->OnResume(visit, context_) ==
+               VisitEngine::ResumeAction::kRestart) {
       Restart(*slot);
     } else {
       visit.state = VisitState::kReadySelect;
@@ -307,104 +306,31 @@ void SearchRun::AdvanceVisit(Worker& worker, VisitId id) {
       Cancel(worker, *slot);
       return;
     }
-    if (visit.path.empty() || visit.path.back().key != visit.current_key) {
-      visit.path.push_back({.key = visit.current_key});
-    }
-    PathStep& step = visit.path.back();
-    metrics_.selection_node_steps.fetch_add(1);
-    RaiseHighWater(metrics_.max_selected_depth, visit.path.size());
-    const SelectResult selected =
-        graph_->SelectAndReserve(visit.current_key, settings_);
-    switch (selected.status) {
-      case SelectStatus::kMissing:
-      case SelectStatus::kMaterializing:
-        if (SuspendForMaterialization(worker, *slot)) return;
-        continue;
-      case SelectStatus::kTerminal:
-        step.generation = selected.generation;
-        visit.result = TerminalValue(selected.terminal);
-        metrics_.terminal_visits.fetch_add(1);
-        Backup(worker, *slot);
-        return;
-      case SelectStatus::kSelected:
-        step.generation = selected.generation;
-        break;
-    }
-    step.selected_move = selected.move;
-    visit.history.Append(selected.move);
-    visit.current_key =
-        MakeNodeKey(visit.history, settings_.history_key_length);
-    // A two-fold repetition whose cycle lies within this search is scored as
-    // a draw. Whether that holds depends on the root, so the graph node is
-    // left untouched and the leaf is backed up from a step that is not in the
-    // graph (generation 0).
-    const Position& position = visit.history.Last();
-    const int ply = static_cast<int>(visit.path.size());
-    if (position.GetRepetitions() == 1 && ply >= 4 &&
-        ply >= position.GetPliesSincePrevRepetition()) {
-      visit.path.push_back({.key = visit.current_key});
-      visit.result = TerminalValue(TerminalKind::kRepetition);
-      metrics_.terminal_visits.fetch_add(1);
+    if (engine_->Descend(visit, context_) ==
+        VisitEngine::DescendResult::kBackup) {
       Backup(worker, *slot);
       return;
     }
+    if (SuspendForMaterialization(worker, *slot)) return;
   }
 }
 
 void SearchRun::Backup(Worker& worker, VisitPool::Slot& slot) {
   Visit& visit = slot.visit;
   visit.state = VisitState::kBackingUp;
-  SearchValue value = visit.result;
-  for (size_t i = visit.path.size(); i-- > 0;) {
-    const PathStep& step = visit.path[i];
-    const bool leaf = i + 1 == visit.path.size();
-    // An in-search repetition leaf has no graph node, and a counted leaf took
-    // its value at install; the parent receives the plain conversion.
-    if (step.generation == 0 || (leaf && visit.leaf_counted)) {
-      value = value.Parent();
-      continue;
-    }
-    // The leaf commits only its node value; ancestors complete their edges.
-    const auto move =
-        i + 1 < visit.path.size() ? step.selected_move : std::nullopt;
-    const BackupResult result =
-        graph_->BackupNode(step.key, step.generation, value, move);
-    metrics_.backup_node_steps.fetch_add(1);
-    if (result.node != UpdateResult::kApplied) {
-      metrics_.stale_generation_node_updates.fetch_add(1);
-    }
-    if (result.edge == UpdateResult::kUnderflow) {
-      metrics_.invariant_underflow_prevented.fetch_add(1);
-    } else if (result.edge != UpdateResult::kApplied) {
-      metrics_.stale_generation_edge_updates.fetch_add(1);
-    }
-    // A stale or missing node falls back to the plain conversion.
-    value = result.to_parent ? *result.to_parent : value.Parent();
-  }
+  engine_->Backup(visit, context_);
   RaiseHighWater(metrics_.max_depth, visit.path.size());
   FinishVisit(worker, slot, true);
 }
 
 void SearchRun::Cancel(Worker& worker, VisitPool::Slot& slot) {
-  for (const PathStep& step : slot.visit.path) {
-    if (step.selected_move &&
-        graph_->CancelEdge(step.key, step.generation, *step.selected_move) ==
-            UpdateResult::kUnderflow) {
-      metrics_.invariant_underflow_prevented.fetch_add(1);
-    }
-  }
+  engine_->Cancel(slot.visit, context_);
   FinishVisit(worker, slot, false);
 }
 
 void SearchRun::Restart(VisitPool::Slot& slot) {
   Visit& visit = slot.visit;
-  for (const PathStep& step : visit.path) {
-    if (step.selected_move &&
-        graph_->CancelEdge(step.key, step.generation, *step.selected_move) ==
-            UpdateResult::kUnderflow) {
-      metrics_.invariant_underflow_prevented.fetch_add(1);
-    }
-  }
+  engine_->Cancel(visit, context_);
   visit.history = visit.origin.history;
   visit.current_key = visit.origin.key;
   visit.path = visit.origin.backup_prefix;
