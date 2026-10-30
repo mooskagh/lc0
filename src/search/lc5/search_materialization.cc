@@ -35,6 +35,7 @@
 #include <utility>
 #include <vector>
 
+#include "search/lc5/prior.h"
 #include "search/lc5/search.h"
 
 namespace lczero::lc5 {
@@ -63,12 +64,14 @@ ExpansionPayload DetectTerminal(const PositionHistory& history) {
   return payload;
 }
 
-// Orders edges by descending prior, ties by move encoding.
+// Rounds priors to the precision the graph stores them in, then orders edges
+// by descending prior, ties by move encoding. Sorting the rounded values keeps
+// the order the graph relies on even when rounding makes two priors equal.
 void SortByPrior(ExpansionPayload& payload) {
   std::vector<std::pair<float, Move>> edges;
   edges.reserve(payload.moves.size());
   for (size_t i = 0; i < payload.moves.size(); ++i) {
-    edges.emplace_back(payload.priors[i], payload.moves[i]);
+    edges.emplace_back(PackedPrior(payload.priors[i]), payload.moves[i]);
   }
   std::ranges::sort(edges, [](const auto& a, const auto& b) {
     if (a.first != b.first) return a.first > b.first;

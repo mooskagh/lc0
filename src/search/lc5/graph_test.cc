@@ -56,6 +56,20 @@ PuctAveraging::Params TestParams() {
           .restart_waiters = false};
 }
 
+TEST(Lc5GraphTest, PackedPriorRoundsMonotonically) {
+  for (const float exact : {0.0f, 1.0f, 0.5f, 0.25f}) {
+    EXPECT_EQ(float(PackedPrior(exact)), exact);
+  }
+  EXPECT_NEAR(float(PackedPrior(1e-6f)), 1e-6f, 6e-8f);
+  EXPECT_NEAR(float(PackedPrior(0.3f)), 0.3f, 0.3f / 1024);
+  float previous = 0.0f;
+  for (int i = 0; i <= 100000; ++i) {
+    const float packed = PackedPrior(i / 100000.0f);
+    EXPECT_GE(packed, previous);
+    previous = packed;
+  }
+}
+
 TEST(Lc5GraphTest, CancellationOnlyErasesMatchingPlaceholder) {
   Graph graph;
   const NodeKey key{123};

@@ -42,6 +42,7 @@
 
 #include "search/lc5/key.h"
 #include "search/lc5/node_store.h"
+#include "search/lc5/prior.h"
 #include "search/lc5/settings.h"
 
 namespace lczero::lc5 {
@@ -53,9 +54,9 @@ enum class NodeLifecycle : uint8_t { kMaterializing, kExpanded };
 // A legal move and its prior; every legal move of an expanded node has one.
 struct LegalEdge {
   Move move;
-  float prior = 0.0f;
+  PackedPrior prior;
 };
-static_assert(sizeof(LegalEdge) == 8);
+static_assert(sizeof(LegalEdge) == 4);
 
 // The statistics of an edge that has been reserved at least once. The
 // machinery owns the reservations; `stats` belongs to the policy P.

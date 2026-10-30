@@ -724,7 +724,7 @@ TEST(Lc5SearchTest, ImmediateAndMixedResultsKeepJobStorageAlive) {
       EXPECT_FLOAT_EQ(node->stats.D(), 0.5f);
       EXPECT_FLOAT_EQ(node->stats.M(), 3.0f);
       for (const auto& edge : node->edges)
-        EXPECT_FLOAT_EQ(edge.prior, 1.0f / node->edges.size());
+        EXPECT_EQ(edge.prior, PackedPrior(1.0f / node->edges.size()));
     }
   }
 }
@@ -1062,7 +1062,7 @@ TEST(Lc5SearchTest, MultiworkerMixedCacheResultsRespectBatchAndItemCredits) {
         EXPECT_FLOAT_EQ(node->stats.D(), 0.5f);
         EXPECT_FLOAT_EQ(node->stats.M(), 3.0f);
         for (const auto& edge : node->edges)
-          EXPECT_FLOAT_EQ(edge.prior, 1.0f / node->edges.size());
+          EXPECT_EQ(edge.prior, PackedPrior(1.0f / node->edges.size()));
       }
     }
   }
@@ -1281,7 +1281,7 @@ TEST(Lc5SearchTest, StopDuringAddInputKeepsOnlyImmediateResults) {
   EXPECT_EQ(run.metrics().visits_cancelled.load(), 3u);
   EXPECT_FLOAT_EQ(hit->stats.Q(), backend.q);
   for (const auto& edge : hit->edges)
-    EXPECT_FLOAT_EQ(edge.prior, 1.0f / hit->edges.size());
+    EXPECT_EQ(edge.prior, PackedPrior(1.0f / hit->edges.size()));
   for (size_t i = 1; i < origins.size(); ++i)
     EXPECT_FALSE(graph.SnapshotNode(origins[i].key));
   ExpectDrained(run, graph);
