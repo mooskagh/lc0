@@ -59,10 +59,18 @@ struct RootStats {
 // and edge statistics, and owns the graph. SearchRun owns visits, tickets,
 // batching and threads, and calls only this. Implementations must be
 // thread-safe; each call locks at most one graph shard at a time.
+// What a policy asks for when a waiting visit's node finishes materializing:
+// continue selecting below that node, reselect at its parent with the node's
+// value known (possibly switching edges), or restart from the root.
+enum class WaiterResume { kSelect, kReselect, kRestart };
+
 class VisitEngine {
  public:
   enum class DescendResult { kMaterialize, kBackup };
-  enum class ResumeAction { kSelect, kRestart };
+  // kSelect: continue selecting from visit.current_key; kRestart: restart
+  // from the root; kBackup: visit.result holds a value to back up (an
+  // in-search repetition reached by reselection).
+  enum class ResumeAction { kSelect, kRestart, kBackup };
 
   virtual ~VisitEngine() = default;
 
@@ -82,9 +90,10 @@ class VisitEngine {
   virtual void Backup(const Visit& visit, const VisitContext& ctx) = 0;
   // Releases every edge reservation on visit.path without committing a visit.
   virtual void Cancel(const Visit& visit, const VisitContext& ctx) = 0;
-  // A waiter's node finished materializing and it is about to select again.
-  virtual ResumeAction OnResume(const Visit& visit,
-                                const VisitContext& ctx) = 0;
+  // A waiter's node finished materializing and it is about to select again;
+  // visit.result holds that node's leaf value. The engine may move the visit
+  // to another edge at the node's parent first.
+  virtual ResumeAction OnResume(Visit& visit, const VisitContext& ctx) = 0;
   // Fills the score, WDL and PV of `info`.
   virtual void Report(const VisitOrigin& root, const VisitContext& ctx,
                       ThinkingInfo& info) const = 0;

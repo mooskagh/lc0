@@ -58,7 +58,7 @@ struct PuctAveraging {
     FpuStrategy fpu_strategy = FpuStrategy::kReduction;
     float fpu_value = 0.33f;
     PuctTotals totals = PuctTotals::kStarted;
-    bool restart_waiters = false;
+    WaiterResume waiter_resume = WaiterResume::kSelect;
 
     static void Populate(OptionsParser* options);
     static Params FromOptions(const OptionsDict& options);
@@ -87,6 +87,13 @@ struct PuctAveraging {
   // The edge to visit next; `node` is expanded, non-terminal, with edges.
   static size_t Select(const NodeState<PuctAveraging>& node,
                        const Params& params);
+  // The edge a waiter visits next after its visit through edge `index` found
+  // the child's value `from_child`: selection is rerun as if that visit had
+  // completed. The graph has already released its reservation; other visits
+  // in flight on the edge still count as in flight.
+  static size_t Reselect(const NodeState<PuctAveraging>& node,
+                         const Params& params, size_t index,
+                         const Message& from_child);
   // The index of the PV and bestmove edge: most visits, then best Q, then
   // PreferOnTie; nullopt if no edge has a visit.
   static std::optional<size_t> ChooseEdge(const NodeState<PuctAveraging>& node);
@@ -102,11 +109,10 @@ struct PuctAveraging {
   // Fills the score and WDL of `info` if the node has visits.
   static void Describe(const NodeStats& node, ThinkingInfo& info);
 
-  static VisitEngine::ResumeAction OnResume(const Params& params) {
-    // Restarting is like a collision: select again from the root with the new
-    // value known, rather than committing this visit to the subtree.
-    return params.restart_waiters ? VisitEngine::ResumeAction::kRestart
-                                  : VisitEngine::ResumeAction::kSelect;
+  // Reselecting or restarting is like a collision: select again with the new
+  // value known, rather than committing this visit to the subtree.
+  static WaiterResume OnResume(const Params& params) {
+    return params.waiter_resume;
   }
 };
 static_assert(sizeof(TriedEdge<PuctAveraging>) <= 20);

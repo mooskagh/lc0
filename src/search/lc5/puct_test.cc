@@ -54,8 +54,7 @@ PuctAveraging::Params TestParams() {
           .cpuct_base = 100.0f,
           .cpuct_factor = 0.0f,
           .fpu_strategy = FpuStrategy::kAbsolute,
-          .fpu_value = 0.0f,
-          .restart_waiters = false};
+          .fpu_value = 0.0f};
 }
 
 TEST(Lc5PuctTest, OptionDefaultsMatchParams) {
@@ -71,9 +70,8 @@ TEST(Lc5PuctTest, OptionDefaultsMatchParams) {
   EXPECT_EQ(params.fpu_strategy, FpuStrategy::kReduction);
   EXPECT_EQ(params.fpu_value, defaults.fpu_value);
   EXPECT_EQ(params.totals, PuctTotals::kStarted);
-  EXPECT_FALSE(params.restart_waiters);
-  EXPECT_EQ(PuctAveraging::OnResume(params),
-            VisitEngine::ResumeAction::kSelect);
+  EXPECT_EQ(params.waiter_resume, WaiterResume::kSelect);
+  EXPECT_EQ(PuctAveraging::OnResume(params), WaiterResume::kSelect);
 }
 
 TEST(Lc5PuctTest, OptionsReachParams) {
@@ -82,14 +80,17 @@ TEST(Lc5PuctTest, OptionsReachParams) {
   parser.SetUciOption("CPuct", "3");
   parser.SetUciOption("FpuStrategy", "absolute");
   parser.SetUciOption("PuctTotals", "completed");
-  parser.SetUciOption("RestartWaiters", "true");
+  parser.SetUciOption("WaiterResume", "restart");
   const auto params =
       PuctAveraging::Params::FromOptions(parser.GetOptionsDict());
   EXPECT_EQ(params.cpuct, 3.0f);
   EXPECT_EQ(params.fpu_strategy, FpuStrategy::kAbsolute);
   EXPECT_EQ(params.totals, PuctTotals::kCompleted);
-  EXPECT_EQ(PuctAveraging::OnResume(params),
-            VisitEngine::ResumeAction::kRestart);
+  EXPECT_EQ(PuctAveraging::OnResume(params), WaiterResume::kRestart);
+  parser.SetUciOption("WaiterResume", "reselect");
+  EXPECT_EQ(
+      PuctAveraging::Params::FromOptions(parser.GetOptionsDict()).waiter_resume,
+      WaiterResume::kReselect);
 }
 
 TEST(Lc5PuctTest, UnstartedNodePicksTopPrior) {
@@ -137,6 +138,21 @@ TEST(Lc5PuctTest, InFlightCountsInTotalsOnlyWhenStarted) {
   // edge B 0.3.
   params.totals = PuctTotals::kCompleted;
   EXPECT_EQ(PuctAveraging::Select(node, params), 0u);
+}
+
+TEST(Lc5PuctTest, ReselectCountsWaiterAsCompleted) {
+  // The owner's visit is still in flight on edge A; the waiter's reservation
+  // has been released and counts as completed with the child's value.
+  const Node node{.lifecycle = NodeLifecycle::kExpanded,
+                  .stats = {.visits = 1},
+                  .edges = {MakeEdge(kFileA, 0.5f), MakeEdge(kFileB, 0.3f)},
+                  .tried = {Tried{.in_flight = 1}}};
+  // N = 2, so sqrt(N) = 1.414. Edge A scores q + 0.5 * 1.414 / 3 = q + 0.236
+  // and edge B 0.3 * 1.414 = 0.424.
+  // q = -0.9: A -0.664 < B 0.424.
+  EXPECT_EQ(PuctAveraging::Reselect(node, TestParams(), 0, {.q = -0.9f}), 1u);
+  // q = 0.9: A 1.136 > B 0.424.
+  EXPECT_EQ(PuctAveraging::Reselect(node, TestParams(), 0, {.q = 0.9f}), 0u);
 }
 
 TEST(Lc5PuctTest, UpdateAveragesAndFlipsForParent) {

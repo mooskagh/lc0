@@ -176,12 +176,20 @@ void SearchRun::Resume(Worker& worker, const Continuation& event) {
         event.kind == Continuation::Kind::kBackupAbove) {
       visit.leaf_counted = event.kind == Continuation::Kind::kBackupAbove;
       visit.state = VisitState::kReadyBackup;
-    } else if (engine_->OnResume(visit, context_) ==
-               VisitEngine::ResumeAction::kRestart) {
-      Restart(*slot);
     } else {
-      visit.state = VisitState::kReadySelect;
-      metrics_.visits_resumed.fetch_add(1);
+      switch (engine_->OnResume(visit, context_)) {
+        case VisitEngine::ResumeAction::kRestart:
+          Restart(*slot);
+          break;
+        case VisitEngine::ResumeAction::kBackup:
+          visit.leaf_counted = false;
+          visit.state = VisitState::kReadyBackup;
+          break;
+        case VisitEngine::ResumeAction::kSelect:
+          visit.state = VisitState::kReadySelect;
+          metrics_.visits_resumed.fetch_add(1);
+          break;
+      }
     }
     if (event.terminal) metrics_.terminal_visits.fetch_add(1);
   }

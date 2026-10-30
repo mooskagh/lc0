@@ -161,6 +161,14 @@ class GameGraph {
   // carries the node's generation, and kTerminal also its terminal kind.
   SelectResult SelectAndReserve(NodeKey key, const typename P::Params& params);
 
+  // Releases one reservation of `move` and reserves the edge the policy
+  // reselects as if that visit had completed with `from_child`. kMissing if
+  // the node is not `expected_generation` or `move` holds no reservation;
+  // nothing is changed then.
+  SelectResult ReselectAndReserve(NodeKey key, uint64_t expected_generation,
+                                  Move move, const Message& from_child,
+                                  const typename P::Params& params);
+
   // Applies the policy's update to the node and, if `move` is given,
   // completes that edge's reservation. On success `to_parent` is the message
   // the parent receives.
@@ -190,6 +198,9 @@ class GameGraph {
   const Shard& ShardFor(NodeKey key) const { return shards_[ShardIndex(key)]; }
   // Inserts a fresh materializing node; the shard must be locked.
   Node& InsertLocked(Shard& shard, NodeKey key, MaterializationTicketId ticket);
+  // Reserves the edge at `index` (in_flight += 1), which is tried or the first
+  // untried one, and returns its move; the shard must be locked.
+  static Move ReserveLocked(Node& node, size_t index);
 
   template <typename Map>
   static auto* FindNode(Map& nodes, NodeKey key) {
@@ -313,18 +324,42 @@ SelectResult GameGraph<P>::SelectAndReserve(NodeKey key,
             .generation = node->generation,
             .terminal = node->terminal};
   }
-  const size_t best_index = P::Select(*node, params);
-  if (best_index == node->tried.size()) {
-    // Grows 2 -> 4 -> 8...; most nodes only ever try a few edges.
-    if (node->tried.empty()) node->tried.reserve(2);
-    node->tried.emplace_back();
-  }
-  Tried& best = node->tried[best_index];
-  assert(best.in_flight < kMaxActiveVisitsLimit);
-  ++best.in_flight;
   return {.status = SelectStatus::kSelected,
-          .move = node->edges[best_index].move,
+          .move = ReserveLocked(*node, P::Select(*node, params)),
           .generation = node->generation};
+}
+
+template <typename P>
+SelectResult GameGraph<P>::ReselectAndReserve(
+    NodeKey key, uint64_t expected_generation, Move move,
+    const Message& from_child, const typename P::Params& params) {
+  auto& shard = ShardFor(key);
+  std::lock_guard lock(shard.mutex);
+  Node* node = FindNode(shard.nodes, key);
+  if (CheckGeneration(node, expected_generation) != UpdateResult::kApplied) {
+    return {.status = SelectStatus::kMissing};
+  }
+  const size_t index = FindEdge(*node, move);
+  if (ReleaseEdge(*node, index) != UpdateResult::kApplied) {
+    return {.status = SelectStatus::kMissing};
+  }
+  return {.status = SelectStatus::kSelected,
+          .move = ReserveLocked(*node,
+                                P::Reselect(*node, params, index, from_child)),
+          .generation = node->generation};
+}
+
+template <typename P>
+Move GameGraph<P>::ReserveLocked(Node& node, size_t index) {
+  if (index == node.tried.size()) {
+    // Grows 2 -> 4 -> 8...; most nodes only ever try a few edges.
+    if (node.tried.empty()) node.tried.reserve(2);
+    node.tried.emplace_back();
+  }
+  Tried& tried = node.tried[index];
+  assert(tried.in_flight < kMaxActiveVisitsLimit);
+  ++tried.in_flight;
+  return node.edges[index].move;
 }
 
 template <typename P>

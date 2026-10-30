@@ -52,8 +52,7 @@ PuctAveraging::Params TestParams() {
           .cpuct_base = 100.0f,
           .cpuct_factor = 0.0f,
           .fpu_strategy = FpuStrategy::kAbsolute,
-          .fpu_value = 0.0f,
-          .restart_waiters = false};
+          .fpu_value = 0.0f};
 }
 
 TEST(Lc5GraphTest, PackedPriorRoundsMonotonically) {
@@ -630,6 +629,56 @@ TEST(Lc5GraphTest, FirstUntriedEdgeCompetesWithTriedOnes) {
               payload.moves[tried_wins ? 0 : 1]);
     EXPECT_EQ(graph.SnapshotNode(key)->tried.size(), tried_wins ? 1u : 2u);
   }
+}
+
+TEST(Lc5GraphTest, ReselectionMovesOnlyTheWaitersReservation) {
+  Graph graph;
+  const NodeKey key{456};
+  const auto created = graph.FindOrCreateMaterializing(key, 1);
+  const ExpansionPayload payload{
+      .moves = {M(kFileA, kFileA), M(kFileB, kFileB), M(kFileC, kFileC)},
+      .priors = {0.8f, 0.1f, 0.1f}};
+  graph.InstallPayload(key, 1, payload);
+  const Move a = payload.moves[0];
+  const Move b = payload.moves[1];
+  const auto params = TestParams();
+  // Edge A scores 0.8, then 0.8 / 2 = 0.4 against B's 0.1.
+  ASSERT_EQ(graph.SelectAndReserve(key, params).move, a);
+  ASSERT_EQ(graph.SelectAndReserve(key, params).move, a);
+  // N = 2 and sqrt(N) = 1.414. A good child keeps edge A, 0.9 + 0.8 * 1.414 /
+  // 3 = 1.277 against B's 0.141, and its reservation.
+  auto result =
+      graph.ReselectAndReserve(key, created.generation, a, {.q = 0.9f}, params);
+  EXPECT_EQ(result.status, SelectStatus::kSelected);
+  EXPECT_EQ(result.move, a);
+  EXPECT_EQ(result.generation, created.generation);
+  auto node = graph.SnapshotNode(key);
+  EXPECT_EQ(TriedAt(*node, 0).in_flight, 2u);
+  EXPECT_EQ(TriedAt(*node, 0).stats.visits, 0u);
+  // A bad child moves it to edge B: A scores -0.9 + 0.377 = -0.523.
+  result = graph.ReselectAndReserve(key, created.generation, a, {.q = -0.9f},
+                                    params);
+  EXPECT_EQ(result.status, SelectStatus::kSelected);
+  EXPECT_EQ(result.move, b);
+  node = graph.SnapshotNode(key);
+  EXPECT_EQ(TriedAt(*node, 0).in_flight, 1u);
+  EXPECT_EQ(TriedAt(*node, 1).in_flight, 1u);
+  EXPECT_EQ(TriedAt(*node, 0).stats.visits, 0u);
+  // Nothing changes for a stale generation or an edge without reservations.
+  EXPECT_EQ(graph
+                .ReselectAndReserve(key, created.generation + 1, a,
+                                    {.q = -0.9f}, params)
+                .status,
+            SelectStatus::kMissing);
+  EXPECT_EQ(graph
+                .ReselectAndReserve(key, created.generation, payload.moves[2],
+                                    {.q = -0.9f}, params)
+                .status,
+            SelectStatus::kMissing);
+  node = graph.SnapshotNode(key);
+  EXPECT_EQ(node->tried.size(), 2u);
+  EXPECT_EQ(TriedAt(*node, 0).in_flight, 1u);
+  EXPECT_EQ(TriedAt(*node, 1).in_flight, 1u);
 }
 
 TEST(Lc5GraphTest, IncomingParentsKeepIndependentEdgeStatistics) {

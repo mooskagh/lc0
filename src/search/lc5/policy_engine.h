@@ -55,9 +55,7 @@ class PolicyEngine final : public VisitEngine {
   DescendResult Descend(Visit& visit, const VisitContext& ctx) override;
   void Backup(const Visit& visit, const VisitContext& ctx) override;
   void Cancel(const Visit& visit, const VisitContext& ctx) override;
-  ResumeAction OnResume(const Visit&, const VisitContext&) override {
-    return P::OnResume(params_);
-  }
+  ResumeAction OnResume(Visit& visit, const VisitContext& ctx) override;
   void Report(const VisitOrigin& root, const VisitContext& ctx,
               ThinkingInfo& info) const override;
   RootStats Root(NodeKey root) const override;
@@ -86,6 +84,12 @@ class PolicyEngine final : public VisitEngine {
     if (position.IsBlackToMove()) move.Flip();
     return move;
   }
+
+  // Takes `move` from `step`, the last path step, extending visit.history and
+  // visit.current_key. Returns true if that reaches an in-search repetition,
+  // whose value is then in visit.result.
+  bool Advance(Visit& visit, PathStep& step, Move move,
+               const VisitContext& ctx);
 
   GameGraph<P> graph_;
   typename P::Params params_;
@@ -116,24 +120,68 @@ VisitEngine::DescendResult PolicyEngine<P>::Descend(Visit& visit,
         step.generation = selected.generation;
         break;
     }
-    step.selected_move = selected.move;
-    visit.history.Append(selected.move);
-    visit.current_key =
-        MakeNodeKey(visit.history, ctx.settings.history_key_length);
-    // A two-fold repetition whose cycle lies within this search is scored as
-    // a draw. Whether that holds depends on the root, so the graph node is
-    // left untouched and the leaf is backed up from a step that is not in the
-    // graph (generation 0).
-    const Position& position = visit.history.Last();
-    const int ply = static_cast<int>(visit.path.size());
-    if (position.GetRepetitions() == 1 && ply >= 4 &&
-        ply >= position.GetPliesSincePrevRepetition()) {
-      visit.path.push_back({.key = visit.current_key});
-      visit.result = TerminalValue(TerminalKind::kRepetition);
-      ctx.metrics.terminal_visits.fetch_add(1);
+    if (Advance(visit, step, selected.move, ctx)) {
       return DescendResult::kBackup;
     }
   }
+}
+
+template <typename P>
+bool PolicyEngine<P>::Advance(Visit& visit, PathStep& step, Move move,
+                              const VisitContext& ctx) {
+  step.selected_move = move;
+  visit.history.Append(move);
+  visit.current_key =
+      MakeNodeKey(visit.history, ctx.settings.history_key_length);
+  // A two-fold repetition whose cycle lies within this search is scored as
+  // a draw. Whether that holds depends on the root, so the graph node is
+  // left untouched and the leaf is backed up from a step that is not in the
+  // graph (generation 0).
+  const Position& position = visit.history.Last();
+  const int ply = static_cast<int>(visit.path.size());
+  if (position.GetRepetitions() == 1 && ply >= 4 &&
+      ply >= position.GetPliesSincePrevRepetition()) {
+    visit.path.push_back({.key = visit.current_key});
+    visit.result = TerminalValue(TerminalKind::kRepetition);
+    ctx.metrics.terminal_visits.fetch_add(1);
+    return true;
+  }
+  return false;
+}
+
+template <typename P>
+VisitEngine::ResumeAction PolicyEngine<P>::OnResume(Visit& visit,
+                                                    const VisitContext& ctx) {
+  switch (P::OnResume(params_)) {
+    case WaiterResume::kSelect:
+      return ResumeAction::kSelect;
+    case WaiterResume::kRestart:
+      return ResumeAction::kRestart;
+    case WaiterResume::kReselect:
+      break;
+  }
+  // The waiter's node X is the search root: it has no parent in this search.
+  if (visit.path.size() < visit.origin.backup_prefix.size() + 2) {
+    return ResumeAction::kSelect;
+  }
+  PathStep& parent = visit.path[visit.path.size() - 2];
+  // X's owner has not backed up yet, so the parent's edge does not show X's
+  // value; it is what the parent receives from X, whose own update was
+  // counted at install.
+  const auto from_child = P::Skip(P::Leaf(visit.result));
+  const SelectResult reselected =
+      graph_.ReselectAndReserve(parent.key, parent.generation,
+                                *parent.selected_move, from_child, params_);
+  if (reselected.status != SelectStatus::kSelected ||
+      reselected.move == *parent.selected_move) {
+    return ResumeAction::kSelect;
+  }
+  ctx.metrics.visits_reselected.fetch_add(1);
+  // pop_back leaves `parent` valid.
+  visit.path.pop_back();
+  visit.history.Pop();
+  return Advance(visit, parent, reselected.move, ctx) ? ResumeAction::kBackup
+                                                      : ResumeAction::kSelect;
 }
 
 template <typename P>

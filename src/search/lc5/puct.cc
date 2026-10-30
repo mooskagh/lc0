@@ -30,6 +30,7 @@
 #include <algorithm>
 #include <cassert>
 #include <cmath>
+#include <span>
 #include <string>
 #include <utility>
 #include <vector>
@@ -50,10 +51,11 @@ const OptionId kPuctTotals{
     "Which child visits count in the parent's sqrt(N) and FPU visited policy: "
     "started (completed plus in flight) or completed only, as in classic. "
     "In-flight visits always count in the edge's own U denominator."};
-const OptionId kRestartWaiters{
-    "restart-waiters", "RestartWaiters",
-    "Visits that waited for a node's evaluation select again from the root "
-    "instead of continuing below that node."};
+const OptionId kWaiterResume{
+    "waiter-resume", "WaiterResume",
+    "What a visit does after waiting for a node's evaluation: select below "
+    "that node, reselect at its parent with the new value (and switch edges if "
+    "another one is now better), or restart from the root."};
 
 ThinkingInfo::WDL WdlFromValue(float q, float d) {
   d = std::clamp(d, 0.0f, 1.0f);
@@ -67,42 +69,16 @@ int CentipawnsFromQ(float q) {
   return static_cast<int>(90 * std::tan(1.5637541897 * q));
 }
 
-}  // namespace
-
-void PuctAveraging::Params::Populate(OptionsParser* options) {
-  const Params defaults;
-  options->Add<FloatOption>(kCpuct, 0.0f, 100.0f) = defaults.cpuct;
-  options->Add<FloatOption>(kCpuctBase, 1.0f, 1.0e9f) = defaults.cpuct_base;
-  options->Add<FloatOption>(kCpuctFactor, 0.0f, 1000.0f) =
-      defaults.cpuct_factor;
-  options->Add<ChoiceOption>(
-      kFpuStrategy, std::vector<std::string>{"absolute", "reduction"}) =
-      defaults.fpu_strategy == FpuStrategy::kAbsolute ? "absolute"
-                                                      : "reduction";
-  options->Add<FloatOption>(kFpuValue, -100.0f, 100.0f) = defaults.fpu_value;
-  options->Add<ChoiceOption>(kPuctTotals,
-                             std::vector<std::string>{"started", "completed"}) =
-      defaults.totals == PuctTotals::kStarted ? "started" : "completed";
-  options->Add<BoolOption>(kRestartWaiters) = defaults.restart_waiters;
+WaiterResume WaiterResumeFromString(const std::string& value) {
+  if (value == "reselect") return WaiterResume::kReselect;
+  if (value == "restart") return WaiterResume::kRestart;
+  return WaiterResume::kSelect;
 }
 
-PuctAveraging::Params PuctAveraging::Params::FromOptions(
-    const OptionsDict& options) {
-  return {.cpuct = options.Get<float>(kCpuct),
-          .cpuct_base = options.Get<float>(kCpuctBase),
-          .cpuct_factor = options.Get<float>(kCpuctFactor),
-          .fpu_strategy = options.Get<std::string>(kFpuStrategy) == "absolute"
-                              ? FpuStrategy::kAbsolute
-                              : FpuStrategy::kReduction,
-          .fpu_value = options.Get<float>(kFpuValue),
-          .totals = options.Get<std::string>(kPuctTotals) == "completed"
-                        ? PuctTotals::kCompleted
-                        : PuctTotals::kStarted,
-          .restart_waiters = options.Get<bool>(kRestartWaiters)};
-}
-
-size_t PuctAveraging::Select(const NodeState<PuctAveraging>& node,
-                             const Params& params) {
+// PUCT selection with `tried_edges` in place of node.tried.
+size_t SelectEdge(const NodeState<PuctAveraging>& node,
+                  std::span<const TriedEdge<PuctAveraging>> tried_edges,
+                  const PuctAveraging::Params& params) {
   const auto started = [](const TriedEdge<PuctAveraging>& tried) {
     return tried.stats.visits + tried.in_flight;
   };
@@ -115,8 +91,8 @@ size_t PuctAveraging::Select(const NodeState<PuctAveraging>& node,
   // Only tried edges have been started, so the sums only need that prefix.
   uint64_t children_counted = 0;
   float visited_policy = 0.0f;
-  for (size_t i = 0; i < node.tried.size(); ++i) {
-    const auto& tried = node.tried[i];
+  for (size_t i = 0; i < tried_edges.size(); ++i) {
+    const auto& tried = tried_edges[i];
     children_counted += counted(tried);
     if (counted(tried) > 0) visited_policy += node.edges[i].prior;
   }
@@ -131,10 +107,11 @@ size_t PuctAveraging::Select(const NodeState<PuctAveraging>& node,
           ? params.fpu_value
           : node.stats.Q() - params.fpu_value * std::sqrt(visited_policy);
   const auto score = [&](size_t i) {
-    const bool is_tried = i < node.tried.size();
-    const float q =
-        is_tried && node.tried[i].stats.visits ? node.tried[i].stats.Q() : fpu;
-    const uint32_t n = is_tried ? started(node.tried[i]) : 0u;
+    const bool is_tried = i < tried_edges.size();
+    const float q = is_tried && tried_edges[i].stats.visits
+                        ? tried_edges[i].stats.Q()
+                        : fpu;
+    const uint32_t n = is_tried ? started(tried_edges[i]) : 0u;
     return q + cpuct * node.edges[i].prior * scale / (1.0f + n);
   };
   const auto pick_best = [&](size_t end) {
@@ -154,9 +131,66 @@ size_t PuctAveraging::Select(const NodeState<PuctAveraging>& node,
   // Untried edges share the FPU and are sorted by PreferOnTie, so the first
   // one beats or ties all later ones and wins the tie.
   const size_t best_index =
-      pick_best(std::min(node.tried.size() + 1, node.edges.size()));
+      pick_best(std::min(tried_edges.size() + 1, node.edges.size()));
   assert(pick_best(node.edges.size()) == best_index);
   return best_index;
+}
+
+}  // namespace
+
+void PuctAveraging::Params::Populate(OptionsParser* options) {
+  const Params defaults;
+  options->Add<FloatOption>(kCpuct, 0.0f, 100.0f) = defaults.cpuct;
+  options->Add<FloatOption>(kCpuctBase, 1.0f, 1.0e9f) = defaults.cpuct_base;
+  options->Add<FloatOption>(kCpuctFactor, 0.0f, 1000.0f) =
+      defaults.cpuct_factor;
+  options->Add<ChoiceOption>(
+      kFpuStrategy, std::vector<std::string>{"absolute", "reduction"}) =
+      defaults.fpu_strategy == FpuStrategy::kAbsolute ? "absolute"
+                                                      : "reduction";
+  options->Add<FloatOption>(kFpuValue, -100.0f, 100.0f) = defaults.fpu_value;
+  options->Add<ChoiceOption>(kPuctTotals,
+                             std::vector<std::string>{"started", "completed"}) =
+      defaults.totals == PuctTotals::kStarted ? "started" : "completed";
+  options->Add<ChoiceOption>(
+      kWaiterResume,
+      std::vector<std::string>{"select", "reselect", "restart"}) =
+      defaults.waiter_resume == WaiterResume::kSelect     ? "select"
+      : defaults.waiter_resume == WaiterResume::kReselect ? "reselect"
+                                                          : "restart";
+}
+
+PuctAveraging::Params PuctAveraging::Params::FromOptions(
+    const OptionsDict& options) {
+  return {.cpuct = options.Get<float>(kCpuct),
+          .cpuct_base = options.Get<float>(kCpuctBase),
+          .cpuct_factor = options.Get<float>(kCpuctFactor),
+          .fpu_strategy = options.Get<std::string>(kFpuStrategy) == "absolute"
+                              ? FpuStrategy::kAbsolute
+                              : FpuStrategy::kReduction,
+          .fpu_value = options.Get<float>(kFpuValue),
+          .totals = options.Get<std::string>(kPuctTotals) == "completed"
+                        ? PuctTotals::kCompleted
+                        : PuctTotals::kStarted,
+          .waiter_resume =
+              WaiterResumeFromString(options.Get<std::string>(kWaiterResume))};
+}
+
+size_t PuctAveraging::Select(const NodeState<PuctAveraging>& node,
+                             const Params& params) {
+  return SelectEdge(node, node.tried, params);
+}
+
+size_t PuctAveraging::Reselect(const NodeState<PuctAveraging>& node,
+                               const Params& params, size_t index,
+                               const Message& from_child) {
+  assert(index < node.tried.size());
+  // Only runs when a waiter resumes, so copying the tried edges is cheap
+  // enough.
+  std::vector<TriedEdge<PuctAveraging>> tried(node.tried.begin(),
+                                              node.tried.end());
+  tried[index].stats.Add(from_child);
+  return SelectEdge(node, tried, params);
 }
 
 std::optional<size_t> PuctAveraging::ChooseEdge(

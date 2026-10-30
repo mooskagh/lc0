@@ -125,8 +125,7 @@ PuctAveraging::Params TestParams() {
           .cpuct_base = 100.0f,
           .cpuct_factor = 0.0f,
           .fpu_strategy = FpuStrategy::kAbsolute,
-          .fpu_value = 0.0f,
-          .restart_waiters = false};
+          .fpu_value = 0.0f};
 }
 
 TimeManager::Config TestTimeManagement() {
@@ -631,6 +630,31 @@ TEST(Lc5SearchTest, OwnerBacksUpLeafWhileWaitersResumeSelection) {
   // Only the owner backs up at the root leaf. Each waiter must traverse an
   // edge.
   EXPECT_EQ(edge_visits, 3u);
+}
+
+TEST(Lc5SearchTest, ReselectingWaitersDrainAndCountOnce) {
+  for (const int threads : {1, 2}) {
+    SCOPED_TRACE(threads);
+    auto params = TestParams();
+    params.waiter_resume = WaiterResume::kReselect;
+    PolicyEngine<PuctAveraging> engine(params);
+    auto& graph = engine.graph();
+    ControlledBackend backend;
+    RecordingResponder responder;
+    auto root = Origin();
+    constexpr int64_t kNodes = 64;
+    SearchRun run(&engine, nullptr, &backend, &responder,
+                  TestSettings(threads, 16), TestTimeManagement(), root,
+                  GoParams{.nodes = kNodes}, std::chrono::steady_clock::now());
+    run.Start();
+    run.Wait();
+    ExpectDrained(run, graph);
+    ExpectFinalOutput(responder, kNodes);
+    EXPECT_EQ(run.metrics().visits_completed.load(), kNodes);
+    const auto node = graph.SnapshotNode(root.key);
+    ASSERT_TRUE(node);
+    EXPECT_EQ(node->stats.visits, static_cast<uint64_t>(kNodes));
+  }
 }
 
 TEST(Lc5SearchTest, TerminalOwnerAndWaitersNeverEvaluate) {

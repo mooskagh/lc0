@@ -60,10 +60,13 @@ Code: `search_visits.cc`, `policy_engine.h`, `puct.cc`, `search_materialization.
    node: its legal moves, priors and value.
 
 5. **Waiting.** When a node is installed, its owner backs up the network's
-   value. Its waiters do not back anything up; they continue selecting
-   *below* the new node and end up at some other leaf. (With
-   `RestartWaiters` they restart from the root instead; in testing that was
-   worse, so it is off.)
+   value. Its waiters do not back anything up; by default they continue
+   selecting *below* the new node and end up at some other leaf. With
+   `WaiterResume=reselect` a waiter first reruns PUCT at the node's parent,
+   counting its own visit as completed with the node's value, and switches
+   to another edge if that one is now better. With `WaiterResume=restart`
+   it restarts from the root instead (this was the `RestartWaiters` option;
+   in earlier testing it was worse).
 
 6. **Backup.** Along the path, add the value to each node and edge and
    release the reservations. Node values are from the side to move at that
@@ -206,7 +209,7 @@ Options of the `puct` policy:
 | `CPuct`, `CPuctBase`, `CPuctFactor` | 1.745, 38739, 3.894 | As classic. |
 | `FpuStrategy`, `FpuValue` | reduction, 0.33 | As classic. |
 | `PuctTotals` | started | Child visits counted in sqrt(N) and the FPU visited policy: started (with in-flight) or completed (as classic). |
-| `RestartWaiters` | false | Waiters restart from the root instead of continuing. |
+| `WaiterResume` | select | After waiting for a node's evaluation: select below it, reselect at its parent, or restart from the root. |
 
 ## Not done yet
 
