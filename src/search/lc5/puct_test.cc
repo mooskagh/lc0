@@ -70,6 +70,7 @@ TEST(Lc5PuctTest, OptionDefaultsMatchParams) {
   EXPECT_EQ(params.cpuct_factor, defaults.cpuct_factor);
   EXPECT_EQ(params.fpu_strategy, FpuStrategy::kReduction);
   EXPECT_EQ(params.fpu_value, defaults.fpu_value);
+  EXPECT_EQ(params.totals, PuctTotals::kStarted);
   EXPECT_FALSE(params.restart_waiters);
   EXPECT_EQ(PuctAveraging::OnResume(params),
             VisitEngine::ResumeAction::kSelect);
@@ -80,11 +81,13 @@ TEST(Lc5PuctTest, OptionsReachParams) {
   PopulatePolicyOptions(&parser);
   parser.SetUciOption("CPuct", "3");
   parser.SetUciOption("FpuStrategy", "absolute");
+  parser.SetUciOption("PuctTotals", "completed");
   parser.SetUciOption("RestartWaiters", "true");
   const auto params =
       PuctAveraging::Params::FromOptions(parser.GetOptionsDict());
   EXPECT_EQ(params.cpuct, 3.0f);
   EXPECT_EQ(params.fpu_strategy, FpuStrategy::kAbsolute);
+  EXPECT_EQ(params.totals, PuctTotals::kCompleted);
   EXPECT_EQ(PuctAveraging::OnResume(params),
             VisitEngine::ResumeAction::kRestart);
 }
@@ -117,6 +120,23 @@ TEST(Lc5PuctTest, InFlightEdgeLosesUrgency) {
             .tried = {Tried{.in_flight = 1}}};
   // Edge A scores 0.5 / 2 with one visit in flight; edge B scores 0.3.
   EXPECT_EQ(PuctAveraging::Select(node, TestParams()), 1u);
+}
+
+TEST(Lc5PuctTest, InFlightCountsInTotalsOnlyWhenStarted) {
+  Tried tried = MakeTried(1, 0.25f);
+  tried.in_flight = 3;
+  const Node node{.lifecycle = NodeLifecycle::kExpanded,
+                  .stats = {.visits = 2},
+                  .edges = {MakeEdge(kFileA, 0.5f), MakeEdge(kFileB, 0.3f)},
+                  .tried = {tried}};
+  auto params = TestParams();
+  // Started totals: sqrt(N) = 2, edge A scores 0.25 + 0.5 * 2 / 5 = 0.45 and
+  // edge B 0.3 * 2 = 0.6.
+  EXPECT_EQ(PuctAveraging::Select(node, params), 1u);
+  // Completed totals: sqrt(N) = 1, edge A scores 0.25 + 0.5 / 5 = 0.35 and
+  // edge B 0.3.
+  params.totals = PuctTotals::kCompleted;
+  EXPECT_EQ(PuctAveraging::Select(node, params), 0u);
 }
 
 TEST(Lc5PuctTest, UpdateAveragesAndFlipsForParent) {

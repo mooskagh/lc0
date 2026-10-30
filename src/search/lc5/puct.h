@@ -42,6 +42,9 @@
 namespace lczero::lc5 {
 
 enum class FpuStrategy { kAbsolute, kReduction };
+// Which child visits count in the parent's totals: sqrt(N) and the FPU
+// visited policy.
+enum class PuctTotals { kStarted, kCompleted };
 
 // PUCT selection over running averages, as in classic. Nodes and edges keep
 // value means, and the message is a value from the side to move at the node.
@@ -54,6 +57,7 @@ struct PuctAveraging {
     float cpuct_factor = 3.894f;
     FpuStrategy fpu_strategy = FpuStrategy::kReduction;
     float fpu_value = 0.33f;
+    PuctTotals totals = PuctTotals::kStarted;
     bool restart_waiters = false;
 
     static void Populate(OptionsParser* options);

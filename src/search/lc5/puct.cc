@@ -45,6 +45,11 @@ const OptionId kFpuStrategy{"fpu-strategy", "FpuStrategy",
                             "Lc5 first-play urgency strategy."};
 const OptionId kFpuValue{"fpu-value", "FpuValue",
                          "Lc5 absolute FPU value or FPU reduction."};
+const OptionId kPuctTotals{
+    "puct-totals", "PuctTotals",
+    "Which child visits count in the parent's sqrt(N) and FPU visited policy: "
+    "started (completed plus in flight) or completed only, as in classic. "
+    "In-flight visits always count in the edge's own U denominator."};
 const OptionId kRestartWaiters{
     "restart-waiters", "RestartWaiters",
     "Visits that waited for a node's evaluation select again from the root "
@@ -75,6 +80,9 @@ void PuctAveraging::Params::Populate(OptionsParser* options) {
       defaults.fpu_strategy == FpuStrategy::kAbsolute ? "absolute"
                                                       : "reduction";
   options->Add<FloatOption>(kFpuValue, -100.0f, 100.0f) = defaults.fpu_value;
+  options->Add<ChoiceOption>(kPuctTotals,
+                             std::vector<std::string>{"started", "completed"}) =
+      defaults.totals == PuctTotals::kStarted ? "started" : "completed";
   options->Add<BoolOption>(kRestartWaiters) = defaults.restart_waiters;
 }
 
@@ -87,6 +95,9 @@ PuctAveraging::Params PuctAveraging::Params::FromOptions(
                               ? FpuStrategy::kAbsolute
                               : FpuStrategy::kReduction,
           .fpu_value = options.Get<float>(kFpuValue),
+          .totals = options.Get<std::string>(kPuctTotals) == "completed"
+                        ? PuctTotals::kCompleted
+                        : PuctTotals::kStarted,
           .restart_waiters = options.Get<bool>(kRestartWaiters)};
 }
 
@@ -95,20 +106,26 @@ size_t PuctAveraging::Select(const NodeState<PuctAveraging>& node,
   const auto started = [](const TriedEdge<PuctAveraging>& tried) {
     return tried.stats.visits + tried.in_flight;
   };
+  const bool completed_only = params.totals == PuctTotals::kCompleted;
+  // Visits a child contributes to the parent's totals: sqrt(N) and the FPU
+  // visited policy. In-flight visits always count in the edge's own U.
+  const auto counted = [&](const TriedEdge<PuctAveraging>& tried) {
+    return completed_only ? tried.stats.visits : started(tried);
+  };
   // Only tried edges have been started, so the sums only need that prefix.
-  uint64_t children_started = 0;
+  uint64_t children_counted = 0;
   float visited_policy = 0.0f;
   for (size_t i = 0; i < node.tried.size(); ++i) {
     const auto& tried = node.tried[i];
-    children_started += started(tried);
-    if (started(tried) > 0) visited_policy += node.edges[i].prior;
+    children_counted += counted(tried);
+    if (counted(tried) > 0) visited_policy += node.edges[i].prior;
   }
   const float cpuct =
       params.cpuct +
       params.cpuct_factor *
           std::log((node.stats.visits + params.cpuct_base) / params.cpuct_base);
   const float scale =
-      std::sqrt(static_cast<float>(std::max<uint64_t>(1, children_started)));
+      std::sqrt(static_cast<float>(std::max<uint64_t>(1, children_counted)));
   const float fpu =
       params.fpu_strategy == FpuStrategy::kAbsolute
           ? params.fpu_value

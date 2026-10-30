@@ -1,8 +1,9 @@
 # Lc5 search
 
 Lc5 is an experimental search, started with `lc0 lc5`. PUCT, FPU and their
-defaults match classic; what differs is how the work is organized. Code is in
-`src/search/lc5/`.
+defaults match classic (except that by default in-flight visits also count in
+the parent's totals, see `PuctTotals`); what differs is how the work is
+organized. Code is in `src/search/lc5/`.
 
 ## Differences from classic
 
@@ -38,9 +39,11 @@ Code: `search_visits.cc`, `policy_engine.h`, `puct.cc`, `search_materialization.
 
 2. **Selection.** At each node the visit picks a move by PUCT
    (`GameGraph::SelectAndReserve`) over the edges tried so far plus the best
-   untried one, and reserves the edge (`in_flight`, which counts toward
-   started visits, as in classic). Each step goes into the
-   visit's `path` for backup or cancel.
+   untried one, and reserves the edge (`in_flight`). In-flight visits count
+   in the edge's own U denominator; by default they also count in the
+   parent's sqrt(N) and FPU visited policy, and with `PuctTotals=completed`
+   they don't, as in classic. Each step goes into the visit's `path` for
+   backup or cancel.
 
 3. **Reaching a leaf.** Selection ends in one of four ways:
    - The node is **terminal** (mate, stalemate, insufficient material,
@@ -202,6 +205,7 @@ Options of the `puct` policy:
 |---|---|---|
 | `CPuct`, `CPuctBase`, `CPuctFactor` | 1.745, 38739, 3.894 | As classic. |
 | `FpuStrategy`, `FpuValue` | reduction, 0.33 | As classic. |
+| `PuctTotals` | started | Child visits counted in sqrt(N) and the FPU visited policy: started (with in-flight) or completed (as classic). |
 | `RestartWaiters` | false | Waiters restart from the root instead of continuing. |
 
 ## Not done yet
