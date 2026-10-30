@@ -50,13 +50,18 @@ using MaterializationTicketId = uint64_t;
 
 enum class NodeLifecycle : uint8_t { kMaterializing, kExpanded };
 
-// The machinery owns an edge's move, prior and reservations; `stats` belongs
-// to the policy P.
-template <typename P>
-struct EdgeState {
+// A legal move and its prior; every legal move of an expanded node has one.
+struct LegalEdge {
   Move move;
-  uint16_t in_flight = 0;  // Virtual loss; bounded by kMaxActiveVisitsLimit.
   float prior = 0.0f;
+};
+static_assert(sizeof(LegalEdge) == 8);
+
+// The statistics of an edge that has been reserved at least once. The
+// machinery owns the reservations; `stats` belongs to the policy P.
+template <typename P>
+struct TriedEdge {
+  uint16_t in_flight = 0;  // Virtual loss; bounded by kMaxActiveVisitsLimit.
   typename P::EdgeStats stats{};
   static_assert(kMaxActiveVisitsLimit <=
                 std::numeric_limits<decltype(in_flight)>::max());
@@ -65,8 +70,7 @@ struct EdgeState {
 // Deterministic tie-break between equally ranked edges: higher prior first,
 // then the lower move encoding. A node's edges are sorted in this order, and
 // selection relies on it.
-template <typename Edge>
-bool PreferOnTie(const Edge& a, const Edge& b) {
+inline bool PreferOnTie(const LegalEdge& a, const LegalEdge& b) {
   if (a.prior != b.prior) return a.prior > b.prior;
   return a.move.raw_data() < b.move.raw_data();
 }
@@ -79,8 +83,10 @@ struct NodeState {
   MaterializationTicketId ticket = 0;  // Zero once expanded.
   TerminalKind terminal = TerminalKind::kNonTerminal;
   typename P::NodeStats stats{};
-  std::vector<EdgeState<P>> edges{};
-  uint32_t started_end = 0;  // Edges from here on have never been started.
+  std::vector<LegalEdge> edges{};
+  // tried[i] belongs to edges[i]. Edges from tried.size() on have never been
+  // reserved; selection appends the first of them when it picks it.
+  std::vector<TriedEdge<P>> tried{};
 };
 
 struct FindOrCreateResult {
@@ -130,7 +136,7 @@ template <typename P>
 class GameGraph {
  public:
   using Node = NodeState<P>;
-  using Edge = EdgeState<P>;
+  using Tried = TriedEdge<P>;
   using Message = typename P::Message;
 
   static constexpr size_t kShardCount = 1024;
@@ -196,16 +202,20 @@ class GameGraph {
     return UpdateResult::kApplied;
   }
 
-  static Edge* FindEdge(Node& node, Move move) {
-    const auto it = std::ranges::find(node.edges, move, &Edge::move);
-    return it == node.edges.end() ? nullptr : &*it;
+  // The index of the edge with `move`, or edges.size() if there is none.
+  static size_t FindEdge(const Node& node, Move move) {
+    return std::ranges::find(node.edges, move, &LegalEdge::move) -
+           node.edges.begin();
   }
 
-  // Releases one reservation of the edge.
-  static UpdateResult ReleaseEdge(Edge* edge) {
-    if (!edge) return UpdateResult::kEdgeMissing;
-    if (edge->in_flight == 0) return UpdateResult::kUnderflow;
-    --edge->in_flight;
+  // Releases one reservation of the edge at `index`. An edge that was never
+  // tried has no reservations.
+  static UpdateResult ReleaseEdge(Node& node, size_t index) {
+    if (index >= node.edges.size()) return UpdateResult::kEdgeMissing;
+    if (index >= node.tried.size() || node.tried[index].in_flight == 0) {
+      return UpdateResult::kUnderflow;
+    }
+    --node.tried[index].in_flight;
     return UpdateResult::kApplied;
   }
 
@@ -278,7 +288,8 @@ InstallResult GameGraph<P>::InstallPayload(NodeKey key,
     node.edges.push_back(
         {.move = payload.moves[i], .prior = payload.priors[i]});
   }
-  assert(std::ranges::is_sorted(node.edges, PreferOnTie<Edge>));
+  assert(std::ranges::is_sorted(node.edges, PreferOnTie));
+  node.tried.clear();
   // The leaf value counts as the node's first visit, so a node keeps it even
   // if the visit that materialized it is cancelled before backing up.
   P::Update(node.stats, nullptr, P::Leaf(payload.leaf));
@@ -302,12 +313,16 @@ SelectResult GameGraph<P>::SelectAndReserve(NodeKey key,
             .terminal = node->terminal};
   }
   const size_t best_index = P::Select(*node, params);
-  if (best_index == node->started_end) ++node->started_end;
-  Edge* best = &node->edges[best_index];
-  assert(best->in_flight < kMaxActiveVisitsLimit);
-  ++best->in_flight;
+  if (best_index == node->tried.size()) {
+    // Grows 2 -> 4 -> 8...; most nodes only ever try a few edges.
+    if (node->tried.empty()) node->tried.reserve(2);
+    node->tried.emplace_back();
+  }
+  Tried& best = node->tried[best_index];
+  assert(best.in_flight < kMaxActiveVisitsLimit);
+  ++best.in_flight;
   return {.status = SelectStatus::kSelected,
-          .move = best->move,
+          .move = node->edges[best_index].move,
           .generation = node->generation};
 }
 
@@ -323,16 +338,17 @@ BackupResult<P> GameGraph<P>::BackupNode(NodeKey key,
       check != UpdateResult::kApplied) {
     return {check, move ? check : UpdateResult::kApplied, std::nullopt};
   }
-  Edge* edge = nullptr;
+  typename P::EdgeStats* edge_stats = nullptr;
   UpdateResult edge_result = UpdateResult::kApplied;
   if (move) {
-    edge = FindEdge(*node, *move);
-    edge_result = ReleaseEdge(edge);
+    const size_t index = FindEdge(*node, *move);
+    edge_result = ReleaseEdge(*node, index);
+    if (edge_result == UpdateResult::kApplied) {
+      edge_stats = &node->tried[index].stats;
+    }
   }
   // The node is updated even if the edge reservation could not be released.
-  Edge* updated = edge_result == UpdateResult::kApplied ? edge : nullptr;
-  const Message to_parent =
-      P::Update(node->stats, updated ? &updated->stats : nullptr, message);
+  const Message to_parent = P::Update(node->stats, edge_stats, message);
   return {UpdateResult::kApplied, edge_result, to_parent};
 }
 
@@ -346,7 +362,7 @@ UpdateResult GameGraph<P>::CancelEdge(NodeKey key, uint64_t expected_generation,
       check != UpdateResult::kApplied) {
     return check;
   }
-  return ReleaseEdge(FindEdge(*node, move));
+  return ReleaseEdge(*node, FindEdge(*node, move));
 }
 
 template <typename P>

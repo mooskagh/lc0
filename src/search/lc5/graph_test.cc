@@ -40,6 +40,13 @@ Move M(File from, File to) {
 
 using Graph = GameGraph<PuctAveraging>;
 
+// The statistics of edge `i`; an untried edge has none, so it reads as empty.
+const TriedEdge<PuctAveraging>& TriedAt(const NodeState<PuctAveraging>& node,
+                                        size_t i) {
+  static const TriedEdge<PuctAveraging> kUntried;
+  return i < node.tried.size() ? node.tried[i] : kUntried;
+}
+
 PuctAveraging::Params TestParams() {
   return {.cpuct = 1.0f,
           .cpuct_base = 100.0f,
@@ -144,9 +151,9 @@ TEST(Lc5GraphTest, PublicationAcceptanceIsIndependentOfReturnedGeneration) {
     ASSERT_EQ(node->edges.size(), 1u);
     EXPECT_EQ(node->edges[0].move, move);
     EXPECT_FLOAT_EQ(node->edges[0].prior, 1.0f);
-    EXPECT_EQ(node->edges[0].stats.visits, 1u);
-    EXPECT_EQ(node->edges[0].in_flight, 1u);
-    EXPECT_FLOAT_EQ(node->edges[0].stats.Q(), 0.25f);
+    EXPECT_EQ(TriedAt(*node, 0).stats.visits, 1u);
+    EXPECT_EQ(TriedAt(*node, 0).in_flight, 1u);
+    EXPECT_FLOAT_EQ(TriedAt(*node, 0).stats.Q(), 0.25f);
     EXPECT_EQ(node->stats.visits, 2u);
   }
   EXPECT_EQ(graph.CancelEdge(key, created.generation, move),
@@ -190,7 +197,7 @@ TEST(Lc5GraphTest, SelectionReportsLifecycleAndGeneration) {
   const auto full = graph.SnapshotNode(key);
   ASSERT_TRUE(full);
   ASSERT_EQ(full->edges.size(), 1u);
-  EXPECT_EQ(full->edges[0].in_flight, 1u);
+  EXPECT_EQ(TriedAt(*full, 0).in_flight, 1u);
   EXPECT_EQ(full->generation, created.generation);
   EXPECT_EQ(full->lifecycle, NodeLifecycle::kExpanded);
   EXPECT_EQ(full->terminal, TerminalKind::kNonTerminal);
@@ -233,7 +240,7 @@ TEST(Lc5GraphTest, SelectionReturnsNewGenerationAfterRecreation) {
   // Updates computed against the erased node are still rejected.
   EXPECT_EQ(graph.CancelEdge(key, created.generation, M(kFileA, kFileA)),
             UpdateResult::kStale);
-  EXPECT_EQ(graph.SnapshotNode(key)->edges[0].in_flight, 1u);
+  EXPECT_EQ(TriedAt(*graph.SnapshotNode(key), 0).in_flight, 1u);
 }
 
 TEST(Lc5GraphTest, SizeCountsOnlyNewNodes) {
@@ -352,9 +359,9 @@ TEST(Lc5GraphTest, LateMaterializationPreservesPublishedEdges) {
     ASSERT_EQ(node->edges.size(), 1u);
     EXPECT_EQ(node->edges[0].move, move);
     EXPECT_FLOAT_EQ(node->edges[0].prior, 1.0f);
-    EXPECT_EQ(node->edges[0].stats.visits, 1u);
-    EXPECT_EQ(node->edges[0].in_flight, 1u);
-    EXPECT_FLOAT_EQ(node->edges[0].stats.Q(), 0.4f);
+    EXPECT_EQ(TriedAt(*node, 0).stats.visits, 1u);
+    EXPECT_EQ(TriedAt(*node, 0).in_flight, 1u);
+    EXPECT_FLOAT_EQ(TriedAt(*node, 0).stats.Q(), 0.4f);
     EXPECT_EQ(node->stats.visits, 2u);
   }
   EXPECT_EQ(graph.CancelEdge(key, created.generation, move),
@@ -424,7 +431,7 @@ TEST(Lc5GraphTest, BackupCommitsNodeAndOptionalEdgeSums) {
   EXPECT_FLOAT_EQ(node->stats.Q(), 0.125f);
   EXPECT_FLOAT_EQ(node->stats.D(), 0.25f);
   EXPECT_FLOAT_EQ(node->stats.M(), 1.5f);
-  EXPECT_EQ(node->edges[0].stats.visits, 0u);
+  EXPECT_EQ(TriedAt(*node, 0).stats.visits, 0u);
   ASSERT_EQ(graph.SelectAndReserve(key, TestParams()).status,
             SelectStatus::kSelected);
   result =
@@ -441,11 +448,11 @@ TEST(Lc5GraphTest, BackupCommitsNodeAndOptionalEdgeSums) {
   EXPECT_FLOAT_EQ(node->stats.Q(), -0.25f / 3);
   EXPECT_FLOAT_EQ(node->stats.D(), 0.25f);
   EXPECT_FLOAT_EQ(node->stats.M(), 7.0f / 3);
-  EXPECT_EQ(node->edges[0].stats.visits, 1u);
-  EXPECT_EQ(node->edges[0].in_flight, 0u);
-  EXPECT_FLOAT_EQ(node->edges[0].stats.Q(), -0.5f);
-  EXPECT_FLOAT_EQ(node->edges[0].stats.D(), 0.25f);
-  EXPECT_FLOAT_EQ(node->edges[0].stats.M(), 4.0f);
+  EXPECT_EQ(TriedAt(*node, 0).stats.visits, 1u);
+  EXPECT_EQ(TriedAt(*node, 0).in_flight, 0u);
+  EXPECT_FLOAT_EQ(TriedAt(*node, 0).stats.Q(), -0.5f);
+  EXPECT_FLOAT_EQ(TriedAt(*node, 0).stats.D(), 0.25f);
+  EXPECT_FLOAT_EQ(TriedAt(*node, 0).stats.M(), 4.0f);
 }
 
 TEST(Lc5GraphTest, BackupRejectsMissingAndStaleGenerations) {
@@ -476,11 +483,11 @@ TEST(Lc5GraphTest, BackupRejectsMissingAndStaleGenerations) {
   EXPECT_FLOAT_EQ(node->stats.Q(), 0.0f);
   EXPECT_FLOAT_EQ(node->stats.D(), 0.0f);
   EXPECT_FLOAT_EQ(node->stats.M(), 0.0f);
-  EXPECT_EQ(node->edges[0].stats.visits, 0u);
-  EXPECT_EQ(node->edges[0].in_flight, 1u);
-  EXPECT_FLOAT_EQ(node->edges[0].stats.Q(), 0.0f);
-  EXPECT_FLOAT_EQ(node->edges[0].stats.D(), 0.0f);
-  EXPECT_FLOAT_EQ(node->edges[0].stats.M(), 0.0f);
+  EXPECT_EQ(TriedAt(*node, 0).stats.visits, 0u);
+  EXPECT_EQ(TriedAt(*node, 0).in_flight, 1u);
+  EXPECT_FLOAT_EQ(TriedAt(*node, 0).stats.Q(), 0.0f);
+  EXPECT_FLOAT_EQ(TriedAt(*node, 0).stats.D(), 0.0f);
+  EXPECT_FLOAT_EQ(TriedAt(*node, 0).stats.M(), 0.0f);
 }
 
 TEST(Lc5GraphTest, BackupCommitsNodeDespiteEdgeFailure) {
@@ -504,11 +511,11 @@ TEST(Lc5GraphTest, BackupCommitsNodeDespiteEdgeFailure) {
   EXPECT_FLOAT_EQ(node->stats.Q(), 0.5f / 3);
   EXPECT_FLOAT_EQ(node->stats.D(), 1.0f / 3);
   EXPECT_FLOAT_EQ(node->stats.M(), 2.0f);
-  EXPECT_EQ(node->edges[0].stats.visits, 0u);
-  EXPECT_EQ(node->edges[0].in_flight, 0u);
-  EXPECT_FLOAT_EQ(node->edges[0].stats.Q(), 0.0f);
-  EXPECT_FLOAT_EQ(node->edges[0].stats.D(), 0.0f);
-  EXPECT_FLOAT_EQ(node->edges[0].stats.M(), 0.0f);
+  EXPECT_EQ(TriedAt(*node, 0).stats.visits, 0u);
+  EXPECT_EQ(TriedAt(*node, 0).in_flight, 0u);
+  EXPECT_FLOAT_EQ(TriedAt(*node, 0).stats.Q(), 0.0f);
+  EXPECT_FLOAT_EQ(TriedAt(*node, 0).stats.D(), 0.0f);
+  EXPECT_FLOAT_EQ(TriedAt(*node, 0).stats.M(), 0.0f);
 }
 
 TEST(Lc5GraphTest, ReservationsAreExactAndCancellationDoesNotCommit) {
@@ -533,10 +540,10 @@ TEST(Lc5GraphTest, ReservationsAreExactAndCancellationDoesNotCommit) {
             UpdateResult::kApplied);
   auto node = graph.SnapshotNode(key);
   ASSERT_TRUE(node);
-  EXPECT_EQ(node->edges[0].stats.visits, 0u);
-  EXPECT_EQ(node->edges[0].in_flight, 0u);
-  EXPECT_EQ(node->edges[1].stats.visits, 1u);
-  EXPECT_FLOAT_EQ(node->edges[1].stats.Q(), 0.4f);
+  EXPECT_EQ(TriedAt(*node, 0).stats.visits, 0u);
+  EXPECT_EQ(TriedAt(*node, 0).in_flight, 0u);
+  EXPECT_EQ(TriedAt(*node, 1).stats.visits, 1u);
+  EXPECT_FLOAT_EQ(TriedAt(*node, 1).stats.Q(), 0.4f);
   EXPECT_EQ(graph.CancelEdge(key, created.generation, first),
             UpdateResult::kUnderflow);
 }
@@ -548,7 +555,7 @@ ExpansionPayload FourEdges() {
           .priors = {0.4f, 0.3f, 0.2f, 0.1f}};
 }
 
-TEST(Lc5GraphTest, StartedPrefixGrowsInPriorOrder) {
+TEST(Lc5GraphTest, TriedPrefixGrowsInPriorOrder) {
   Graph graph;
   const NodeKey key{456};
   const auto created = graph.FindOrCreateMaterializing(key, 1);
@@ -558,19 +565,19 @@ TEST(Lc5GraphTest, StartedPrefixGrowsInPriorOrder) {
   auto params = TestParams();
   params.fpu_value = 1.0f;
   for (uint32_t i = 0; i < 4; ++i) {
-    EXPECT_EQ(graph.SnapshotNode(key)->started_end, i);
+    EXPECT_EQ(graph.SnapshotNode(key)->tried.size(), i);
     const auto selection = graph.SelectAndReserve(key, params);
     EXPECT_EQ(selection.move, payload.moves[i]);
-    EXPECT_EQ(graph.SnapshotNode(key)->started_end, i + 1);
+    EXPECT_EQ(graph.SnapshotNode(key)->tried.size(), i + 1);
     graph.BackupNode(key, created.generation, {}, selection.move);
     graph.BackupNode(key, created.generation, {}, std::nullopt);
-    EXPECT_EQ(graph.SnapshotNode(key)->started_end, i + 1);
+    EXPECT_EQ(graph.SnapshotNode(key)->tried.size(), i + 1);
   }
   EXPECT_EQ(graph.SelectAndReserve(key, params).move, payload.moves[0]);
-  EXPECT_EQ(graph.SnapshotNode(key)->started_end, 4u);
+  EXPECT_EQ(graph.SnapshotNode(key)->tried.size(), 4u);
 }
 
-TEST(Lc5GraphTest, CancelledEdgeBelowStartedEndIsStillSelectable) {
+TEST(Lc5GraphTest, CancelledTriedEdgeIsStillSelectable) {
   Graph graph;
   const NodeKey key{456};
   const auto created = graph.FindOrCreateMaterializing(key, 1);
@@ -582,11 +589,11 @@ TEST(Lc5GraphTest, CancelledEdgeBelowStartedEndIsStillSelectable) {
   EXPECT_EQ(graph.SelectAndReserve(key, params).move, payload.moves[1]);
   EXPECT_EQ(graph.CancelEdge(key, created.generation, payload.moves[0]),
             UpdateResult::kApplied);
-  EXPECT_EQ(graph.SnapshotNode(key)->started_end, 2u);
+  EXPECT_EQ(graph.SnapshotNode(key)->tried.size(), 2u);
   EXPECT_EQ(graph.SelectAndReserve(key, params).move, payload.moves[0]);
   const auto node = graph.SnapshotNode(key);
-  EXPECT_EQ(node->started_end, 2u);
-  EXPECT_EQ(node->edges[0].in_flight, 1u);
+  EXPECT_EQ(node->tried.size(), 2u);
+  EXPECT_EQ(TriedAt(*node, 0).in_flight, 1u);
 }
 
 TEST(Lc5GraphTest, FirstUntriedEdgeCompetesWithTriedOnes) {
@@ -607,7 +614,7 @@ TEST(Lc5GraphTest, FirstUntriedEdgeCompetesWithTriedOnes) {
     const bool tried_wins = q > 0.05f;
     EXPECT_EQ(graph.SelectAndReserve(key, params).move,
               payload.moves[tried_wins ? 0 : 1]);
-    EXPECT_EQ(graph.SnapshotNode(key)->started_end, tried_wins ? 1u : 2u);
+    EXPECT_EQ(graph.SnapshotNode(key)->tried.size(), tried_wins ? 1u : 2u);
   }
 }
 
@@ -622,8 +629,8 @@ TEST(Lc5GraphTest, IncomingParentsKeepIndependentEdgeStatistics) {
   auto params = TestParams();
   graph.SelectAndReserve(NodeKey{1}, params);
   graph.BackupNode(NodeKey{1}, p1.generation, {}, move);
-  EXPECT_EQ(graph.SnapshotNode(NodeKey{1})->edges[0].stats.visits, 1u);
-  EXPECT_EQ(graph.SnapshotNode(NodeKey{2})->edges[0].stats.visits, 0u);
+  EXPECT_EQ(TriedAt(*graph.SnapshotNode(NodeKey{1}), 0).stats.visits, 1u);
+  EXPECT_EQ(TriedAt(*graph.SnapshotNode(NodeKey{2}), 0).stats.visits, 0u);
 }
 
 }  // namespace

@@ -96,12 +96,19 @@ class SearchRunTestPeer {
              .SnapshotAllForTesting()) {
       EXPECT_EQ(node.lifecycle, NodeLifecycle::kExpanded);
       EXPECT_EQ(node.ticket, 0u);
-      for (const auto& edge : node.edges) EXPECT_EQ(edge.in_flight, 0u);
+      for (const auto& tried : node.tried) EXPECT_EQ(tried.in_flight, 0u);
     }
   }
 };
 
 namespace {
+
+// The statistics of edge `i`; an untried edge has none, so it reads as empty.
+const TriedEdge<PuctAveraging>& TriedAt(const NodeState<PuctAveraging>& node,
+                                        size_t i) {
+  static const TriedEdge<PuctAveraging> kUntried;
+  return i < node.tried.size() ? node.tried[i] : kUntried;
+}
 
 Settings::Resolved TestSettings(int threads = 1, int capacity = 4) {
   return {.threads = threads,
@@ -387,7 +394,7 @@ void ExpectDrained(const SearchRun& run,
     SCOPED_TRACE(key.hash);
     EXPECT_EQ(node.lifecycle, NodeLifecycle::kExpanded);
     EXPECT_EQ(node.ticket, 0u);
-    for (const auto& edge : node.edges) EXPECT_EQ(edge.in_flight, 0u);
+    for (const auto& tried : node.tried) EXPECT_EQ(tried.in_flight, 0u);
   }
 }
 
@@ -620,7 +627,7 @@ TEST(Lc5SearchTest, OwnerBacksUpLeafWhileWaitersResumeSelection) {
   ASSERT_TRUE(node);
   EXPECT_EQ(node->stats.visits, 4u);
   uint64_t edge_visits = 0;
-  for (const auto& edge : node->edges) edge_visits += edge.stats.visits;
+  for (const auto& tried : node->tried) edge_visits += tried.stats.visits;
   // Only the owner backs up at the root leaf. Each waiter must traverse an
   // edge.
   EXPECT_EQ(edge_visits, 3u);
@@ -750,7 +757,7 @@ TEST(Lc5SearchTest, BlockedBackendStopAndAbortDrainReservationsAndPersistence) {
       run.Wait();
       FAIL() << "Backend computation was not reached";
     }
-    EXPECT_EQ(graph.SnapshotNode(root.key)->edges[0].in_flight, 4u);
+    EXPECT_EQ(TriedAt(*graph.SnapshotNode(root.key), 0).in_flight, 4u);
     EXPECT_EQ(run.metrics().ticket_waiters.load(), 3u);
     if (abort)
       run.Abort();
@@ -778,8 +785,8 @@ TEST(Lc5SearchTest, BlockedBackendStopAndAbortDrainReservationsAndPersistence) {
     // The setup install plus the owner's late backup.
     const auto root_node = graph.SnapshotNode(root.key);
     EXPECT_EQ(root_node->stats.visits, 2u);
-    EXPECT_EQ(root_node->edges[0].stats.visits, 1u);
-    EXPECT_EQ(root_node->edges[0].in_flight, 0u);
+    EXPECT_EQ(TriedAt(*root_node, 0).stats.visits, 1u);
+    EXPECT_EQ(TriedAt(*root_node, 0).in_flight, 0u);
     if (abort) {
       EXPECT_TRUE(responder.bestmoves.empty());
       EXPECT_TRUE(std::none_of(responder.thinking.begin(),
@@ -1095,7 +1102,7 @@ TEST(Lc5SearchTest, BlockedStoreLoadsAndPersistenceDrainAfterStopOrAbort) {
       run.Start();
       const bool loading = store.load.WaitForArrival();
       if (loading) {
-        EXPECT_EQ(graph.SnapshotNode(root.key)->edges[0].in_flight, 4u);
+        EXPECT_EQ(TriedAt(*graph.SnapshotNode(root.key), 0).in_flight, 4u);
         EXPECT_EQ(run.metrics().ticket_waiters.load(), 3u);
         EXPECT_EQ(backend.inputs.load(), 0u);
       }
@@ -1126,7 +1133,8 @@ TEST(Lc5SearchTest, BlockedStoreLoadsAndPersistenceDrainAfterStopOrAbort) {
       EXPECT_EQ(graph.SnapshotNode(child.key).has_value(), hit);
       // The setup install, plus the owner's backup on a hit.
       EXPECT_EQ(graph.SnapshotNode(root.key)->stats.visits, hit ? 2u : 1u);
-      EXPECT_EQ(graph.SnapshotNode(root.key)->edges[0].stats.visits, hit ? 1u : 0u);
+      EXPECT_EQ(TriedAt(*graph.SnapshotNode(root.key), 0).stats.visits,
+                hit ? 1u : 0u);
       if (abort) {
         EXPECT_TRUE(responder.bestmoves.empty());
         EXPECT_TRUE(std::none_of(responder.thinking.begin(),
@@ -1233,7 +1241,7 @@ TEST(Lc5SearchTest, AuthorizedEvaluationsBackUpToRootAfterStop) {
   ASSERT_TRUE(node);
   EXPECT_EQ(node->stats.visits, 5u);
   uint64_t edge_visits = 0;
-  for (const auto& edge : node->edges) edge_visits += edge.stats.visits;
+  for (const auto& tried : node->tried) edge_visits += tried.stats.visits;
   EXPECT_EQ(edge_visits, 4u);
   ExpectFinalOutput(responder, 20);
 }
@@ -1374,7 +1382,7 @@ TEST(Lc5SearchTest, SingleNodeSearchPlaysTopPriorMove) {
   const auto node = graph.SnapshotNode(root.key);
   ASSERT_TRUE(node);
   ASSERT_FALSE(node->edges.empty());
-  for (const auto& edge : node->edges) EXPECT_EQ(edge.stats.visits, 0u);
+  for (const auto& tried : node->tried) EXPECT_EQ(tried.stats.visits, 0u);
   Move expected = node->edges[0].move;
   expected.Flip();
   ASSERT_EQ(responder.thinking.back().pv.size(), 1u);

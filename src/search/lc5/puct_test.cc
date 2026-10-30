@@ -35,16 +35,18 @@ namespace lczero::lc5 {
 namespace {
 
 using Node = NodeState<PuctAveraging>;
-using Edge = EdgeState<PuctAveraging>;
+using Tried = TriedEdge<PuctAveraging>;
 
 Move M(File from, File to) {
   return Move::White(Square(from, kRank2), Square(to, kRank3));
 }
 
-Edge MakeEdge(File file, float prior, uint32_t visits = 0, float q = 0.0f) {
-  return {.move = M(file, file),
-          .prior = prior,
-          .stats = {.visits = visits, .q = q}};
+LegalEdge MakeEdge(File file, float prior) {
+  return {.move = M(file, file), .prior = prior};
+}
+
+Tried MakeTried(uint32_t visits, float q = 0.0f) {
+  return {.stats = {.visits = visits, .q = q}};
 }
 
 PuctAveraging::Params TestParams() {
@@ -100,9 +102,9 @@ TEST(Lc5PuctTest, FirstUntriedEdgeCompetesWithTriedOnes) {
     SCOPED_TRACE(q);
     const Node node{.lifecycle = NodeLifecycle::kExpanded,
                     .stats = {.visits = 2},
-                    .edges = {MakeEdge(kFileA, 0.5f, 1, q),
-                              MakeEdge(kFileB, 0.3f), MakeEdge(kFileC, 0.2f)},
-                    .started_end = 1};
+                    .edges = {MakeEdge(kFileA, 0.5f), MakeEdge(kFileB, 0.3f),
+                              MakeEdge(kFileC, 0.2f)},
+                    .tried = {MakeTried(1, q)}};
     // The tried edge scores q + 0.25 and the first untried one 0.3.
     EXPECT_EQ(PuctAveraging::Select(node, TestParams()), q > 0.05f ? 0u : 1u);
   }
@@ -112,9 +114,8 @@ TEST(Lc5PuctTest, InFlightEdgeLosesUrgency) {
   Node node{.lifecycle = NodeLifecycle::kExpanded,
             .stats = {.visits = 1},
             .edges = {MakeEdge(kFileA, 0.5f), MakeEdge(kFileB, 0.3f)},
-            .started_end = 1};
+            .tried = {Tried{.in_flight = 1}}};
   // Edge A scores 0.5 / 2 with one visit in flight; edge B scores 0.3.
-  node.edges[0].in_flight = 1;
   EXPECT_EQ(PuctAveraging::Select(node, TestParams()), 1u);
 }
 
@@ -145,33 +146,34 @@ TEST(Lc5PuctTest, ChooseEdgeRanksVisitsThenQThenPrior) {
   Node node{.lifecycle = NodeLifecycle::kExpanded,
             .edges = {MakeEdge(kFileA, 0.5f), MakeEdge(kFileB, 0.3f),
                       MakeEdge(kFileC, 0.2f)}};
-  EXPECT_EQ(PuctAveraging::ChooseEdge(node), nullptr);
+  EXPECT_EQ(PuctAveraging::ChooseEdge(node), std::nullopt);
 
-  node.edges[2].stats = {.visits = 1, .q = -0.9f};
-  EXPECT_EQ(PuctAveraging::ChooseEdge(node), &node.edges[2]);
+  // Tried edges without a visit don't count.
+  node.tried = {Tried{.in_flight = 1}, Tried{}, MakeTried(1, -0.9f)};
+  EXPECT_EQ(PuctAveraging::ChooseEdge(node), 2u);
 
-  node.edges[1].stats = {.visits = 2, .q = -0.5f};
-  node.edges[2].stats = {.visits = 2, .q = 0.1f};
-  EXPECT_EQ(PuctAveraging::ChooseEdge(node), &node.edges[2]);
+  node.tried[1].stats = {.visits = 2, .q = -0.5f};
+  node.tried[2].stats = {.visits = 2, .q = 0.1f};
+  EXPECT_EQ(PuctAveraging::ChooseEdge(node), 2u);
 
-  node.edges[1].stats.q = 0.1f;
-  EXPECT_EQ(PuctAveraging::ChooseEdge(node), &node.edges[1]);
+  node.tried[1].stats.q = 0.1f;
+  EXPECT_EQ(PuctAveraging::ChooseEdge(node), 1u);
 
-  node.edges[0].stats = {.visits = 3, .q = -1.0f};
-  EXPECT_EQ(PuctAveraging::ChooseEdge(node), &node.edges[0]);
+  node.tried[0].stats = {.visits = 3, .q = -1.0f};
+  EXPECT_EQ(PuctAveraging::ChooseEdge(node), 0u);
 }
 
 TEST(Lc5PuctTest, ChooseMoveFallsBackToTopPrior) {
   Node node{.lifecycle = NodeLifecycle::kExpanded};
-  EXPECT_EQ(PuctAveraging::ChooseMove(node), nullptr);
+  EXPECT_EQ(PuctAveraging::ChooseMove(node), std::nullopt);
 
   node.edges = {MakeEdge(kFileC, 0.5f), MakeEdge(kFileA, 0.3f),
                 MakeEdge(kFileB, 0.2f)};
-  EXPECT_EQ(PuctAveraging::ChooseEdge(node), nullptr);
-  EXPECT_EQ(PuctAveraging::ChooseMove(node), &node.edges[0]);
+  EXPECT_EQ(PuctAveraging::ChooseEdge(node), std::nullopt);
+  EXPECT_EQ(PuctAveraging::ChooseMove(node), 0u);
 
-  node.edges[2].stats = {.visits = 1};
-  EXPECT_EQ(PuctAveraging::ChooseMove(node), &node.edges[2]);
+  node.tried = {Tried{}, Tried{}, MakeTried(1)};
+  EXPECT_EQ(PuctAveraging::ChooseMove(node), 2u);
 }
 
 TEST(Lc5PuctTest, DescribeNeedsVisits) {

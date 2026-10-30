@@ -29,6 +29,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <string_view>
 
 #include "chess/callbacks.h"
@@ -82,16 +83,17 @@ struct PuctAveraging {
   // The edge to visit next; `node` is expanded, non-terminal, with edges.
   static size_t Select(const NodeState<PuctAveraging>& node,
                        const Params& params);
-  // The PV and bestmove edge: most visits, then best Q, then PreferOnTie;
-  // nullptr if no edge has a visit.
-  static const EdgeState<PuctAveraging>* ChooseEdge(
-      const NodeState<PuctAveraging>& node);
-  // The bestmove edge: ChooseEdge, or before any edge has a visit the
-  // highest-prior one (edges are sorted by PreferOnTie); nullptr if no edges.
-  static const EdgeState<PuctAveraging>* ChooseMove(
+  // The index of the PV and bestmove edge: most visits, then best Q, then
+  // PreferOnTie; nullopt if no edge has a visit.
+  static std::optional<size_t> ChooseEdge(const NodeState<PuctAveraging>& node);
+  // The index of the bestmove edge: ChooseEdge, or before any edge has a visit
+  // the highest-prior one (edges are sorted by PreferOnTie); nullopt if no
+  // edges.
+  static std::optional<size_t> ChooseMove(
       const NodeState<PuctAveraging>& node) {
-    const auto* edge = ChooseEdge(node);
-    return edge || node.edges.empty() ? edge : &node.edges.front();
+    const auto index = ChooseEdge(node);
+    if (index || node.edges.empty()) return index;
+    return 0;
   }
   // Fills the score and WDL of `info` if the node has visits.
   static void Describe(const NodeStats& node, ThinkingInfo& info);
@@ -103,6 +105,6 @@ struct PuctAveraging {
                                   : VisitEngine::ResumeAction::kSelect;
   }
 };
-static_assert(sizeof(EdgeState<PuctAveraging>) <= 24);
+static_assert(sizeof(TriedEdge<PuctAveraging>) <= 20);
 
 }  // namespace lczero::lc5

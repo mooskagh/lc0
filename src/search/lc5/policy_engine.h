@@ -192,11 +192,11 @@ void PolicyEngine<P>::Report(const VisitOrigin& root, const VisitContext& ctx,
          node->terminal == TerminalKind::kNonTerminal) {
     // The root's move is the bestmove, so it is chosen even before any of its
     // edges has a visit.
-    const EdgeState<P>* edge =
-        pv.empty() ? P::ChooseMove(*node) : P::ChooseEdge(*node);
-    if (!edge) break;
-    pv.push_back(ToUci(edge->move, history.Last()));
-    history.Append(edge->move);
+    const auto index = pv.empty() ? P::ChooseMove(*node) : P::ChooseEdge(*node);
+    if (!index) break;
+    const Move move = node->edges[*index].move;
+    pv.push_back(ToUci(move, history.Last()));
+    history.Append(move);
     const NodeKey key = MakeNodeKey(history, ctx.settings.history_key_length);
     if (!seen.insert(key.hash).second) break;
     node = graph_.SnapshotNode(key);
@@ -211,8 +211,8 @@ RootStats PolicyEngine<P>::Root(NodeKey root) const {
   stats.expanded = node->lifecycle == NodeLifecycle::kExpanded;
   stats.visits = P::Visits(node->stats);
   stats.edges = node->edges.size();
-  for (const auto& edge : node->edges) {
-    const uint64_t visits = P::Visits(edge.stats);
+  for (const auto& tried : node->tried) {
+    const uint64_t visits = P::Visits(tried.stats);
     if (visits > stats.best_edge_visits) {
       stats.second_edge_visits = stats.best_edge_visits;
       stats.best_edge_visits = visits;

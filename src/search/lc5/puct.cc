@@ -92,17 +92,16 @@ PuctAveraging::Params PuctAveraging::Params::FromOptions(
 
 size_t PuctAveraging::Select(const NodeState<PuctAveraging>& node,
                              const Params& params) {
-  using Edge = EdgeState<PuctAveraging>;
-  const auto started = [](const Edge& edge) {
-    return edge.stats.visits + edge.in_flight;
+  const auto started = [](const TriedEdge<PuctAveraging>& tried) {
+    return tried.stats.visits + tried.in_flight;
   };
-  // Started edges all lie below started_end, so the sums only need that prefix.
+  // Only tried edges have been started, so the sums only need that prefix.
   uint64_t children_started = 0;
   float visited_policy = 0.0f;
-  for (uint32_t i = 0; i < node.started_end; ++i) {
-    const auto& edge = node.edges[i];
-    children_started += started(edge);
-    if (started(edge) > 0) visited_policy += edge.prior;
+  for (size_t i = 0; i < node.tried.size(); ++i) {
+    const auto& tried = node.tried[i];
+    children_started += started(tried);
+    if (started(tried) > 0) visited_policy += node.edges[i].prior;
   }
   const float cpuct =
       params.cpuct +
@@ -114,17 +113,20 @@ size_t PuctAveraging::Select(const NodeState<PuctAveraging>& node,
       params.fpu_strategy == FpuStrategy::kAbsolute
           ? params.fpu_value
           : node.stats.Q() - params.fpu_value * std::sqrt(visited_policy);
-  const auto score = [&](const Edge& edge) {
-    const float q = edge.stats.visits ? edge.stats.Q() : fpu;
-    return q + cpuct * edge.prior * scale / (1.0f + started(edge));
+  const auto score = [&](size_t i) {
+    const bool is_tried = i < node.tried.size();
+    const float q =
+        is_tried && node.tried[i].stats.visits ? node.tried[i].stats.Q() : fpu;
+    const uint32_t n = is_tried ? started(node.tried[i]) : 0u;
+    return q + cpuct * node.edges[i].prior * scale / (1.0f + n);
   };
   const auto pick_best = [&](size_t end) {
     size_t best = 0;
-    float best_score = score(node.edges[0]);
+    float best_score = score(0);
     for (size_t i = 1; i < end; ++i) {
-      const float s = score(node.edges[i]);
-      if (s > best_score ||
-          (s == best_score && PreferOnTie(node.edges[i], node.edges[best]))) {
+      const float s = score(i);
+      // Ties keep the lower index, which PreferOnTie prefers.
+      if (s > best_score) {
         best = i;
         best_score = s;
       }
@@ -132,32 +134,25 @@ size_t PuctAveraging::Select(const NodeState<PuctAveraging>& node,
     return best;
   };
 
-  // Unstarted edges share the FPU and are sorted by PreferOnTie, so the first
+  // Untried edges share the FPU and are sorted by PreferOnTie, so the first
   // one beats or ties all later ones and wins the tie.
   const size_t best_index =
-      pick_best(std::min<size_t>(node.started_end + 1, node.edges.size()));
-#ifndef NDEBUG
-  for (size_t i = node.started_end; i < node.edges.size(); ++i) {
-    assert(started(node.edges[i]) == 0);
-  }
+      pick_best(std::min(node.tried.size() + 1, node.edges.size()));
   assert(pick_best(node.edges.size()) == best_index);
-#endif
   return best_index;
 }
 
-const EdgeState<PuctAveraging>* PuctAveraging::ChooseEdge(
+std::optional<size_t> PuctAveraging::ChooseEdge(
     const NodeState<PuctAveraging>& node) {
-  using Edge = EdgeState<PuctAveraging>;
-  const Edge* best = nullptr;
-  for (const auto& edge : node.edges) {
-    if (edge.stats.visits == 0) continue;
-    const auto rank = [](const Edge& e) {
-      return std::pair(e.stats.visits, e.stats.Q());
-    };
-    if (!best || rank(edge) > rank(*best) ||
-        (rank(edge) == rank(*best) && PreferOnTie(edge, *best))) {
-      best = &edge;
-    }
+  // Untried edges have no visits.
+  const auto rank = [&](size_t i) {
+    return std::pair(node.tried[i].stats.visits, node.tried[i].stats.Q());
+  };
+  std::optional<size_t> best;
+  for (size_t i = 0; i < node.tried.size(); ++i) {
+    if (node.tried[i].stats.visits == 0) continue;
+    // Ties keep the lower index, which PreferOnTie prefers.
+    if (!best || rank(i) > rank(*best)) best = i;
   }
   return best;
 }

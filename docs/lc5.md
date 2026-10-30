@@ -21,6 +21,9 @@ defaults match classic; what differs is how the work is organized. Code is in
 - **Statistics on edges.** Each edge records its own visits and value. When
   two parents lead into the same node, each parent's edge keeps its own
   numbers, so a transposition does not distort the other parent's view.
+  Every legal move keeps only its move and prior; statistics exist only for
+  the edges that have been tried, which always form a prefix of the
+  prior-sorted edges.
 - **Collisions wait instead of being discarded.** If a visit reaches a node
   that is already waiting for the network, it waits too. When the evaluation
   arrives, it carries on selecting below that node (see "Waiting" below).
@@ -159,7 +162,7 @@ Reading the `info` line:
 | `puct.h/.cc` | `PuctAveraging`, the policy: PUCT selection, averaging backup, its options, PV edge, score/WDL. |
 | `policies.cc` | Policy table and the `Lc5Policy` option; a new policy is one row. |
 | `search_materialization.cc` | Creating nodes, terminal detection, jobs, evaluator batching. |
-| `graph.h` | `GameGraph<P>`: sharded node map, reservations, per-node updates; node and edge stats belong to the policy. |
+| `graph.h` | `GameGraph<P>`: sharded node map, reservations, per-node updates, tried-edge stats; node and edge stats belong to the policy. |
 | `visit.h` | Visit state and the fixed pool of visit slots. |
 | `key.h`, `value.h` | Node keys; value sums and perspective flips. |
 | `time_manager.cc` | Per-move deadline. |
