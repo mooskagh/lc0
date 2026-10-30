@@ -32,6 +32,7 @@
 #include <string_view>
 
 #include "chess/callbacks.h"
+#include "neural/backend.h"
 #include "search/lc5/graph.h"
 #include "search/lc5/metrics.h"
 #include "search/lc5/settings.h"
@@ -76,8 +77,10 @@ class VisitEngine {
 
   // The policy name, as in the Lc5Policy option.
   virtual std::string_view name() const = 0;
-  // Reads the policy's options; called only while no search runs.
-  virtual void Configure(const OptionsDict& options) = 0;
+  // Reads the policy's options and what the backend provides; called only
+  // while no search runs.
+  virtual void Configure(const OptionsDict& options,
+                         const BackendAttributes& backend) = 0;
   // Drops the whole graph; called only while no search runs.
   virtual void Clear() = 0;
 

@@ -59,9 +59,23 @@ struct PuctAveraging {
     float fpu_value = 0.33f;
     PuctTotals totals = PuctTotals::kStarted;
     WaiterResume waiter_resume = WaiterResume::kSelect;
+    // Moves-left utility: in clearly decided nodes, prefer edges that shorten
+    // a win or lengthen a loss. Needs a network with a moves-left head.
+    struct MovesLeft {
+      bool enabled = false;
+      float max_effect = 0.0345f;
+      float threshold = 0.8f;
+      float slope = 0.0027f;
+      float constant_factor = 0.0f;
+      float scaled_factor = 1.6521f;
+      float quadratic_factor = -0.6521f;
+    };
+    MovesLeft moves_left = {};
 
     static void Populate(OptionsParser* options);
-    static Params FromOptions(const OptionsDict& options);
+    // Moves-left stays off if the backend has no moves-left head.
+    static Params FromOptions(const OptionsDict& options,
+                              const BackendAttributes& backend);
   };
 
   using NodeStats = ValueStats;

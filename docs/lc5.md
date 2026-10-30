@@ -42,8 +42,11 @@ Code: `search_visits.cc`, `policy_engine.h`, `puct.cc`, `search_materialization.
    untried one, and reserves the edge (`in_flight`). In-flight visits count
    in the edge's own U denominator; by default they also count in the
    parent's sqrt(N) and FPU visited policy, and with `PuctTotals=completed`
-   they don't, as in classic. Each step goes into the visit's `path` for
-   backup or cancel.
+   they don't, as in classic. With `MovesLeft` (needs a network with a
+   moves-left head), in nodes whose |Q| exceeds `MovesLeftThreshold` a tried
+   edge's Q also gets a small bonus for shortening a win or lengthening a
+   loss, from the edge's M against the node's. Each step goes into the
+   visit's `path` for backup or cancel.
 
 3. **Reaching a leaf.** Selection ends in one of four ways:
    - The node is **terminal** (mate, stalemate, insufficient material,
@@ -210,10 +213,13 @@ Options of the `puct` policy:
 | `FpuStrategy`, `FpuValue` | reduction, 0.33 | As classic. |
 | `PuctTotals` | started | Child visits counted in sqrt(N) and the FPU visited policy: started (with in-flight) or completed (as classic). |
 | `WaiterResume` | select | After waiting for a node's evaluation: select below it, reselect at its parent, or restart from the root. |
+| `MovesLeft` | false | Prefer shorter wins and longer losses in clearly decided nodes. Off without a moves-left head. |
+| `MovesLeftMaxEffect`, `MovesLeftThreshold`, `MovesLeftSlope` | 0.0345, 0.8, 0.0027 | Largest bonus, node \|Q\| above which it applies, bonus per ply of M difference. |
+| `MovesLeftConstantFactor`, `MovesLeftScaledFactor`, `MovesLeftQuadraticFactor` | 0, 1.6521, −0.6521 | Bonus scaling: a + b·x + c·x², x = edge \|Q\| above the threshold, rescaled to [0, 1]. |
 
 ## Not done yet
 
-- Moves-left utility, mate propagation, Syzygy, MultiPV, training data
-  output, memory limits and eviction.
+- Mate propagation, Syzygy, MultiPV, training data output, memory limits
+  and eviction.
 
 `scripts/benchmark_lc5.py` is a speed benchmark harness.

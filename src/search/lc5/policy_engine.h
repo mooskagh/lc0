@@ -47,8 +47,9 @@ class PolicyEngine final : public VisitEngine {
   explicit PolicyEngine(typename P::Params params = {}) : params_(params) {}
 
   std::string_view name() const override { return P::kName; }
-  void Configure(const OptionsDict& options) override {
-    params_ = P::Params::FromOptions(options);
+  void Configure(const OptionsDict& options,
+                 const BackendAttributes& backend) override {
+    params_ = P::Params::FromOptions(options, backend);
   }
   void Clear() override { graph_.Clear(); }
 

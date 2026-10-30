@@ -91,7 +91,7 @@ void Lc5Engine::StartSearch(const GoParams& params) {
   if (!visit_engine_ || visit_engine_->name() != policy) {
     visit_engine_ = MakeVisitEngine(policy);
   }
-  visit_engine_->Configure(*options_);
+  visit_engine_->Configure(*options_, backend_->GetAttributes());
   const Settings settings(*options_);
   VisitOrigin root{
       .key = MakeNodeKey(*root_history_, settings.history_key_length()),

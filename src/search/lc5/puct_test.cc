@@ -45,9 +45,21 @@ LegalEdge MakeEdge(File file, float prior) {
   return {.move = M(file, file), .prior = prior};
 }
 
-Tried MakeTried(uint32_t visits, float q = 0.0f) {
-  return {.stats = {.visits = visits, .q = q}};
+Tried MakeTried(uint32_t visits, float q = 0.0f, float m = 0.0f) {
+  return {.stats = {.visits = visits, .q = q, .m = m}};
 }
+
+BackendAttributes MakeAttributes(bool has_mlh) {
+  return {.has_mlh = has_mlh,
+          .has_wdl = true,
+          .runs_on_cpu = false,
+          .suggested_num_search_threads = 1,
+          .recommended_batch_size = 1,
+          .maximum_batch_size = 1};
+}
+
+// A backend with a moves-left head.
+const BackendAttributes kMlh = MakeAttributes(true);
 
 PuctAveraging::Params TestParams() {
   return {.cpuct = 1.0f,
@@ -62,7 +74,7 @@ TEST(Lc5PuctTest, OptionDefaultsMatchParams) {
   PopulatePolicyOptions(&parser);
   EXPECT_EQ(PolicyName(parser.GetOptionsDict()), "puct");
   const auto params =
-      PuctAveraging::Params::FromOptions(parser.GetOptionsDict());
+      PuctAveraging::Params::FromOptions(parser.GetOptionsDict(), kMlh);
   const PuctAveraging::Params defaults;
   EXPECT_EQ(params.cpuct, defaults.cpuct);
   EXPECT_EQ(params.cpuct_base, defaults.cpuct_base);
@@ -72,6 +84,15 @@ TEST(Lc5PuctTest, OptionDefaultsMatchParams) {
   EXPECT_EQ(params.totals, PuctTotals::kStarted);
   EXPECT_EQ(params.waiter_resume, WaiterResume::kSelect);
   EXPECT_EQ(PuctAveraging::OnResume(params), WaiterResume::kSelect);
+  EXPECT_FALSE(params.moves_left.enabled);
+  EXPECT_EQ(params.moves_left.max_effect, defaults.moves_left.max_effect);
+  EXPECT_EQ(params.moves_left.threshold, defaults.moves_left.threshold);
+  EXPECT_EQ(params.moves_left.slope, defaults.moves_left.slope);
+  EXPECT_EQ(params.moves_left.constant_factor,
+            defaults.moves_left.constant_factor);
+  EXPECT_EQ(params.moves_left.scaled_factor, defaults.moves_left.scaled_factor);
+  EXPECT_EQ(params.moves_left.quadratic_factor,
+            defaults.moves_left.quadratic_factor);
 }
 
 TEST(Lc5PuctTest, OptionsReachParams) {
@@ -81,16 +102,24 @@ TEST(Lc5PuctTest, OptionsReachParams) {
   parser.SetUciOption("FpuStrategy", "absolute");
   parser.SetUciOption("PuctTotals", "completed");
   parser.SetUciOption("WaiterResume", "restart");
+  parser.SetUciOption("MovesLeft", "true");
+  parser.SetUciOption("MovesLeftSlope", "0.01");
   const auto params =
-      PuctAveraging::Params::FromOptions(parser.GetOptionsDict());
+      PuctAveraging::Params::FromOptions(parser.GetOptionsDict(), kMlh);
   EXPECT_EQ(params.cpuct, 3.0f);
   EXPECT_EQ(params.fpu_strategy, FpuStrategy::kAbsolute);
   EXPECT_EQ(params.totals, PuctTotals::kCompleted);
   EXPECT_EQ(PuctAveraging::OnResume(params), WaiterResume::kRestart);
+  EXPECT_TRUE(params.moves_left.enabled);
+  EXPECT_EQ(params.moves_left.slope, 0.01f);
   parser.SetUciOption("WaiterResume", "reselect");
-  EXPECT_EQ(
-      PuctAveraging::Params::FromOptions(parser.GetOptionsDict()).waiter_resume,
-      WaiterResume::kReselect);
+  EXPECT_EQ(PuctAveraging::Params::FromOptions(parser.GetOptionsDict(), kMlh)
+                .waiter_resume,
+            WaiterResume::kReselect);
+  // Without a moves-left head the option has no effect.
+  EXPECT_FALSE(PuctAveraging::Params::FromOptions(parser.GetOptionsDict(),
+                                                  MakeAttributes(false))
+                   .moves_left.enabled);
 }
 
 TEST(Lc5PuctTest, UnstartedNodePicksTopPrior) {
@@ -153,6 +182,33 @@ TEST(Lc5PuctTest, ReselectCountsWaiterAsCompleted) {
   EXPECT_EQ(PuctAveraging::Reselect(node, TestParams(), 0, {.q = -0.9f}), 1u);
   // q = 0.9: A 1.136 > B 0.424.
   EXPECT_EQ(PuctAveraging::Reselect(node, TestParams(), 0, {.q = 0.9f}), 0u);
+}
+
+TEST(Lc5PuctTest, MovesLeftPrefersShorterWinsAndLongerLosses) {
+  auto params = TestParams();
+  params.moves_left.enabled = true;
+  const auto select = [&](float node_q, float edge_q) {
+    // Equal priors and visits, so without moves-left the tie goes to edge A.
+    // The node has M 20; edge A's child has M 30 (10 plies longer) and edge
+    // B's child M 10 (10 plies shorter).
+    const Node node{
+        .lifecycle = NodeLifecycle::kExpanded,
+        .stats = {.visits = 3, .q = node_q, .m = 20.0f},
+        .edges = {MakeEdge(kFileA, 0.5f), MakeEdge(kFileB, 0.5f)},
+        .tried = {MakeTried(1, edge_q, 31.0f), MakeTried(1, edge_q, 11.0f)}};
+    return PuctAveraging::Select(node, params);
+  };
+  // Edge |Q| 0.9 is (0.9 - 0.8) / 0.2 = 0.5 above the threshold, so the
+  // scaling is 1.6521 * 0.5 - 0.6521 * 0.25 = 0.663. The slope gives
+  // 0.0027 * 10 = 0.027, so the edges get +-0.0179.
+  // Winning: B (shorter) gets the bonus.
+  EXPECT_EQ(select(0.9f, 0.9f), 1u);
+  // Losing: A (longer) gets the bonus.
+  EXPECT_EQ(select(-0.9f, -0.9f), 0u);
+  // Node |Q| 0.5 is below the threshold: tie.
+  EXPECT_EQ(select(0.5f, 0.9f), 0u);
+  params.moves_left.enabled = false;
+  EXPECT_EQ(select(0.9f, 0.9f), 0u);
 }
 
 TEST(Lc5PuctTest, UpdateAveragesAndFlipsForParent) {
