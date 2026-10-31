@@ -61,7 +61,7 @@ struct PuctParams {
   float cpuct_factor = 3.894f;
   FpuStrategy fpu_strategy = FpuStrategy::kReduction;
   float fpu_value = 0.33f;
-  WaiterResume waiter_resume = WaiterResume::kSelect;
+  WaiterResume waiter_resume = WaiterResume::kReselect;
   // Moves-left utility: in clearly decided nodes, prefer edges that shorten
   // a win or lengthen a loss. Needs a network with a moves-left head.
   struct MovesLeft {

@@ -73,13 +73,14 @@ Code: `search_visits.cc`, `policy_engine.h`, `puct.cc`, `search_materialization.
    node: its legal moves, priors and value.
 
 5. **Waiting.** When a node is installed, its owner backs up the network's
-   value. Its waiters do not back anything up; by default they continue
-   selecting *below* the new node and end up at some other leaf. With
-   `WaiterResume=reselect` a waiter first reruns PUCT at the node's parent,
+   value. Its waiters do not back anything up. By default
+   (`WaiterResume=reselect`) a waiter reruns PUCT at the node's parent,
    counting its own visit as completed with the node's value, and switches
-   to another edge if that one is now better. With `WaiterResume=restart`
-   it restarts from the root instead (this was the `RestartWaiters` option;
-   in earlier testing it was worse).
+   to another edge if that one is now better (about +7 Elo over `select`).
+   With `WaiterResume=select` it continues selecting *below* the new node
+   and ends up at some other leaf; with `WaiterResume=restart` it restarts
+   from the root instead (this was the `RestartWaiters` option; in earlier
+   testing it was worse).
 
 6. **Backup.** Along the path, add the value to each node and edge and
    release the reservations. Node values are from the side to move at that
@@ -236,7 +237,7 @@ Options of the `puct` and `puct-dag` policies (they share them):
 |---|---|---|
 | `CPuct`, `CPuctBase`, `CPuctFactor` | 1.745, 38739, 3.894 | As classic. |
 | `FpuStrategy`, `FpuValue` | reduction, 0.33 | As classic. |
-| `WaiterResume` | select | After waiting for a node's evaluation: select below it, reselect at its parent, or restart from the root. |
+| `WaiterResume` | reselect | After waiting for a node's evaluation: select below it, reselect at its parent, or restart from the root. |
 | `MovesLeft` | false | Prefer shorter wins and longer losses in clearly decided nodes. Off without a moves-left head. |
 | `MovesLeftMaxEffect`, `MovesLeftThreshold`, `MovesLeftSlope` | 0.0345, 0.8, 0.0027 | Largest bonus, node \|Q\| above which it applies, bonus per ply of M difference. |
 | `MovesLeftConstantFactor`, `MovesLeftScaledFactor`, `MovesLeftQuadraticFactor` | 0, 1.6521, −0.6521 | Bonus scaling: a + b·x + c·x², x = edge \|Q\| above the threshold, rescaled to [0, 1]. |

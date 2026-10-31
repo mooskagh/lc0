@@ -83,8 +83,8 @@ TEST(Lc5PuctTest, OptionDefaultsMatchParams) {
   EXPECT_EQ(params.cpuct_factor, defaults.cpuct_factor);
   EXPECT_EQ(params.fpu_strategy, FpuStrategy::kReduction);
   EXPECT_EQ(params.fpu_value, defaults.fpu_value);
-  EXPECT_EQ(params.waiter_resume, WaiterResume::kSelect);
-  EXPECT_EQ(PuctAveraging::OnResume(params), WaiterResume::kSelect);
+  EXPECT_EQ(params.waiter_resume, WaiterResume::kReselect);
+  EXPECT_EQ(PuctAveraging::OnResume(params), WaiterResume::kReselect);
   EXPECT_FALSE(params.moves_left.enabled);
   EXPECT_EQ(params.moves_left.max_effect, defaults.moves_left.max_effect);
   EXPECT_EQ(params.moves_left.threshold, defaults.moves_left.threshold);
@@ -119,10 +119,10 @@ TEST(Lc5PuctTest, OptionsReachParams) {
   EXPECT_TRUE(params.sticky_endgames);
   EXPECT_EQ(params.two_fold_draws, TwoFoldDraws::kContained);
   EXPECT_TRUE(PuctAveraging::ContainTwoFold(params));
-  parser.SetUciOption("WaiterResume", "reselect");
+  parser.SetUciOption("WaiterResume", "select");
   EXPECT_EQ(PuctAveraging::Params::FromOptions(parser.GetOptionsDict(), kMlh)
                 .waiter_resume,
-            WaiterResume::kReselect);
+            WaiterResume::kSelect);
   // Without a moves-left head the option has no effect.
   EXPECT_FALSE(PuctAveraging::Params::FromOptions(parser.GetOptionsDict(),
                                                   MakeAttributes(false))
