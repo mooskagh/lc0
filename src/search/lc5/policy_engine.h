@@ -41,7 +41,8 @@
 namespace lczero::lc5 {
 
 // Search over a GameGraph it owns, with node and edge statistics, selection
-// and backup supplied by the policy P (see PuctAveraging for the interface).
+// and backup supplied by the policy P (see PuctPolicy and PuctAveraging in
+// puct.h for the interface).
 template <typename P>
 class PolicyEngine final : public VisitEngine {
  public:

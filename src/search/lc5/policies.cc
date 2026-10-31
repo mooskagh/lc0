@@ -27,6 +27,7 @@
 
 #include "search/lc5/policies.h"
 
+#include <algorithm>
 #include <vector>
 
 #include "search/lc5/policy_engine.h"
@@ -60,7 +61,17 @@ void PopulatePolicyOptions(OptionsParser* options) {
   std::vector<std::string> names;
   for (const auto& policy : kPolicies) names.emplace_back(policy.name);
   options->Add<ChoiceOption>(kPolicy, names) = names.front();
-  for (const auto& policy : kPolicies) policy.populate(options);
+  // Policies may share a parameter set (and so its options), which is
+  // registered once.
+  std::vector<void (*)(OptionsParser*)> populated;
+  for (const auto& policy : kPolicies) {
+    if (std::find(populated.begin(), populated.end(), policy.populate) !=
+        populated.end()) {
+      continue;
+    }
+    populated.push_back(policy.populate);
+    policy.populate(options);
+  }
 }
 
 std::string PolicyName(const OptionsDict& options) {

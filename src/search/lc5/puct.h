@@ -27,15 +27,22 @@
 
 #pragma once
 
+#include <algorithm>
+#include <cassert>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
+#include <span>
 #include <string_view>
+#include <tuple>
+#include <vector>
 
 #include "chess/callbacks.h"
 #include "search/lc5/graph.h"
 #include "search/lc5/value.h"
 #include "search/lc5/visit_engine.h"
+#include "utils/fastmath.h"
 #include "utils/optionsdict.h"
 #include "utils/optionsparser.h"
 
@@ -49,42 +56,51 @@ enum class PuctTotals { kStarted, kCompleted };
 // the repeated position's first occurrence only.
 enum class TwoFoldDraws { kRoot, kContained };
 
-// PUCT selection over running averages, as in classic. Nodes and edges keep
-// value means and bounds, and the message is a value and bounds from the side
-// to move at the node.
-struct PuctAveraging {
-  static constexpr std::string_view kName = "puct";
-
-  struct Params {
-    float cpuct = 1.745f;
-    float cpuct_base = 38739.0f;
-    float cpuct_factor = 3.894f;
-    FpuStrategy fpu_strategy = FpuStrategy::kReduction;
-    float fpu_value = 0.33f;
-    PuctTotals totals = PuctTotals::kStarted;
-    WaiterResume waiter_resume = WaiterResume::kSelect;
-    // Moves-left utility: in clearly decided nodes, prefer edges that shorten
-    // a win or lengthen a loss. Needs a network with a moves-left head.
-    struct MovesLeft {
-      bool enabled = false;
-      float max_effect = 0.0345f;
-      float threshold = 0.8f;
-      float slope = 0.0027f;
-      float constant_factor = 0.0f;
-      float scaled_factor = 1.6521f;
-      float quadratic_factor = -0.6521f;
-    };
-    MovesLeft moves_left = {};
-    // Use proven bounds in selection, the move choice, early stopping and
-    // mate scores. Bounds are tracked either way.
-    bool sticky_endgames = false;
-    TwoFoldDraws two_fold_draws = TwoFoldDraws::kRoot;
-
-    static void Populate(OptionsParser* options);
-    // Moves-left stays off if the backend has no moves-left head.
-    static Params FromOptions(const OptionsDict& options,
-                              const BackendAttributes& backend);
+// The parameters of PUCT selection, shared by all PUCT policies (which
+// therefore share their options).
+struct PuctParams {
+  float cpuct = 1.745f;
+  float cpuct_base = 38739.0f;
+  float cpuct_factor = 3.894f;
+  FpuStrategy fpu_strategy = FpuStrategy::kReduction;
+  float fpu_value = 0.33f;
+  PuctTotals totals = PuctTotals::kStarted;
+  WaiterResume waiter_resume = WaiterResume::kSelect;
+  // Moves-left utility: in clearly decided nodes, prefer edges that shorten
+  // a win or lengthen a loss. Needs a network with a moves-left head.
+  struct MovesLeft {
+    bool enabled = false;
+    float max_effect = 0.0345f;
+    float threshold = 0.8f;
+    float slope = 0.0027f;
+    float constant_factor = 0.0f;
+    float scaled_factor = 1.6521f;
+    float quadratic_factor = -0.6521f;
   };
+  MovesLeft moves_left = {};
+  // Use proven bounds in selection, the move choice, early stopping and
+  // mate scores. Bounds are tracked either way.
+  bool sticky_endgames = false;
+  TwoFoldDraws two_fold_draws = TwoFoldDraws::kRoot;
+
+  static void Populate(OptionsParser* options);
+  // Moves-left stays off if the backend has no moves-left head.
+  static PuctParams FromOptions(const OptionsDict& options,
+                                const BackendAttributes& backend);
+};
+
+// The WDL and centipawn score that Describe reports for a value.
+ThinkingInfo::WDL WdlFromValue(float q, float d);
+int CentipawnsFromQ(float q);
+
+// PUCT selection, move choice, bounds and reporting over ValueStats nodes and
+// edges. `Self` supplies kName, Update and UpdateEdge: how a message changes
+// the node and the edge it came through, and what the parent receives. Nodes
+// and edges keep value means and bounds, and the message is a value and
+// bounds from the side to move at the node.
+template <typename Self>
+struct PuctPolicy {
+  using Params = PuctParams;
 
   // Node stats are from the node's side to move, edge stats from the edge's
   // parent's.
@@ -111,28 +127,10 @@ struct PuctAveraging {
   static Message Stale(const Message& message) {
     return {message.value.Parent(), Bounds{}};
   }
-  // Folds `message` into the node and, if given, the edge the visit took, and
-  // returns what the parent receives: the value and the node's own bounds.
-  static Message Update(NodeState<PuctAveraging>& node,
-                        TriedEdge<PuctAveraging>* edge,
-                        const Message& message) {
-    node.stats.Add(message.value);
-    if (edge) edge->stats.Add(message.value);
-    if (node.edges.empty()) {
-      // A terminal's bounds are its own leaf's.
-      node.stats.bounds = message.bounds;
-    } else if (edge && edge->stats.bounds != message.bounds) {
-      // Bounds rarely change, so the node is recomputed only then. A
-      // node-only update (the leaf's own value) leaves them alone.
-      edge->stats.bounds = message.bounds;
-      node.stats.bounds = BoundsFromEdges(node);
-    }
-    return {message.value.Parent(), node.stats.bounds.Parent()};
-  }
 
   // What the parent receives from the node's current statistics instead of
   // the backed-up message: the node's mean and bounds.
-  static Message Current(const NodeState<PuctAveraging>& node) {
+  static Message Current(const NodeState<Self>& node) {
     const ValueStats& stats = node.stats;
     return {SearchValue{stats.Q(), stats.D(), stats.M()}.Parent(),
             stats.bounds.Parent()};
@@ -146,34 +144,33 @@ struct PuctAveraging {
   static uint32_t Visits(const ValueStats& stats) { return stats.visits; }
 
   // The edge to visit next; `node` is expanded, non-terminal, with edges.
-  static size_t Select(const NodeState<PuctAveraging>& node,
-                       const Params& params);
+  static size_t Select(const NodeState<Self>& node, const Params& params) {
+    return SelectEdge(node, node.tried, params);
+  }
   // The edge a waiter visits next after its visit through edge `index` found
   // the child's value `from_child`: selection is rerun as if that visit had
   // completed. The graph has already released its reservation; other visits
   // in flight on the edge still count as in flight.
-  static size_t Reselect(const NodeState<PuctAveraging>& node,
-                         const Params& params, size_t index,
-                         const Message& from_child);
+  static size_t Reselect(const NodeState<Self>& node, const Params& params,
+                         size_t index, const Message& from_child);
   // The exact value of a proven node, which a visit backs up instead of
   // descending; nullopt if the node is not proven or StickyEndgames is off.
-  static std::optional<SearchValue> ProvenValue(
-      const NodeState<PuctAveraging>& node, const Params& params);
+  static std::optional<SearchValue> ProvenValue(const NodeState<Self>& node,
+                                                const Params& params);
   // Whether the node's result is proven and StickyEndgames is on.
-  static bool Decided(const NodeState<PuctAveraging>& node,
-                      const Params& params) {
+  static bool Decided(const NodeState<Self>& node, const Params& params) {
     return params.sticky_endgames && node.stats.bounds.Proven();
   }
   // The index of the PV and bestmove edge: most visits, then best Q, then
   // PreferOnTie; nullopt if no edge has a visit. With StickyEndgames, a
   // proven win comes first (shortest first) and a proven loss last (longest
   // first).
-  static std::optional<size_t> ChooseEdge(const NodeState<PuctAveraging>& node,
+  static std::optional<size_t> ChooseEdge(const NodeState<Self>& node,
                                           const Params& params);
   // The index of the bestmove edge: ChooseEdge, or before any edge has a visit
   // the highest-prior one (edges are sorted by PreferOnTie); nullopt if no
   // edges.
-  static std::optional<size_t> ChooseMove(const NodeState<PuctAveraging>& node,
+  static std::optional<size_t> ChooseMove(const NodeState<Self>& node,
                                           const Params& params) {
     const auto index = ChooseEdge(node, params);
     if (index || node.edges.empty()) return index;
@@ -181,20 +178,248 @@ struct PuctAveraging {
   }
   // Fills the score and WDL of `info` if the node has visits; with
   // StickyEndgames, a proven win or loss as a mate score instead.
-  static void Describe(const NodeState<PuctAveraging>& node,
-                       const Params& params, ThinkingInfo& info);
+  static void Describe(const NodeState<Self>& node, const Params& params,
+                       ThinkingInfo& info);
 
   // The node's bounds from its edges' bounds, which are in the node's frame.
   // An untried edge is unknown.
-  static Bounds BoundsFromEdges(const NodeState<PuctAveraging>& node);
+  static Bounds BoundsFromEdges(const NodeState<Self>& node);
+  // Sets the bounds after an update with `bounds` from the edge (or, without
+  // an edge, the node's own leaf): a terminal's bounds are its leaf's, and an
+  // expanded node's follow from its edges'.
+  static void UpdateBounds(NodeState<Self>& node, TriedEdge<Self>* edge,
+                           const Bounds& bounds) {
+    if (node.edges.empty()) {
+      // A terminal's bounds are its own leaf's.
+      node.stats.bounds = bounds;
+    } else if (edge && edge->stats.bounds != bounds) {
+      // Bounds rarely change, so the node is recomputed only then. A
+      // node-only update (the leaf's own value) leaves them alone.
+      edge->stats.bounds = bounds;
+      node.stats.bounds = BoundsFromEdges(node);
+    }
+  }
 
   // Reselecting or restarting is like a collision: select again with the new
   // value known, rather than committing this visit to the subtree.
   static WaiterResume OnResume(const Params& params) {
     return params.waiter_resume;
   }
+
+ private:
+  // PUCT selection with `tried_edges` in place of node.tried.
+  static size_t SelectEdge(const NodeState<Self>& node,
+                           std::span<const TriedEdge<Self>> tried_edges,
+                           const Params& params);
+};
+
+// PUCT over running averages: an edge averages the values of the visits that
+// went through it, and a node those of all visits to it.
+struct PuctAveraging : PuctPolicy<PuctAveraging> {
+  static constexpr std::string_view kName = "puct";
+
+  // A completed visit through the edge adds the child's value to its mean.
+  static void UpdateEdge(ValueStats& edge, const Message& from_child) {
+    edge.Add(from_child.value);
+  }
+  // Folds `message` into the node and, if given, the edge the visit took, and
+  // returns what the parent receives: the value and the node's own bounds.
+  static Message Update(NodeState<PuctAveraging>& node,
+                        TriedEdge<PuctAveraging>* edge,
+                        const Message& message) {
+    node.stats.Add(message.value);
+    if (edge) UpdateEdge(edge->stats, message);
+    UpdateBounds(node, edge, message.bounds);
+    return {message.value.Parent(), node.stats.bounds.Parent()};
+  }
 };
 // The bounds grew the edge from 20 to 24 bytes.
 static_assert(sizeof(TriedEdge<PuctAveraging>) <= 24);
+
+template <typename Self>
+size_t PuctPolicy<Self>::SelectEdge(
+    const NodeState<Self>& node, std::span<const TriedEdge<Self>> tried_edges,
+    const Params& params) {
+  const auto started = [](const TriedEdge<Self>& tried) {
+    return tried.stats.visits + tried.in_flight;
+  };
+  const bool completed_only = params.totals == PuctTotals::kCompleted;
+  // Visits a child contributes to the parent's totals: sqrt(N) and the FPU
+  // visited policy. In-flight visits always count in the edge's own U.
+  const auto counted = [&](const TriedEdge<Self>& tried) {
+    return completed_only ? tried.stats.visits : started(tried);
+  };
+  // Only tried edges have been started, so the sums only need that prefix.
+  uint64_t children_counted = 0;
+  float visited_policy = 0.0f;
+  for (size_t i = 0; i < tried_edges.size(); ++i) {
+    const auto& tried = tried_edges[i];
+    children_counted += counted(tried);
+    if (counted(tried) > 0) visited_policy += node.edges[i].prior;
+  }
+  const float cpuct =
+      params.cpuct +
+      params.cpuct_factor *
+          std::log((node.stats.visits + params.cpuct_base) / params.cpuct_base);
+  const float scale =
+      std::sqrt(static_cast<float>(std::max<uint64_t>(1, children_counted)));
+  const float fpu =
+      params.fpu_strategy == FpuStrategy::kAbsolute
+          ? params.fpu_value
+          : node.stats.Q() - params.fpu_value * std::sqrt(visited_policy);
+  const auto& ml = params.moves_left;
+  // The moves-left utility applies only in clearly decided nodes.
+  const bool use_m = ml.enabled && std::abs(node.stats.Q()) > ml.threshold;
+  // A bonus for a winning edge whose child has fewer moves left than the node,
+  // or a losing one whose child has more; scaled by the edge's |Q| above the
+  // threshold.
+  const auto m_utility = [&](const TriedEdge<Self>& tried, float q) {
+    // The edge's M is one ply longer than the child's.
+    const float m_diff = tried.stats.M() - 1.0f - node.stats.M();
+    const float m =
+        std::clamp(ml.slope * m_diff, -ml.max_effect, ml.max_effect) *
+        FastSign(-q);
+    if (ml.threshold > 0.0f && ml.threshold < 1.0f) {
+      q = std::max(0.0f, std::abs(q) - ml.threshold) / (1.0f - ml.threshold);
+    }
+    return m * (ml.constant_factor + ml.scaled_factor * std::abs(q) +
+                ml.quadratic_factor * q * q);
+  };
+  const auto score = [&](size_t i) {
+    const bool is_tried = i < tried_edges.size();
+    const bool has_visits = is_tried && tried_edges[i].stats.visits;
+    float q = has_visits ? tried_edges[i].stats.Q() : fpu;
+    // With StickyEndgames, a proven edge scores its exact value without a
+    // moves-left term, and an unproven one stays within its bounds. Untried
+    // edges get neither, nor a moves-left term, so they still share one score
+    // apart from the prior.
+    if (has_visits && params.sticky_endgames) {
+      const Bounds& bounds = tried_edges[i].stats.bounds;
+      if (bounds.Proven()) {
+        q = bounds.lower;
+      } else {
+        q = std::clamp<float>(q, bounds.lower, bounds.upper);
+        if (use_m) q += m_utility(tried_edges[i], q);
+      }
+    } else if (has_visits && use_m) {
+      q += m_utility(tried_edges[i], q);
+    }
+    const uint32_t n = is_tried ? started(tried_edges[i]) : 0u;
+    return q + cpuct * node.edges[i].prior * scale / (1.0f + n);
+  };
+  const auto pick_best = [&](size_t end) {
+    size_t best = 0;
+    float best_score = score(0);
+    for (size_t i = 1; i < end; ++i) {
+      const float s = score(i);
+      // Ties keep the lower index, which PreferOnTie prefers.
+      if (s > best_score) {
+        best = i;
+        best_score = s;
+      }
+    }
+    return best;
+  };
+
+  // Untried edges share the FPU and are sorted by PreferOnTie, so the first
+  // one beats or ties all later ones and wins the tie.
+  const size_t best_index =
+      pick_best(std::min(tried_edges.size() + 1, node.edges.size()));
+  assert(pick_best(node.edges.size()) == best_index);
+  return best_index;
+}
+
+template <typename Self>
+size_t PuctPolicy<Self>::Reselect(const NodeState<Self>& node,
+                                  const Params& params, size_t index,
+                                  const Message& from_child) {
+  assert(index < node.tried.size());
+  // Only runs when a waiter resumes, so copying the tried edges is cheap
+  // enough.
+  std::vector<TriedEdge<Self>> tried(node.tried.begin(), node.tried.end());
+  Self::UpdateEdge(tried[index].stats, from_child);
+  return SelectEdge(node, tried, params);
+}
+
+template <typename Self>
+std::optional<SearchValue> PuctPolicy<Self>::ProvenValue(
+    const NodeState<Self>& node, const Params& params) {
+  const Bounds& bounds = node.stats.bounds;
+  if (!params.sticky_endgames || !bounds.Proven()) return std::nullopt;
+  return SearchValue{.q = static_cast<float>(bounds.lower),
+                     .d = bounds.lower == 0 ? 1.0f : 0.0f,
+                     .m = static_cast<float>(bounds.plies)};
+}
+
+template <typename Self>
+std::optional<size_t> PuctPolicy<Self>::ChooseEdge(const NodeState<Self>& node,
+                                                   const Params& params) {
+  // Untried edges have no visits.
+  const auto rank = [&](size_t i) {
+    const auto& stats = node.tried[i].stats;
+    // With StickyEndgames: proven wins, then the rest, then proven losses.
+    int result = 0;
+    float plies = 0.0f;
+    if (params.sticky_endgames && stats.bounds.lower == 1) {
+      result = 1;
+      plies = -stats.bounds.plies;
+    } else if (params.sticky_endgames && stats.bounds.upper == -1) {
+      result = -1;
+      plies = stats.bounds.plies;
+    }
+    return std::tuple(result, plies, stats.visits, stats.Q());
+  };
+  std::optional<size_t> best;
+  for (size_t i = 0; i < node.tried.size(); ++i) {
+    if (node.tried[i].stats.visits == 0) continue;
+    // Ties keep the lower index, which PreferOnTie prefers.
+    if (!best || rank(i) > rank(*best)) best = i;
+  }
+  return best;
+}
+
+template <typename Self>
+void PuctPolicy<Self>::Describe(const NodeState<Self>& node,
+                                const Params& params, ThinkingInfo& info) {
+  const NodeStats& stats = node.stats;
+  if (!stats.visits) return;
+  info.score = CentipawnsFromQ(stats.Q());
+  info.wdl = WdlFromValue(stats.Q(), stats.D());
+  const Bounds& bounds = stats.bounds;
+  // A terminal root (0 plies) has no move to show a mate for.
+  if (params.sticky_endgames && bounds.Proven() && bounds.lower != 0 &&
+      bounds.plies > 0) {
+    // UCI counts mates in moves, negative when the side to move is mated.
+    info.mate =
+        bounds.lower == 1 ? (bounds.plies + 1) / 2 : -(bounds.plies / 2);
+    info.score.reset();
+  }
+}
+
+template <typename Self>
+Bounds PuctPolicy<Self>::BoundsFromEdges(const NodeState<Self>& node) {
+  Bounds bounds{.lower = -1,
+                .upper = static_cast<int8_t>(
+                    node.tried.size() < node.edges.size() ? 1 : -1)};
+  for (const auto& tried : node.tried) {
+    bounds.lower = std::max(bounds.lower, tried.stats.bounds.lower);
+    bounds.upper = std::max(bounds.upper, tried.stats.bounds.upper);
+  }
+  if (bounds.lower == 1) {
+    // A win takes the shortest winning edge.
+    bounds.plies = 255;
+    for (const auto& tried : node.tried) {
+      if (tried.stats.bounds.lower == 1) {
+        bounds.plies = std::min(bounds.plies, tried.stats.bounds.plies);
+      }
+    }
+  } else if (bounds.upper == -1) {
+    // A loss takes the longest one.
+    for (const auto& tried : node.tried) {
+      bounds.plies = std::max(bounds.plies, tried.stats.bounds.plies);
+    }
+  }
+  return bounds;
+}
 
 }  // namespace lczero::lc5
