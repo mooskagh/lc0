@@ -45,12 +45,16 @@ Code: `search_visits.cc`, `policy_engine.h`, `puct.cc`, `search_materialization.
    they don't, as in classic. With `MovesLeft` (needs a network with a
    moves-left head), in nodes whose |Q| exceeds `MovesLeftThreshold` a tried
    edge's Q also gets a small bonus for shortening a win or lengthening a
-   loss, from the edge's M against the node's. Each step goes into the
-   visit's `path` for backup or cancel.
+   loss, from the edge's M against the node's. With `StickyEndgames`, a
+   proven edge (see Backup) scores its exact value and an unproven one's Q
+   is kept within its bounds. Each step goes into the visit's `path` for
+   backup or cancel.
 
-3. **Reaching a leaf.** Selection ends in one of four ways:
+3. **Reaching a leaf.** Selection ends in one of five ways:
    - The node is **terminal** (mate, stalemate, insufficient material,
      rule 50, threefold): back up its fixed value.
+   - With `StickyEndgames`, the node is **proven** and is not the search
+     root: back up its exact value without descending.
    - The position is a **two-fold repetition** whose cycle lies within this
      search (at least 4 plies from the root): back up a draw. This depends on
      the root, so the graph node itself is not marked terminal.
@@ -74,8 +78,15 @@ Code: `search_visits.cc`, `policy_engine.h`, `puct.cc`, `search_materialization.
 6. **Backup.** Along the path, add the value to each node and edge and
    release the reservations. Node values are from the side to move at that
    node; edge values from the parent's side to move. Each node's update
-   returns the value its parent receives (for now the averaged value with
-   the perspective flipped).
+   returns the value its parent receives: the averaged value with the
+   perspective flipped, and the node's win/draw/loss bounds. A terminal's
+   bounds are exact, except for repetitions, which depend on the history
+   before the node (the node key covers checkmate, stalemate, insufficient
+   material and rule 50). Each edge keeps the last bounds its child sent,
+   and a node proves its own bounds from its edges: a win if any edge wins
+   (the shortest), a loss if all edges lose (the longest), and an untried
+   edge is unknown. Bounds are always tracked; only `StickyEndgames` uses
+   them.
 
 If the search stops, a visit that hasn't finished is **cancelled**: its
 reservations are released and nothing is added.
@@ -136,7 +147,9 @@ earlier (below). `movetime` minus `MoveOverheadMs` is used, as in classic;
 
 **Early stop.** Classic-style smart pruning, checked every 10 ms against the
 run's visit rate (`SmartPruningFactor`, 1.33). Unused time goes to the next
-move.
+move. With `StickyEndgames`, a search whose root is proven also stops
+(checked every 10 ms, also under `go nodes` and `movetime`, but not in
+`infinite` or `ponder`).
 
 ## Stopping and output
 
@@ -155,9 +168,13 @@ Reading the `info` line:
 - `nodes`/`nps`: visits completed in this search.
 - `eps`: network evaluations, excluding cache hits.
 - `depth` = `seldepth` = the longest path. Not comparable to classic.
+- `score mate N`: with `StickyEndgames`, a root proven won (N > 0, moves to
+  mate) or lost (N < 0). Then `bestmove` is the shortest proven win, and a
+  proven losing move is played only if all moves lose (the longest one).
 - `string lc5 ...`: debug counters. `cache` counts NN cache hits,
-  `suspended` counts visits that had to wait for the network, `active` is
-  the number of live visits, and `graph` is the node count.
+  `suspended` counts visits that had to wait for the network, `proven`
+  counts visits that backed up a proven node's value, `active` is the
+  number of live visits, and `graph` is the node count.
 
 ## Code map
 
@@ -216,10 +233,11 @@ Options of the `puct` policy:
 | `MovesLeft` | false | Prefer shorter wins and longer losses in clearly decided nodes. Off without a moves-left head. |
 | `MovesLeftMaxEffect`, `MovesLeftThreshold`, `MovesLeftSlope` | 0.0345, 0.8, 0.0027 | Largest bonus, node \|Q\| above which it applies, bonus per ply of M difference. |
 | `MovesLeftConstantFactor`, `MovesLeftScaledFactor`, `MovesLeftQuadraticFactor` | 0, 1.6521, −0.6521 | Bonus scaling: a + b·x + c·x², x = edge \|Q\| above the threshold, rescaled to [0, 1]. |
+| `StickyEndgames` | false | Use proven wins, draws and losses in selection, the bestmove, early stopping and mate scores. Repetition draws are not proven. |
 
 ## Not done yet
 
-- Mate propagation, Syzygy, MultiPV, training data output, memory limits
+- Proving repetition draws, Syzygy, MultiPV, training data output, memory limits
   and eviction.
 
 `scripts/benchmark_lc5.py` is a speed benchmark harness.

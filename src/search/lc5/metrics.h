@@ -44,6 +44,8 @@ struct Metrics {
   // Waiters that switched edges at their node's parent (WaiterResume=reselect).
   std::atomic<uint64_t> visits_reselected{0};
   std::atomic<uint64_t> terminal_visits{0};
+  // Visits that backed up a proven node's value (StickyEndgames).
+  std::atomic<uint64_t> proven_visits{0};
   std::atomic<uint64_t> selection_node_steps{0};
   std::atomic<uint64_t> backup_node_steps{0};
   std::atomic<uint64_t> stale_generation_node_updates{0};

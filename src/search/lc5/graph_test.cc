@@ -234,6 +234,57 @@ TEST(Lc5GraphTest, SelectionReportsExpandedTerminalKind) {
   EXPECT_EQ(terminal.terminal, TerminalKind::kCheckmate);
 }
 
+TEST(Lc5GraphTest, ProvenBoundsGoUpAndStopSelectionWhenAsked) {
+  Graph graph;
+  const NodeKey parent{1};
+  const NodeKey child{2};
+  const Move move = M(kFileA, kFileA);
+  const auto parent_created = graph.FindOrCreateMaterializing(parent, 1);
+  graph.InstallPayload(parent, 1, {.moves = {move}, .priors = {1.0f}});
+  const auto child_created = graph.FindOrCreateMaterializing(child, 2);
+  graph.InstallPayload(child, 2,
+                       {.terminal = TerminalKind::kCheckmate,
+                        .leaf = TerminalValue(TerminalKind::kCheckmate),
+                        .moves = {},
+                        .priors = {}});
+  // The install proves the checkmate; the leaf's own backup keeps it.
+  ASSERT_EQ(graph.SelectAndReserve(parent, TestParams()).move, move);
+  const auto from_child = graph.BackupNode(
+      child, child_created.generation,
+      PuctAveraging::Leaf(TerminalValue(TerminalKind::kCheckmate), true),
+      std::nullopt);
+  ASSERT_TRUE(from_child.to_parent);
+  EXPECT_EQ(from_child.to_parent->bounds,
+            (Bounds{.lower = 1, .upper = 1, .plies = 1}));
+  const auto up = graph.BackupNode(parent, parent_created.generation,
+                                   *from_child.to_parent, move);
+  ASSERT_TRUE(up.to_parent);
+  EXPECT_EQ(up.to_parent->bounds,
+            (Bounds{.lower = -1, .upper = -1, .plies = 2}));
+  EXPECT_EQ(graph.SnapshotNode(parent)->stats.bounds,
+            (Bounds{.lower = 1, .upper = 1, .plies = 1}));
+
+  // A proven node stops selection only with StickyEndgames and when asked.
+  auto params = TestParams();
+  const auto select = [&](bool stop_at_proven) {
+    const auto selected =
+        graph.SelectAndReserve(parent, params, stop_at_proven);
+    if (selected.status == SelectStatus::kSelected) {
+      graph.CancelEdge(parent, parent_created.generation, move);
+    }
+    return selected;
+  };
+  EXPECT_EQ(select(true).status, SelectStatus::kSelected);
+  params.sticky_endgames = true;
+  EXPECT_EQ(select(false).status, SelectStatus::kSelected);
+  const auto proven = select(true);
+  EXPECT_EQ(proven.status, SelectStatus::kProven);
+  EXPECT_EQ(proven.generation, parent_created.generation);
+  EXPECT_EQ(proven.value.q, 1.0f);
+  EXPECT_EQ(proven.value.m, 1.0f);
+  EXPECT_EQ(graph.SnapshotNode(parent)->tried[0].in_flight, 0u);
+}
+
 TEST(Lc5GraphTest, SelectionReturnsNewGenerationAfterRecreation) {
   Graph graph;
   const NodeKey key{123};
@@ -347,11 +398,10 @@ TEST(Lc5GraphTest, LateMaterializationPreservesPublishedEdges) {
   graph.InstallPayload(key, 7, payload);
   ASSERT_EQ(graph.SelectAndReserve(key, TestParams()).status,
             SelectStatus::kSelected);
-  ASSERT_EQ(graph
-                .BackupNode(key, created.generation,
-                            SearchValue{0.4f, 0.2f, 2.0f}, move)
-                .edge,
-            UpdateResult::kApplied);
+  ASSERT_EQ(
+      graph.BackupNode(key, created.generation, {{0.4f, 0.2f, 2.0f}}, move)
+          .edge,
+      UpdateResult::kApplied);
   ASSERT_EQ(graph.SelectAndReserve(key, TestParams()).status,
             SelectStatus::kSelected);
 
@@ -452,9 +502,9 @@ TEST(Lc5GraphTest, BackupCommitsNodeAndOptionalEdgeSums) {
   EXPECT_EQ(result.node, UpdateResult::kApplied);
   EXPECT_EQ(result.edge, UpdateResult::kApplied);
   ASSERT_TRUE(result.to_parent);
-  EXPECT_FLOAT_EQ(result.to_parent->q, 0.5f);
-  EXPECT_FLOAT_EQ(result.to_parent->d, 0.25f);
-  EXPECT_FLOAT_EQ(result.to_parent->m, 5.0f);
+  EXPECT_FLOAT_EQ(result.to_parent->value.q, 0.5f);
+  EXPECT_FLOAT_EQ(result.to_parent->value.d, 0.25f);
+  EXPECT_FLOAT_EQ(result.to_parent->value.m, 5.0f);
   node = graph.SnapshotNode(key);
   ASSERT_TRUE(node);
   EXPECT_EQ(node->stats.visits, 3u);
@@ -546,11 +596,10 @@ TEST(Lc5GraphTest, ReservationsAreExactAndCancellationDoesNotCommit) {
   EXPECT_EQ(selection2.move, second);
   EXPECT_EQ(graph.CancelEdge(key, created.generation, first),
             UpdateResult::kApplied);
-  EXPECT_EQ(graph
-                .BackupNode(key, created.generation,
-                            SearchValue{0.4f, 0.2f, 2.0f}, second)
-                .edge,
-            UpdateResult::kApplied);
+  EXPECT_EQ(
+      graph.BackupNode(key, created.generation, {{0.4f, 0.2f, 2.0f}}, second)
+          .edge,
+      UpdateResult::kApplied);
   auto node = graph.SnapshotNode(key);
   ASSERT_TRUE(node);
   EXPECT_EQ(TriedAt(*node, 0).stats.visits, 0u);
@@ -647,8 +696,8 @@ TEST(Lc5GraphTest, ReselectionMovesOnlyTheWaitersReservation) {
   ASSERT_EQ(graph.SelectAndReserve(key, params).move, a);
   // N = 2 and sqrt(N) = 1.414. A good child keeps edge A, 0.9 + 0.8 * 1.414 /
   // 3 = 1.277 against B's 0.141, and its reservation.
-  auto result =
-      graph.ReselectAndReserve(key, created.generation, a, {.q = 0.9f}, params);
+  auto result = graph.ReselectAndReserve(key, created.generation, a,
+                                         {.value = {.q = 0.9f}}, params);
   EXPECT_EQ(result.status, SelectStatus::kSelected);
   EXPECT_EQ(result.move, a);
   EXPECT_EQ(result.generation, created.generation);
@@ -656,8 +705,8 @@ TEST(Lc5GraphTest, ReselectionMovesOnlyTheWaitersReservation) {
   EXPECT_EQ(TriedAt(*node, 0).in_flight, 2u);
   EXPECT_EQ(TriedAt(*node, 0).stats.visits, 0u);
   // A bad child moves it to edge B: A scores -0.9 + 0.377 = -0.523.
-  result = graph.ReselectAndReserve(key, created.generation, a, {.q = -0.9f},
-                                    params);
+  result = graph.ReselectAndReserve(key, created.generation, a,
+                                    {.value = {.q = -0.9f}}, params);
   EXPECT_EQ(result.status, SelectStatus::kSelected);
   EXPECT_EQ(result.move, b);
   node = graph.SnapshotNode(key);
@@ -667,12 +716,12 @@ TEST(Lc5GraphTest, ReselectionMovesOnlyTheWaitersReservation) {
   // Nothing changes for a stale generation or an edge without reservations.
   EXPECT_EQ(graph
                 .ReselectAndReserve(key, created.generation + 1, a,
-                                    {.q = -0.9f}, params)
+                                    {.value = {.q = -0.9f}}, params)
                 .status,
             SelectStatus::kMissing);
   EXPECT_EQ(graph
                 .ReselectAndReserve(key, created.generation, payload.moves[2],
-                                    {.q = -0.9f}, params)
+                                    {.value = {.q = -0.9f}}, params)
                 .status,
             SelectStatus::kMissing);
   node = graph.SnapshotNode(key);

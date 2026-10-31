@@ -106,8 +106,12 @@ VisitEngine::DescendResult PolicyEngine<P>::Descend(Visit& visit,
     PathStep& step = visit.path.back();
     ctx.metrics.selection_node_steps.fetch_add(1);
     RaiseHighWater(ctx.metrics.max_selected_depth, visit.path.size());
+    // Below the search root, a proven node backs up its exact value. The root
+    // keeps selecting, so its PV still deepens.
+    const bool stop_at_proven =
+        visit.path.size() > visit.origin.backup_prefix.size() + 1;
     const SelectResult selected =
-        graph_.SelectAndReserve(visit.current_key, params_);
+        graph_.SelectAndReserve(visit.current_key, params_, stop_at_proven);
     switch (selected.status) {
       case SelectStatus::kMissing:
       case SelectStatus::kMaterializing:
@@ -115,7 +119,14 @@ VisitEngine::DescendResult PolicyEngine<P>::Descend(Visit& visit,
       case SelectStatus::kTerminal:
         step.generation = selected.generation;
         visit.result = TerminalValue(selected.terminal);
+        visit.result_exact = IsExact(selected.terminal);
         ctx.metrics.terminal_visits.fetch_add(1);
+        return DescendResult::kBackup;
+      case SelectStatus::kProven:
+        step.generation = selected.generation;
+        visit.result = selected.value;
+        visit.result_exact = true;
+        ctx.metrics.proven_visits.fetch_add(1);
         return DescendResult::kBackup;
       case SelectStatus::kSelected:
         step.generation = selected.generation;
@@ -144,6 +155,7 @@ bool PolicyEngine<P>::Advance(Visit& visit, PathStep& step, Move move,
       ply >= position.GetPliesSincePrevRepetition()) {
     visit.path.push_back({.key = visit.current_key});
     visit.result = TerminalValue(TerminalKind::kRepetition);
+    visit.result_exact = false;
     ctx.metrics.terminal_visits.fetch_add(1);
     return true;
   }
@@ -169,7 +181,7 @@ VisitEngine::ResumeAction PolicyEngine<P>::OnResume(Visit& visit,
   // X's owner has not backed up yet, so the parent's edge does not show X's
   // value; it is what the parent receives from X, whose own update was
   // counted at install.
-  const auto from_child = P::Skip(P::Leaf(visit.result));
+  const auto from_child = P::Skip(P::Leaf(visit.result, visit.result_exact));
   const SelectResult reselected =
       graph_.ReselectAndReserve(parent.key, parent.generation,
                                 *parent.selected_move, from_child, params_);
@@ -187,7 +199,7 @@ VisitEngine::ResumeAction PolicyEngine<P>::OnResume(Visit& visit,
 
 template <typename P>
 void PolicyEngine<P>::Backup(const Visit& visit, const VisitContext& ctx) {
-  typename P::Message message = P::Leaf(visit.result);
+  typename P::Message message = P::Leaf(visit.result, visit.result_exact);
   for (size_t i = visit.path.size(); i-- > 0;) {
     const PathStep& step = visit.path[i];
     const bool leaf = i + 1 == visit.path.size();
@@ -212,7 +224,7 @@ void PolicyEngine<P>::Backup(const Visit& visit, const VisitContext& ctx) {
       ctx.metrics.stale_generation_edge_updates.fetch_add(1);
     }
     // A stale or missing node is skipped.
-    message = result.to_parent ? *result.to_parent : P::Skip(message);
+    message = result.to_parent ? *result.to_parent : P::Stale(message);
   }
 }
 
@@ -231,7 +243,7 @@ template <typename P>
 void PolicyEngine<P>::Report(const VisitOrigin& root, const VisitContext& ctx,
                              ThinkingInfo& info) const {
   auto node = graph_.SnapshotNode(root.key);
-  if (node) P::Describe(node->stats, info);
+  if (node) P::Describe(*node, params_, info);
   std::vector<Move>& pv = info.pv;
   pv.clear();
   PositionHistory history = root.history;
@@ -241,7 +253,8 @@ void PolicyEngine<P>::Report(const VisitOrigin& root, const VisitContext& ctx,
          node->terminal == TerminalKind::kNonTerminal) {
     // The root's move is the bestmove, so it is chosen even before any of its
     // edges has a visit.
-    const auto index = pv.empty() ? P::ChooseMove(*node) : P::ChooseEdge(*node);
+    const auto index = pv.empty() ? P::ChooseMove(*node, params_)
+                                  : P::ChooseEdge(*node, params_);
     if (!index) break;
     const Move move = node->edges[*index].move;
     pv.push_back(ToUci(move, history.Last()));
@@ -260,6 +273,7 @@ RootStats PolicyEngine<P>::Root(NodeKey root) const {
   stats.expanded = node->lifecycle == NodeLifecycle::kExpanded;
   stats.visits = P::Visits(node->stats);
   stats.edges = node->edges.size();
+  stats.decided = P::Decided(*node, params_);
   for (const auto& tried : node->tried) {
     const uint64_t visits = P::Visits(tried.stats);
     if (visits > stats.best_edge_visits) {

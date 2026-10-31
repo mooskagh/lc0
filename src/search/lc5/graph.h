@@ -102,13 +102,20 @@ struct InstallResult {
   bool accepted;
 };
 
-enum class SelectStatus { kSelected, kMissing, kMaterializing, kTerminal };
+enum class SelectStatus {
+  kSelected,
+  kMissing,
+  kMaterializing,
+  kTerminal,
+  kProven
+};
 
 struct SelectResult {
   SelectStatus status = SelectStatus::kMissing;
   Move move{};
   uint64_t generation = 0;
   TerminalKind terminal = TerminalKind::kNonTerminal;
+  SearchValue value{};  // The proven value, for kProven.
 };
 
 enum class UpdateResult {
@@ -158,8 +165,11 @@ class GameGraph {
 
   // Selects an edge by the policy and reserves it (in_flight += 1); otherwise
   // reports why the node can't be selected from. Every result but kMissing
-  // carries the node's generation, and kTerminal also its terminal kind.
-  SelectResult SelectAndReserve(NodeKey key, const typename P::Params& params);
+  // carries the node's generation, and kTerminal also its terminal kind. With
+  // `stop_at_proven`, a node the policy has proven returns kProven with its
+  // value instead.
+  SelectResult SelectAndReserve(NodeKey key, const typename P::Params& params,
+                                bool stop_at_proven = false);
 
   // Releases one reservation of `move` and reserves the edge the policy
   // reselects as if that visit had completed with `from_child`. kMissing if
@@ -304,13 +314,14 @@ InstallResult GameGraph<P>::InstallPayload(NodeKey key,
   node.tried.clear();
   // The leaf value counts as the node's first visit, so a node keeps it even
   // if the visit that materialized it is cancelled before backing up.
-  P::Update(node.stats, nullptr, P::Leaf(payload.leaf));
+  P::Update(node, nullptr, P::Leaf(payload.leaf, IsExact(payload.terminal)));
   return {node.generation, true};
 }
 
 template <typename P>
 SelectResult GameGraph<P>::SelectAndReserve(NodeKey key,
-                                            const typename P::Params& params) {
+                                            const typename P::Params& params,
+                                            bool stop_at_proven) {
   auto& shard = ShardFor(key);
   std::lock_guard lock(shard.mutex);
   Node* node = FindNode(shard.nodes, key);
@@ -323,6 +334,13 @@ SelectResult GameGraph<P>::SelectAndReserve(NodeKey key,
     return {.status = SelectStatus::kTerminal,
             .generation = node->generation,
             .terminal = node->terminal};
+  }
+  if (stop_at_proven) {
+    if (const auto value = P::ProvenValue(*node, params)) {
+      return {.status = SelectStatus::kProven,
+              .generation = node->generation,
+              .value = *value};
+    }
   }
   return {.status = SelectStatus::kSelected,
           .move = ReserveLocked(*node, P::Select(*node, params)),
@@ -374,17 +392,15 @@ BackupResult<P> GameGraph<P>::BackupNode(NodeKey key,
       check != UpdateResult::kApplied) {
     return {check, move ? check : UpdateResult::kApplied, std::nullopt};
   }
-  typename P::EdgeStats* edge_stats = nullptr;
+  Tried* edge = nullptr;
   UpdateResult edge_result = UpdateResult::kApplied;
   if (move) {
     const size_t index = FindEdge(*node, *move);
     edge_result = ReleaseEdge(*node, index);
-    if (edge_result == UpdateResult::kApplied) {
-      edge_stats = &node->tried[index].stats;
-    }
+    if (edge_result == UpdateResult::kApplied) edge = &node->tried[index];
   }
   // The node is updated even if the edge reservation could not be released.
-  const Message to_parent = P::Update(node->stats, edge_stats, message);
+  const Message to_parent = P::Update(*node, edge, message);
   return {UpdateResult::kApplied, edge_result, to_parent};
 }
 

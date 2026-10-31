@@ -47,7 +47,8 @@ enum class FpuStrategy { kAbsolute, kReduction };
 enum class PuctTotals { kStarted, kCompleted };
 
 // PUCT selection over running averages, as in classic. Nodes and edges keep
-// value means, and the message is a value from the side to move at the node.
+// value means and bounds, and the message is a value and bounds from the side
+// to move at the node.
 struct PuctAveraging {
   static constexpr std::string_view kName = "puct";
 
@@ -71,6 +72,9 @@ struct PuctAveraging {
       float quadratic_factor = -0.6521f;
     };
     MovesLeft moves_left = {};
+    // Use proven bounds in selection, the move choice, early stopping and
+    // mate scores. Bounds are tracked either way.
+    bool sticky_endgames = false;
 
     static void Populate(OptionsParser* options);
     // Moves-left stays off if the backend has no moves-left head.
@@ -78,22 +82,48 @@ struct PuctAveraging {
                               const BackendAttributes& backend);
   };
 
+  // Node stats are from the node's side to move, edge stats from the edge's
+  // parent's.
   using NodeStats = ValueStats;
   using EdgeStats = ValueStats;
-  using Message = SearchValue;
+  struct Message {
+    SearchValue value;
+    Bounds bounds = {};
+  };
 
   // The message a leaf evaluation (or terminal value) starts the backup with.
-  static Message Leaf(const SearchValue& value) { return value; }
+  // An exact value (a terminal other than a repetition, or a proven node) is
+  // proven.
+  static Message Leaf(const SearchValue& value, bool exact) {
+    return {value, exact ? Bounds::Exact(value.q, value.m) : Bounds{}};
+  }
   // The message the parent receives when this node's update is skipped: an
-  // in-search repetition leaf, a counted leaf, or a stale or missing node.
-  static Message Skip(const Message& message) { return message.Parent(); }
+  // in-search repetition leaf or a counted leaf.
+  static Message Skip(const Message& message) {
+    return {message.value.Parent(), message.bounds.Parent()};
+  }
+  // The message the parent receives past a stale or missing node: the value
+  // without bounds, which belong to a node that is not the parent's child.
+  static Message Stale(const Message& message) {
+    return {message.value.Parent(), Bounds{}};
+  }
   // Folds `message` into the node and, if given, the edge the visit took, and
-  // returns what the parent receives.
-  static Message Update(NodeStats& node, EdgeStats* edge,
+  // returns what the parent receives: the value and the node's own bounds.
+  static Message Update(NodeState<PuctAveraging>& node,
+                        TriedEdge<PuctAveraging>* edge,
                         const Message& message) {
-    node.Add(message);
-    if (edge) edge->Add(message);
-    return message.Parent();
+    node.stats.Add(message.value);
+    if (edge) edge->stats.Add(message.value);
+    if (node.edges.empty()) {
+      // A terminal's bounds are its own leaf's.
+      node.stats.bounds = message.bounds;
+    } else if (edge && edge->stats.bounds != message.bounds) {
+      // Bounds rarely change, so the node is recomputed only then. A
+      // node-only update (the leaf's own value) leaves them alone.
+      edge->stats.bounds = message.bounds;
+      node.stats.bounds = BoundsFromEdges(node);
+    }
+    return {message.value.Parent(), node.stats.bounds.Parent()};
   }
 
   static uint32_t Visits(const ValueStats& stats) { return stats.visits; }
@@ -108,20 +138,38 @@ struct PuctAveraging {
   static size_t Reselect(const NodeState<PuctAveraging>& node,
                          const Params& params, size_t index,
                          const Message& from_child);
+  // The exact value of a proven node, which a visit backs up instead of
+  // descending; nullopt if the node is not proven or StickyEndgames is off.
+  static std::optional<SearchValue> ProvenValue(
+      const NodeState<PuctAveraging>& node, const Params& params);
+  // Whether the node's result is proven and StickyEndgames is on.
+  static bool Decided(const NodeState<PuctAveraging>& node,
+                      const Params& params) {
+    return params.sticky_endgames && node.stats.bounds.Proven();
+  }
   // The index of the PV and bestmove edge: most visits, then best Q, then
-  // PreferOnTie; nullopt if no edge has a visit.
-  static std::optional<size_t> ChooseEdge(const NodeState<PuctAveraging>& node);
+  // PreferOnTie; nullopt if no edge has a visit. With StickyEndgames, a
+  // proven win comes first (shortest first) and a proven loss last (longest
+  // first).
+  static std::optional<size_t> ChooseEdge(const NodeState<PuctAveraging>& node,
+                                          const Params& params);
   // The index of the bestmove edge: ChooseEdge, or before any edge has a visit
   // the highest-prior one (edges are sorted by PreferOnTie); nullopt if no
   // edges.
-  static std::optional<size_t> ChooseMove(
-      const NodeState<PuctAveraging>& node) {
-    const auto index = ChooseEdge(node);
+  static std::optional<size_t> ChooseMove(const NodeState<PuctAveraging>& node,
+                                          const Params& params) {
+    const auto index = ChooseEdge(node, params);
     if (index || node.edges.empty()) return index;
     return 0;
   }
-  // Fills the score and WDL of `info` if the node has visits.
-  static void Describe(const NodeStats& node, ThinkingInfo& info);
+  // Fills the score and WDL of `info` if the node has visits; with
+  // StickyEndgames, a proven win or loss as a mate score instead.
+  static void Describe(const NodeState<PuctAveraging>& node,
+                       const Params& params, ThinkingInfo& info);
+
+  // The node's bounds from its edges' bounds, which are in the node's frame.
+  // An untried edge is unknown.
+  static Bounds BoundsFromEdges(const NodeState<PuctAveraging>& node);
 
   // Reselecting or restarting is like a collision: select again with the new
   // value known, rather than committing this visit to the subtree.
@@ -129,6 +177,7 @@ struct PuctAveraging {
     return params.waiter_resume;
   }
 };
-static_assert(sizeof(TriedEdge<PuctAveraging>) <= 20);
+// The bounds grew the edge from 20 to 24 bytes.
+static_assert(sizeof(TriedEdge<PuctAveraging>) <= 24);
 
 }  // namespace lczero::lc5

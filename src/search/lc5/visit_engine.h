@@ -54,6 +54,8 @@ struct RootStats {
   size_t edges = 0;
   uint64_t best_edge_visits = 0;
   uint64_t second_edge_visits = 0;
+  // The root's result is proven, so the search can stop.
+  bool decided = false;
 };
 
 // The search-algorithm side of a visit: everything that reads or writes node

@@ -32,6 +32,7 @@
 #include <cmath>
 #include <span>
 #include <string>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -84,6 +85,12 @@ const OptionId kMovesLeftQuadraticFactor{
     "moves-left-quadratic-factor", "MovesLeftQuadraticFactor",
     "Quadratic term of the moves-left scaling by the edge's |Q| above the "
     "threshold."};
+
+const OptionId kStickyEndgames{
+    "sticky-endgames", "StickyEndgames",
+    "Prove wins, draws and losses from terminal positions up the tree and use "
+    "them in selection, the move choice, early stopping and mate scores. "
+    "Repetition draws are not proven."};
 
 ThinkingInfo::WDL WdlFromValue(float q, float d) {
   d = std::clamp(d, 0.0f, 1.0f);
@@ -156,9 +163,21 @@ size_t SelectEdge(const NodeState<PuctAveraging>& node,
     const bool is_tried = i < tried_edges.size();
     const bool has_visits = is_tried && tried_edges[i].stats.visits;
     float q = has_visits ? tried_edges[i].stats.Q() : fpu;
-    // Untried edges get no moves-left term, so they still share one score
+    // With StickyEndgames, a proven edge scores its exact value without a
+    // moves-left term, and an unproven one stays within its bounds. Untried
+    // edges get neither, nor a moves-left term, so they still share one score
     // apart from the prior.
-    if (has_visits && use_m) q += m_utility(tried_edges[i], q);
+    if (has_visits && params.sticky_endgames) {
+      const Bounds& bounds = tried_edges[i].stats.bounds;
+      if (bounds.Proven()) {
+        q = bounds.lower;
+      } else {
+        q = std::clamp<float>(q, bounds.lower, bounds.upper);
+        if (use_m) q += m_utility(tried_edges[i], q);
+      }
+    } else if (has_visits && use_m) {
+      q += m_utility(tried_edges[i], q);
+    }
     const uint32_t n = is_tried ? started(tried_edges[i]) : 0u;
     return q + cpuct * node.edges[i].prior * scale / (1.0f + n);
   };
@@ -217,6 +236,7 @@ void PuctAveraging::Params::Populate(OptionsParser* options) {
       ml.scaled_factor;
   options->Add<FloatOption>(kMovesLeftQuadraticFactor, -1.0f, 1.0f) =
       ml.quadratic_factor;
+  options->Add<BoolOption>(kStickyEndgames) = defaults.sticky_endgames;
 }
 
 PuctAveraging::Params PuctAveraging::Params::FromOptions(
@@ -236,14 +256,40 @@ PuctAveraging::Params PuctAveraging::Params::FromOptions(
           WaiterResumeFromString(options.Get<std::string>(kWaiterResume)),
       // Without a moves-left head, M is only the mean depth of the leaves
       // below.
-      .moves_left = {
-          .enabled = options.Get<bool>(kMovesLeft) && backend.has_mlh,
-          .max_effect = options.Get<float>(kMovesLeftMaxEffect),
-          .threshold = options.Get<float>(kMovesLeftThreshold),
-          .slope = options.Get<float>(kMovesLeftSlope),
-          .constant_factor = options.Get<float>(kMovesLeftConstantFactor),
-          .scaled_factor = options.Get<float>(kMovesLeftScaledFactor),
-          .quadratic_factor = options.Get<float>(kMovesLeftQuadraticFactor)}};
+      .moves_left =
+          {.enabled = options.Get<bool>(kMovesLeft) && backend.has_mlh,
+           .max_effect = options.Get<float>(kMovesLeftMaxEffect),
+           .threshold = options.Get<float>(kMovesLeftThreshold),
+           .slope = options.Get<float>(kMovesLeftSlope),
+           .constant_factor = options.Get<float>(kMovesLeftConstantFactor),
+           .scaled_factor = options.Get<float>(kMovesLeftScaledFactor),
+           .quadratic_factor = options.Get<float>(kMovesLeftQuadraticFactor)},
+      .sticky_endgames = options.Get<bool>(kStickyEndgames)};
+}
+
+Bounds PuctAveraging::BoundsFromEdges(const NodeState<PuctAveraging>& node) {
+  Bounds bounds{.lower = -1,
+                .upper = static_cast<int8_t>(
+                    node.tried.size() < node.edges.size() ? 1 : -1)};
+  for (const auto& tried : node.tried) {
+    bounds.lower = std::max(bounds.lower, tried.stats.bounds.lower);
+    bounds.upper = std::max(bounds.upper, tried.stats.bounds.upper);
+  }
+  if (bounds.lower == 1) {
+    // A win takes the shortest winning edge.
+    bounds.plies = 255;
+    for (const auto& tried : node.tried) {
+      if (tried.stats.bounds.lower == 1) {
+        bounds.plies = std::min(bounds.plies, tried.stats.bounds.plies);
+      }
+    }
+  } else if (bounds.upper == -1) {
+    // A loss takes the longest one.
+    for (const auto& tried : node.tried) {
+      bounds.plies = std::max(bounds.plies, tried.stats.bounds.plies);
+    }
+  }
+  return bounds;
 }
 
 size_t PuctAveraging::Select(const NodeState<PuctAveraging>& node,
@@ -259,15 +305,35 @@ size_t PuctAveraging::Reselect(const NodeState<PuctAveraging>& node,
   // enough.
   std::vector<TriedEdge<PuctAveraging>> tried(node.tried.begin(),
                                               node.tried.end());
-  tried[index].stats.Add(from_child);
+  tried[index].stats.Add(from_child.value);
   return SelectEdge(node, tried, params);
 }
 
+std::optional<SearchValue> PuctAveraging::ProvenValue(
+    const NodeState<PuctAveraging>& node, const Params& params) {
+  const Bounds& bounds = node.stats.bounds;
+  if (!params.sticky_endgames || !bounds.Proven()) return std::nullopt;
+  return SearchValue{.q = static_cast<float>(bounds.lower),
+                     .d = bounds.lower == 0 ? 1.0f : 0.0f,
+                     .m = static_cast<float>(bounds.plies)};
+}
+
 std::optional<size_t> PuctAveraging::ChooseEdge(
-    const NodeState<PuctAveraging>& node) {
+    const NodeState<PuctAveraging>& node, const Params& params) {
   // Untried edges have no visits.
   const auto rank = [&](size_t i) {
-    return std::pair(node.tried[i].stats.visits, node.tried[i].stats.Q());
+    const auto& stats = node.tried[i].stats;
+    // With StickyEndgames: proven wins, then the rest, then proven losses.
+    int result = 0;
+    float plies = 0.0f;
+    if (params.sticky_endgames && stats.bounds.lower == 1) {
+      result = 1;
+      plies = -stats.bounds.plies;
+    } else if (params.sticky_endgames && stats.bounds.upper == -1) {
+      result = -1;
+      plies = stats.bounds.plies;
+    }
+    return std::tuple(result, plies, stats.visits, stats.Q());
   };
   std::optional<size_t> best;
   for (size_t i = 0; i < node.tried.size(); ++i) {
@@ -278,10 +344,21 @@ std::optional<size_t> PuctAveraging::ChooseEdge(
   return best;
 }
 
-void PuctAveraging::Describe(const NodeStats& node, ThinkingInfo& info) {
-  if (!node.visits) return;
-  info.score = CentipawnsFromQ(node.Q());
-  info.wdl = WdlFromValue(node.Q(), node.D());
+void PuctAveraging::Describe(const NodeState<PuctAveraging>& node,
+                             const Params& params, ThinkingInfo& info) {
+  const NodeStats& stats = node.stats;
+  if (!stats.visits) return;
+  info.score = CentipawnsFromQ(stats.Q());
+  info.wdl = WdlFromValue(stats.Q(), stats.D());
+  const Bounds& bounds = stats.bounds;
+  // A terminal root (0 plies) has no move to show a mate for.
+  if (params.sticky_endgames && bounds.Proven() && bounds.lower != 0 &&
+      bounds.plies > 0) {
+    // UCI counts mates in moves, negative when the side to move is mated.
+    info.mate =
+        bounds.lower == 1 ? (bounds.plies + 1) / 2 : -(bounds.plies / 2);
+    info.score.reset();
+  }
 }
 
 }  // namespace lczero::lc5

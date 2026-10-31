@@ -53,6 +53,13 @@ inline SearchValue TerminalValue(TerminalKind terminal) {
                                               : SearchValue{0.0f, 1.0f, 0.0f};
 }
 
+// Whether a terminal's value holds wherever its node is reached. A
+// repetition depends on the history before the node, so it is not exact.
+inline bool IsExact(TerminalKind terminal) {
+  return terminal != TerminalKind::kNonTerminal &&
+         terminal != TerminalKind::kRepetition;
+}
+
 // Immutable result of expanding a node: either a terminal kind, or legal moves
 // with priors and the network's leaf value.
 struct ExpansionPayload {

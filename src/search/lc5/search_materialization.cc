@@ -185,6 +185,7 @@ void SearchRun::CompleteMaterialization(Worker& worker,
     event.generation = installed.generation;
     event.value = payload.leaf;
     event.terminal = terminal;
+    event.exact = installed.accepted && IsExact(payload.terminal);
     Deliver(worker, event);
   };
   wake(ticket.owner, true);

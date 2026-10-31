@@ -172,6 +172,7 @@ void SearchRun::Resume(Worker& worker, const Continuation& event) {
     visit.path.back().generation = event.generation;
     visit.path.back().selected_move.reset();
     visit.result = event.value;
+    visit.result_exact = event.exact;
     if (event.kind == Continuation::Kind::kBackup ||
         event.kind == Continuation::Kind::kBackupAbove) {
       visit.leaf_counted = event.kind == Continuation::Kind::kBackupAbove;

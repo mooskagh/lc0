@@ -83,6 +83,8 @@ struct Visit {
   std::vector<PathStep> path;
   MaterializationTicketId waiting_ticket = 0;
   SearchValue result;
+  // `result` is exact: a terminal other than a repetition, or a proven node.
+  bool result_exact = false;
   // The leaf node already holds `result` (added at install).
   bool leaf_counted = false;
 };

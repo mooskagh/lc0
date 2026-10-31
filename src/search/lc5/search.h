@@ -108,6 +108,7 @@ class SearchRun {
     MaterializationTicketId ticket = 0;
     uint64_t generation = 0;
     SearchValue value{};
+    bool exact = false;  // `value` is an exact terminal value.
     bool terminal = false;
   };
   struct Ticket {
@@ -206,7 +207,8 @@ class SearchRun {
 
   // Controller.
   void Controller();
-  bool BestMoveDecided(std::chrono::steady_clock::time_point now) const;
+  bool BestMoveDecided(const RootStats& root,
+                       std::chrono::steady_clock::time_point now) const;
   void Respond();
   bool FullyDrained();
   void Shutdown();
@@ -294,6 +296,9 @@ class SearchRun {
   size_t next_owner_ = 0;
   size_t next_admission_waiter_ = 0;
   std::optional<uint64_t> node_limit_;
+  // Not in infinite or ponder searches: a decided root or smart pruning may
+  // stop the search before its limits.
+  bool may_stop_early_ = true;
 
   std::atomic<StopMode> stop_mode_{StopMode::kRunning};
   std::atomic<bool> started_{false};

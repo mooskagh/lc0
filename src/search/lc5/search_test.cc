@@ -657,6 +657,43 @@ TEST(Lc5SearchTest, ReselectingWaitersDrainAndCountOnce) {
   }
 }
 
+TEST(Lc5SearchTest, StickyEndgamesPlaysMateAndStopsEarly) {
+  // Mate in one: d1d8.
+  const auto root = Origin("6k1/5ppp/8/8/8/8/5PPP/3R2K1 w - - 0 1");
+  const Move mate = Move::White(Square(kFileD, kRank1), Square(kFileD, kRank8));
+  for (const bool sticky : {false, true}) {
+    SCOPED_TRACE(sticky);
+    auto params = TestParams();
+    params.sticky_endgames = sticky;
+    PolicyEngine<PuctAveraging> engine(params);
+    auto& graph = engine.graph();
+    ControlledBackend backend;
+    RecordingResponder responder;
+    // Without the option the search runs to the limit, so keep it small.
+    const int nodes = sticky ? 1'000'000 : 500;
+    SearchRun run(&engine, nullptr, &backend, &responder, TestSettings(),
+                  TestTimeManagement(), root, GoParams{.nodes = nodes},
+                  std::chrono::steady_clock::now());
+    run.Start();
+    run.Wait();
+    ExpectDrained(run, graph);
+    ExpectFinalOutput(responder, nodes);
+    const auto& final = responder.thinking.back();
+    if (sticky) {
+      EXPECT_EQ(responder.bestmoves[0].bestmove, mate);
+      EXPECT_EQ(final.mate, 1);
+      EXPECT_FALSE(final.score);
+      EXPECT_LT(run.metrics().visits_completed.load(),
+                static_cast<uint64_t>(nodes));
+    } else {
+      EXPECT_FALSE(final.mate);
+      EXPECT_TRUE(final.score);
+      EXPECT_EQ(run.metrics().visits_completed.load(),
+                static_cast<uint64_t>(nodes));
+    }
+  }
+}
+
 TEST(Lc5SearchTest, TerminalOwnerAndWaitersNeverEvaluate) {
   struct Case {
     const char* fen;

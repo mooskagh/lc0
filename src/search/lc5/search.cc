@@ -70,6 +70,7 @@ SearchRun::SearchRun(VisitEngine* engine, NodeStore* store, Backend* backend,
     workers_.push_back(std::make_unique<Worker>(i));
   }
   root_visits_at_start_ = engine_->Root(root_.key).visits;
+  may_stop_early_ = !go_params.infinite && !go_params.ponder;
   node_limit_ =
       kMaxRootVisits - std::min(root_visits_at_start_, kMaxRootVisits);
   if (!go_params.ponder && go_params.nodes && *go_params.nodes >= 0) {
@@ -146,19 +147,30 @@ void SearchRun::Controller() {
     if (!Stopping()) {
       const auto decision = time_manager_.Evaluate(now);
       next_check = decision.next_check;
-      if (decision.should_stop ||
-          (node_limit_ && metrics_.visits_completed.load() >= *node_limit_)) {
-        Stop();
-      } else if (time_manager_.smart_pruning_factor() > 0.0f) {
-        if (BestMoveDecided(now)) {
+      const RootStats root = engine_->Root(root_.key);
+      // Early stops bank the unused time only for budgets from the clock.
+      const auto stop_early = [&] {
+        if (time_manager_.smart_pruning_factor() > 0.0f) {
           unused_time_ms_.store(
               std::chrono::duration_cast<std::chrono::milliseconds>(
                   *time_manager_.deadline() - now)
                   .count());
-          Stop();
-        } else {
-          next_check = std::min(*next_check, now + kSmartPruningInterval);
         }
+        Stop();
+      };
+      if (decision.should_stop ||
+          (node_limit_ && metrics_.visits_completed.load() >= *node_limit_)) {
+        Stop();
+      } else if (may_stop_early_ && root.decided) {
+        // The root's result is proven; more visits can't change the move.
+        stop_early();
+      } else if (time_manager_.smart_pruning_factor() > 0.0f &&
+                 BestMoveDecided(root, now)) {
+        stop_early();
+      } else if (may_stop_early_) {
+        // Polls for a decided root, and for smart pruning.
+        next_check = std::min(next_check.value_or(now + kSmartPruningInterval),
+                              now + kSmartPruningInterval);
       }
     }
     if (!Stopping() && now >= next_info) {
@@ -186,8 +198,8 @@ void SearchRun::Controller() {
 
 // Whether the most visited root edge stays ahead even if all remaining visits,
 // estimated from this run's rate so far, go to the runner-up.
-bool SearchRun::BestMoveDecided(steady_clock::time_point now) const {
-  const RootStats root = engine_->Root(root_.key);
+bool SearchRun::BestMoveDecided(const RootStats& root,
+                                steady_clock::time_point now) const {
   if (!root.expanded) return false;
   if (root.edges == 1) return true;
   const uint64_t visits = metrics_.visits_completed.load();
