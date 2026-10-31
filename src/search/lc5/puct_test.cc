@@ -85,7 +85,7 @@ TEST(Lc5PuctTest, OptionDefaultsMatchParams) {
   EXPECT_EQ(params.fpu_value, defaults.fpu_value);
   EXPECT_EQ(params.waiter_resume, WaiterResume::kReselect);
   EXPECT_EQ(PuctAveraging::OnResume(params), WaiterResume::kReselect);
-  EXPECT_FALSE(params.moves_left.enabled);
+  EXPECT_TRUE(params.moves_left.enabled);
   EXPECT_EQ(params.moves_left.max_effect, defaults.moves_left.max_effect);
   EXPECT_EQ(params.moves_left.threshold, defaults.moves_left.threshold);
   EXPECT_EQ(params.moves_left.slope, defaults.moves_left.slope);
@@ -126,6 +126,9 @@ TEST(Lc5PuctTest, OptionsReachParams) {
   // Without a moves-left head the option has no effect.
   EXPECT_FALSE(PuctAveraging::Params::FromOptions(parser.GetOptionsDict(),
                                                   MakeAttributes(false))
+                   .moves_left.enabled);
+  parser.SetUciOption("MovesLeft", "false");
+  EXPECT_FALSE(PuctAveraging::Params::FromOptions(parser.GetOptionsDict(), kMlh)
                    .moves_left.enabled);
 }
 

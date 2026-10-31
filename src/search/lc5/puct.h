@@ -65,7 +65,7 @@ struct PuctParams {
   // Moves-left utility: in clearly decided nodes, prefer edges that shorten
   // a win or lengthen a loss. Needs a network with a moves-left head.
   struct MovesLeft {
-    bool enabled = false;
+    bool enabled = true;
     float max_effect = 0.0345f;
     float threshold = 0.8f;
     float slope = 0.0027f;

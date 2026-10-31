@@ -238,7 +238,7 @@ Options of the `puct` and `puct-dag` policies (they share them):
 | `CPuct`, `CPuctBase`, `CPuctFactor` | 1.745, 38739, 3.894 | As classic. |
 | `FpuStrategy`, `FpuValue` | reduction, 0.33 | As classic. |
 | `WaiterResume` | reselect | After waiting for a node's evaluation: select below it, reselect at its parent, or restart from the root. |
-| `MovesLeft` | false | Prefer shorter wins and longer losses in clearly decided nodes. Off without a moves-left head. |
+| `MovesLeft` | true | Prefer shorter wins and longer losses in clearly decided nodes. Off without a moves-left head. |
 | `MovesLeftMaxEffect`, `MovesLeftThreshold`, `MovesLeftSlope` | 0.0345, 0.8, 0.0027 | Largest bonus, node \|Q\| above which it applies, bonus per ply of M difference. |
 | `MovesLeftConstantFactor`, `MovesLeftScaledFactor`, `MovesLeftQuadraticFactor` | 0, 1.6521, −0.6521 | Bonus scaling: a + b·x + c·x², x = edge \|Q\| above the threshold, rescaled to [0, 1]. |
 | `StickyEndgames` | false | Use proven wins, draws and losses in selection, the bestmove, early stopping and mate scores. Repetition draws are not proven. |
