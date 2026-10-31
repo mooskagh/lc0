@@ -181,9 +181,11 @@ class GameGraph {
 
   // Applies the policy's update to the node and, if `move` is given,
   // completes that edge's reservation. On success `to_parent` is the message
-  // the parent receives.
+  // the parent receives: the update's, or with `send_current` the node's
+  // statistics after the update (P::Current).
   BackupResult<P> BackupNode(NodeKey key, uint64_t expected_generation,
-                             Message message, std::optional<Move> move);
+                             Message message, std::optional<Move> move,
+                             bool send_current = false);
 
   // Releases an edge reservation without committing a visit.
   UpdateResult CancelEdge(NodeKey key, uint64_t expected_generation, Move move);
@@ -384,7 +386,8 @@ template <typename P>
 BackupResult<P> GameGraph<P>::BackupNode(NodeKey key,
                                          uint64_t expected_generation,
                                          Message message,
-                                         std::optional<Move> move) {
+                                         std::optional<Move> move,
+                                         bool send_current) {
   auto& shard = ShardFor(key);
   std::lock_guard lock(shard.mutex);
   Node* node = FindNode(shard.nodes, key);
@@ -400,7 +403,8 @@ BackupResult<P> GameGraph<P>::BackupNode(NodeKey key,
     if (edge_result == UpdateResult::kApplied) edge = &node->tried[index];
   }
   // The node is updated even if the edge reservation could not be released.
-  const Message to_parent = P::Update(*node, edge, message);
+  Message to_parent = P::Update(*node, edge, message);
+  if (send_current) to_parent = P::Current(*node);
   return {UpdateResult::kApplied, edge_result, to_parent};
 }
 

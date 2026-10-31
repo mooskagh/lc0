@@ -45,6 +45,9 @@ enum class FpuStrategy { kAbsolute, kReduction };
 // Which child visits count in the parent's totals: sqrt(N) and the FPU
 // visited policy.
 enum class PuctTotals { kStarted, kCompleted };
+// How far an in-search two-fold draw is backed up: to the search root, or to
+// the repeated position's first occurrence only.
+enum class TwoFoldDraws { kRoot, kContained };
 
 // PUCT selection over running averages, as in classic. Nodes and edges keep
 // value means and bounds, and the message is a value and bounds from the side
@@ -75,6 +78,7 @@ struct PuctAveraging {
     // Use proven bounds in selection, the move choice, early stopping and
     // mate scores. Bounds are tracked either way.
     bool sticky_endgames = false;
+    TwoFoldDraws two_fold_draws = TwoFoldDraws::kRoot;
 
     static void Populate(OptionsParser* options);
     // Moves-left stays off if the backend has no moves-left head.
@@ -124,6 +128,19 @@ struct PuctAveraging {
       node.stats.bounds = BoundsFromEdges(node);
     }
     return {message.value.Parent(), node.stats.bounds.Parent()};
+  }
+
+  // What the parent receives from the node's current statistics instead of
+  // the backed-up message: the node's mean and bounds.
+  static Message Current(const NodeState<PuctAveraging>& node) {
+    const ValueStats& stats = node.stats;
+    return {SearchValue{stats.Q(), stats.D(), stats.M()}.Parent(),
+            stats.bounds.Parent()};
+  }
+  // Whether an in-search two-fold draw stops at the repeated position's first
+  // occurrence, which then sends its Current value further up.
+  static bool ContainTwoFold(const Params& params) {
+    return params.two_fold_draws == TwoFoldDraws::kContained;
   }
 
   static uint32_t Visits(const ValueStats& stats) { return stats.visits; }

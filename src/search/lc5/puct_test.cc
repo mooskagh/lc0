@@ -94,6 +94,8 @@ TEST(Lc5PuctTest, OptionDefaultsMatchParams) {
   EXPECT_EQ(params.moves_left.quadratic_factor,
             defaults.moves_left.quadratic_factor);
   EXPECT_FALSE(params.sticky_endgames);
+  EXPECT_EQ(params.two_fold_draws, TwoFoldDraws::kRoot);
+  EXPECT_FALSE(PuctAveraging::ContainTwoFold(params));
 }
 
 TEST(Lc5PuctTest, OptionsReachParams) {
@@ -106,6 +108,7 @@ TEST(Lc5PuctTest, OptionsReachParams) {
   parser.SetUciOption("MovesLeft", "true");
   parser.SetUciOption("MovesLeftSlope", "0.01");
   parser.SetUciOption("StickyEndgames", "true");
+  parser.SetUciOption("TwoFoldDraws", "contained");
   const auto params =
       PuctAveraging::Params::FromOptions(parser.GetOptionsDict(), kMlh);
   EXPECT_EQ(params.cpuct, 3.0f);
@@ -115,6 +118,8 @@ TEST(Lc5PuctTest, OptionsReachParams) {
   EXPECT_TRUE(params.moves_left.enabled);
   EXPECT_EQ(params.moves_left.slope, 0.01f);
   EXPECT_TRUE(params.sticky_endgames);
+  EXPECT_EQ(params.two_fold_draws, TwoFoldDraws::kContained);
+  EXPECT_TRUE(PuctAveraging::ContainTwoFold(params));
   parser.SetUciOption("WaiterResume", "reselect");
   EXPECT_EQ(PuctAveraging::Params::FromOptions(parser.GetOptionsDict(), kMlh)
                 .waiter_resume,
@@ -244,6 +249,22 @@ TEST(Lc5PuctTest, UpdateAveragesAndFlipsForParent) {
   const auto skipped = PuctAveraging::Skip(message);
   EXPECT_FLOAT_EQ(skipped.value.q, 0.5f);
   EXPECT_FLOAT_EQ(skipped.value.m, 5.0f);
+}
+
+TEST(Lc5PuctTest, CurrentSendsNodeMeanAndBoundsFlipped) {
+  Node node{.lifecycle = NodeLifecycle::kExpanded,
+            .stats = {.visits = 4,
+                      .q = 0.25f,
+                      .d = 0.5f,
+                      .m = 6.0f,
+                      .bounds = {.lower = 0, .upper = 1}},
+            .edges = {MakeEdge(kFileA, 1.0f)},
+            .tried = {Tried{}}};
+  const auto up = PuctAveraging::Current(node);
+  EXPECT_FLOAT_EQ(up.value.q, -0.25f);
+  EXPECT_FLOAT_EQ(up.value.d, 0.5f);
+  EXPECT_FLOAT_EQ(up.value.m, 7.0f);
+  EXPECT_EQ(up.bounds, (Bounds{.lower = -1, .upper = 0}));
 }
 
 // An expanded node with `edges` edges, of which the first ones are tried with

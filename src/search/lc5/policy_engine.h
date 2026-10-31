@@ -28,6 +28,7 @@
 #pragma once
 
 #include <algorithm>
+#include <cassert>
 #include <cstddef>
 #include <optional>
 #include <string_view>
@@ -151,12 +152,17 @@ bool PolicyEngine<P>::Advance(Visit& visit, PathStep& step, Move move,
   // graph (generation 0).
   const Position& position = visit.history.Last();
   const int ply = static_cast<int>(visit.path.size());
-  if (position.GetRepetitions() == 1 && ply >= 4 &&
-      ply >= position.GetPliesSincePrevRepetition()) {
+  const int cycle = position.GetPliesSincePrevRepetition();
+  if (position.GetRepetitions() == 1 && ply >= 4 && ply >= cycle) {
+    // The first occurrence is `cycle` plies up the path. This assumes path
+    // indices count plies from the history's root, which holds while
+    // backup_prefix is empty.
+    if (P::ContainTwoFold(params_)) visit.two_fold_origin = ply - cycle;
     visit.path.push_back({.key = visit.current_key});
     visit.result = TerminalValue(TerminalKind::kRepetition);
     visit.result_exact = false;
     ctx.metrics.terminal_visits.fetch_add(1);
+    ctx.metrics.two_fold_visits.fetch_add(1);
     return true;
   }
   return false;
@@ -212,8 +218,13 @@ void PolicyEngine<P>::Backup(const Visit& visit, const VisitContext& ctx) {
     // The leaf commits only its node value; ancestors complete their edges.
     const auto move =
         i + 1 < visit.path.size() ? step.selected_move : std::nullopt;
-    const BackupResult<P> result =
-        graph_.BackupNode(step.key, step.generation, message, move);
+    // A contained two-fold draw stops at the repeated position's first
+    // occurrence, which takes the draw and sends its own value further up.
+    // If that node is stale or missing, the draw goes on past it (rare).
+    const bool two_fold_origin = visit.two_fold_origin == i;
+    assert(!two_fold_origin || (step.generation != 0 && move));
+    const BackupResult<P> result = graph_.BackupNode(
+        step.key, step.generation, message, move, two_fold_origin);
     ctx.metrics.backup_node_steps.fetch_add(1);
     if (result.node != UpdateResult::kApplied) {
       ctx.metrics.stale_generation_node_updates.fetch_add(1);

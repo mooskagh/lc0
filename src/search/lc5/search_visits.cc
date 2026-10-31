@@ -343,6 +343,7 @@ void SearchRun::Restart(VisitPool::Slot& slot) {
   visit.history = visit.origin.history;
   visit.current_key = visit.origin.key;
   visit.path = visit.origin.backup_prefix;
+  visit.two_fold_origin.reset();
   visit.state = VisitState::kReadySelect;
   metrics_.visits_restarted.fetch_add(1);
 }

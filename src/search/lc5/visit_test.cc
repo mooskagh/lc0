@@ -148,8 +148,10 @@ TEST(Lc5VisitPoolTest, InitializesAndResetsVisit) {
     EXPECT_FLOAT_EQ(visit.result.q, 0.0f);
     EXPECT_FLOAT_EQ(visit.result.d, 0.0f);
     EXPECT_FLOAT_EQ(visit.result.m, 0.0f);
+    EXPECT_FALSE(visit.two_fold_origin);
     visit.waiting_ticket = 17;
     visit.result = {1.0f, 0.5f, 3.0f};
+    visit.two_fold_origin = 3;
     EXPECT_TRUE(pool.ReleaseLocked(*slot, *id));
     EXPECT_FALSE(visit.id);
     EXPECT_EQ(visit.state, VisitState::kFree);

@@ -518,6 +518,39 @@ TEST(Lc5GraphTest, BackupCommitsNodeAndOptionalEdgeSums) {
   EXPECT_FLOAT_EQ(TriedAt(*node, 0).stats.M(), 4.0f);
 }
 
+TEST(Lc5GraphTest, BackupCanSendTheNodesCurrentValue) {
+  Graph graph;
+  NodeKey key{457};
+  Move move = M(kFileA, kFileA);
+  auto created = graph.FindOrCreateMaterializing(key, 1);
+  // The install counts the leaf value once: Q 0.25, D 0.5, M 2.
+  graph.InstallPayload(key, 1,
+                       {.leaf = {.q = 0.25f, .d = 0.5f, .m = 2.0f},
+                        .moves = {move},
+                        .priors = {1.0f}});
+  ASSERT_EQ(graph.SelectAndReserve(key, TestParams()).status,
+            SelectStatus::kSelected);
+  const auto result = graph.BackupNode(key, created.generation,
+                                       {-0.75f, 0.0f, 4.0f}, move, true);
+  EXPECT_EQ(result.node, UpdateResult::kApplied);
+  EXPECT_EQ(result.edge, UpdateResult::kApplied);
+  const auto node = graph.SnapshotNode(key);
+  ASSERT_TRUE(node);
+  EXPECT_EQ(node->stats.visits, 2u);
+  EXPECT_FLOAT_EQ(node->stats.Q(), -0.25f);
+  EXPECT_FLOAT_EQ(node->stats.D(), 0.25f);
+  EXPECT_FLOAT_EQ(node->stats.M(), 3.0f);
+  EXPECT_EQ(TriedAt(*node, 0).stats.visits, 1u);
+  EXPECT_EQ(TriedAt(*node, 0).in_flight, 0u);
+  EXPECT_FLOAT_EQ(TriedAt(*node, 0).stats.Q(), -0.75f);
+  // The parent receives the node's new mean, not the backed-up value.
+  ASSERT_TRUE(result.to_parent);
+  EXPECT_FLOAT_EQ(result.to_parent->value.q, 0.25f);
+  EXPECT_FLOAT_EQ(result.to_parent->value.d, 0.25f);
+  EXPECT_FLOAT_EQ(result.to_parent->value.m, 4.0f);
+  EXPECT_EQ(result.to_parent->bounds, Bounds{});
+}
+
 TEST(Lc5GraphTest, BackupRejectsMissingAndStaleGenerations) {
   Graph graph;
   NodeKey key{456};
