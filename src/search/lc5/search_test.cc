@@ -35,11 +35,13 @@
 #include <thread>
 #include <unordered_map>
 #include <unordered_set>
+#include <vector>
 
 #include "search/lc5/engine.h"
 #include "search/lc5/policies.h"
 #include "search/lc5/policy_engine.h"
 #include "search/lc5/puct.h"
+#include "search/lc5/puct_dag.h"
 
 namespace lczero::lc5 {
 
@@ -380,8 +382,8 @@ class BlockingStore final : public NodeStore {
   std::atomic<size_t> load_calls_{0};
 };
 
-void ExpectDrained(const SearchRun& run,
-                   const GameGraph<PuctAveraging>& graph) {
+template <typename P>
+void ExpectDrained(const SearchRun& run, const GameGraph<P>& graph) {
   ASSERT_TRUE(run.Finished());
   SearchRunTestPeer::ExpectDrained(run);
   const auto& m = run.metrics();
@@ -654,6 +656,72 @@ TEST(Lc5SearchTest, ReselectingWaitersDrainAndCountOnce) {
     const auto node = graph.SnapshotNode(root.key);
     ASSERT_TRUE(node);
     EXPECT_EQ(node->stats.visits, static_cast<uint64_t>(kNodes));
+  }
+}
+
+TEST(Lc5SearchTest, PuctDagDrainsAndKeepsNodeMeans) {
+  // Kings and blocked pawns: with HistoryKeyLength 0, king routes that
+  // commute share a node from the fourth ply.
+  auto settings = TestSettings();
+  settings.history_key_length = 0;
+  PositionHistory history;
+  history.Reset(Position::FromFen("k7/p7/P7/8/8/8/8/7K w - - 0 1"));
+  const VisitOrigin root{.key = MakeNodeKey(history, 0),
+                         .history = std::move(history),
+                         .backup_prefix = {}};
+  for (const int threads : {1, 2}) {
+    SCOPED_TRACE(threads);
+    settings.threads = threads;
+    settings.max_active_visits = 16;
+    PolicyEngine<PuctDag> engine(TestParams());
+    auto& graph = engine.graph();
+    ControlledBackend backend;
+    RecordingResponder responder;
+    constexpr int64_t kNodes = 2000;
+    SearchRun run(&engine, nullptr, &backend, &responder, settings,
+                  TestTimeManagement(), root, GoParams{.nodes = kNodes},
+                  std::chrono::steady_clock::now());
+    run.Start();
+    run.Wait();
+    ExpectDrained(run, graph);
+    ExpectFinalOutput(responder, kNodes);
+    ExpectLegalBestmove(responder, root);
+    const auto node = graph.SnapshotNode(root.key);
+    ASSERT_TRUE(node);
+    EXPECT_EQ(node->stats.visits, static_cast<uint64_t>(kNodes));
+    // A node's visits are its own sample plus its edges' visits, whose cached
+    // values its mean weighs.
+    const auto snapshot = graph.SnapshotAllForTesting();
+    std::unordered_map<uint64_t, const NodeState<PuctDag>*> nodes;
+    for (const auto& [key, n] : snapshot) {
+      nodes[key.hash] = &n;
+      EXPECT_LE(std::abs(n.stats.Q()), 1.0f);
+      if (n.terminal != TerminalKind::kNonTerminal) continue;
+      uint32_t edge_visits = 0;
+      for (const auto& tried : n.tried) edge_visits += tried.stats.visits;
+      EXPECT_EQ(n.stats.visits, 1 + edge_visits);
+    }
+    // Transpositions: some node is the child of more than one visited edge.
+    std::unordered_map<uint64_t, int> parents;
+    std::unordered_set<uint64_t> seen{root.key.hash};
+    std::vector<PositionHistory> pending{root.history};
+    while (!pending.empty()) {
+      const PositionHistory parent = std::move(pending.back());
+      pending.pop_back();
+      const auto it = nodes.find(MakeNodeKey(parent, 0).hash);
+      if (it == nodes.end()) continue;
+      const auto& n = *it->second;
+      for (size_t i = 0; i < n.tried.size(); ++i) {
+        if (n.tried[i].stats.visits == 0) continue;
+        PositionHistory child = parent;
+        child.Append(n.edges[i].move);
+        const uint64_t key = MakeNodeKey(child, 0).hash;
+        ++parents[key];
+        if (seen.insert(key).second) pending.push_back(std::move(child));
+      }
+    }
+    EXPECT_TRUE(std::any_of(parents.begin(), parents.end(),
+                            [](const auto& p) { return p.second > 1; }));
   }
 }
 

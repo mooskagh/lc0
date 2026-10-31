@@ -30,6 +30,8 @@
 #include <gtest/gtest.h>
 
 #include "search/lc5/policies.h"
+#include "search/lc5/puct_dag.h"
+#include "search/lc5/visit_engine.h"
 
 namespace lczero::lc5 {
 namespace {
@@ -489,6 +491,112 @@ TEST(Lc5PuctTest, DescribeShowsProvenMates) {
   info = describe(WithPlies(kWin, 1));
   EXPECT_FALSE(info.mate);
   EXPECT_TRUE(info.score);
+}
+
+TEST(Lc5PuctTest, PoliciesShareThePuctOptions) {
+  OptionsParser parser;
+  PopulatePolicyOptions(&parser);
+  parser.SetUciOption("Lc5Policy", "puct-dag");
+  parser.SetUciOption("CPuct", "3");
+  EXPECT_EQ(PolicyName(parser.GetOptionsDict()), "puct-dag");
+  EXPECT_EQ(PuctDag::Params::FromOptions(parser.GetOptionsDict(), kMlh).cpuct,
+            3.0f);
+  EXPECT_EQ(MakeVisitEngine("puct")->name(), "puct");
+  EXPECT_EQ(MakeVisitEngine("puct-dag")->name(), "puct-dag");
+}
+
+using DagNode = NodeState<PuctDag>;
+using DagTried = TriedEdge<PuctDag>;
+
+TEST(Lc5PuctTest, DagEdgesCacheTheChildValue) {
+  DagNode node{.lifecycle = NodeLifecycle::kExpanded,
+               .edges = {MakeEdge(kFileA, 0.5f), MakeEdge(kFileB, 0.5f)},
+               .tried = {DagTried{}, DagTried{}}};
+  const SearchValue leaf{.q = 0.2f, .d = 0.4f, .m = 10.0f};
+  PuctDag::Update(node, nullptr, PuctDag::Leaf(leaf, false));
+  EXPECT_EQ(node.stats.visits, 1u);
+  EXPECT_FLOAT_EQ(node.stats.Q(), 0.2f);
+
+  // Visits through the edges with changing child values, in the edge frame.
+  struct Step {
+    size_t edge;
+    SearchValue value;
+  };
+  const Step steps[] = {
+      {0, {.q = 0.5f, .d = 0.3f, .m = 8.0f}},
+      {1, {.q = -0.4f, .d = 0.6f, .m = 12.0f}},
+      {0, {.q = 0.1f, .d = 0.2f, .m = 7.0f}},
+      {0, {.q = -0.7f, .d = 0.1f, .m = 6.0f}},
+      {1, {.q = 0.9f, .d = 0.05f, .m = 3.0f}},
+      {1, {.q = 0.3f, .d = 0.5f, .m = 9.0f}},
+  };
+  for (const Step& step : steps) {
+    const uint32_t before = node.tried[step.edge].stats.visits;
+    const auto up =
+        PuctDag::Update(node, &node.tried[step.edge], {.value = step.value});
+    const ValueStats& edge = node.tried[step.edge].stats;
+    EXPECT_EQ(edge.visits, before + 1);
+    EXPECT_EQ(edge.Q(), step.value.q);
+    EXPECT_EQ(edge.D(), step.value.d);
+    EXPECT_EQ(edge.M(), step.value.m);
+    // The node is its own sample plus each edge's cached value, weighted by
+    // the edge's visits.
+    float visits = 1.0f, q = leaf.q, d = leaf.d, m = leaf.m;
+    for (const DagTried& tried : node.tried) {
+      visits += tried.stats.visits;
+      q += tried.stats.visits * tried.stats.Q();
+      d += tried.stats.visits * tried.stats.D();
+      m += tried.stats.visits * tried.stats.M();
+    }
+    EXPECT_EQ(node.stats.visits, static_cast<uint32_t>(visits));
+    EXPECT_NEAR(node.stats.Q(), q / visits, 1e-5f);
+    EXPECT_NEAR(node.stats.D(), d / visits, 1e-5f);
+    EXPECT_NEAR(node.stats.M(), m / visits, 1e-4f);
+    const auto current = PuctDag::Current(node);
+    EXPECT_EQ(up.value.q, current.value.q);
+    EXPECT_EQ(up.value.d, current.value.d);
+    EXPECT_EQ(up.value.m, current.value.m);
+    EXPECT_EQ(up.bounds, current.bounds);
+  }
+}
+
+TEST(Lc5PuctTest, DagReselectReplacesTheEdgeValue) {
+  // Edge A has 3 visits at 0.8; the waiter brings 0.2. With N = 4, sqrt(N) =
+  // 2: A scores q + 0.5 * 2 / 5 = q + 0.2 and the untried B 0.3 * 2 = 0.6.
+  // Averaging gives A q = 0.65 (0.85 > 0.6); replacing gives 0.2 (0.4 < 0.6).
+  const Node node{.lifecycle = NodeLifecycle::kExpanded,
+                  .stats = {.visits = 4},
+                  .edges = {MakeEdge(kFileA, 0.5f), MakeEdge(kFileB, 0.3f)},
+                  .tried = {MakeTried(3, 0.8f)}};
+  const DagNode dag{.lifecycle = NodeLifecycle::kExpanded,
+                    .stats = {.visits = 4},
+                    .edges = {MakeEdge(kFileA, 0.5f), MakeEdge(kFileB, 0.3f)},
+                    .tried = {DagTried{.stats = {.visits = 3, .q = 0.8f}}}};
+  const SearchValue from_child{.q = 0.2f};
+  EXPECT_EQ(
+      PuctAveraging::Reselect(node, TestParams(), 0, {.value = from_child}),
+      0u);
+  EXPECT_EQ(PuctDag::Reselect(dag, TestParams(), 0, {.value = from_child}), 1u);
+}
+
+TEST(Lc5PuctTest, DagTerminalLossProvesParentWin) {
+  DagNode child{.lifecycle = NodeLifecycle::kExpanded,
+                .terminal = TerminalKind::kCheckmate};
+  const auto from_child = PuctDag::Update(
+      child, nullptr,
+      PuctDag::Leaf(TerminalValue(TerminalKind::kCheckmate), true));
+  EXPECT_EQ(child.stats.bounds, kLoss);
+  EXPECT_EQ(from_child.bounds, WithPlies(kWin, 1));
+  EXPECT_FLOAT_EQ(from_child.value.q, 1.0f);
+
+  DagNode parent{.lifecycle = NodeLifecycle::kExpanded,
+                 .stats = {.visits = 1},
+                 .edges = {MakeEdge(kFileA, 0.5f), MakeEdge(kFileB, 0.5f)},
+                 .tried = {DagTried{}}};
+  const auto up = PuctDag::Update(parent, &parent.tried[0], from_child);
+  EXPECT_EQ(parent.tried[0].stats.bounds, WithPlies(kWin, 1));
+  EXPECT_EQ(parent.stats.bounds, WithPlies(kWin, 1));
+  EXPECT_EQ(up.bounds, WithPlies(kLoss, 2));
 }
 
 }  // namespace

@@ -22,6 +22,8 @@ organized. Code is in `src/search/lc5/`.
 - **Statistics on edges.** Each edge records its own visits and value. When
   two parents lead into the same node, each parent's edge keeps its own
   numbers, so a transposition does not distort the other parent's view.
+  (With `Lc5Policy=puct-dag` an edge caches the child's value instead, so
+  every parent sees the shared node's full value; see "Policies".)
   Every legal move keeps only its move and prior (stored as fp16, 4 bytes in
   all); statistics exist only for the edges that have been tried, which
   always form a prefix of the prior-sorted edges.
@@ -190,7 +192,8 @@ Reading the `info` line:
 | `search_visits.cc` | Admission, worker loop, driving each visit through the engine. |
 | `visit_engine.h` | `VisitEngine` interface: descent, backup, cancel, report. |
 | `policy_engine.h` | `PolicyEngine<P>` implements it on a `GameGraph<P>` it owns: descent, two-fold check, backup, PV walk. |
-| `puct.h/.cc` | `PuctAveraging`, the policy: PUCT selection, averaging backup, its options, PV edge, score/WDL. |
+| `puct.h/.cc` | `PuctPolicy<Self>`: PUCT selection, PV edge, bounds, score/WDL and the PUCT options (`PuctParams`), shared by the policies; `PuctAveraging` (`puct`) adds the averaging backup. |
+| `puct_dag.h` | `PuctDag` (`puct-dag`): edges cache the child's value; see "Policies". |
 | `policies.cc` | Policy table and the `Lc5Policy` option; a new policy is one row. |
 | `search_materialization.cc` | Creating nodes, terminal detection, jobs, evaluator batching. |
 | `graph.h` | `GameGraph<P>`: sharded node map, reservations, per-node updates, tried-edge stats; node and edge stats belong to the policy. |
@@ -225,9 +228,9 @@ Things that look odd but are deliberate:
 | `MoveOverheadMs` | 200 | As classic. |
 | `AlphaZeroTimePct` | 3 | Share of the clock spent per move. |
 | `SmartPruningFactor` | 1.33 | Early stop aggressiveness; 0 disables. |
-| `Lc5Policy` | puct | Search policy; only `puct` for now. |
+| `Lc5Policy` | puct | Search policy: `puct` or `puct-dag` (see "Policies"). |
 
-Options of the `puct` policy:
+Options of the `puct` and `puct-dag` policies (they share them):
 
 | Option | Default | Meaning |
 |---|---|---|
@@ -240,6 +243,30 @@ Options of the `puct` policy:
 | `MovesLeftConstantFactor`, `MovesLeftScaledFactor`, `MovesLeftQuadraticFactor` | 0, 1.6521, −0.6521 | Bonus scaling: a + b·x + c·x², x = edge \|Q\| above the threshold, rescaled to [0, 1]. |
 | `StickyEndgames` | false | Use proven wins, draws and losses in selection, the bestmove, early stopping and mate scores. Repetition draws are not proven. |
 | `TwoFoldDraws` | root | How far a two-fold repetition inside the search is backed up as a draw: to the search root, or contained at the repeated position's first occurrence, which sends its own value further up. |
+
+## Policies
+
+Both policies select by PUCT with the options above; they differ in what an
+edge and a node remember.
+
+- **`puct`.** An edge averages the values of the visits that went through
+  it, and a node those of all visits to it. A transposed node pools its
+  visits from all parents, but each parent's edge sees only its own share.
+- **`puct-dag`.** An edge caches its child's current value from the last
+  visit through it, and its visit count is its weight. A node's value is the
+  visit-weighted mean of its own evaluation and its edges' cached values, and
+  each update sends the node's current value up (not the leaf's). So a parent
+  sees what the child learned through other parents too, from its next visit
+  through that edge. Without `StickyEndgames`, a node's visits are always
+  1 + its edges' visits. A two-fold draw is cached by the edge that reached
+  it and goes further up only through the nodes' values, so `TwoFoldDraws`
+  makes no difference.
+
+With a short `HistoryKeyLength` more positions share a node, which matters
+most for `puct-dag`. The key still includes the fifty-move counter, so the
+graph has no cycles. A three-fold repetition found at a node is stored on it,
+so with short keys another history reaching that node also sees the draw,
+whatever its own repetitions (both policies).
 
 ## Not done yet
 

@@ -32,6 +32,7 @@
 
 #include "search/lc5/policy_engine.h"
 #include "search/lc5/puct.h"
+#include "search/lc5/puct_dag.h"
 #include "utils/exception.h"
 
 namespace lczero::lc5 {
@@ -52,6 +53,10 @@ const PolicyEntry kPolicies[] = {
     {PuctAveraging::kName, &PuctAveraging::Params::Populate,
      []() -> std::unique_ptr<VisitEngine> {
        return std::make_unique<PolicyEngine<PuctAveraging>>();
+     }},
+    {PuctDag::kName, &PuctDag::Params::Populate,
+     []() -> std::unique_ptr<VisitEngine> {
+       return std::make_unique<PolicyEngine<PuctDag>>();
      }},
 };
 
