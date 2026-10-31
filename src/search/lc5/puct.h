@@ -49,9 +49,6 @@
 namespace lczero::lc5 {
 
 enum class FpuStrategy { kAbsolute, kReduction };
-// Which child visits count in the parent's totals: sqrt(N) and the FPU
-// visited policy.
-enum class PuctTotals { kStarted, kCompleted };
 // How far an in-search two-fold draw is backed up: to the search root, or to
 // the repeated position's first occurrence only.
 enum class TwoFoldDraws { kRoot, kContained };
@@ -64,7 +61,6 @@ struct PuctParams {
   float cpuct_factor = 3.894f;
   FpuStrategy fpu_strategy = FpuStrategy::kReduction;
   float fpu_value = 0.33f;
-  PuctTotals totals = PuctTotals::kStarted;
   WaiterResume waiter_resume = WaiterResume::kSelect;
   // Moves-left utility: in clearly decided nodes, prefer edges that shorten
   // a win or lengthen a loss. Needs a network with a moves-left head.
@@ -243,26 +239,22 @@ size_t PuctPolicy<Self>::SelectEdge(
   const auto started = [](const TriedEdge<Self>& tried) {
     return tried.stats.visits + tried.in_flight;
   };
-  const bool completed_only = params.totals == PuctTotals::kCompleted;
-  // Visits a child contributes to the parent's totals: sqrt(N) and the FPU
-  // visited policy. In-flight visits always count in the edge's own U.
-  const auto counted = [&](const TriedEdge<Self>& tried) {
-    return completed_only ? tried.stats.visits : started(tried);
-  };
+  // Started visits (completed plus in flight) count in the parent's totals,
+  // sqrt(N) and the FPU visited policy, as well as in the edge's own U.
   // Only tried edges have been started, so the sums only need that prefix.
-  uint64_t children_counted = 0;
+  uint64_t children_started = 0;
   float visited_policy = 0.0f;
   for (size_t i = 0; i < tried_edges.size(); ++i) {
-    const auto& tried = tried_edges[i];
-    children_counted += counted(tried);
-    if (counted(tried) > 0) visited_policy += node.edges[i].prior;
+    const uint32_t n = started(tried_edges[i]);
+    children_started += n;
+    if (n > 0) visited_policy += node.edges[i].prior;
   }
   const float cpuct =
       params.cpuct +
       params.cpuct_factor *
           std::log((node.stats.visits + params.cpuct_base) / params.cpuct_base);
   const float scale =
-      std::sqrt(static_cast<float>(std::max<uint64_t>(1, children_counted)));
+      std::sqrt(static_cast<float>(std::max<uint64_t>(1, children_started)));
   const float fpu =
       params.fpu_strategy == FpuStrategy::kAbsolute
           ? params.fpu_value

@@ -83,7 +83,6 @@ TEST(Lc5PuctTest, OptionDefaultsMatchParams) {
   EXPECT_EQ(params.cpuct_factor, defaults.cpuct_factor);
   EXPECT_EQ(params.fpu_strategy, FpuStrategy::kReduction);
   EXPECT_EQ(params.fpu_value, defaults.fpu_value);
-  EXPECT_EQ(params.totals, PuctTotals::kStarted);
   EXPECT_EQ(params.waiter_resume, WaiterResume::kSelect);
   EXPECT_EQ(PuctAveraging::OnResume(params), WaiterResume::kSelect);
   EXPECT_FALSE(params.moves_left.enabled);
@@ -105,7 +104,6 @@ TEST(Lc5PuctTest, OptionsReachParams) {
   PopulatePolicyOptions(&parser);
   parser.SetUciOption("CPuct", "3");
   parser.SetUciOption("FpuStrategy", "absolute");
-  parser.SetUciOption("PuctTotals", "completed");
   parser.SetUciOption("WaiterResume", "restart");
   parser.SetUciOption("MovesLeft", "true");
   parser.SetUciOption("MovesLeftSlope", "0.01");
@@ -115,7 +113,6 @@ TEST(Lc5PuctTest, OptionsReachParams) {
       PuctAveraging::Params::FromOptions(parser.GetOptionsDict(), kMlh);
   EXPECT_EQ(params.cpuct, 3.0f);
   EXPECT_EQ(params.fpu_strategy, FpuStrategy::kAbsolute);
-  EXPECT_EQ(params.totals, PuctTotals::kCompleted);
   EXPECT_EQ(PuctAveraging::OnResume(params), WaiterResume::kRestart);
   EXPECT_TRUE(params.moves_left.enabled);
   EXPECT_EQ(params.moves_left.slope, 0.01f);
@@ -162,21 +159,17 @@ TEST(Lc5PuctTest, InFlightEdgeLosesUrgency) {
   EXPECT_EQ(PuctAveraging::Select(node, TestParams()), 1u);
 }
 
-TEST(Lc5PuctTest, InFlightCountsInTotalsOnlyWhenStarted) {
+TEST(Lc5PuctTest, InFlightCountsInTotals) {
   Tried tried = MakeTried(1, 0.25f);
   tried.in_flight = 3;
   const Node node{.lifecycle = NodeLifecycle::kExpanded,
                   .stats = {.visits = 2},
                   .edges = {MakeEdge(kFileA, 0.5f), MakeEdge(kFileB, 0.3f)},
                   .tried = {tried}};
-  auto params = TestParams();
   // Started totals: sqrt(N) = 2, edge A scores 0.25 + 0.5 * 2 / 5 = 0.45 and
-  // edge B 0.3 * 2 = 0.6.
-  EXPECT_EQ(PuctAveraging::Select(node, params), 1u);
-  // Completed totals: sqrt(N) = 1, edge A scores 0.25 + 0.5 / 5 = 0.35 and
-  // edge B 0.3.
-  params.totals = PuctTotals::kCompleted;
-  EXPECT_EQ(PuctAveraging::Select(node, params), 0u);
+  // edge B 0.3 * 2 = 0.6. (Counting only completed visits, sqrt(N) = 1 would
+  // pick A: 0.35 against 0.3.)
+  EXPECT_EQ(PuctAveraging::Select(node, TestParams()), 1u);
 }
 
 TEST(Lc5PuctTest, ReselectCountsWaiterAsCompleted) {

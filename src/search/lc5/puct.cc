@@ -43,11 +43,6 @@ const OptionId kFpuStrategy{"fpu-strategy", "FpuStrategy",
                             "Lc5 first-play urgency strategy."};
 const OptionId kFpuValue{"fpu-value", "FpuValue",
                          "Lc5 absolute FPU value or FPU reduction."};
-const OptionId kPuctTotals{
-    "puct-totals", "PuctTotals",
-    "Which child visits count in the parent's sqrt(N) and FPU visited policy: "
-    "started (completed plus in flight) or completed only, as in classic. "
-    "In-flight visits always count in the edge's own U denominator."};
 const OptionId kWaiterResume{
     "waiter-resume", "WaiterResume",
     "What a visit does after waiting for a node's evaluation: select below "
@@ -122,9 +117,6 @@ void PuctParams::Populate(OptionsParser* options) {
       defaults.fpu_strategy == FpuStrategy::kAbsolute ? "absolute"
                                                       : "reduction";
   options->Add<FloatOption>(kFpuValue, -100.0f, 100.0f) = defaults.fpu_value;
-  options->Add<ChoiceOption>(kPuctTotals,
-                             std::vector<std::string>{"started", "completed"}) =
-      defaults.totals == PuctTotals::kStarted ? "started" : "completed";
   options->Add<ChoiceOption>(
       kWaiterResume,
       std::vector<std::string>{"select", "reselect", "restart"}) =
@@ -158,9 +150,6 @@ PuctParams PuctParams::FromOptions(const OptionsDict& options,
                           ? FpuStrategy::kAbsolute
                           : FpuStrategy::kReduction,
       .fpu_value = options.Get<float>(kFpuValue),
-      .totals = options.Get<std::string>(kPuctTotals) == "completed"
-                    ? PuctTotals::kCompleted
-                    : PuctTotals::kStarted,
       .waiter_resume =
           WaiterResumeFromString(options.Get<std::string>(kWaiterResume)),
       // Without a moves-left head, M is only the mean depth of the leaves

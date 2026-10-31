@@ -1,8 +1,8 @@
 # Lc5 search
 
 Lc5 is an experimental search, started with `lc0 lc5`. PUCT, FPU and their
-defaults match classic (except that by default in-flight visits also count in
-the parent's totals, see `PuctTotals`); what differs is how the work is
+defaults match classic (except that in-flight visits also count in the
+parent's totals, see "Following one visit"); what differs is how the work is
 organized. Code is in `src/search/lc5/`.
 
 ## Differences from classic
@@ -42,14 +42,14 @@ Code: `search_visits.cc`, `policy_engine.h`, `puct.cc`, `search_materialization.
 2. **Selection.** At each node the visit picks a move by PUCT
    (`GameGraph::SelectAndReserve`) over the edges tried so far plus the best
    untried one, and reserves the edge (`in_flight`). In-flight visits count
-   in the edge's own U denominator; by default they also count in the
-   parent's sqrt(N) and FPU visited policy, and with `PuctTotals=completed`
-   they don't, as in classic. With `MovesLeft` (needs a network with a
-   moves-left head), in nodes whose |Q| exceeds `MovesLeftThreshold` a tried
-   edge's Q also gets a small bonus for shortening a win or lengthening a
-   loss, from the edge's M against the node's. With `StickyEndgames`, a
-   proven edge (see Backup) scores its exact value and an unproven one's Q
-   is kept within its bounds. Each step goes into the visit's `path` for
+   in the edge's own U denominator and in the parent's sqrt(N) and FPU
+   visited policy (counting only completed visits there lost about 50 Elo).
+   With `MovesLeft` (needs a network with a moves-left head), in nodes
+   whose |Q| exceeds `MovesLeftThreshold` a tried edge's Q also gets a small
+   bonus for shortening a win or lengthening a loss, from the edge's M
+   against the node's. With `StickyEndgames`, a proven edge (see Backup)
+   scores its exact value and an unproven one's Q is kept within its
+   bounds. Each step goes into the visit's `path` for
    backup or cancel.
 
 3. **Reaching a leaf.** Selection ends in one of five ways:
@@ -236,7 +236,6 @@ Options of the `puct` and `puct-dag` policies (they share them):
 |---|---|---|
 | `CPuct`, `CPuctBase`, `CPuctFactor` | 1.745, 38739, 3.894 | As classic. |
 | `FpuStrategy`, `FpuValue` | reduction, 0.33 | As classic. |
-| `PuctTotals` | started | Child visits counted in sqrt(N) and the FPU visited policy: started (with in-flight) or completed (as classic). |
 | `WaiterResume` | select | After waiting for a node's evaluation: select below it, reselect at its parent, or restart from the root. |
 | `MovesLeft` | false | Prefer shorter wins and longer losses in clearly decided nodes. Off without a moves-left head. |
 | `MovesLeftMaxEffect`, `MovesLeftThreshold`, `MovesLeftSlope` | 0.0345, 0.8, 0.0027 | Largest bonus, node \|Q\| above which it applies, bonus per ply of M difference. |
