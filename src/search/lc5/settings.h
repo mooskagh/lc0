@@ -44,13 +44,13 @@ inline constexpr int kMaxActiveVisitsLimit =
 class Settings {
  public:
   struct Resolved {
-    int threads;
-    int eval_threads;
-    int minibatch_size;
-    int max_active_visits;
-    int history_key_length;
-    int max_batch_delay_ms;
-    float active_visits_ratio;
+    int threads;                // Visit worker threads.
+    int eval_threads;           // Concurrent evaluators (and store threads).
+    int minibatch_size;         // Target NN batch size.
+    int max_active_visits;      // VisitPool capacity: live visits, hard cap.
+    int history_key_length;     // Earlier positions hashed into a NodeKey.
+    int max_batch_delay_ms;     // Longest wait to fill a partial batch.
+    float active_visits_ratio;  // Live visits <= 16 + this * root visits.
   };
 
   explicit Settings(const OptionsDict& options);
