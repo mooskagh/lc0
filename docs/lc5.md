@@ -194,8 +194,8 @@ Reading the `info` line:
 | `visit_engine.h` | `VisitEngine` interface: descent, backup, cancel, report. |
 | `policy_engine.h` | `PolicyEngine<P>` implements it on a `GameGraph<P>` it owns: descent, two-fold check, backup, PV walk. |
 | `puct.h/.cc` | `PuctPolicy<Self>`: PUCT selection, PV edge, bounds, score/WDL and the PUCT options (`PuctParams`), shared by the policies; `PuctAveraging` (`puct`) adds the averaging backup. |
-| `puct_dag.h` | `PuctDag` (`puct-dag`): edges cache the child's value; see "Policies". |
-| `policies.cc` | Policy table and the `Lc5Policy` option; a new policy is one row. |
+| `puct_dag.h/.cc` | `PuctDag` (`puct-dag`): edges cache the child's value; see "Policies". |
+| `policies.h/.cc` | `PolicyRegistry` and the `Lc5Policy` option. A policy registers itself with `REGISTER_LC5_POLICY(P, priority)` in its own .cc; the highest priority (`puct`) is the default. |
 | `search_materialization.cc` | Creating nodes, terminal detection, jobs, evaluator batching. |
 | `graph.h` | `GameGraph<P>`: sharded node map, reservations, per-node updates, tried-edge stats; node and edge stats belong to the policy. |
 | `visit.h` | Visit state and the fixed pool of visit slots. |

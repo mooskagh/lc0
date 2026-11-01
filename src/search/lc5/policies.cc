@@ -27,12 +27,10 @@
 
 #include "search/lc5/policies.h"
 
-#include <algorithm>
+#include <tuple>
 #include <vector>
 
-#include "search/lc5/policy_engine.h"
-#include "search/lc5/puct.h"
-#include "search/lc5/puct_dag.h"
+#include "absl/algorithm/container.h"
 #include "utils/exception.h"
 
 namespace lczero::lc5 {
@@ -42,38 +40,32 @@ const OptionId kPolicy{"lc5-policy", "Lc5Policy",
                        "Lc5 search policy: how node and edge statistics are "
                        "kept, backed up and used for selection."};
 
-struct PolicyEntry {
-  std::string_view name;
-  void (*populate)(OptionsParser*);
-  std::unique_ptr<VisitEngine> (*make)();
-};
-
-// Adding a policy is one row here. The first row is the default.
-const PolicyEntry kPolicies[] = {
-    {PuctAveraging::kName, &PuctAveraging::Params::Populate,
-     []() -> std::unique_ptr<VisitEngine> {
-       return std::make_unique<PolicyEngine<PuctAveraging>>();
-     }},
-    {PuctDag::kName, &PuctDag::Params::Populate,
-     []() -> std::unique_ptr<VisitEngine> {
-       return std::make_unique<PolicyEngine<PuctDag>>();
-     }},
-};
-
 }  // namespace
 
+PolicyRegistry* PolicyRegistry::Get() {
+  static PolicyRegistry registry;
+  return &registry;
+}
+
+void PolicyRegistry::Add(const Entry& entry) {
+  const auto pos = absl::c_find_if(entries_, [&](const Entry& other) {
+    return std::tie(other.priority, entry.name) <
+           std::tie(entry.priority, other.name);
+  });
+  entries_.insert(pos, entry);
+}
+
 void PopulatePolicyOptions(OptionsParser* options) {
+  const auto& policies = PolicyRegistry::Get()->entries();
+  if (policies.empty()) throw Exception("No Lc5Policy registered");
   std::vector<std::string> names;
-  for (const auto& policy : kPolicies) names.emplace_back(policy.name);
+  for (const auto& policy : policies) names.emplace_back(policy.name);
   options->Add<ChoiceOption>(kPolicy, names) = names.front();
   // Policies may share a parameter set (and so its options), which is
   // registered once.
   std::vector<void (*)(OptionsParser*)> populated;
-  for (const auto& policy : kPolicies) {
-    if (std::find(populated.begin(), populated.end(), policy.populate) !=
-        populated.end()) {
-      continue;
-    }
+  for (const auto& policy : policies) {
+    if (absl::c_find(populated, policy.populate) != populated.end()) continue;
     populated.push_back(policy.populate);
     policy.populate(options);
   }
@@ -84,10 +76,13 @@ std::string PolicyName(const OptionsDict& options) {
 }
 
 std::unique_ptr<VisitEngine> MakeVisitEngine(std::string_view name) {
-  for (const auto& policy : kPolicies) {
-    if (policy.name == name) return policy.make();
+  const auto& policies = PolicyRegistry::Get()->entries();
+  const auto it = absl::c_find_if(
+      policies, [name](const auto& policy) { return policy.name == name; });
+  if (it == policies.end()) {
+    throw Exception("Unknown Lc5Policy: " + std::string(name));
   }
-  throw Exception("Unknown Lc5Policy: " + std::string(name));
+  return it->make();
 }
 
 }  // namespace lczero::lc5

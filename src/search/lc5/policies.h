@@ -30,12 +30,58 @@
 #include <memory>
 #include <string>
 #include <string_view>
+#include <vector>
 
 #include "search/lc5/visit_engine.h"
 #include "utils/optionsdict.h"
 #include "utils/optionsparser.h"
 
 namespace lczero::lc5 {
+
+template <typename P>
+class PolicyEngine;
+
+// A singleton that keeps every registered lc5 policy. Policies register
+// themselves with REGISTER_LC5_POLICY; the one with the highest priority is
+// the default.
+class PolicyRegistry {
+ public:
+  struct Entry {
+    std::string_view name;
+    int priority;
+    void (*populate)(OptionsParser*);
+    std::unique_ptr<VisitEngine> (*make)();
+  };
+
+  static PolicyRegistry* Get();
+  void Add(const Entry& entry);
+  // Sorted by priority (highest first), then by name.
+  const std::vector<Entry>& entries() const { return entries_; }
+
+  template <typename P>
+  struct Register {
+    explicit Register(int priority) {
+      PolicyRegistry::Get()->Add(
+          {P::kName, priority, &P::Params::Populate,
+           []() -> std::unique_ptr<VisitEngine> {
+             return std::make_unique<PolicyEngine<P>>();
+           }});
+    }
+  };
+
+ private:
+  PolicyRegistry() = default;
+
+  std::vector<Entry> entries_;
+};
+
+// Registers policy P (with P::kName and P::Params::Populate) as an Lc5Policy
+// choice. The registering file must include policy_engine.h.
+#define REGISTER_LC5_POLICY(P, priority)                             \
+  namespace {                                                        \
+  [[maybe_unused]] static ::lczero::lc5::PolicyRegistry::Register<P> \
+      reg_lc5_policy_##P(priority);                                  \
+  }
 
 // Adds the Lc5Policy option and every policy's own options.
 void PopulatePolicyOptions(OptionsParser* options);

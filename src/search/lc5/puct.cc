@@ -32,6 +32,9 @@
 #include <string>
 #include <vector>
 
+#include "search/lc5/policies.h"
+#include "search/lc5/policy_engine.h"
+
 namespace lczero::lc5 {
 namespace {
 
@@ -167,5 +170,8 @@ PuctParams PuctParams::FromOptions(const OptionsDict& options,
                             ? TwoFoldDraws::kContained
                             : TwoFoldDraws::kRoot};
 }
+
+// The default policy.
+REGISTER_LC5_POLICY(PuctAveraging, 100)
 
 }  // namespace lczero::lc5
