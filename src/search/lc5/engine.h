@@ -32,7 +32,7 @@
 #include <optional>
 
 #include "chess/gamestate.h"
-#include "search/lc5/policies.h"
+#include "search/lc5/policies/registry.h"
 #include "search/lc5/search.h"
 #include "search/lc5/visit_engine.h"
 #include "search/search.h"

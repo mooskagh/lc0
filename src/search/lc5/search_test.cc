@@ -38,10 +38,10 @@
 #include <vector>
 
 #include "search/lc5/engine.h"
-#include "search/lc5/policies.h"
-#include "search/lc5/policy_engine.h"
-#include "search/lc5/puct.h"
-#include "search/lc5/puct_dag.h"
+#include "search/lc5/policies/policy_engine.h"
+#include "search/lc5/policies/puct.h"
+#include "search/lc5/policies/puct_dag.h"
+#include "search/lc5/policies/registry.h"
 
 namespace lczero::lc5 {
 

@@ -29,7 +29,7 @@
 
 #include <gtest/gtest.h>
 
-#include "search/lc5/puct.h"
+#include "search/lc5/policies/puct.h"
 
 namespace lczero::lc5 {
 namespace {

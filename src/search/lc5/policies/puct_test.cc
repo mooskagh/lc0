@@ -25,12 +25,12 @@
   Program grant you additional permission to convey the resulting work.
 */
 
-#include "search/lc5/puct.h"
+#include "search/lc5/policies/puct.h"
 
 #include <gtest/gtest.h>
 
-#include "search/lc5/policies.h"
-#include "search/lc5/puct_dag.h"
+#include "search/lc5/policies/puct_dag.h"
+#include "search/lc5/policies/registry.h"
 #include "search/lc5/visit_engine.h"
 
 namespace lczero::lc5 {

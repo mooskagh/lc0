@@ -61,11 +61,10 @@ class PolicyRegistry {
   template <typename P>
   struct Register {
     explicit Register(int priority) {
-      PolicyRegistry::Get()->Add(
-          {P::kName, priority, &P::Params::Populate,
-           []() -> std::unique_ptr<VisitEngine> {
-             return std::make_unique<PolicyEngine<P>>();
-           }});
+      PolicyRegistry::Get()->Add({P::kName, priority, &P::Params::Populate,
+                                  []() -> std::unique_ptr<VisitEngine> {
+                                    return std::make_unique<PolicyEngine<P>>();
+                                  }});
     }
   };
 

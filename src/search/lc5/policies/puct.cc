@@ -25,15 +25,15 @@
   Program grant you additional permission to convey the resulting work.
 */
 
-#include "search/lc5/puct.h"
+#include "search/lc5/policies/puct.h"
 
 #include <algorithm>
 #include <cmath>
 #include <string>
 #include <vector>
 
-#include "search/lc5/policies.h"
-#include "search/lc5/policy_engine.h"
+#include "search/lc5/policies/policy_engine.h"
+#include "search/lc5/policies/registry.h"
 
 namespace lczero::lc5 {
 namespace {

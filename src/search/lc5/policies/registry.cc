@@ -25,7 +25,7 @@
   Program grant you additional permission to convey the resulting work.
 */
 
-#include "search/lc5/policies.h"
+#include "search/lc5/policies/registry.h"
 
 #include <tuple>
 #include <vector>
