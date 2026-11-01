@@ -60,9 +60,15 @@ struct Metrics {
   std::atomic<uint64_t> node_store_load_keys{0};
   std::atomic<uint64_t> node_store_hits{0};
   std::atomic<uint64_t> node_store_misses{0};
-  std::atomic<uint64_t> node_store_store_batches{0};
+  std::atomic<uint64_t> node_store_evict_batches{0};
+  // Nodes moved from the graph to the store, and back.
+  std::atomic<uint64_t> nodes_evicted{0};
+  std::atomic<uint64_t> nodes_restored{0};
+  // Eviction candidates that changed before they could be erased.
+  std::atomic<uint64_t> evictions_skipped{0};
+  // Store hits whose record was rejected, so the node was evaluated instead.
+  std::atomic<uint64_t> restores_rejected{0};
   std::atomic<uint64_t> graph_nodes_created{0};
-  std::atomic<uint64_t> graph_nodes_rehydrated{0};
   std::atomic<uint64_t> graph_size_high_water{0};
   std::atomic<uint64_t> eval_requests{0};
   std::atomic<uint64_t> cache_hits{0};

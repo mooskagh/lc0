@@ -126,6 +126,12 @@ bool SearchRun::SuspendForMaterialization(Worker& worker,
     visit.state = VisitState::kWaitingMaterialization;
   }
   metrics_.visits_suspended.fetch_add(1);
+  // Wakes the controller once the graph outgrows its limit, so eviction keeps
+  // up with fast searches between its periodic checks.
+  if (owner && Evicts() && engine_->GraphSize() > settings_.graph_node_limit &&
+      !eviction_requested_.exchange(true)) {
+    worker.controller_event = true;
+  }
   if (owner) {
     // Preparation and publication happen later, outside this slot's lock.
     Request request{.ticket = ticket_id,
@@ -143,8 +149,7 @@ void SearchRun::PrepareEvaluation(Worker& worker, Request request) {
   }
   request.payload = DetectTerminal(request.history);
   if (request.payload.terminal != TerminalKind::kNonTerminal) {
-    CompleteMaterialization(worker, request.ticket, std::move(request.payload),
-                            true);
+    CompleteMaterialization(worker, request.ticket, std::move(request.payload));
     return;
   }
   request.payload.priors.resize(request.payload.moves.size());
@@ -155,8 +160,7 @@ void SearchRun::PrepareEvaluation(Worker& worker, Request request) {
 
 void SearchRun::CompleteMaterialization(Worker& worker,
                                         MaterializationTicketId ticket_id,
-                                        ExpansionPayload payload,
-                                        bool store_payload) {
+                                        ExpansionPayload payload) {
   Ticket ticket;
   InstallResult installed;
   {
@@ -190,10 +194,36 @@ void SearchRun::CompleteMaterialization(Worker& worker,
   };
   wake(ticket.owner, true);
   for (const auto& event : ticket.waiters) wake(event, false);
-  // Accepted immutable payloads are persisted even after cancellation.
-  if (installed.accepted && store_ && store_payload) {
-    worker.persistence.push_back({ticket.key, std::move(payload)});
+}
+
+bool SearchRun::CompleteRestore(Worker& worker,
+                                MaterializationTicketId ticket_id,
+                                std::span<const uint8_t> record) {
+  Ticket ticket;
+  InstallResult restored;
+  {
+    std::lock_guard lock(tickets_mutex_);
+    const auto it = tickets_.find(ticket_id);
+    if (it == tickets_.end()) return true;
+    assert(it->second.owner.worker == worker.index);
+    restored = engine_->Restore(it->second.key, ticket_id, record);
+    if (!restored.accepted) return false;
+    ticket = std::move(it->second);
+    tickets_.erase(it);
+    ticket_by_key_.erase(ticket.key);
   }
+  metrics_.nodes_restored.fetch_add(1);
+  RaiseHighWater(metrics_.graph_size_high_water, engine_->GraphSize());
+  // The node has its statistics back and nothing new to back up, so the owner
+  // and the waiters all select below it.
+  const auto wake = [&](Continuation event) {
+    event.kind = Continuation::Kind::kRestored;
+    event.generation = restored.generation;
+    Deliver(worker, event);
+  };
+  wake(ticket.owner);
+  for (const auto& event : ticket.waiters) wake(event);
+  return true;
 }
 
 void SearchRun::CancelMaterialization(Worker& worker,
@@ -268,18 +298,14 @@ void SearchRun::SubmitJobs(Worker& worker) {
 
 std::unique_ptr<SearchRun::Job> SearchRun::TakeJob(Worker& worker) const {
   // Small whole jobs leave room to collect more cache misses without exceeding
-  // the backend batch. Item credits bound all I/O, including stores.
+  // the backend batch. Item credits bound loads and evaluations.
   const size_t batch_size = settings_.minibatch_size;
   const size_t limit =
       std::min((batch_size + 3) / 4, 2 * batch_size - worker.outstanding_items);
   auto job = std::make_unique<Job>();
   job->worker = worker.index;
   job->queued_at = std::chrono::steady_clock::now();
-  // Persistence goes first, so fast backends cannot grow a store backlog.
-  if (!worker.persistence.empty()) {
-    job->kind = JobKind::kPersist;
-    MoveFront(worker.persistence, job->entries, limit);
-  } else if (!worker.loads.empty()) {
+  if (!worker.loads.empty()) {
     job->kind = JobKind::kLoad;
     MoveFront(worker.loads, job->requests, limit);
   } else if (!worker.evals.empty()) {
@@ -304,13 +330,16 @@ void SearchRun::ConsumeJob(Worker& worker, std::unique_ptr<Job> job) {
       case Request::State::kEvaluated:
         SortByPrior(request.payload);
         CompleteMaterialization(worker, request.ticket,
-                                std::move(request.payload), true);
+                                std::move(request.payload));
         break;
       case Request::State::kStoreHit:
         metrics_.node_store_hits.fetch_add(1);
-        metrics_.graph_nodes_rehydrated.fetch_add(1);
-        CompleteMaterialization(worker, request.ticket,
-                                std::move(request.payload), false);
+        if (!CompleteRestore(worker, request.ticket, request.record)) {
+          // Not a record for this policy or format: evaluate the node.
+          metrics_.restores_rejected.fetch_add(1);
+          request.record.clear();
+          PrepareEvaluation(worker, std::move(request));
+        }
         break;
       case Request::State::kStoreMiss:
         metrics_.node_store_misses.fetch_add(1);
@@ -325,7 +354,7 @@ void SearchRun::ConsumeJob(Worker& worker, std::unique_ptr<Job> job) {
   --worker.outstanding;
   assert(worker.outstanding_items >= job->items());
   worker.outstanding_items -= job->items();
-  // Decrement last: publication and persistence enqueueing are part of the job.
+  // Decrement last: publication is part of the job.
   jobs_in_flight_.fetch_sub(1);
 }
 
@@ -333,9 +362,10 @@ void SearchRun::StoreWorker() {
   std::unique_ptr<Job> job;
   while (store_jobs_.Pop(&job)) {
     if (job->kind == JobKind::kPersist) {
-      store_->StoreBatch(job->entries);
-      metrics_.node_store_store_batches.fetch_add(1);
-    } else if (!Stopping()) {
+      Evict(*job);
+      continue;
+    }
+    if (!Stopping()) {
       std::vector<NodeKey> keys;
       for (const auto& request : job->requests) keys.push_back(request.key);
       auto loaded = store_->LoadBatch(keys);
@@ -343,7 +373,7 @@ void SearchRun::StoreWorker() {
       for (size_t i = 0; i < loaded.size(); ++i) {
         auto& request = job->requests[i];
         if (loaded[i]) {
-          request.payload = std::move(*loaded[i]);
+          request.record = std::move(*loaded[i]);
           request.state = Request::State::kStoreHit;
         } else {
           request.state = Request::State::kStoreMiss;
@@ -354,6 +384,49 @@ void SearchRun::StoreWorker() {
     }
     ReturnJob(std::move(job));
   }
+}
+
+void SearchRun::QueueEvictions() {
+  if (!Evicts() || Stopping() || evictions_in_flight_.load() > 0) return;
+  eviction_requested_.store(false);
+  const size_t limit = settings_.graph_node_limit;
+  const size_t size = engine_->GraphSize();
+  if (size <= limit) return;
+  // Evict down to a low-water mark, so the next round is not due right away.
+  const size_t target = limit - limit / 10;
+  auto candidates = engine_->CollectEvictable(size - target, root_.key);
+  for (size_t begin = 0; begin < candidates.size(); begin += kEvictionBatch) {
+    const size_t end = std::min(candidates.size(), begin + kEvictionBatch);
+    auto job = std::make_unique<Job>();
+    job->kind = JobKind::kPersist;
+    job->queued_at = std::chrono::steady_clock::now();
+    job->evictions.assign(std::make_move_iterator(candidates.begin() + begin),
+                          std::make_move_iterator(candidates.begin() + end));
+    evictions_in_flight_.fetch_add(1);
+    RaiseHighWater(metrics_.io_jobs_high_water,
+                   jobs_in_flight_.fetch_add(1) + 1);
+    store_jobs_.Push(std::move(job));
+  }
+}
+
+void SearchRun::Evict(Job& job) {
+  // Store first: once a node leaves the graph, a miss must find its record.
+  std::vector<StoredNode> records;
+  records.reserve(job.evictions.size());
+  for (const auto& candidate : job.evictions) {
+    records.push_back(candidate.stored);
+  }
+  store_->StoreBatch(records);
+  metrics_.node_store_evict_batches.fetch_add(1);
+  // A node that changed since its record was taken stays in the graph; its
+  // stale record is harmless, as the graph is always checked first.
+  const size_t erased = engine_->ConfirmEvicted(job.evictions);
+  metrics_.nodes_evicted.fetch_add(erased);
+  metrics_.evictions_skipped.fetch_add(job.evictions.size() - erased);
+  jobs_in_flight_.fetch_sub(1);
+  // The controller may queue the next round, or finish draining.
+  evictions_in_flight_.fetch_sub(1);
+  NotifyController();
 }
 
 void SearchRun::EvaluatorWorker() {

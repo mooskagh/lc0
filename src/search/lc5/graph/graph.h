@@ -41,58 +41,11 @@
 #include <vector>
 
 #include "search/lc5/graph/key.h"
+#include "search/lc5/graph/node.h"
+#include "search/lc5/graph/node_record.h"
 #include "search/lc5/graph/node_store.h"
-#include "search/lc5/graph/prior.h"
 
 namespace lczero::lc5 {
-
-using MaterializationTicketId = uint64_t;
-
-// Each live visit holds at most one unit of an edge's 16-bit in_flight, which
-// caps the number of live visits.
-inline constexpr int kMaxActiveVisitsLimit =
-    std::numeric_limits<uint16_t>::max();
-
-enum class NodeLifecycle : uint8_t { kMaterializing, kExpanded };
-
-// A legal move and its prior; every legal move of an expanded node has one.
-struct LegalEdge {
-  Move move;
-  PackedPrior prior;
-};
-static_assert(sizeof(LegalEdge) == 4);
-
-// The statistics of an edge that has been reserved at least once. The
-// machinery owns the reservations; `stats` belongs to the policy P.
-template <typename P>
-struct TriedEdge {
-  uint16_t in_flight = 0;  // Virtual loss; bounded by kMaxActiveVisitsLimit.
-  typename P::EdgeStats stats{};
-  static_assert(kMaxActiveVisitsLimit <=
-                std::numeric_limits<decltype(in_flight)>::max());
-};
-
-// Deterministic tie-break between equally ranked edges: higher prior first,
-// then the lower move encoding. A node's edges are sorted in this order, and
-// selection relies on it.
-inline bool PreferOnTie(const LegalEdge& a, const LegalEdge& b) {
-  if (a.prior != b.prior) return a.prior > b.prior;
-  return a.move.raw_data() < b.move.raw_data();
-}
-
-template <typename P>
-struct NodeState {
-  // Unique per (re)creation, so updates for an erased node are rejected.
-  uint64_t generation = 0;
-  NodeLifecycle lifecycle = NodeLifecycle::kMaterializing;
-  MaterializationTicketId ticket = 0;  // Zero once expanded.
-  TerminalKind terminal = TerminalKind::kNonTerminal;
-  typename P::NodeStats stats{};
-  std::vector<LegalEdge> edges{};
-  // tried[i] belongs to edges[i]. Edges from tried.size() on have never been
-  // reserved; selection appends the first of them when it picks it.
-  std::vector<TriedEdge<P>> tried{};
-};
 
 struct FindOrCreateResult {
   uint64_t generation;
@@ -104,6 +57,14 @@ struct FindOrCreateResult {
 struct InstallResult {
   uint64_t generation;
   bool accepted;
+};
+
+// The record of a node chosen for eviction, and the node's generation and
+// version when the record was taken.
+struct EvictCandidate {
+  StoredNode stored;
+  uint64_t generation;
+  uint32_t version;
 };
 
 enum class SelectStatus {
@@ -167,6 +128,13 @@ class GameGraph {
   InstallResult InstallPayload(NodeKey key, MaterializationTicketId ticket,
                                const ExpansionPayload& payload);
 
+  // Like InstallPayload, but the node takes the statistics, edges and terminal
+  // kind of `restored` (an evicted node) instead of counting a leaf. The node
+  // keeps the generation of its materializing placeholder, which is new, so
+  // updates for the evicted node stay rejected.
+  InstallResult RestoreNode(NodeKey key, MaterializationTicketId ticket,
+                            Node restored);
+
   // Selects an edge by the policy and reserves it (in_flight += 1); otherwise
   // reports why the node can't be selected from. Every result but kMissing
   // carries the node's generation, and kTerminal also its terminal kind. With
@@ -195,6 +163,20 @@ class GameGraph {
   UpdateResult CancelEdge(NodeKey key, uint64_t expected_generation, Move move);
 
   std::optional<Node> SnapshotNode(NodeKey key) const;
+
+  // Records of up to `max` evictable nodes: expanded, not `keep`, with no
+  // edge reserved. Scans shards from `*cursor` on, at most all of them once,
+  // and leaves the cursor after the last one scanned. From each shard it takes
+  // the `fraction` of its nodes with the fewest visits (at least one node).
+  std::vector<EvictCandidate> EvictCandidates(size_t* cursor, size_t max,
+                                              double fraction,
+                                              NodeKey keep) const;
+  // Erases the node if it still is `generation` at `version` and has no
+  // reservations, as when its record was taken.
+  bool EraseIfUnchanged(NodeKey key, uint64_t generation, uint32_t version);
+  // Calls fn(key, node) for every expanded node, with its shard locked.
+  template <typename F>
+  void ForEachExpanded(F&& fn) const;
 
   bool Erase(NodeKey key);
   void Clear();
@@ -244,7 +226,17 @@ class GameGraph {
       return UpdateResult::kUnderflow;
     }
     --node.tried[index].in_flight;
+    ++node.version;
     return UpdateResult::kApplied;
+  }
+
+  // Whether the node can leave the graph: expanded, and no visit holds one
+  // of its edges.
+  static bool Evictable(const Node& node) {
+    return node.lifecycle == NodeLifecycle::kExpanded &&
+           std::ranges::none_of(node.tried, [](const Tried& tried) {
+             return tried.in_flight > 0;
+           });
   }
 
   std::array<Shard, kShardCount> shards_;
@@ -309,6 +301,7 @@ InstallResult GameGraph<P>::InstallPayload(NodeKey key,
   }
   node.lifecycle = NodeLifecycle::kExpanded;
   node.ticket = 0;
+  ++node.version;
   node.terminal = payload.terminal;
   node.edges.clear();
   node.edges.reserve(payload.moves.size());
@@ -322,6 +315,28 @@ InstallResult GameGraph<P>::InstallPayload(NodeKey key,
   // if the visit that materialized it is cancelled before backing up.
   P::Update(node, nullptr, P::Leaf(payload.leaf, IsExact(payload.terminal)));
   return {node.generation, true};
+}
+
+template <typename P>
+InstallResult GameGraph<P>::RestoreNode(NodeKey key,
+                                        MaterializationTicketId ticket,
+                                        Node restored) {
+  auto& shard = ShardFor(key);
+  std::lock_guard lock(shard.mutex);
+  Node* existing = FindNode(shard.nodes, key);
+  Node& node = existing ? *existing : InsertLocked(shard, key, ticket);
+  if (node.lifecycle == NodeLifecycle::kExpanded || node.ticket != ticket) {
+    return {node.generation, false};
+  }
+  const uint64_t generation = node.generation;
+  const uint32_t version = node.version + 1;
+  node = std::move(restored);
+  node.generation = generation;
+  node.version = version;
+  node.lifecycle = NodeLifecycle::kExpanded;
+  node.ticket = 0;
+  for (auto& tried : node.tried) tried.in_flight = 0;
+  return {generation, true};
 }
 
 template <typename P>
@@ -383,6 +398,7 @@ Move GameGraph<P>::ReserveLocked(Node& node, size_t index) {
   Tried& tried = node.tried[index];
   assert(tried.in_flight < kMaxActiveVisitsLimit);
   ++tried.in_flight;
+  ++node.version;
   return node.edges[index].move;
 }
 
@@ -407,6 +423,7 @@ BackupResult<P> GameGraph<P>::BackupNode(NodeKey key,
     if (edge_result == UpdateResult::kApplied) edge = &node->tried[index];
   }
   // The node is updated even if the edge reservation could not be released.
+  ++node->version;
   Message to_parent = P::Update(*node, edge, message);
   if (send_current) to_parent = P::Current(*node);
   return {UpdateResult::kApplied, edge_result, to_parent};
@@ -432,6 +449,67 @@ std::optional<NodeState<P>> GameGraph<P>::SnapshotNode(NodeKey key) const {
   const Node* node = FindNode(shard.nodes, key);
   if (!node) return std::nullopt;
   return *node;
+}
+
+template <typename P>
+std::vector<EvictCandidate> GameGraph<P>::EvictCandidates(size_t* cursor,
+                                                          size_t max,
+                                                          double fraction,
+                                                          NodeKey keep) const {
+  std::vector<EvictCandidate> result;
+  std::vector<std::pair<uint64_t, const std::pair<const NodeKey, Node>*>>
+      evictable;
+  for (size_t scanned = 0; scanned < kShardCount && result.size() < max;
+       ++scanned) {
+    const Shard& shard = shards_[*cursor];
+    *cursor = (*cursor + 1) % kShardCount;
+    std::lock_guard lock(shard.mutex);
+    evictable.clear();
+    for (const auto& entry : shard.nodes) {
+      if (entry.first == keep || !Evictable(entry.second)) continue;
+      evictable.emplace_back(P::Visits(entry.second.stats), &entry);
+    }
+    const size_t wanted = std::max<size_t>(
+        1, static_cast<size_t>(
+               fraction * static_cast<double>(shard.nodes.size()) + 0.5));
+    const size_t take =
+        std::min({wanted, evictable.size(), max - result.size()});
+    std::ranges::nth_element(evictable, evictable.begin() + take, {},
+                             &decltype(evictable)::value_type::first);
+    for (size_t i = 0; i < take; ++i) {
+      const auto& [key, node] = *evictable[i].second;
+      result.push_back({.stored = {key, EncodeNode(node)},
+                        .generation = node.generation,
+                        .version = node.version});
+    }
+  }
+  return result;
+}
+
+template <typename P>
+bool GameGraph<P>::EraseIfUnchanged(NodeKey key, uint64_t generation,
+                                    uint32_t version) {
+  auto& shard = ShardFor(key);
+  std::lock_guard lock(shard.mutex);
+  const Node* node = FindNode(shard.nodes, key);
+  if (!node || node->generation != generation || node->version != version ||
+      !Evictable(*node)) {
+    return false;
+  }
+  shard.nodes.erase(key);
+  size_.fetch_sub(1, std::memory_order_relaxed);
+  return true;
+}
+
+template <typename P>
+template <typename F>
+void GameGraph<P>::ForEachExpanded(F&& fn) const {
+  for (const auto& shard : shards_) {
+    std::lock_guard lock(shard.mutex);
+    for (const auto& [key, node] : shard.nodes) {
+      if (node.lifecycle == NodeLifecycle::kExpanded) fn(key, node);
+    }
+  }
 }
 
 template <typename P>

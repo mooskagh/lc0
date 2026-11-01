@@ -165,7 +165,8 @@ void SearchRun::Resume(Worker& worker, const Continuation& event) {
     visit.waiting_ticket = 0;
     // On stop, visits finish only when their evaluation already exists.
     if (event.kind == Continuation::Kind::kCancel ||
-        (Stopping() && event.kind == Continuation::Kind::kSelect)) {
+        (Stopping() && (event.kind == Continuation::Kind::kSelect ||
+                        event.kind == Continuation::Kind::kRestored))) {
       Cancel(worker, *slot);
       return;
     }
@@ -177,6 +178,9 @@ void SearchRun::Resume(Worker& worker, const Continuation& event) {
         event.kind == Continuation::Kind::kBackupAbove) {
       visit.leaf_counted = event.kind == Continuation::Kind::kBackupAbove;
       visit.state = VisitState::kReadyBackup;
+    } else if (event.kind == Continuation::Kind::kRestored) {
+      visit.state = VisitState::kReadySelect;
+      metrics_.visits_resumed.fetch_add(1);
     } else {
       switch (engine_->OnResume(visit, context_)) {
         case VisitEngine::ResumeAction::kRestart:
@@ -203,7 +207,7 @@ void SearchRun::VisitWorker(Worker& worker) {
     ProcessMailbox(worker);
     if (Stopping()) {
       CancelVisits(worker);
-    } else if (!PersistenceBacklogged(worker)) {
+    } else {
       AdvanceRunnable(worker, kWorkChunk);
       AdmitMore(worker);
     }
@@ -283,15 +287,8 @@ void SearchRun::PublishWorkerState(Worker& worker) {
 }
 
 bool SearchRun::HasLocalWork(const Worker& worker) const {
-  return (!Stopping() && !worker.runnable.empty() &&
-          !PersistenceBacklogged(worker)) ||
+  return (!Stopping() && !worker.runnable.empty()) ||
          (HasJobCredit(worker) && worker.HasQueuedIo());
-}
-
-// Pending writes of a full minibatch pause selection so persistence catches up.
-bool SearchRun::PersistenceBacklogged(const Worker& worker) const {
-  return worker.persistence.size() >=
-         static_cast<size_t>(settings_.minibatch_size);
 }
 
 void SearchRun::AdvanceVisit(Worker& worker, VisitId id) {

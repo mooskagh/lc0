@@ -57,11 +57,17 @@ class Lc5Engine final : public SearchBase {
  private:
   friend class SearchRunTestPeer;
   void AbortAndWait();
+  // Drops the graph and the stored nodes.
+  void ClearGraph();
 
   const OptionsDict* options_;
   // Created on the first search and whenever Lc5Policy changes. Its graph is
-  // retained without eviction for the whole game, so no NodeStore is needed.
+  // retained for the whole game.
   std::unique_ptr<VisitEngine> visit_engine_;
+  // The graph's cold tier: nodes evicted to keep the graph within
+  // Lc5GraphNodeLimit, with their statistics. Created when a search first
+  // runs with a limit, and cleared with the graph.
+  std::unique_ptr<NodeStore> store_;
   std::unique_ptr<SearchRun> run_;
   std::optional<Position> game_start_;
   std::optional<PositionHistory> root_history_;

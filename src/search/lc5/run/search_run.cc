@@ -37,6 +37,8 @@ namespace {
 using std::chrono::steady_clock;
 constexpr auto kInfoInterval = std::chrono::seconds(1);
 constexpr auto kSmartPruningInterval = std::chrono::milliseconds(10);
+// How often the controller checks the graph against its node limit.
+constexpr auto kEvictionInterval = std::chrono::milliseconds(10);
 // Visits to complete before the visit rate is trusted for early stopping.
 constexpr uint64_t kSmartPruningMinVisits = 100;
 // Root visits are counted in uint32_t; classic caps a search the same way.
@@ -172,6 +174,11 @@ void SearchRun::Controller() {
         next_check = std::min(next_check.value_or(now + kSmartPruningInterval),
                               now + kSmartPruningInterval);
       }
+      if (Evicts()) {
+        QueueEvictions();
+        next_check = std::min(next_check.value_or(now + kEvictionInterval),
+                              now + kEvictionInterval);
+      }
     }
     if (!Stopping() && now >= next_info) {
       std::vector<ThinkingInfo> infos{BuildInfo(false)};
@@ -212,7 +219,7 @@ bool SearchRun::BestMoveDecided(const RootStats& root,
 }
 
 void SearchRun::Respond() {
-  // Capture once, without waiting for any executor or persistence. Abort can
+  // Capture once, without waiting for any executor or eviction. Abort can
   // suppress this response until commitment, but cannot retract it.
   if (stop_mode_.load() == StopMode::kRespondBestmove) {
     std::vector<ThinkingInfo> infos{BuildInfo(true)};
@@ -242,7 +249,7 @@ bool SearchRun::FullyDrained() {
     if (!tickets_.empty()) return false;
   }
   if (jobs_in_flight_.load() != 0) return false;
-  // Workers may hold unpublished local requests or persistence. Require their
+  // Workers may hold unpublished local requests. Require their
   // explicit idle acknowledgement, not merely empty executor queues.
   for (auto& worker : workers_) {
     std::lock_guard lock(worker->mailbox.mutex);

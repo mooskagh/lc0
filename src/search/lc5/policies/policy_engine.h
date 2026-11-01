@@ -30,9 +30,12 @@
 #include <algorithm>
 #include <cassert>
 #include <cstddef>
+#include <mutex>
 #include <optional>
+#include <span>
 #include <string_view>
 #include <unordered_set>
+#include <utility>
 #include <vector>
 
 #include "search/lc5/graph/graph.h"
@@ -77,6 +80,44 @@ class PolicyEngine final : public VisitEngine {
   }
   size_t GraphSize() const override { return graph_.Size(); }
 
+  InstallResult Restore(NodeKey key, MaterializationTicketId ticket,
+                        std::span<const uint8_t> record) override {
+    auto node = DecodeNode<P>(record);
+    if (!node) return {0, false};
+    return graph_.RestoreNode(key, ticket, std::move(*node));
+  }
+  std::vector<EvictCandidate> CollectEvictable(size_t max,
+                                               NodeKey keep) override {
+    const size_t size = graph_.Size();
+    if (size == 0 || max == 0) return {};
+    const double fraction =
+        std::min(1.0, static_cast<double>(max) / static_cast<double>(size));
+    std::lock_guard lock(evict_mutex_);
+    return graph_.EvictCandidates(&evict_cursor_, max, fraction, keep);
+  }
+  size_t ConfirmEvicted(std::span<const EvictCandidate> evicted) override {
+    size_t erased = 0;
+    for (const auto& candidate : evicted) {
+      erased += graph_.EraseIfUnchanged(
+          candidate.stored.key, candidate.generation, candidate.version);
+    }
+    return erased;
+  }
+  void SaveAll(NodeStore& store) const override {
+    constexpr size_t kBatch = 1024;
+    std::vector<StoredNode> batch;
+    graph_.ForEachExpanded([&](NodeKey key, const NodeState<P>& node) {
+      batch.push_back({key, EncodeNode(node)});
+      // Stores under the shard lock; a store must not call back into the
+      // graph.
+      if (batch.size() >= kBatch) {
+        store.StoreBatch(batch);
+        batch.clear();
+      }
+    });
+    if (!batch.empty()) store.StoreBatch(batch);
+  }
+
   GameGraph<P>& graph() { return graph_; }
 
  private:
@@ -96,6 +137,9 @@ class PolicyEngine final : public VisitEngine {
 
   GameGraph<P> graph_;
   typename P::Params params_;
+  // Where the next eviction scan starts, so evictions spread over all shards.
+  std::mutex evict_mutex_;
+  size_t evict_cursor_ = 0;
 };
 
 template <typename P>

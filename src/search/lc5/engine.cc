@@ -32,6 +32,7 @@
 
 #include "chess/callbacks.h"
 #include "chess/uciloop.h"
+#include "search/lc5/graph/memory_node_store.h"
 #include "search/lc5/settings.h"
 #include "search/register.h"
 #include "utils/exception.h"
@@ -46,19 +47,22 @@ void Lc5Engine::AbortAndWait() {
   run_->Wait();
 }
 
+void Lc5Engine::ClearGraph() {
+  if (visit_engine_) visit_engine_->Clear();
+  if (store_) store_->Clear();
+}
+
 void Lc5Engine::SetBackend(Backend* backend) {
   if (backend_ == backend) return;
   AbortAndWait();
   backend_ = backend;
-  if (visit_engine_) visit_engine_->Clear();
+  ClearGraph();
 }
 
 void Lc5Engine::SetPosition(const GameState& state) {
   AbortAndWait();
   // The graph survives position changes within the same game.
-  if (game_start_ != state.startpos && visit_engine_) {
-    visit_engine_->Clear();
-  }
+  if (game_start_ != state.startpos) ClearGraph();
   game_start_ = state.startpos;
   root_history_.emplace();
   root_history_->Reset(state.startpos);
@@ -68,7 +72,7 @@ void Lc5Engine::SetPosition(const GameState& state) {
 void Lc5Engine::NewGame() {
   AbortAndWait();
   run_.reset();
-  if (visit_engine_) visit_engine_->Clear();
+  ClearGraph();
   game_start_.reset();
   root_history_.reset();
   clock_start_.reset();
@@ -90,9 +94,16 @@ void Lc5Engine::StartSearch(const GoParams& params) {
   const std::string policy = PolicyName(*options_);
   if (!visit_engine_ || visit_engine_->name() != policy) {
     visit_engine_ = MakeVisitEngine(policy);
+    if (store_) store_->Clear();
   }
   visit_engine_->Configure(*options_, backend_->GetAttributes());
   const Settings settings(*options_);
+  const Settings::Resolved resolved =
+      settings.Resolve(backend_->GetAttributes());
+  // Kept when the limit is lifted: the graph may still miss stored nodes.
+  if (resolved.graph_node_limit > 0 && !store_) {
+    store_ = std::make_unique<MemoryNodeStore>();
+  }
   VisitOrigin root{
       .key = MakeNodeKey(*root_history_, settings.history_key_length()),
       .history = *root_history_,
@@ -100,9 +111,9 @@ void Lc5Engine::StartSearch(const GoParams& params) {
   const auto start = clock_start_.value_or(std::chrono::steady_clock::now());
   clock_start_.reset();
   run_ = std::make_unique<SearchRun>(
-      visit_engine_.get(), /*store=*/nullptr, backend_, uci_responder_,
-      settings.Resolve(backend_->GetAttributes()), settings.time_management(),
-      std::move(root), params, start, std::exchange(saved_time_ms_, 0));
+      visit_engine_.get(), store_.get(), backend_, uci_responder_, resolved,
+      settings.time_management(), std::move(root), params, start,
+      std::exchange(saved_time_ms_, 0));
   run_->Start();
 }
 

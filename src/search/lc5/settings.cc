@@ -53,6 +53,11 @@ const OptionId kActiveVisitsRatio{
     "active-visits-ratio", "ActiveVisitsRatio",
     "Live visits are limited to 16 plus this fraction of the root's visits "
     "(and to MaxActiveVisits); 0 disables the limit."};
+const OptionId kGraphNodeLimit{
+    "lc5-graph-node-limit", "Lc5GraphNodeLimit",
+    "Lc5 graph nodes kept in RAM. Above it, the nodes with the fewest visits "
+    "move to a node store with their statistics, and come back when a search "
+    "reaches them again. 0 keeps every node in the graph."};
 const OptionId kMoveOverhead{"move-overhead", "MoveOverheadMs",
                              "Time reserved for communication overhead."};
 const OptionId kAlphazeroTimePct{
@@ -75,20 +80,22 @@ void Settings::Populate(OptionsParser* options) {
   options->Add<IntOption>(kHistoryKeyLength, 0, 7) = 7;
   options->Add<IntOption>(kMaxBatchDelay, 0, 100) = 2;
   options->Add<FloatOption>(kActiveVisitsRatio, 0.0f, 100.0f) = 0.25f;
+  options->Add<IntOption>(kGraphNodeLimit, 0, 2'000'000'000) = 0;
   options->Add<IntOption>(kMoveOverhead, 0, 100000000) = 200;
   options->Add<FloatOption>(kAlphazeroTimePct, 0.0f, 100.0f) = 3.0f;
   options->Add<FloatOption>(kSmartPruningFactor, 0.0f, 10.0f) = 1.33f;
 }
 
 Settings::Settings(const OptionsDict& options)
-    : configured_{
-          .threads = options.Get<int>(kThreads),
-          .eval_threads = options.Get<int>(kEvalThreads),
-          .minibatch_size = options.Get<int>(kMinibatchSize),
-          .max_active_visits = options.Get<int>(kMaxActiveVisits),
-          .history_key_length = options.Get<int>(kHistoryKeyLength),
-          .max_batch_delay_ms = options.Get<int>(kMaxBatchDelay),
-          .active_visits_ratio = options.Get<float>(kActiveVisitsRatio)},
+    : configured_{.threads = options.Get<int>(kThreads),
+                  .eval_threads = options.Get<int>(kEvalThreads),
+                  .minibatch_size = options.Get<int>(kMinibatchSize),
+                  .max_active_visits = options.Get<int>(kMaxActiveVisits),
+                  .history_key_length = options.Get<int>(kHistoryKeyLength),
+                  .max_batch_delay_ms = options.Get<int>(kMaxBatchDelay),
+                  .active_visits_ratio = options.Get<float>(kActiveVisitsRatio),
+                  .graph_node_limit =
+                      static_cast<size_t>(options.Get<int>(kGraphNodeLimit))},
       time_management_{
           .move_overhead_ms = options.Get<int>(kMoveOverhead),
           .alphazero_time_pct = options.Get<float>(kAlphazeroTimePct),

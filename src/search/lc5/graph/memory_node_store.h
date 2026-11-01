@@ -36,11 +36,13 @@
 
 namespace lczero::lc5 {
 
+// A NodeStore that keeps the records in RAM.
 class MemoryNodeStore final : public NodeStore {
  public:
-  std::vector<std::optional<ExpansionPayload>> LoadBatch(
+  std::vector<std::optional<std::vector<uint8_t>>> LoadBatch(
       std::span<const NodeKey> keys) override;
-  void StoreBatch(std::span<const StoredExpansion> entries) override;
+  void StoreBatch(std::span<const StoredNode> nodes) override;
+  void EraseBatch(std::span<const NodeKey> keys) override;
   void Clear() override;
   size_t Size() const;
 
@@ -48,7 +50,7 @@ class MemoryNodeStore final : public NodeStore {
   static constexpr size_t kShardCount = 64;
   struct Shard {
     mutable std::mutex mutex;
-    absl::flat_hash_map<NodeKey, ExpansionPayload> entries;
+    absl::flat_hash_map<NodeKey, std::vector<uint8_t>> records;
   };
   static size_t ShardIndex(NodeKey key) { return key.hash >> 58; }
   std::array<Shard, kShardCount> shards_;

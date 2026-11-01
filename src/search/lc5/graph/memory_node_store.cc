@@ -29,33 +29,43 @@
 
 namespace lczero::lc5 {
 
-std::vector<std::optional<ExpansionPayload>> MemoryNodeStore::LoadBatch(
+std::vector<std::optional<std::vector<uint8_t>>> MemoryNodeStore::LoadBatch(
     std::span<const NodeKey> keys) {
-  std::vector<std::optional<ExpansionPayload>> result;
+  std::vector<std::optional<std::vector<uint8_t>>> result;
   result.reserve(keys.size());
   for (const NodeKey key : keys) {
     auto& shard = shards_[ShardIndex(key)];
     std::lock_guard lock(shard.mutex);
-    const auto it = shard.entries.find(key);
-    result.push_back(it == shard.entries.end()
-                         ? std::nullopt
-                         : std::optional<ExpansionPayload>(it->second));
+    const auto it = shard.records.find(key);
+    if (it == shard.records.end()) {
+      result.emplace_back(std::nullopt);
+    } else {
+      result.emplace_back(it->second);
+    }
   }
   return result;
 }
 
-void MemoryNodeStore::StoreBatch(std::span<const StoredExpansion> entries) {
-  for (const auto& entry : entries) {
-    auto& shard = shards_[ShardIndex(entry.key)];
+void MemoryNodeStore::StoreBatch(std::span<const StoredNode> nodes) {
+  for (const auto& node : nodes) {
+    auto& shard = shards_[ShardIndex(node.key)];
     std::lock_guard lock(shard.mutex);
-    shard.entries.insert_or_assign(entry.key, entry.payload);
+    shard.records.insert_or_assign(node.key, node.record);
+  }
+}
+
+void MemoryNodeStore::EraseBatch(std::span<const NodeKey> keys) {
+  for (const NodeKey key : keys) {
+    auto& shard = shards_[ShardIndex(key)];
+    std::lock_guard lock(shard.mutex);
+    shard.records.erase(key);
   }
 }
 
 void MemoryNodeStore::Clear() {
   for (auto& shard : shards_) {
     std::lock_guard lock(shard.mutex);
-    shard.entries.clear();
+    shard.records.clear();
   }
 }
 
@@ -63,7 +73,7 @@ size_t MemoryNodeStore::Size() const {
   size_t size = 0;
   for (const auto& shard : shards_) {
     std::lock_guard lock(shard.mutex);
-    size += shard.entries.size();
+    size += shard.records.size();
   }
   return size;
 }

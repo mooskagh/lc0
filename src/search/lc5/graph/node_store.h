@@ -32,55 +32,31 @@
 #include <span>
 #include <vector>
 
-#include "chess/types.h"
 #include "search/lc5/graph/key.h"
-#include "search/lc5/graph/value.h"
 
 namespace lczero::lc5 {
 
-enum class TerminalKind : uint8_t {
-  kNonTerminal,
-  kCheckmate,
-  kStalemate,
-  kRule50,
-  kRepetition,
-  kInsufficientMaterial,
-};
-
-// Value of a terminal position for its side to move.
-inline SearchValue TerminalValue(TerminalKind terminal) {
-  return terminal == TerminalKind::kCheckmate ? SearchValue{-1.0f, 0.0f, 0.0f}
-                                              : SearchValue{0.0f, 1.0f, 0.0f};
-}
-
-// Whether a terminal's value holds wherever its node is reached. A
-// repetition depends on the history before the node, so it is not exact.
-inline bool IsExact(TerminalKind terminal) {
-  return terminal != TerminalKind::kNonTerminal &&
-         terminal != TerminalKind::kRepetition;
-}
-
-// Immutable result of expanding a node: either a terminal kind, or legal moves
-// with priors and the network's leaf value.
-struct ExpansionPayload {
-  TerminalKind terminal = TerminalKind::kNonTerminal;
-  SearchValue leaf{};
-  std::vector<Move> moves;
-  std::vector<float> priors;
-};
-
-struct StoredExpansion {
+// A node's search state, serialized by the graph (see node_record.h). The
+// store does not look inside it.
+struct StoredNode {
   NodeKey key;
-  ExpansionPayload payload;
+  std::vector<uint8_t> record;
 };
 
-// Optional batched backing store for expansion payloads.
+// The cold tier of the graph: node records that were evicted from the graph
+// and can be restored into it with their statistics. The graph is always
+// checked first, so a store may hold records that are out of date for nodes
+// that are back in the graph. Implementations must be thread-safe.
 class NodeStore {
  public:
   virtual ~NodeStore() = default;
-  virtual std::vector<std::optional<ExpansionPayload>> LoadBatch(
+  // One entry per key, nullopt if the store has no record for it.
+  virtual std::vector<std::optional<std::vector<uint8_t>>> LoadBatch(
       std::span<const NodeKey> keys) = 0;
-  virtual void StoreBatch(std::span<const StoredExpansion> entries) = 0;
+  // Stores or replaces the records; they are visible to LoadBatch once this
+  // returns.
+  virtual void StoreBatch(std::span<const StoredNode> nodes) = 0;
+  virtual void EraseBatch(std::span<const NodeKey> keys) = 0;
   virtual void Clear() = 0;
 };
 

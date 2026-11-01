@@ -1216,6 +1216,7 @@ if get_option('gtest')
         'src/search/lc5/run/visits.cc',
         'src/search/lc5/run/materialization.cc',
         'src/search/lc5/engine.cc',
+        'src/search/lc5/graph/memory_node_store.cc',
         'src/search/lc5/run/metrics.cc',
         'src/search/lc5/policies/registry.cc',
         'src/search/lc5/policies/puct.cc',

@@ -27,6 +27,8 @@
 
 #pragma once
 
+#include <cstddef>
+
 #include "neural/backend.h"
 #include "search/lc5/time_manager.h"
 #include "utils/optionsdict.h"
@@ -44,6 +46,9 @@ class Settings {
     int history_key_length;     // Earlier positions hashed into a NodeKey.
     int max_batch_delay_ms;     // Longest wait to fill a partial batch.
     float active_visits_ratio;  // Live visits <= 16 + this * root visits.
+    // Graph nodes kept in RAM; above it, nodes move to the NodeStore. 0 means
+    // unlimited.
+    size_t graph_node_limit = 0;
   };
 
   explicit Settings(const OptionsDict& options);

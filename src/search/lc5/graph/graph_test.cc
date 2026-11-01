@@ -29,7 +29,13 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
+#include <cstddef>
+#include <vector>
+
+#include "search/lc5/graph/node_record.h"
 #include "search/lc5/policies/puct.h"
+#include "search/lc5/policies/puct_dag.h"
 
 namespace lczero::lc5 {
 namespace {
@@ -776,6 +782,212 @@ TEST(Lc5GraphTest, IncomingParentsKeepIndependentEdgeStatistics) {
   graph.BackupNode(NodeKey{1}, p1.generation, {}, move);
   EXPECT_EQ(TriedAt(*graph.SnapshotNode(NodeKey{1}), 0).stats.visits, 1u);
   EXPECT_EQ(TriedAt(*graph.SnapshotNode(NodeKey{2}), 0).stats.visits, 0u);
+}
+
+// A node with two of its three edges tried, visits and proven bounds.
+Graph::Node BackedUpNode(Graph& graph, NodeKey key) {
+  graph.InstallPayload(
+      key, 1,
+      {.leaf = {0.5f, 0.25f, 6.0f},
+       .moves = {M(kFileA, kFileA), M(kFileB, kFileB), M(kFileC, kFileC)},
+       .priors = {0.5f, 0.3f, 0.2f}});
+  const auto params = TestParams();
+  for (int i = 0; i < 2; ++i) {
+    const auto selected = graph.SelectAndReserve(key, params);
+    EXPECT_EQ(selected.status, SelectStatus::kSelected);
+    graph.BackupNode(key, selected.generation,
+                     PuctAveraging::Leaf({-0.75f, 0.25f, 3.0f}, i == 0),
+                     selected.move);
+  }
+  return *graph.SnapshotNode(key);
+}
+
+TEST(Lc5NodeRecordTest, RoundTripKeepsStatisticsAndEdges) {
+  Graph graph;
+  const NodeKey key{42};
+  const auto node = BackedUpNode(graph, key);
+  ASSERT_EQ(node.tried.size(), 2u);
+  const auto decoded = DecodeNode<PuctAveraging>(EncodeNode(node));
+  ASSERT_TRUE(decoded);
+  EXPECT_EQ(decoded->lifecycle, NodeLifecycle::kExpanded);
+  EXPECT_EQ(decoded->terminal, node.terminal);
+  EXPECT_EQ(decoded->stats.visits, node.stats.visits);
+  EXPECT_EQ(decoded->stats.Q(), node.stats.Q());
+  EXPECT_EQ(decoded->stats.D(), node.stats.D());
+  EXPECT_EQ(decoded->stats.M(), node.stats.M());
+  EXPECT_EQ(decoded->stats.bounds, node.stats.bounds);
+  ASSERT_EQ(decoded->edges.size(), node.edges.size());
+  for (size_t i = 0; i < node.edges.size(); ++i) {
+    EXPECT_EQ(decoded->edges[i].move, node.edges[i].move);
+    EXPECT_EQ(decoded->edges[i].prior.bits, node.edges[i].prior.bits);
+  }
+  ASSERT_EQ(decoded->tried.size(), node.tried.size());
+  for (size_t i = 0; i < node.tried.size(); ++i) {
+    EXPECT_EQ(decoded->tried[i].in_flight, 0u);
+    EXPECT_EQ(decoded->tried[i].stats.visits, node.tried[i].stats.visits);
+    EXPECT_EQ(decoded->tried[i].stats.Q(), node.tried[i].stats.Q());
+    EXPECT_EQ(decoded->tried[i].stats.bounds, node.tried[i].stats.bounds);
+  }
+  // The first backup was exact, so that edge is proven.
+  EXPECT_TRUE(decoded->tried[0].stats.bounds.Proven());
+
+  // A terminal node has no edges.
+  graph.InstallPayload(NodeKey{43}, 1,
+                       {.terminal = TerminalKind::kCheckmate,
+                        .leaf = TerminalValue(TerminalKind::kCheckmate),
+                        .moves = {},
+                        .priors = {}});
+  const auto terminal =
+      DecodeNode<PuctAveraging>(EncodeNode(*graph.SnapshotNode(NodeKey{43})));
+  ASSERT_TRUE(terminal);
+  EXPECT_EQ(terminal->terminal, TerminalKind::kCheckmate);
+  EXPECT_TRUE(terminal->edges.empty());
+  EXPECT_EQ(terminal->stats.visits, 1u);
+}
+
+TEST(Lc5NodeRecordTest, RejectsOtherPoliciesAndMalformedRecords) {
+  Graph graph;
+  const auto record = EncodeNode(BackedUpNode(graph, NodeKey{42}));
+  EXPECT_FALSE(DecodeNode<PuctDag>(record));
+  EXPECT_TRUE(DecodeNode<PuctAveraging>(record));
+  EXPECT_FALSE(DecodeNode<PuctAveraging>({}));
+  auto truncated = record;
+  truncated.pop_back();
+  EXPECT_FALSE(DecodeNode<PuctAveraging>(truncated));
+  auto longer = record;
+  longer.push_back(0);
+  EXPECT_FALSE(DecodeNode<PuctAveraging>(longer));
+  auto version = record;
+  version[offsetof(RecordHeader, version)] ^= 1;
+  EXPECT_FALSE(DecodeNode<PuctAveraging>(version));
+}
+
+TEST(Lc5GraphTest, RestoreKeepsStatisticsUnderANewGeneration) {
+  Graph graph;
+  const NodeKey key{42};
+  const auto original = BackedUpNode(graph, key);
+  const auto record = EncodeNode(original);
+  ASSERT_TRUE(
+      graph.EraseIfUnchanged(key, original.generation, original.version));
+  EXPECT_EQ(graph.Size(), 0u);
+
+  const auto placeholder = graph.FindOrCreateMaterializing(key, 9);
+  ASSERT_TRUE(placeholder.created);
+  EXPECT_NE(placeholder.generation, original.generation);
+  auto decoded = DecodeNode<PuctAveraging>(record);
+  ASSERT_TRUE(decoded);
+  // Another ticket's restore is rejected.
+  EXPECT_FALSE(graph.RestoreNode(key, 8, *decoded).accepted);
+  const auto restored = graph.RestoreNode(key, 9, *decoded);
+  ASSERT_TRUE(restored.accepted);
+  EXPECT_EQ(restored.generation, placeholder.generation);
+  // One-shot per ticket.
+  EXPECT_FALSE(graph.RestoreNode(key, 9, *decoded).accepted);
+
+  const auto node = graph.SnapshotNode(key);
+  ASSERT_TRUE(node);
+  EXPECT_EQ(node->lifecycle, NodeLifecycle::kExpanded);
+  EXPECT_EQ(node->ticket, 0u);
+  EXPECT_EQ(node->stats.visits, original.stats.visits);
+  EXPECT_EQ(node->stats.Q(), original.stats.Q());
+  ASSERT_EQ(node->tried.size(), original.tried.size());
+  EXPECT_EQ(node->tried[0].stats.visits, original.tried[0].stats.visits);
+  // Updates for the evicted node are rejected.
+  EXPECT_EQ(graph
+                .BackupNode(key, original.generation,
+                            PuctAveraging::Leaf({0.0f, 1.0f, 0.0f}, false),
+                            std::nullopt)
+                .node,
+            UpdateResult::kStale);
+  EXPECT_EQ(graph
+                .BackupNode(key, restored.generation,
+                            PuctAveraging::Leaf({0.0f, 1.0f, 0.0f}, false),
+                            std::nullopt)
+                .node,
+            UpdateResult::kApplied);
+  EXPECT_EQ(graph.SnapshotNode(key)->stats.visits, original.stats.visits + 1);
+}
+
+TEST(Lc5GraphTest, EraseIfUnchangedRefusesAfterAnyChange) {
+  Graph graph;
+  const NodeKey key{42};
+  const auto params = TestParams();
+  auto node = BackedUpNode(graph, key);
+  // A backup.
+  graph.BackupNode(key, node.generation,
+                   PuctAveraging::Leaf({0.0f, 1.0f, 0.0f}, false),
+                   std::nullopt);
+  EXPECT_FALSE(graph.EraseIfUnchanged(key, node.generation, node.version));
+  // A reservation, which also makes the node not evictable.
+  node = *graph.SnapshotNode(key);
+  const auto selected = graph.SelectAndReserve(key, params);
+  EXPECT_FALSE(graph.EraseIfUnchanged(key, node.generation, node.version));
+  node = *graph.SnapshotNode(key);
+  EXPECT_FALSE(graph.EraseIfUnchanged(key, node.generation, node.version));
+  // A cancelled reservation.
+  graph.CancelEdge(key, selected.generation, selected.move);
+  EXPECT_FALSE(graph.EraseIfUnchanged(key, node.generation, node.version));
+  // Another generation.
+  node = *graph.SnapshotNode(key);
+  EXPECT_FALSE(graph.EraseIfUnchanged(key, node.generation + 1, node.version));
+  EXPECT_TRUE(graph.EraseIfUnchanged(key, node.generation, node.version));
+  EXPECT_FALSE(graph.SnapshotNode(key));
+  EXPECT_EQ(graph.Size(), 0u);
+}
+
+TEST(Lc5GraphTest, EvictCandidatesSkipReservedMaterializingAndKeptNodes) {
+  Graph graph;
+  const auto params = TestParams();
+  const NodeKey keep{1}, reserved{2}, materializing{3}, idle{4};
+  for (const NodeKey key : {keep, reserved, idle}) {
+    graph.InstallPayload(key, 1,
+                         {.moves = {M(kFileA, kFileA)}, .priors = {1.0f}});
+  }
+  graph.FindOrCreateMaterializing(materializing, 5);
+  ASSERT_EQ(graph.SelectAndReserve(reserved, params).status,
+            SelectStatus::kSelected);
+  size_t cursor = 0;
+  const auto candidates = graph.EvictCandidates(&cursor, 10, 1.0, keep);
+  ASSERT_EQ(candidates.size(), 1u);
+  EXPECT_EQ(candidates[0].stored.key, idle);
+  const auto node = graph.SnapshotNode(idle);
+  EXPECT_EQ(candidates[0].generation, node->generation);
+  EXPECT_EQ(candidates[0].version, node->version);
+  EXPECT_EQ(candidates[0].stored.record, EncodeNode(*node));
+  // Nothing is erased until the eviction is confirmed.
+  EXPECT_EQ(graph.Size(), 4u);
+}
+
+TEST(Lc5GraphTest, EvictCandidatesPreferFewVisits) {
+  Graph graph;
+  const auto params = TestParams();
+  // All keys in one shard (the graph's shard index is the top 10 bits of a
+  // Fibonacci hash), so the fraction applies to them together.
+  std::vector<NodeKey> keys;
+  for (uint64_t i = 0; keys.size() < 4; ++i) {
+    if ((i * 11400714819323198485ull) >> 54 == 0) keys.push_back(NodeKey{i});
+  }
+  for (size_t i = 0; i < keys.size(); ++i) {
+    graph.InstallPayload(keys[i], 1,
+                         {.moves = {M(kFileA, kFileA)}, .priors = {1.0f}});
+    for (size_t visit = 0; visit < 3 - i % 3 + (i == 3 ? 5 : 0); ++visit) {
+      const auto selected = graph.SelectAndReserve(keys[i], params);
+      graph.BackupNode(keys[i], selected.generation,
+                       PuctAveraging::Leaf({0.0f, 1.0f, 0.0f}, false),
+                       selected.move);
+    }
+  }
+  size_t cursor = 0;
+  const auto candidates =
+      graph.EvictCandidates(&cursor, 2, 0.5, NodeKey{~0ull});
+  ASSERT_EQ(candidates.size(), 2u);
+  std::vector<uint32_t> visits;
+  for (const auto& candidate : candidates) {
+    visits.push_back(graph.SnapshotNode(candidate.stored.key)->stats.visits);
+  }
+  std::ranges::sort(visits);
+  // Visits are 4, 3, 2 and 9; the two lowest are taken.
+  EXPECT_EQ(visits, (std::vector<uint32_t>{2, 3}));
 }
 
 }  // namespace

@@ -29,11 +29,14 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <span>
 #include <string_view>
+#include <vector>
 
 #include "chess/callbacks.h"
 #include "neural/backend.h"
 #include "search/lc5/graph/graph.h"
+#include "search/lc5/graph/node_store.h"
 #include "search/lc5/run/metrics.h"
 #include "search/lc5/settings.h"
 #include "search/lc5/visit.h"
@@ -114,6 +117,24 @@ class VisitEngine {
   virtual void CancelMaterialization(NodeKey key,
                                      MaterializationTicketId ticket) = 0;
   virtual size_t GraphSize() const = 0;
+
+  // Node records for the NodeStore, the graph's cold tier.
+  //
+  // Expands the node from a record that CollectEvictable or SaveAll produced,
+  // with the statistics it had; no leaf is counted. Not accepted if the record
+  // does not decode for this policy, and the caller then evaluates the node.
+  virtual InstallResult Restore(NodeKey key, MaterializationTicketId ticket,
+                                std::span<const uint8_t> record) = 0;
+  // Records of up to `max` nodes that may leave the graph (fewest visits
+  // first, never `keep` or a node with a reserved edge). Nothing is erased
+  // until ConfirmEvicted, which must come after the records are stored.
+  virtual std::vector<EvictCandidate> CollectEvictable(size_t max,
+                                                       NodeKey keep) = 0;
+  // Erases the nodes that did not change since CollectEvictable; returns how
+  // many were erased.
+  virtual size_t ConfirmEvicted(std::span<const EvictCandidate> evicted) = 0;
+  // Stores a record of every expanded node; called only while no search runs.
+  virtual void SaveAll(NodeStore& store) const = 0;
 };
 
 }  // namespace lczero::lc5

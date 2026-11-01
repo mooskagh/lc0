@@ -18,7 +18,8 @@ organized. Code is in `src/search/lc5/`.
 - **Kept for the whole game.** The graph survives from move to move. On a new
   `position` the root is simply looked up again; nothing is promoted or
   pruned. It is cleared on `ucinewgame`, a different start position, or a
-  backend change. There is no eviction, so memory grows over the game.
+  backend change. By default nothing is evicted, so memory grows over the
+  game; `Lc5GraphNodeLimit` caps the graph (see "Node store").
 - **Statistics on edges.** Each edge records its own visits and value. When
   two parents lead into the same node, each parent's edge keeps its own
   numbers, so a transposition does not distort the other parent's view.
@@ -141,9 +142,38 @@ early when:
 The NN cache is keyed on the last position only, so transpositions with a
 different history (separate lc5 nodes) show up as cache hits.
 
-There is also an optional **node store** for persisting evaluated nodes, with
-its own load/store jobs. The engine doesn't use it yet; it exists for future
-eviction.
+### Node store
+
+The **node store** is the graph's cold tier. It holds the search state of
+nodes that left the graph: terminal kind, node statistics, legal edges with
+priors, and the statistics of tried edges (`graph/node_record.h`).
+Reservations, generations and tickets are not stored. A record is tagged with
+the policy and a format version, and a record that does not match is treated
+as a miss, so one policy never reads another's statistics. The store sees
+records only as bytes; `MemoryNodeStore` keeps them in RAM.
+
+With `Lc5GraphNodeLimit` > 0, the engine creates a store and keeps the graph
+near that size:
+
+- **Eviction.** When the graph grows past the limit (the controller checks
+  every 10 ms, and a worker wakes it when it sees the graph over the limit),
+  the controller picks nodes down to 90% of the limit, fewest visits first.
+  It never picks the root, a materializing node, or a node with a reserved
+  edge. Eviction has two phases, so a miss can never race ahead of the write:
+  the records are taken under the shard lock along with each node's
+  generation and version, a store thread writes them, and then each node is
+  erased only if its version is unchanged. A node that changed stays in the
+  graph. Its stale record does no harm because the graph is always checked
+  first.
+- **Restore.** With a store, a graph miss loads from the store before
+  evaluating. On a hit the node comes back with all its statistics under a
+  new generation, so in-flight updates meant for the evicted node are
+  rejected. Nothing is backed up: the owner and waiters all continue
+  selecting below the node.
+
+Fresh evaluations are not stored; that is the NN cache's job. The store is
+cleared with the graph. Saving the whole graph (`VisitEngine::SaveAll`) to a
+file and loading it later to continue a search is the planned next step.
 
 ## Time management
 
@@ -205,7 +235,8 @@ has the engine, configuration, and the seam between `run/` and `policies/`
 | `run/metrics.h` | Debug counters. |
 | `graph/graph.h` | `GameGraph<P>`: sharded node map, reservations, per-node updates, tried-edge stats; node and edge stats belong to the policy. |
 | `graph/key.h`, `graph/value.h`, `graph/prior.h` | Node keys; value sums and perspective flips; fp16 priors. |
-| `graph/node_store.h`, `graph/memory_node_store.cc` | Expansion payloads and terminals; optional persistence (unused by the engine). |
+| `graph/node.h`, `graph/expansion.h` | Node, edge and tried-edge state; expansion payloads and terminal kinds. |
+| `graph/node_store.h`, `graph/memory_node_store.cc`, `graph/node_record.h` | The node store (the graph's cold tier), its in-RAM implementation, and the node record format. |
 | `policies/policy_engine.h` | `PolicyEngine<P>` implements `VisitEngine` on a `GameGraph<P>` it owns: descent, two-fold check, backup, PV walk. |
 | `policies/puct.h/.cc` | `PuctPolicy<Self>`: PUCT selection, PV edge, bounds, score/WDL and the PUCT options (`PuctParams`), shared by the policies; `PuctAveraging` (`puct`) adds the averaging backup. |
 | `policies/puct_dag.h/.cc` | `PuctDag` (`puct-dag`): edges cache the child's value; see "Policies". |
@@ -236,6 +267,7 @@ Things that look odd but are deliberate:
 | `AlphaZeroTimePct` | 3 | Share of the clock spent per move. |
 | `SmartPruningFactor` | 1.33 | Early stop aggressiveness; 0 disables. |
 | `Lc5Policy` | puct | Search policy: `puct` or `puct-dag` (see "Policies"). |
+| `Lc5GraphNodeLimit` | 0 | Graph nodes kept in RAM; extra nodes are evicted to the node store with their statistics. 0 means unlimited. |
 
 Options of the `puct` and `puct-dag` policies (they share them):
 
@@ -276,7 +308,8 @@ whatever its own repetitions (both policies).
 
 ## Not done yet
 
-- Proving repetition draws, Syzygy, MultiPV, training data output, memory limits
-  and eviction.
+- Proving repetition draws, Syzygy, MultiPV, training data output, a
+  memory-based limit (the limit counts nodes), an on-disk node store, and
+  saving and reloading a graph.
 
 `scripts/benchmark_lc5.py` is a speed benchmark harness.

@@ -36,6 +36,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <span>
 #include <thread>
 #include <unordered_map>
 #include <unordered_set>
@@ -61,7 +62,9 @@ namespace lczero::lc5 {
 // ticket; the ticket's owner submits the node to the store and/or evaluator
 // as part of a whole I/O job and later publishes the expansion, resuming all
 // waiters through their owners' mailboxes. The controller thread enforces
-// limits, reports info and coordinates shutdown.
+// limits, reports info and coordinates shutdown. With a store and a graph
+// node limit, the controller also moves nodes out of the graph into the store
+// (eviction), and a graph miss restores a stored node with its statistics.
 class SearchRun {
  public:
   SearchRun(VisitEngine* engine, NodeStore* store, Backend* backend,
@@ -95,6 +98,9 @@ class SearchRun {
     enum class Kind : uint8_t {
       kAdmit,   // Newly admitted visit.
       kSelect,  // Materialization finished; select below the node.
+      // The node was restored from the store with its statistics; select
+      // below it without resuming through the policy, as nothing new is known.
+      kRestored,
       kBackup,  // Materialization finished; back up `value`.
       // Materialization finished and the node already holds `value`; back
       // up through the steps above it.
@@ -120,7 +126,7 @@ class SearchRun {
   struct Request {
     enum class State : uint8_t {
       kPending,    // Not (yet) processed, or abandoned on stop.
-      kStoreHit,   // `payload` was loaded from the store.
+      kStoreHit,   // `record` was loaded from the store.
       kStoreMiss,  // Not in the store; needs evaluation.
       kQueued,     // Added to a computation that has not run yet.
       kEvaluated,  // `payload` holds the evaluation.
@@ -129,8 +135,12 @@ class SearchRun {
     NodeKey key;
     PositionHistory history;
     ExpansionPayload payload{};
+    std::vector<uint8_t> record{};
     State state = State::kPending;
   };
+  // kPersist jobs store evicted nodes and then erase them from the graph. The
+  // controller creates them, and a store thread finishes them without
+  // returning them to a worker.
   enum class JobKind { kEval, kLoad, kPersist };
   // Storage is fixed before AddInput; the whole job lives through compute
   // and completion consumption, including immediate-cache results.
@@ -139,8 +149,8 @@ class SearchRun {
     size_t worker;
     std::chrono::steady_clock::time_point queued_at;
     std::vector<Request> requests;
-    std::vector<StoredExpansion> entries;
-    size_t items() const { return requests.size() + entries.size(); }
+    std::vector<EvictCandidate> evictions;
+    size_t items() const { return requests.size(); }
   };
   struct Mailbox {
     template <typename F>
@@ -165,8 +175,7 @@ class SearchRun {
   struct Worker {
     explicit Worker(size_t index) : index(index) {}
     bool HasQueuedIo() const {
-      return !unprepared.empty() || !loads.empty() || !evals.empty() ||
-             !persistence.empty();
+      return !unprepared.empty() || !loads.empty() || !evals.empty();
     }
 
     const size_t index;
@@ -177,7 +186,6 @@ class SearchRun {
     std::deque<Request> unprepared;  // Await terminal detection.
     std::deque<Request> loads;
     std::deque<Request> evals;
-    std::deque<StoredExpansion> persistence;
     std::vector<std::vector<Continuation>> outgoing;  // Indexed by worker.
     size_t outstanding = 0;
     size_t outstanding_items = 0;
@@ -201,6 +209,8 @@ class SearchRun {
   static constexpr size_t kBatchCredits = 16;
   static constexpr size_t kWorkChunk = 32;
   static constexpr size_t kMinActiveVisits = 16;
+  // Nodes per eviction job.
+  static constexpr size_t kEvictionBatch = 1024;
 
   bool Stopping() const { return stop_mode_.load() != StopMode::kRunning; }
   void RequestStop(StopMode mode);
@@ -215,6 +225,10 @@ class SearchRun {
   void WakeAllWorkers();
   void NotifyController();
   ThinkingInfo BuildInfo(bool final) const;
+  // Whether the graph has a node limit to keep, by evicting to the store.
+  bool Evicts() const { return store_ && settings_.graph_node_limit > 0; }
+  // Queues eviction jobs when the graph is over its node limit.
+  void QueueEvictions();
   Move FallbackMove() const;
 
   // Admission (visits.cc).
@@ -233,7 +247,6 @@ class SearchRun {
   void CancelVisits(Worker& worker);
   void PublishWorkerState(Worker& worker);
   bool HasLocalWork(const Worker& worker) const;
-  bool PersistenceBacklogged(const Worker& worker) const;
   void AdvanceVisit(Worker& worker, VisitId id);
   void Backup(Worker& worker, VisitPool::Slot& slot);
   void Cancel(Worker& worker, VisitPool::Slot& slot);
@@ -248,7 +261,11 @@ class SearchRun {
   bool SuspendForMaterialization(Worker& worker, VisitPool::Slot& slot);
   void PrepareEvaluation(Worker& worker, Request request);
   void CompleteMaterialization(Worker& worker, MaterializationTicketId ticket,
-                               ExpansionPayload payload, bool store_payload);
+                               ExpansionPayload payload);
+  // Publishes a node restored from the store; returns false, with the ticket
+  // still open, if the record was rejected.
+  bool CompleteRestore(Worker& worker, MaterializationTicketId ticket,
+                       std::span<const uint8_t> record);
   void CancelMaterialization(Worker& worker, MaterializationTicketId ticket);
   void CancelPendingRequests(Worker& worker);
   void SubmitJobs(Worker& worker);
@@ -258,6 +275,7 @@ class SearchRun {
   void ConsumeJob(Worker& worker, std::unique_ptr<Job> job);
   void ReturnJob(std::unique_ptr<Job> job);
   void StoreWorker();
+  void Evict(Job& job);
   void EvaluatorWorker();
   Batch CollectBatch(std::unique_ptr<Job> first, std::unique_ptr<Job>* next);
   void AddInputs(BackendComputation& computation, Job& job);
@@ -308,6 +326,10 @@ class SearchRun {
   std::atomic<int64_t> unused_time_ms_{0};
   // Includes queued, executing, and returned-but-unconsumed jobs.
   std::atomic<size_t> jobs_in_flight_{0};
+  // Eviction jobs queued or running; the controller queues more only at zero.
+  std::atomic<size_t> evictions_in_flight_{0};
+  // A worker saw the graph over its limit and woke the controller.
+  std::atomic<bool> eviction_requested_{false};
   // Jobs held by collectors (including retained whole jobs), not computing or
   // returned. If these are all remaining jobs and producers are blocked,
   // further collection depends on flushing at least one computation.
