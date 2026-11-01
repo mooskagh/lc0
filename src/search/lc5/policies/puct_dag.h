@@ -30,9 +30,9 @@
 #include <algorithm>
 #include <string_view>
 
-#include "search/lc5/graph.h"
+#include "search/lc5/graph/graph.h"
+#include "search/lc5/graph/value.h"
 #include "search/lc5/policies/puct.h"
-#include "search/lc5/value.h"
 
 namespace lczero::lc5 {
 

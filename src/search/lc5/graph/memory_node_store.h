@@ -25,47 +25,33 @@
   Program grant you additional permission to convey the resulting work.
 */
 
-#include "search/lc5/memory_node_store.h"
+#pragma once
+
+#include <absl/container/flat_hash_map.h>
+
+#include <array>
+#include <mutex>
+
+#include "search/lc5/graph/node_store.h"
 
 namespace lczero::lc5 {
 
-std::vector<std::optional<ExpansionPayload>> MemoryNodeStore::LoadBatch(
-    std::span<const NodeKey> keys) {
-  std::vector<std::optional<ExpansionPayload>> result;
-  result.reserve(keys.size());
-  for (const NodeKey key : keys) {
-    auto& shard = shards_[ShardIndex(key)];
-    std::lock_guard lock(shard.mutex);
-    const auto it = shard.entries.find(key);
-    result.push_back(it == shard.entries.end()
-                         ? std::nullopt
-                         : std::optional<ExpansionPayload>(it->second));
-  }
-  return result;
-}
+class MemoryNodeStore final : public NodeStore {
+ public:
+  std::vector<std::optional<ExpansionPayload>> LoadBatch(
+      std::span<const NodeKey> keys) override;
+  void StoreBatch(std::span<const StoredExpansion> entries) override;
+  void Clear() override;
+  size_t Size() const;
 
-void MemoryNodeStore::StoreBatch(std::span<const StoredExpansion> entries) {
-  for (const auto& entry : entries) {
-    auto& shard = shards_[ShardIndex(entry.key)];
-    std::lock_guard lock(shard.mutex);
-    shard.entries.insert_or_assign(entry.key, entry.payload);
-  }
-}
-
-void MemoryNodeStore::Clear() {
-  for (auto& shard : shards_) {
-    std::lock_guard lock(shard.mutex);
-    shard.entries.clear();
-  }
-}
-
-size_t MemoryNodeStore::Size() const {
-  size_t size = 0;
-  for (const auto& shard : shards_) {
-    std::lock_guard lock(shard.mutex);
-    size += shard.entries.size();
-  }
-  return size;
-}
+ private:
+  static constexpr size_t kShardCount = 64;
+  struct Shard {
+    mutable std::mutex mutex;
+    absl::flat_hash_map<NodeKey, ExpansionPayload> entries;
+  };
+  static size_t ShardIndex(NodeKey key) { return key.hash >> 58; }
+  std::array<Shard, kShardCount> shards_;
+};
 
 }  // namespace lczero::lc5

@@ -35,8 +35,8 @@
 #include <utility>
 #include <vector>
 
-#include "search/lc5/prior.h"
-#include "search/lc5/search.h"
+#include "search/lc5/graph/prior.h"
+#include "search/lc5/run/search_run.h"
 
 namespace lczero::lc5 {
 namespace {

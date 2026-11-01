@@ -25,7 +25,7 @@
   Program grant you additional permission to convey the resulting work.
 */
 
-#include "search/lc5/search.h"
+#include "search/lc5/run/search_run.h"
 
 #include <algorithm>
 #include <chrono>

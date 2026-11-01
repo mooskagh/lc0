@@ -25,8 +25,6 @@
   Program grant you additional permission to convey the resulting work.
 */
 
-#include "search/lc5/search.h"
-
 #include <gtest/gtest.h>
 
 #include <algorithm>
@@ -42,6 +40,7 @@
 #include "search/lc5/policies/puct.h"
 #include "search/lc5/policies/puct_dag.h"
 #include "search/lc5/policies/registry.h"
+#include "search/lc5/run/search_run.h"
 
 namespace lczero::lc5 {
 

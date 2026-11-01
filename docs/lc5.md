@@ -33,7 +33,7 @@ organized. Code is in `src/search/lc5/`.
 
 ## Following one visit
 
-Code: `search_visits.cc`, `policies/policy_engine.h`, `policies/puct.cc`, `search_materialization.cc`.
+Code: `run/visits.cc`, `policies/policy_engine.h`, `policies/puct.cc`, `run/materialization.cc`.
 
 1. **Admission.** A worker lets a new visit in at the root, if limits allow
    (see "How many visits are in flight"). Under `go nodes N`, at most N
@@ -186,24 +186,30 @@ Reading the `info` line:
 
 ## Code map
 
+Three subdirectories: `graph/` is the node data model, `run/` is the
+`SearchRun` machinery, and `policies/` holds the search policies. The root
+has the engine, configuration, and the seam between `run/` and `policies/`
+(`visit_engine.h`, `visit.h`).
+
 | File | What's there |
 |---|---|
 | `engine.cc` | UCI glue: keeps the visit engine (and its graph), starts a `SearchRun` per `go`, carries saved time. |
-| `search.cc` | `SearchRun`: setup, controller, early stop, `info`/`bestmove`. |
-| `search_visits.cc` | Admission, worker loop, driving each visit through the engine. |
 | `visit_engine.h` | `VisitEngine` interface: descent, backup, cancel, report. |
-| `policies/policy_engine.h` | `PolicyEngine<P>` implements it on a `GameGraph<P>` it owns: descent, two-fold check, backup, PV walk. |
+| `visit.h` | Visit state and the fixed pool of visit slots. |
+| `settings.cc` | Machinery options and their automatic values. |
+| `time_manager.cc` | Per-move deadline. |
+| `run/search_run.h/.cc` | `SearchRun`: setup, controller, early stop, `info`/`bestmove`. |
+| `run/visits.cc` | Admission, worker loop, driving each visit through the engine. |
+| `run/materialization.cc` | Creating nodes, terminal detection, jobs, evaluator batching. |
+| `run/work_queue.h` | Closable MPMC queue for requests and jobs. |
+| `run/metrics.h` | Debug counters. |
+| `graph/graph.h` | `GameGraph<P>`: sharded node map, reservations, per-node updates, tried-edge stats; node and edge stats belong to the policy. |
+| `graph/key.h`, `graph/value.h`, `graph/prior.h` | Node keys; value sums and perspective flips; fp16 priors. |
+| `graph/node_store.h`, `graph/memory_node_store.cc` | Expansion payloads and terminals; optional persistence (unused by the engine). |
+| `policies/policy_engine.h` | `PolicyEngine<P>` implements `VisitEngine` on a `GameGraph<P>` it owns: descent, two-fold check, backup, PV walk. |
 | `policies/puct.h/.cc` | `PuctPolicy<Self>`: PUCT selection, PV edge, bounds, score/WDL and the PUCT options (`PuctParams`), shared by the policies; `PuctAveraging` (`puct`) adds the averaging backup. |
 | `policies/puct_dag.h/.cc` | `PuctDag` (`puct-dag`): edges cache the child's value; see "Policies". |
 | `policies/registry.h/.cc` | `PolicyRegistry` and the `Lc5Policy` option. A policy registers itself with `REGISTER_LC5_POLICY(P, priority)` in its own .cc; the highest priority (`puct`) is the default. |
-| `search_materialization.cc` | Creating nodes, terminal detection, jobs, evaluator batching. |
-| `graph.h` | `GameGraph<P>`: sharded node map, reservations, per-node updates, tried-edge stats; node and edge stats belong to the policy. |
-| `visit.h` | Visit state and the fixed pool of visit slots. |
-| `key.h`, `value.h` | Node keys; value sums and perspective flips. |
-| `time_manager.cc` | Per-move deadline. |
-| `settings.cc` | Machinery options and their automatic values. |
-| `node_store.h`, `memory_node_store.cc` | Optional persistence (unused by the engine). |
-| `metrics.h` | Debug counters. |
 
 Things that look odd but are deliberate:
 

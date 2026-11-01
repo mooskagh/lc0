@@ -33,8 +33,8 @@
 
 #include "chess/callbacks.h"
 #include "neural/backend.h"
-#include "search/lc5/graph.h"
-#include "search/lc5/metrics.h"
+#include "search/lc5/graph/graph.h"
+#include "search/lc5/run/metrics.h"
 #include "search/lc5/settings.h"
 #include "search/lc5/visit.h"
 #include "utils/optionsdict.h"

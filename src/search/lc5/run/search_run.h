@@ -44,12 +44,12 @@
 #include "chess/callbacks.h"
 #include "chess/uciloop.h"
 #include "neural/backend.h"
-#include "search/lc5/metrics.h"
-#include "search/lc5/node_store.h"
+#include "search/lc5/graph/node_store.h"
+#include "search/lc5/run/metrics.h"
+#include "search/lc5/run/work_queue.h"
 #include "search/lc5/time_manager.h"
 #include "search/lc5/visit.h"
 #include "search/lc5/visit_engine.h"
-#include "search/lc5/work_queue.h"
 
 namespace lczero::lc5 {
 
@@ -217,7 +217,7 @@ class SearchRun {
   ThinkingInfo BuildInfo(bool final) const;
   Move FallbackMove() const;
 
-  // Admission (search_visits.cc).
+  // Admission (visits.cc).
   bool AdmissionClosed() const;  // Requires admission_mutex_.
   // Live visits allowed now: grows with the root's visits, as classic search
   // grows its collision limit, so small trees are not flooded.
@@ -226,7 +226,7 @@ class SearchRun {
   void AdmitMore(Worker& worker);
   void WakeAdmissionWaiters();
 
-  // Visit workers (search_visits.cc).
+  // Visit workers (visits.cc).
   void VisitWorker(Worker& worker);
   void ProcessMailbox(Worker& worker);
   void AdvanceRunnable(Worker& worker, size_t limit);
@@ -244,7 +244,7 @@ class SearchRun {
   void Deliver(Worker& worker, const Continuation& continuation);
   void SendContinuations(size_t worker, std::vector<Continuation>& batch);
 
-  // Materialization and I/O (search_materialization.cc).
+  // Materialization and I/O (materialization.cc).
   bool SuspendForMaterialization(Worker& worker, VisitPool::Slot& slot);
   void PrepareEvaluation(Worker& worker, Request request);
   void CompleteMaterialization(Worker& worker, MaterializationTicketId ticket,

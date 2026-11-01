@@ -29,6 +29,7 @@
 
 #include <gtest/gtest.h>
 
+#include "search/lc5/graph/graph.h"
 #include "utils/exception.h"
 
 namespace lczero::lc5 {

@@ -33,8 +33,8 @@
 #include <vector>
 
 #include "chess/types.h"
-#include "search/lc5/key.h"
-#include "search/lc5/value.h"
+#include "search/lc5/graph/key.h"
+#include "search/lc5/graph/value.h"
 
 namespace lczero::lc5 {
 

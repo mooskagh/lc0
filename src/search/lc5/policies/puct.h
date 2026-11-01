@@ -39,8 +39,8 @@
 #include <vector>
 
 #include "chess/callbacks.h"
-#include "search/lc5/graph.h"
-#include "search/lc5/value.h"
+#include "search/lc5/graph/graph.h"
+#include "search/lc5/graph/value.h"
 #include "search/lc5/visit_engine.h"
 #include "utils/fastmath.h"
 #include "utils/optionsdict.h"

@@ -25,7 +25,7 @@
   Program grant you additional permission to convey the resulting work.
 */
 
-#include "search/lc5/graph.h"
+#include "search/lc5/graph/graph.h"
 
 #include <gtest/gtest.h>
 

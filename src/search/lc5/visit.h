@@ -38,7 +38,7 @@
 #include <vector>
 
 #include "chess/position.h"
-#include "search/lc5/graph.h"
+#include "search/lc5/graph/graph.h"
 
 namespace lczero::lc5 {
 

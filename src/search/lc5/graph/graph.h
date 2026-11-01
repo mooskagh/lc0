@@ -40,14 +40,18 @@
 #include <utility>
 #include <vector>
 
-#include "search/lc5/key.h"
-#include "search/lc5/node_store.h"
-#include "search/lc5/prior.h"
-#include "search/lc5/settings.h"
+#include "search/lc5/graph/key.h"
+#include "search/lc5/graph/node_store.h"
+#include "search/lc5/graph/prior.h"
 
 namespace lczero::lc5 {
 
 using MaterializationTicketId = uint64_t;
+
+// Each live visit holds at most one unit of an edge's 16-bit in_flight, which
+// caps the number of live visits.
+inline constexpr int kMaxActiveVisitsLimit =
+    std::numeric_limits<uint16_t>::max();
 
 enum class NodeLifecycle : uint8_t { kMaterializing, kExpanded };
 

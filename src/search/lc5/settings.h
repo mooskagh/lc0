@@ -27,19 +27,12 @@
 
 #pragma once
 
-#include <cstdint>
-#include <limits>
-
 #include "neural/backend.h"
 #include "search/lc5/time_manager.h"
 #include "utils/optionsdict.h"
 #include "utils/optionsparser.h"
 
 namespace lczero::lc5 {
-
-// Each live visit holds at most one unit of an edge's 16-bit in_flight.
-inline constexpr int kMaxActiveVisitsLimit =
-    std::numeric_limits<uint16_t>::max();
 
 class Settings {
  public:

@@ -35,7 +35,7 @@
 #include <unordered_set>
 #include <vector>
 
-#include "search/lc5/graph.h"
+#include "search/lc5/graph/graph.h"
 #include "search/lc5/visit_engine.h"
 
 namespace lczero::lc5 {
