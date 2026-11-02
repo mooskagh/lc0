@@ -31,10 +31,8 @@
 
 #include <atomic>
 #include <chrono>
-#include <condition_variable>
 #include <deque>
 #include <memory>
-#include <mutex>
 #include <optional>
 #include <span>
 #include <thread>
@@ -48,6 +46,7 @@
 #include "search/lc5/run/metrics.h"
 #include "search/lc5/run/work_queue.h"
 #include "search/lc5/store/node_store.h"
+#include "search/lc5/sync.h"
 #include "search/lc5/time_manager.h"
 #include "search/lc5/visit.h"
 #include "search/lc5/visit_engine.h"
@@ -152,25 +151,17 @@ class SearchRun {
     std::vector<EvictCandidate> evictions;
     size_t items() const { return requests.size(); }
   };
+  // A worker's inbox. Senders lock `mutex` and add to it; unlocking wakes the
+  // owner if its wait condition now holds.
   struct Mailbox {
-    template <typename F>
-    void Post(F&& mutate) {
-      {
-        std::lock_guard lock(mutex);
-        mutate();
-      }
-      cv.notify_one();
-    }
-    // Makes the owner re-evaluate its wait predicate.
-    void Wake() {
-      Post([] {});
-    }
+    // Makes the owner re-evaluate its wait condition after external state
+    // (stop, shutdown) changed.
+    void Wake() { MutexLock lock(mutex); }
 
-    std::mutex mutex;
-    std::condition_variable cv;
-    std::vector<Continuation> continuations;
-    std::vector<std::unique_ptr<Job>> completions;
-    bool admission_ready = false;
+    absl::Mutex mutex;
+    std::vector<Continuation> continuations ABSL_GUARDED_BY(mutex);
+    std::vector<std::unique_ptr<Job>> completions ABSL_GUARDED_BY(mutex);
+    bool admission_ready ABSL_GUARDED_BY(mutex) = false;
   };
   struct Worker {
     explicit Worker(size_t index) : index(index) {}
@@ -196,7 +187,7 @@ class SearchRun {
     // Conservative signal: this worker can submit without a collected job's
     // completion. Initially true until the first work chunk is inspected.
     std::atomic<bool> producing{true};
-    // Protected by admission_mutex_, not worker-owned.
+    // Guarded by SearchRun::admission_mutex_, not worker-owned.
     bool admission_waiting = false;
   };
   struct Batch {
@@ -230,11 +221,12 @@ class SearchRun {
   Move FallbackMove() const;
 
   // Admission (visits.cc).
-  bool AdmissionClosed() const;  // Requires admission_mutex_.
+  bool AdmissionClosed() const ABSL_EXCLUSIVE_LOCKS_REQUIRED(admission_mutex_);
   // Live visits allowed now: grows with the root's visits, as classic search
   // grows its collision limit, so small trees are not flooded.
   size_t ActiveLimit() const;
-  std::optional<VisitId> Allocate(const VisitOrigin& origin, size_t worker);
+  std::optional<VisitId> Allocate(const VisitOrigin& origin, size_t worker)
+      ABSL_EXCLUSIVE_LOCKS_REQUIRED(admission_mutex_);
   void AdmitMore(Worker& worker);
   void WakeAdmissionWaiters();
 
@@ -246,17 +238,21 @@ class SearchRun {
   void PublishWorkerState(Worker& worker);
   bool HasLocalWork(const Worker& worker) const;
   void AdvanceVisit(Worker& worker, VisitId id);
-  void Backup(Worker& worker, VisitPool::Slot& slot);
-  void Cancel(Worker& worker, VisitPool::Slot& slot);
+  void Backup(Worker& worker, VisitPool::Slot& slot)
+      ABSL_EXCLUSIVE_LOCKS_REQUIRED(slot.mutex);
+  void Cancel(Worker& worker, VisitPool::Slot& slot)
+      ABSL_EXCLUSIVE_LOCKS_REQUIRED(slot.mutex);
   // Releases the visit's reservations and returns it to its origin.
-  void Restart(VisitPool::Slot& slot);
-  void FinishVisit(Worker& worker, VisitPool::Slot& slot, bool completed);
+  void Restart(VisitPool::Slot& slot) ABSL_EXCLUSIVE_LOCKS_REQUIRED(slot.mutex);
+  void FinishVisit(Worker& worker, VisitPool::Slot& slot, bool completed)
+      ABSL_EXCLUSIVE_LOCKS_REQUIRED(slot.mutex);
   void Resume(Worker& worker, const Continuation& continuation);
   void Deliver(Worker& worker, const Continuation& continuation);
   void SendContinuations(size_t worker, std::vector<Continuation>& batch);
 
   // Materialization and I/O (materialization.cc).
-  bool SuspendForMaterialization(Worker& worker, VisitPool::Slot& slot);
+  bool SuspendForMaterialization(Worker& worker, VisitPool::Slot& slot)
+      ABSL_EXCLUSIVE_LOCKS_REQUIRED(slot.mutex);
   void PrepareEvaluation(Worker& worker, Request request);
   void CompleteMaterialization(Worker& worker, MaterializationTicketId ticket,
                                ExpansionPayload payload);
@@ -301,20 +297,25 @@ class SearchRun {
   std::vector<std::thread> evaluator_threads_;
   std::thread controller_thread_;
 
-  std::mutex tickets_mutex_;
-  absl::flat_hash_map<NodeKey, MaterializationTicketId> ticket_by_key_;
-  std::unordered_map<MaterializationTicketId, Ticket> tickets_;
-  MaterializationTicketId next_ticket_ = 1;
+  absl::Mutex tickets_mutex_;
+  absl::flat_hash_map<NodeKey, MaterializationTicketId> ticket_by_key_
+      ABSL_GUARDED_BY(tickets_mutex_);
+  std::unordered_map<MaterializationTicketId, Ticket> tickets_
+      ABSL_GUARDED_BY(tickets_mutex_);
+  MaterializationTicketId next_ticket_ ABSL_GUARDED_BY(tickets_mutex_) = 1;
 
-  // Serializes admission, stop requests and NN authorization.
-  std::mutex admission_mutex_;
-  uint64_t admitted_ = 0;
-  size_t next_owner_ = 0;
-  size_t next_admission_waiter_ = 0;
+  // Set in the constructor only.
   std::optional<uint64_t> node_limit_;
   // Not in infinite or ponder searches: a decided root or smart pruning may
   // stop the search before its limits.
   bool may_stop_early_ = true;
+
+  // Serializes admission, stop requests and NN authorization. Also guards
+  // Worker::admission_waiting.
+  absl::Mutex admission_mutex_;
+  uint64_t admitted_ ABSL_GUARDED_BY(admission_mutex_) = 0;
+  size_t next_owner_ ABSL_GUARDED_BY(admission_mutex_) = 0;
+  size_t next_admission_waiter_ ABSL_GUARDED_BY(admission_mutex_) = 0;
 
   std::atomic<StopMode> stop_mode_{StopMode::kRunning};
   std::atomic<bool> started_{false};
@@ -332,9 +333,8 @@ class SearchRun {
   // returned. If these are all remaining jobs and producers are blocked,
   // further collection depends on flushing at least one computation.
   std::atomic<size_t> collecting_jobs_{0};
-  std::mutex controller_mutex_;
-  std::condition_variable controller_cv_;
-  uint64_t controller_generation_ = 0;  // Protected by controller_mutex_.
+  absl::Mutex controller_mutex_;
+  uint64_t controller_generation_ ABSL_GUARDED_BY(controller_mutex_) = 0;
 };
 
 }  // namespace lczero::lc5

@@ -220,6 +220,12 @@ deps += dependency('threads')
 ### Lc5 Search Algorithm
 
 if get_option('lc5')
+  absl_synchronization_dep = dependency(
+    'absl_synchronization', 'absl', modules:['absl::synchronization'],
+    include_type: 'system',
+    fallback: ['abseil-cpp', 'absl_synchronization_dep'],
+    default_options : ['warning_level=0', 'cpp_std=c++20'])
+  deps += absl_synchronization_dep
   files += [
     'src/search/lc5/engine.cc',
     'src/search/lc5/store/memory_node_store.cc',
@@ -1196,7 +1202,7 @@ if get_option('gtest')
         'src/search/lc5/visit_test.cc',
         pb_files,
         include_directories: includes, link_with: lc0_lib,
-        dependencies: [gtest, absl_flat_hash_map_dep]),
+        dependencies: [gtest, absl_flat_hash_map_dep, absl_synchronization_dep]),
       args: '--gtest_output=xml:lc5_visit_test.xml', timeout: 90)
 
     test('Lc5Graph',
@@ -1206,7 +1212,7 @@ if get_option('gtest')
         'src/search/lc5/policies/puct.cc',
         pb_files,
         include_directories: includes, link_with: lc0_lib,
-        dependencies: [gtest, absl_flat_hash_map_dep]),
+        dependencies: [gtest, absl_flat_hash_map_dep, absl_synchronization_dep]),
       args: '--gtest_output=xml:lc5_graph_test.xml', timeout: 90)
 
     test('Lc5Search',
@@ -1226,7 +1232,7 @@ if get_option('gtest')
         'src/search/register.cc',
         pb_files,
         include_directories: includes, link_with: lc0_lib,
-        dependencies: [gtest, absl_flat_hash_map_dep]),
+        dependencies: [gtest, absl_flat_hash_map_dep, absl_synchronization_dep]),
       args: '--gtest_output=xml:lc5_search_test.xml', timeout: 90)
 
     test('Lc5TimeManager',
@@ -1235,7 +1241,7 @@ if get_option('gtest')
         'src/search/lc5/time_manager.cc',
         pb_files,
         include_directories: includes, link_with: lc0_lib,
-        dependencies: [gtest, absl_flat_hash_map_dep]),
+        dependencies: [gtest, absl_flat_hash_map_dep, absl_synchronization_dep]),
       args: '--gtest_output=xml:lc5_time_manager_test.xml', timeout: 90)
 
     test('Lc5Settings',
@@ -1244,7 +1250,7 @@ if get_option('gtest')
         'src/search/lc5/settings.cc',
         pb_files,
         include_directories: includes, link_with: lc0_lib,
-        dependencies: [gtest, absl_flat_hash_map_dep]),
+        dependencies: [gtest, absl_flat_hash_map_dep, absl_synchronization_dep]),
       args: '--gtest_output=xml:lc5_settings_test.xml', timeout: 90)
 
     test('Lc5Puct',
@@ -1255,7 +1261,7 @@ if get_option('gtest')
         'src/search/lc5/policies/registry.cc',
         pb_files,
         include_directories: includes, link_with: lc0_lib,
-        dependencies: [gtest, absl_flat_hash_map_dep]),
+        dependencies: [gtest, absl_flat_hash_map_dep, absl_synchronization_dep]),
       args: '--gtest_output=xml:lc5_puct_test.xml', timeout: 90)
   endif
 endif

@@ -33,12 +33,12 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
-#include <mutex>
 #include <optional>
 #include <vector>
 
 #include "chess/position.h"
 #include "search/lc5/graph/graph.h"
+#include "search/lc5/sync.h"
 
 namespace lczero::lc5 {
 
@@ -95,9 +95,9 @@ struct Visit {
 class VisitPool {
  public:
   struct Slot {
-    std::mutex mutex;
+    absl::Mutex mutex;
     std::atomic<uint32_t> epoch{0};
-    Visit visit;
+    Visit visit ABSL_GUARDED_BY(mutex);
   };
 
   explicit VisitPool(size_t capacity) {
@@ -115,7 +115,7 @@ class VisitPool {
                                   size_t worker = 0) {
     uint32_t i;
     {
-      std::lock_guard pool_lock(pool_mutex_);
+      MutexLock pool_lock(pool_mutex_);
       if (free_indices_.empty()) return std::nullopt;
       std::pop_heap(free_indices_.begin(), free_indices_.end(),
                     std::greater<uint32_t>{});
@@ -127,7 +127,7 @@ class VisitPool {
     // Never hold pool_mutex_ while waiting for a slot: release locks
     // slot -> pool.
     Slot& slot = *slots_[i];
-    std::lock_guard slot_lock(slot.mutex);
+    MutexLock slot_lock(slot.mutex);
     uint32_t epoch = slot.epoch.load(std::memory_order_relaxed) + 1;
     if (epoch == 0) ++epoch;
     slot.epoch.store(epoch, std::memory_order_release);
@@ -150,27 +150,22 @@ class VisitPool {
                                                                      : nullptr;
   }
 
-  // Returns the slot of live visit `id`, locked by `lock`, or nullptr if the
-  // visit has finished or the slot was reused.
-  Slot* LockLive(VisitId id, std::unique_lock<std::mutex>& lock) {
-    Slot* slot = Lookup(id);
-    if (!slot) return nullptr;
-    lock = std::unique_lock(slot->mutex);
-    if (slot->epoch.load(std::memory_order_relaxed) != id.epoch() ||
-        slot->visit.state == VisitState::kFree) {
-      lock.unlock();
-      return nullptr;
-    }
-    return slot;
+  // Whether `slot`, found by Lookup(id), still holds live visit `id`: it may
+  // have finished or been reused before its mutex was taken.
+  static bool IsLiveLocked(const Slot& slot, VisitId id)
+      ABSL_SHARED_LOCKS_REQUIRED(slot.mutex) {
+    return slot.epoch.load(std::memory_order_relaxed) == id.epoch() &&
+           slot.visit.state != VisitState::kFree;
   }
 
-  bool ReleaseLocked(Slot& slot, VisitId id) {
+  bool ReleaseLocked(Slot& slot, VisitId id)
+      ABSL_EXCLUSIVE_LOCKS_REQUIRED(slot.mutex) {
     if (slot.epoch.load(std::memory_order_relaxed) != id.epoch() ||
         slot.visit.id != id || slot.visit.state == VisitState::kFree)
       return false;
     slot.visit = Visit{};
-    // The caller holds slot.mutex. Publish only after resetting the visit.
-    std::lock_guard pool_lock(pool_mutex_);
+    // Publish only after resetting the visit.
+    MutexLock pool_lock(pool_mutex_);
     free_indices_.push_back(id.slot());
     std::push_heap(free_indices_.begin(), free_indices_.end(),
                    std::greater<uint32_t>{});
@@ -182,17 +177,17 @@ class VisitPool {
   std::vector<VisitId> ActiveIds() const {
     std::vector<VisitId> ids;
     for (const auto& ptr : slots_) {
-      std::lock_guard lock(ptr->mutex);
+      MutexLock lock(ptr->mutex);
       if (ptr->visit.state != VisitState::kFree) ids.push_back(ptr->visit.id);
     }
     return ids;
   }
 
  private:
-  mutable std::mutex pool_mutex_;
+  absl::Mutex pool_mutex_;
   std::vector<std::unique_ptr<Slot>> slots_;
-  // Protected by pool_mutex_; every index is either free or reserved/active.
-  std::vector<uint32_t> free_indices_;
+  // Every index is either free or reserved/active.
+  std::vector<uint32_t> free_indices_ ABSL_GUARDED_BY(pool_mutex_);
   std::atomic<size_t> active_{0};
 };
 

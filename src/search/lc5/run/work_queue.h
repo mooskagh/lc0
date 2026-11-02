@@ -28,67 +28,67 @@
 #pragma once
 
 #include <atomic>
+#include <cassert>
 #include <chrono>
-#include <condition_variable>
 #include <cstddef>
 #include <deque>
-#include <mutex>
 #include <utility>
+
+#include "search/lc5/sync.h"
 
 namespace lczero::lc5 {
 
-// Closable multi-producer multi-consumer FIFO.
+// Closable multi-producer multi-consumer FIFO. PopUntil() can also wait on a
+// caller predicate over external state; whoever changes that state must call
+// NotifyPredicateChanged() afterwards.
 template <typename T>
 class WorkQueue {
  public:
-  bool Push(T value) {
-    {
-      std::lock_guard lock(mutex_);
-      if (closed_) return false;
-      queue_.push_back(std::move(value));
-      size_.store(queue_.size(), std::memory_order_relaxed);
-    }
-    cv_.notify_one();
-    return true;
+  // Must not be called after Close().
+  void Push(T value) {
+    MutexLock lock(mutex_);
+    assert(!closed_);
+    queue_.push_back(std::move(value));
+    size_.store(queue_.size(), std::memory_order_relaxed);
   }
   // Blocks until an item is available; false once closed and empty.
   bool Pop(T* value) {
-    std::unique_lock lock(mutex_);
-    cv_.wait(lock, [&] { return closed_ || !queue_.empty(); });
+    MutexLock lock(mutex_);
+    mutex_.Await(absl::Condition(this, &WorkQueue::ReadyLocked));
     return TakeFrontLocked(value);
   }
   bool TryPop(T* value) {
-    std::lock_guard lock(mutex_);
+    MutexLock lock(mutex_);
     return TakeFrontLocked(value);
   }
-  // Like Pop, but also gives up at `deadline` or once `give_up()` holds. The
-  // predicate may read external state; WakeAll() makes its changes visible.
+  // Like Pop, but also gives up at `deadline` or once `give_up()` holds.
+  // `give_up` may run on any thread that unlocks the queue, under its mutex,
+  // and may read external state.
   template <typename Predicate>
   bool PopUntil(T* value, std::chrono::steady_clock::time_point deadline,
                 Predicate give_up) {
-    std::unique_lock lock(mutex_);
-    cv_.wait_until(lock, deadline,
-                   [&] { return closed_ || !queue_.empty() || give_up(); });
+    MutexLock lock(mutex_);
+    const auto ready = [&] {
+      mutex_.AssertReaderHeld();
+      return ReadyLocked() || give_up();
+    };
+    AwaitUntil(mutex_, absl::Condition(&ready), deadline);
     return TakeFrontLocked(value);
   }
-  // Locking before notifying avoids lost wakeups for external predicates.
-  void WakeAll() {
-    {
-      std::lock_guard lock(mutex_);
-    }
-    cv_.notify_all();
-  }
+  // Makes PopUntil() waiters re-check `give_up` after external state changed:
+  // the mutex re-evaluates waiters' conditions when it is unlocked.
+  void NotifyPredicateChanged() { MutexLock lock(mutex_); }
   void Close() {
-    {
-      std::lock_guard lock(mutex_);
-      closed_ = true;
-    }
-    cv_.notify_all();
+    MutexLock lock(mutex_);
+    closed_ = true;
   }
   size_t Size() const { return size_.load(std::memory_order_relaxed); }
 
  private:
-  bool TakeFrontLocked(T* value) {
+  bool ReadyLocked() const ABSL_SHARED_LOCKS_REQUIRED(mutex_) {
+    return closed_ || !queue_.empty();
+  }
+  bool TakeFrontLocked(T* value) ABSL_EXCLUSIVE_LOCKS_REQUIRED(mutex_) {
     if (queue_.empty()) return false;
     *value = std::move(queue_.front());
     queue_.pop_front();
@@ -96,11 +96,11 @@ class WorkQueue {
     return true;
   }
 
-  std::mutex mutex_;
-  std::condition_variable cv_;
-  std::deque<T> queue_;
+  absl::Mutex mutex_;
+  std::deque<T> queue_ ABSL_GUARDED_BY(mutex_);
+  // Lock-free copy of queue_.size(), for metrics and tests only.
   std::atomic<size_t> size_{0};
-  bool closed_ = false;
+  bool closed_ ABSL_GUARDED_BY(mutex_) = false;
 };
 
 }  // namespace lczero::lc5

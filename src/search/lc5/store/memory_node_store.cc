@@ -35,7 +35,7 @@ std::vector<std::optional<std::vector<uint8_t>>> MemoryNodeStore::LoadBatch(
   result.reserve(keys.size());
   for (const NodeKey key : keys) {
     auto& shard = shards_[ShardIndex(key)];
-    std::lock_guard lock(shard.mutex);
+    MutexLock lock(shard.mutex);
     const auto it = shard.records.find(key);
     if (it == shard.records.end()) {
       result.emplace_back(std::nullopt);
@@ -49,7 +49,7 @@ std::vector<std::optional<std::vector<uint8_t>>> MemoryNodeStore::LoadBatch(
 void MemoryNodeStore::StoreBatch(std::span<const StoredNode> nodes) {
   for (const auto& node : nodes) {
     auto& shard = shards_[ShardIndex(node.key)];
-    std::lock_guard lock(shard.mutex);
+    MutexLock lock(shard.mutex);
     shard.records.insert_or_assign(node.key, node.record);
   }
 }
@@ -57,14 +57,14 @@ void MemoryNodeStore::StoreBatch(std::span<const StoredNode> nodes) {
 void MemoryNodeStore::EraseBatch(std::span<const NodeKey> keys) {
   for (const NodeKey key : keys) {
     auto& shard = shards_[ShardIndex(key)];
-    std::lock_guard lock(shard.mutex);
+    MutexLock lock(shard.mutex);
     shard.records.erase(key);
   }
 }
 
 void MemoryNodeStore::Clear() {
   for (auto& shard : shards_) {
-    std::lock_guard lock(shard.mutex);
+    MutexLock lock(shard.mutex);
     shard.records.clear();
   }
 }
@@ -72,7 +72,7 @@ void MemoryNodeStore::Clear() {
 size_t MemoryNodeStore::Size() const {
   size_t size = 0;
   for (const auto& shard : shards_) {
-    std::lock_guard lock(shard.mutex);
+    MutexLock lock(shard.mutex);
     size += shard.records.size();
   }
   return size;

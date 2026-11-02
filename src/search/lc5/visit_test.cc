@@ -41,7 +41,7 @@ namespace {
 bool Release(VisitPool& pool, VisitId id) {
   auto* slot = pool.Lookup(id);
   if (!slot) return false;
-  std::lock_guard lock(slot->mutex);
+  MutexLock lock(slot->mutex);
   return pool.ReleaseLocked(*slot, id);
 }
 
@@ -88,7 +88,7 @@ TEST(Lc5VisitPoolTest, RejectsStaleDuplicateAndMismatchedIds) {
   auto* slot = pool.Lookup(*old);
   ASSERT_NE(slot, nullptr);
   {
-    std::lock_guard lock(slot->mutex);
+    MutexLock lock(slot->mutex);
     EXPECT_FALSE(pool.ReleaseLocked(*slot, {}));
     EXPECT_FALSE(pool.ReleaseLocked(*slot, *other));
     EXPECT_EQ(pool.active(), 2u);
@@ -104,7 +104,7 @@ TEST(Lc5VisitPoolTest, RejectsStaleDuplicateAndMismatchedIds) {
   EXPECT_EQ(pool.Lookup({}), nullptr);
   EXPECT_EQ(pool.Lookup(VisitId{(uint64_t{1} << 32) | 2}), nullptr);
   {
-    std::lock_guard lock(slot->mutex);
+    MutexLock lock(slot->mutex);
     EXPECT_FALSE(pool.ReleaseLocked(*slot, *old));
     EXPECT_EQ(slot->visit.id, *current);
   }
@@ -129,7 +129,7 @@ TEST(Lc5VisitPoolTest, InitializesAndResetsVisit) {
     EXPECT_EQ(id->epoch(), epoch);
     auto* slot = pool.Lookup(*id);
     ASSERT_NE(slot, nullptr);
-    std::lock_guard lock(slot->mutex);
+    MutexLock lock(slot->mutex);
     auto& visit = slot->visit;
     EXPECT_EQ(visit.id, *id);
     EXPECT_EQ(visit.state, VisitState::kReadySelect);
@@ -171,7 +171,7 @@ TEST(Lc5VisitPoolTest, EpochWrapSkipsZero) {
   auto* slot = pool.Lookup(*id);
   ASSERT_NE(slot, nullptr);
   {
-    std::lock_guard lock(slot->mutex);
+    MutexLock lock(slot->mutex);
     EXPECT_TRUE(pool.ReleaseLocked(*slot, *id));
     slot->epoch.store(std::numeric_limits<uint32_t>::max(),
                       std::memory_order_relaxed);
@@ -189,14 +189,14 @@ TEST(Lc5VisitPoolTest, AllocationDoesNotLockOccupiedSlots) {
   ASSERT_TRUE(occupied);
   auto* slot = pool.Lookup(*occupied);
   ASSERT_NE(slot, nullptr);
-  std::unique_lock lock(slot->mutex);
+  ReleasableMutexLock lock(slot->mutex);
   auto allocation =
       std::async(std::launch::async, [&] { return pool.Allocate({}); });
   EXPECT_EQ(allocation.wait_for(std::chrono::seconds(2)),
             std::future_status::ready);
   // Unlock before joining even on failure, so the old scan fails without
   // hanging.
-  lock.unlock();
+  lock.Release();
   auto id = allocation.get();
   ASSERT_TRUE(id);
   EXPECT_EQ(id->slot(), 1u);
@@ -210,7 +210,7 @@ TEST(Lc5VisitPoolTest, WaitingForReservedSlotDoesNotHoldPoolLock) {
   ASSERT_TRUE(old);
   auto* slot = pool.Lookup(*old);
   ASSERT_NE(slot, nullptr);
-  std::unique_lock lock(slot->mutex);
+  ReleasableMutexLock lock(slot->mutex);
   ASSERT_TRUE(pool.ReleaseLocked(*slot, *old));
   auto first =
       std::async(std::launch::async, [&] { return pool.Allocate({}); });
@@ -226,7 +226,7 @@ TEST(Lc5VisitPoolTest, WaitingForReservedSlotDoesNotHoldPoolLock) {
       std::async(std::launch::async, [&] { return pool.Allocate({}); });
   EXPECT_EQ(second.wait_for(std::chrono::seconds(2)),
             std::future_status::ready);
-  lock.unlock();
+  lock.Release();
   auto first_id = first.get();
   auto second_id = second.get();
   ASSERT_TRUE(first_id);
@@ -249,7 +249,7 @@ TEST(Lc5VisitPoolTest, ConcurrentAllocationAndRelease) {
         EXPECT_FALSE(owned[id->slot()].exchange(true));
         auto* slot = pool.Lookup(*id);
         ASSERT_NE(slot, nullptr);
-        std::lock_guard lock(slot->mutex);
+        MutexLock lock(slot->mutex);
         EXPECT_EQ(slot->visit.id, *id);
         EXPECT_EQ(slot->visit.state, VisitState::kReadySelect);
         EXPECT_LE(pool.active(), pool.capacity());

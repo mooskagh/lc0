@@ -30,7 +30,6 @@
 #include <cstdint>
 #include <limits>
 #include <memory>
-#include <mutex>
 #include <optional>
 #include <utility>
 #include <vector>
@@ -45,7 +44,7 @@ bool SearchRun::AdmissionClosed() const {
 
 std::optional<VisitId> SearchRun::Allocate(const VisitOrigin& origin,
                                            size_t worker) {
-  // admission_mutex_ is held by the caller. Allocate never holds pool -> slot.
+  // Allocate never holds pool -> slot.
   if (AdmissionClosed() || visits_.active() >= ActiveLimit()) {
     return std::nullopt;
   }
@@ -70,7 +69,7 @@ bool SearchRun::Admit(const VisitOrigin& origin) {
   size_t owner;
   std::vector<Continuation> admitted;
   {
-    std::lock_guard lock(admission_mutex_);
+    MutexLock lock(admission_mutex_);
     owner = next_owner_++ % workers_.size();
     const auto id = Allocate(origin, owner);
     if (!id) return false;
@@ -83,7 +82,7 @@ bool SearchRun::Admit(const VisitOrigin& origin) {
 }
 
 void SearchRun::AdmitMore(Worker& worker) {
-  std::lock_guard lock(admission_mutex_);
+  MutexLock lock(admission_mutex_);
   worker.admission_waiting = false;
   // A modest per-worker share prevents one worker from monopolizing the pool.
   const size_t share =
@@ -105,7 +104,7 @@ void SearchRun::AdmitMore(Worker& worker) {
 void SearchRun::WakeAdmissionWaiters() {
   std::vector<size_t> wake;
   {
-    std::lock_guard lock(admission_mutex_);
+    MutexLock lock(admission_mutex_);
     if (AdmissionClosed()) return;
     const size_t limit = ActiveLimit();
     const size_t active = visits_.active();
@@ -125,18 +124,20 @@ void SearchRun::WakeAdmissionWaiters() {
   // re-registers on its next attempt.
   for (size_t index : wake) {
     auto& mailbox = workers_[index]->mailbox;
-    mailbox.Post([&] { mailbox.admission_ready = true; });
+    MutexLock lock(mailbox.mutex);
+    mailbox.admission_ready = true;
   }
 }
 
 void SearchRun::SendContinuations(size_t worker,
                                   std::vector<Continuation>& batch) {
   if (batch.empty()) return;
-  auto& mailbox = workers_[worker]->mailbox;
-  mailbox.Post([&] {
+  {
+    auto& mailbox = workers_[worker]->mailbox;
+    MutexLock lock(mailbox.mutex);
     mailbox.continuations.insert(mailbox.continuations.end(), batch.begin(),
                                  batch.end());
-  });
+  }
   batch.clear();
   metrics_.mailbox_notifications.fetch_add(1);
 }
@@ -150,9 +151,10 @@ void SearchRun::Deliver(Worker& worker, const Continuation& continuation) {
 }
 
 void SearchRun::Resume(Worker& worker, const Continuation& event) {
-  std::unique_lock<std::mutex> lock;
-  VisitPool::Slot* slot = visits_.LockLive(event.id, lock);
+  VisitPool::Slot* slot = visits_.Lookup(event.id);
   if (!slot) return;
+  MutexLock lock(slot->mutex);
+  if (!visits_.IsLiveLocked(*slot, event.id)) return;
   Visit& visit = slot->visit;
   assert(visit.worker == worker.index);
   if (event.kind == Continuation::Kind::kAdmit) {
@@ -220,13 +222,17 @@ void SearchRun::VisitWorker(Worker& worker) {
     // Keep going locally without a wake or controller handoff. Suspended
     // visits and exhausted credits wait for whole completions.
     if (HasLocalWork(worker)) continue;
-    std::unique_lock lock(worker.mailbox.mutex);
-    worker.mailbox.cv.wait(lock, [&] {
-      return shutdown_.load() || worker.mailbox.admission_ready ||
-             !worker.mailbox.continuations.empty() ||
-             !worker.mailbox.completions.empty() ||
+    // Senders evaluate this on unlock; `cancelled` is written only by this
+    // worker, never while it waits here.
+    auto& mailbox = worker.mailbox;
+    MutexLock lock(mailbox.mutex);
+    const auto ready = [&] {
+      mailbox.mutex.AssertReaderHeld();
+      return shutdown_.load() || mailbox.admission_ready ||
+             !mailbox.continuations.empty() || !mailbox.completions.empty() ||
              (!worker.cancelled && Stopping());
-    });
+    };
+    mailbox.mutex.Await(absl::Condition(&ready));
   }
 }
 
@@ -235,7 +241,7 @@ void SearchRun::ProcessMailbox(Worker& worker) {
   std::vector<std::unique_ptr<Job>> completions;
   bool admission_ready;
   {
-    std::lock_guard lock(worker.mailbox.mutex);
+    MutexLock lock(worker.mailbox.mutex);
     continuations.swap(worker.mailbox.continuations);
     completions.swap(worker.mailbox.completions);
     admission_ready = std::exchange(worker.mailbox.admission_ready, false);
@@ -292,9 +298,10 @@ bool SearchRun::HasLocalWork(const Worker& worker) const {
 }
 
 void SearchRun::AdvanceVisit(Worker& worker, VisitId id) {
-  std::unique_lock<std::mutex> lock;
-  VisitPool::Slot* slot = visits_.LockLive(id, lock);
+  VisitPool::Slot* slot = visits_.Lookup(id);
   if (!slot) return;
+  MutexLock lock(slot->mutex);
+  if (!visits_.IsLiveLocked(*slot, id)) return;
   Visit& visit = slot->visit;
   assert(visit.worker == worker.index);
   if (visit.state == VisitState::kReadyBackup) {

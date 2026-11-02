@@ -30,9 +30,9 @@
 #include <absl/container/flat_hash_map.h>
 
 #include <array>
-#include <mutex>
 
 #include "search/lc5/store/node_store.h"
+#include "search/lc5/sync.h"
 
 namespace lczero::lc5 {
 
@@ -49,8 +49,9 @@ class MemoryNodeStore final : public NodeStore {
  private:
   static constexpr size_t kShardCount = 64;
   struct Shard {
-    mutable std::mutex mutex;
-    absl::flat_hash_map<NodeKey, std::vector<uint8_t>> records;
+    mutable absl::Mutex mutex;
+    absl::flat_hash_map<NodeKey, std::vector<uint8_t>> records
+        ABSL_GUARDED_BY(mutex);
   };
   static size_t ShardIndex(NodeKey key) { return key.hash >> 58; }
   std::array<Shard, kShardCount> shards_;

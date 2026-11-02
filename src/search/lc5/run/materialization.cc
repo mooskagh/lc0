@@ -31,7 +31,6 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
-#include <mutex>
 #include <utility>
 #include <vector>
 
@@ -100,7 +99,7 @@ bool SearchRun::SuspendForMaterialization(Worker& worker,
   MaterializationTicketId ticket_id;
   {
     // Lock order: slot -> tickets -> one graph shard. No mailbox transfer here.
-    std::lock_guard lock(tickets_mutex_);
+    MutexLock lock(tickets_mutex_);
     const auto existing = ticket_by_key_.find(visit.current_key);
     owner = existing == ticket_by_key_.end();
     ticket_id = owner ? next_ticket_++ : existing->second;
@@ -164,7 +163,7 @@ void SearchRun::CompleteMaterialization(Worker& worker,
   Ticket ticket;
   InstallResult installed;
   {
-    std::lock_guard lock(tickets_mutex_);
+    MutexLock lock(tickets_mutex_);
     const auto it = tickets_.find(ticket_id);
     if (it == tickets_.end()) return;
     assert(it->second.owner.worker == worker.index);
@@ -202,7 +201,7 @@ bool SearchRun::CompleteRestore(Worker& worker,
   Ticket ticket;
   InstallResult restored;
   {
-    std::lock_guard lock(tickets_mutex_);
+    MutexLock lock(tickets_mutex_);
     const auto it = tickets_.find(ticket_id);
     if (it == tickets_.end()) return true;
     assert(it->second.owner.worker == worker.index);
@@ -232,7 +231,7 @@ void SearchRun::CancelMaterialization(Worker& worker,
   // owner and waiters are still alive and must be woken to cancel.
   Ticket ticket;
   {
-    std::lock_guard lock(tickets_mutex_);
+    MutexLock lock(tickets_mutex_);
     const auto it = tickets_.find(ticket_id);
     if (it == tickets_.end()) return;
     engine_->CancelMaterialization(it->second.key, ticket_id);
@@ -266,7 +265,8 @@ bool SearchRun::HasJobCredit(const Worker& worker) const {
 void SearchRun::SetProducing(Worker& worker, bool producing) {
   // Only true -> false enables the collectors' starvation predicate, so only
   // that edge needs the queue-mutex handshake.
-  if (worker.producing.exchange(producing) && !producing) eval_jobs_.WakeAll();
+  if (worker.producing.exchange(producing) && !producing)
+    eval_jobs_.NotifyPredicateChanged();
 }
 
 void SearchRun::SubmitJobs(Worker& worker) {
@@ -318,8 +318,11 @@ std::unique_ptr<SearchRun::Job> SearchRun::TakeJob(Worker& worker) const {
 }
 
 void SearchRun::ReturnJob(std::unique_ptr<Job> job) {
-  auto& mailbox = workers_[job->worker]->mailbox;
-  mailbox.Post([&] { mailbox.completions.push_back(std::move(job)); });
+  {
+    auto& mailbox = workers_[job->worker]->mailbox;
+    MutexLock lock(mailbox.mutex);
+    mailbox.completions.push_back(std::move(job));
+  }
   metrics_.mailbox_notifications.fetch_add(1);
 }
 
@@ -468,7 +471,7 @@ SearchRun::Batch SearchRun::CollectBatch(std::unique_ptr<Job> job,
       // that need those cache results. The oldest job's deadline is absolute;
       // zero disables it, but dependency starvation still flushes.
       if (used == 0 || Stopping()) break;
-      eval_jobs_.WakeAll();
+      eval_jobs_.NotifyPredicateChanged();
       if (!eval_jobs_.PopUntil(&job, deadline, [&] {
             return Stopping() || EvaluationStarved();
           })) {
@@ -516,7 +519,7 @@ void SearchRun::RunBatch(Batch batch) {
   if (used > 0) {
     // The final gate shares stop's linearization point. A serial evaluator
     // cannot authorize again until this computation has returned.
-    std::lock_guard lock(admission_mutex_);
+    MutexLock lock(admission_mutex_);
     authorized = !Stopping();
   }
   if (authorized) {

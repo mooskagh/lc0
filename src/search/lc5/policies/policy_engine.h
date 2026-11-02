@@ -30,7 +30,6 @@
 #include <algorithm>
 #include <cassert>
 #include <cstddef>
-#include <mutex>
 #include <optional>
 #include <span>
 #include <string_view>
@@ -40,6 +39,7 @@
 
 #include "search/lc5/graph/graph.h"
 #include "search/lc5/graph/node_record.h"
+#include "search/lc5/sync.h"
 #include "search/lc5/visit_engine.h"
 
 namespace lczero::lc5 {
@@ -95,7 +95,7 @@ class PolicyEngine final : public VisitEngine {
         std::min(1.0, static_cast<double>(max) / static_cast<double>(size));
     std::vector<std::pair<NodeKey, NodeState<P>>> nodes;
     {
-      std::lock_guard lock(evict_mutex_);
+      MutexLock lock(evict_mutex_);
       nodes = graph_.EvictCandidates(&evict_cursor_, max, fraction, keep);
     }
     std::vector<EvictCandidate> result;
@@ -150,8 +150,8 @@ class PolicyEngine final : public VisitEngine {
   GameGraph<P> graph_;
   typename P::Params params_;
   // Where the next eviction scan starts, so evictions spread over all shards.
-  std::mutex evict_mutex_;
-  size_t evict_cursor_ = 0;
+  absl::Mutex evict_mutex_;
+  size_t evict_cursor_ ABSL_GUARDED_BY(evict_mutex_) = 0;
 };
 
 template <typename P>

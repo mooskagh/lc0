@@ -35,13 +35,13 @@
 #include <cassert>
 #include <cstdint>
 #include <limits>
-#include <mutex>
 #include <optional>
 #include <utility>
 #include <vector>
 
 #include "search/lc5/graph/key.h"
 #include "search/lc5/graph/node.h"
+#include "search/lc5/sync.h"
 
 namespace lczero::lc5 {
 
@@ -176,8 +176,8 @@ class GameGraph {
 
  private:
   struct Shard {
-    mutable std::mutex mutex;
-    absl::flat_hash_map<NodeKey, Node> nodes;
+    mutable absl::Mutex mutex;
+    absl::flat_hash_map<NodeKey, Node> nodes ABSL_GUARDED_BY(mutex);
   };
 
   static size_t ShardIndex(NodeKey key) {
@@ -185,8 +185,9 @@ class GameGraph {
   }
   Shard& ShardFor(NodeKey key) { return shards_[ShardIndex(key)]; }
   const Shard& ShardFor(NodeKey key) const { return shards_[ShardIndex(key)]; }
-  // Inserts a fresh materializing node; the shard must be locked.
-  Node& InsertLocked(Shard& shard, NodeKey key, MaterializationTicketId ticket);
+  // Inserts a fresh materializing node.
+  Node& InsertLocked(Shard& shard, NodeKey key, MaterializationTicketId ticket)
+      ABSL_EXCLUSIVE_LOCKS_REQUIRED(shard.mutex);
   // Reserves the edge at `index` (in_flight += 1), which is tried or the first
   // untried one, and returns its move; the shard must be locked.
   static Move ReserveLocked(Node& node, size_t index);
@@ -251,7 +252,7 @@ template <typename P>
 FindOrCreateResult GameGraph<P>::FindOrCreateMaterializing(
     NodeKey key, MaterializationTicketId ticket) {
   auto& shard = ShardFor(key);
-  std::lock_guard lock(shard.mutex);
+  MutexLock lock(shard.mutex);
   if (const Node* node = FindNode(shard.nodes, key)) {
     return {node->generation, false, node->lifecycle, node->ticket};
   }
@@ -263,7 +264,7 @@ template <typename P>
 bool GameGraph<P>::CancelMaterialization(NodeKey key,
                                          MaterializationTicketId ticket) {
   auto& shard = ShardFor(key);
-  std::lock_guard lock(shard.mutex);
+  MutexLock lock(shard.mutex);
   const Node* node = FindNode(shard.nodes, key);
   if (!node || node->lifecycle != NodeLifecycle::kMaterializing ||
       node->ticket != ticket) {
@@ -282,7 +283,7 @@ InstallResult GameGraph<P>::InstallPayload(NodeKey key,
   assert(payload.terminal == TerminalKind::kNonTerminal ||
          payload.moves.empty());
   auto& shard = ShardFor(key);
-  std::lock_guard lock(shard.mutex);
+  MutexLock lock(shard.mutex);
   Node* existing = FindNode(shard.nodes, key);
   Node& node = existing ? *existing : InsertLocked(shard, key, ticket);
   // Late or duplicate completions must not reset expanded edges, including
@@ -313,7 +314,7 @@ InstallResult GameGraph<P>::RestoreNode(NodeKey key,
                                         MaterializationTicketId ticket,
                                         Node restored) {
   auto& shard = ShardFor(key);
-  std::lock_guard lock(shard.mutex);
+  MutexLock lock(shard.mutex);
   Node* existing = FindNode(shard.nodes, key);
   Node& node = existing ? *existing : InsertLocked(shard, key, ticket);
   if (node.lifecycle == NodeLifecycle::kExpanded || node.ticket != ticket) {
@@ -335,7 +336,7 @@ SelectResult GameGraph<P>::SelectAndReserve(NodeKey key,
                                             const typename P::Params& params,
                                             bool stop_at_proven) {
   auto& shard = ShardFor(key);
-  std::lock_guard lock(shard.mutex);
+  MutexLock lock(shard.mutex);
   Node* node = FindNode(shard.nodes, key);
   if (!node) return {.status = SelectStatus::kMissing};
   if (node->lifecycle == NodeLifecycle::kMaterializing) {
@@ -364,7 +365,7 @@ SelectResult GameGraph<P>::ReselectAndReserve(
     NodeKey key, uint64_t expected_generation, Move move,
     const Message& from_child, const typename P::Params& params) {
   auto& shard = ShardFor(key);
-  std::lock_guard lock(shard.mutex);
+  MutexLock lock(shard.mutex);
   Node* node = FindNode(shard.nodes, key);
   if (CheckGeneration(node, expected_generation) != UpdateResult::kApplied) {
     return {.status = SelectStatus::kMissing};
@@ -400,7 +401,7 @@ BackupResult<P> GameGraph<P>::BackupNode(NodeKey key,
                                          std::optional<Move> move,
                                          bool send_current) {
   auto& shard = ShardFor(key);
-  std::lock_guard lock(shard.mutex);
+  MutexLock lock(shard.mutex);
   Node* node = FindNode(shard.nodes, key);
   if (const auto check = CheckGeneration(node, expected_generation);
       check != UpdateResult::kApplied) {
@@ -424,7 +425,7 @@ template <typename P>
 UpdateResult GameGraph<P>::CancelEdge(NodeKey key, uint64_t expected_generation,
                                       Move move) {
   auto& shard = ShardFor(key);
-  std::lock_guard lock(shard.mutex);
+  MutexLock lock(shard.mutex);
   Node* node = FindNode(shard.nodes, key);
   if (const auto check = CheckGeneration(node, expected_generation);
       check != UpdateResult::kApplied) {
@@ -436,7 +437,7 @@ UpdateResult GameGraph<P>::CancelEdge(NodeKey key, uint64_t expected_generation,
 template <typename P>
 std::optional<NodeState<P>> GameGraph<P>::SnapshotNode(NodeKey key) const {
   const auto& shard = ShardFor(key);
-  std::lock_guard lock(shard.mutex);
+  MutexLock lock(shard.mutex);
   const Node* node = FindNode(shard.nodes, key);
   if (!node) return std::nullopt;
   return *node;
@@ -452,7 +453,7 @@ std::vector<std::pair<NodeKey, NodeState<P>>> GameGraph<P>::EvictCandidates(
        ++scanned) {
     const Shard& shard = shards_[*cursor];
     *cursor = (*cursor + 1) % kShardCount;
-    std::lock_guard lock(shard.mutex);
+    MutexLock lock(shard.mutex);
     evictable.clear();
     for (const auto& entry : shard.nodes) {
       if (entry.first == keep || !Evictable(entry.second)) continue;
@@ -476,7 +477,7 @@ template <typename P>
 bool GameGraph<P>::EraseIfUnchanged(NodeKey key, uint64_t generation,
                                     uint32_t version) {
   auto& shard = ShardFor(key);
-  std::lock_guard lock(shard.mutex);
+  MutexLock lock(shard.mutex);
   const Node* node = FindNode(shard.nodes, key);
   if (!node || node->generation != generation || node->version != version ||
       !Evictable(*node)) {
@@ -491,7 +492,7 @@ template <typename P>
 template <typename F>
 void GameGraph<P>::ForEachExpanded(F&& fn) const {
   for (const auto& shard : shards_) {
-    std::lock_guard lock(shard.mutex);
+    MutexLock lock(shard.mutex);
     for (const auto& [key, node] : shard.nodes) {
       if (node.lifecycle == NodeLifecycle::kExpanded) fn(key, node);
     }
@@ -501,7 +502,7 @@ void GameGraph<P>::ForEachExpanded(F&& fn) const {
 template <typename P>
 bool GameGraph<P>::Erase(NodeKey key) {
   auto& shard = ShardFor(key);
-  std::lock_guard lock(shard.mutex);
+  MutexLock lock(shard.mutex);
   if (shard.nodes.erase(key) == 0) return false;
   size_.fetch_sub(1, std::memory_order_relaxed);
   return true;
@@ -510,7 +511,7 @@ bool GameGraph<P>::Erase(NodeKey key) {
 template <typename P>
 void GameGraph<P>::Clear() {
   for (auto& shard : shards_) {
-    std::lock_guard lock(shard.mutex);
+    MutexLock lock(shard.mutex);
     // Subtract per shard to preserve concurrent insertions into shards that
     // have already been cleared.
     size_.fetch_sub(shard.nodes.size(), std::memory_order_relaxed);
@@ -523,7 +524,7 @@ std::vector<std::pair<NodeKey, NodeState<P>>>
 GameGraph<P>::SnapshotAllForTesting() const {
   std::vector<std::pair<NodeKey, Node>> result;
   for (const auto& shard : shards_) {
-    std::lock_guard lock(shard.mutex);
+    MutexLock lock(shard.mutex);
     result.insert(result.end(), shard.nodes.begin(), shard.nodes.end());
   }
   return result;

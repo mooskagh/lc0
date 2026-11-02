@@ -49,7 +49,7 @@ namespace lczero::lc5 {
 class SearchRunTestPeer {
  public:
   // Before Start only: make the entire backlog ready before collectors run.
-  static void PrepareAdmissions(SearchRun& run) {
+  static void PrepareAdmissions(SearchRun& run) ABSL_NO_THREAD_SAFETY_ANALYSIS {
     for (auto& ptr : run.workers_) {
       auto& worker = *ptr;
       worker.outgoing.resize(run.workers_.size());
@@ -66,7 +66,8 @@ class SearchRunTestPeer {
     }
   }
   // Inspect owner-local state only after Wait's full join barrier.
-  static void ExpectDrained(const SearchRun& run) {
+  static void ExpectDrained(const SearchRun& run)
+      ABSL_NO_THREAD_SAFETY_ANALYSIS {
     EXPECT_EQ(run.visits_.active(), 0u);
     EXPECT_TRUE(run.tickets_.empty());
     EXPECT_TRUE(run.ticket_by_key_.empty());
