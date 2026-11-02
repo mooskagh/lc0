@@ -46,9 +46,9 @@
 #include "neural/backend.h"
 #include "search/lc5/run/metrics.h"
 #include "search/lc5/run/work_queue.h"
+#include "search/lc5/run/visit_pool.h"
 #include "search/lc5/store/node_store.h"
 #include "search/lc5/time_manager.h"
-#include "search/lc5/visit.h"
 #include "search/lc5/visit_engine.h"
 
 namespace lczero::lc5 {

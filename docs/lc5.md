@@ -229,10 +229,11 @@ has the engine, configuration, and the seam between `run/` and `policies/`
 |---|---|
 | `engine.cc` | UCI glue: keeps the visit engine (and its graph), starts a `SearchRun` per `go`, carries saved time. |
 | `visit_engine.h` | `VisitEngine` interface: descent, backup, cancel, report. |
-| `visit.h` | Visit state and the fixed pool of visit slots. |
+| `visit.h` | Visit state passed to the visit engine. |
 | `settings.cc` | Machinery options and their automatic values. |
 | `time_manager.cc` | Per-move deadline, smart pruning's visit estimate, saved time. |
 | `run/search_run.h/.cc` | `SearchRun`: setup, controller, early stop, `info`/`bestmove`. |
+| `run/visit_pool.h/.cc` | `VisitPool`: fixed visit slots addressed by epoch-tagged `VisitId`s. |
 | `run/visits.cc` | Admission, worker loop, driving each visit through the engine. |
 | `run/materialization.cc` | Creating nodes, terminal detection, jobs, evaluator batching. |
 | `run/work_queue.h` | Closable MPMC queue for requests and jobs. |
