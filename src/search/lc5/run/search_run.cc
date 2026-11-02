@@ -27,6 +27,8 @@
 
 #include "search/lc5/run/search_run.h"
 
+#include <absl/time/time.h>
+
 #include <algorithm>
 #include <chrono>
 #include <utility>
@@ -103,7 +105,7 @@ void SearchRun::RequestStop(StopMode requested) {
   {
     // Admission and stop have one linearization point. Abort may override a
     // bestmove response until its output is committed.
-    MutexLock lock(admission_mutex_);
+    absl::MutexLock lock(admission_mutex_);
     if (requested == StopMode::kAbort ? !output_committed_.load()
                                       : !Stopping()) {
       stop_mode_.store(requested);
@@ -121,7 +123,7 @@ void SearchRun::Wait() {
 }
 
 void SearchRun::NotifyController() {
-  MutexLock lock(controller_mutex_);
+  absl::MutexLock lock(controller_mutex_);
   ++controller_generation_;
 }
 
@@ -137,7 +139,7 @@ void SearchRun::Controller() {
     {
       // Snapshot before inspecting predicates: any enabling event during
       // inspection changes the generation and prevents sleeping.
-      MutexLock lock(controller_mutex_);
+      absl::MutexLock lock(controller_mutex_);
       generation = controller_generation_;
     }
     const auto now = steady_clock::now();
@@ -185,12 +187,14 @@ void SearchRun::Controller() {
     if (!Stopping()) {
       wake_at = std::min(next_info, next_check.value_or(wake_at));
     }
-    MutexLock lock(controller_mutex_);
+    absl::MutexLock lock(controller_mutex_);
     const auto notified = [&] {
       controller_mutex_.AssertReaderHeld();
       return controller_generation_ != generation;
     };
-    AwaitUntil(controller_mutex_, absl::Condition(&notified), wake_at);
+    controller_mutex_.AwaitWithTimeout(
+        absl::Condition(&notified),
+        absl::FromChrono(wake_at - steady_clock::now()));
   }
   Shutdown();
 }
@@ -207,7 +211,7 @@ void SearchRun::Respond() {
                       pv.size() > 1 ? pv[1] : Move{});
     bool respond;
     {
-      MutexLock lock(admission_mutex_);
+      absl::MutexLock lock(admission_mutex_);
       respond = stop_mode_.load() == StopMode::kRespondBestmove;
       if (respond) output_committed_.store(true);
     }
@@ -224,14 +228,14 @@ void SearchRun::Respond() {
 bool SearchRun::FullyDrained() {
   if (visits_.active() != 0) return false;
   {
-    MutexLock lock(tickets_mutex_);
+    absl::MutexLock lock(tickets_mutex_);
     if (!tickets_.empty()) return false;
   }
   if (jobs_in_flight_.load() != 0) return false;
   // Workers may hold unpublished local requests. Require their
   // explicit idle acknowledgement, not merely empty executor queues.
   for (auto& worker : workers_) {
-    MutexLock lock(worker->mailbox.mutex);
+    absl::MutexLock lock(worker->mailbox.mutex);
     if (!worker->mailbox.continuations.empty() ||
         !worker->mailbox.completions.empty() || !worker->drained.load()) {
       return false;

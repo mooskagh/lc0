@@ -27,6 +27,8 @@
 
 #pragma once
 
+#include <absl/synchronization/mutex.h>
+
 #include <algorithm>
 #include <atomic>
 #include <compare>
@@ -38,7 +40,6 @@
 
 #include "chess/position.h"
 #include "search/lc5/graph/graph.h"
-#include "search/lc5/sync.h"
 
 namespace lczero::lc5 {
 
@@ -115,7 +116,7 @@ class VisitPool {
                                   size_t worker = 0) {
     uint32_t i;
     {
-      MutexLock pool_lock(pool_mutex_);
+      absl::MutexLock pool_lock(pool_mutex_);
       if (free_indices_.empty()) return std::nullopt;
       std::pop_heap(free_indices_.begin(), free_indices_.end(),
                     std::greater<uint32_t>{});
@@ -127,7 +128,7 @@ class VisitPool {
     // Never hold pool_mutex_ while waiting for a slot: release locks
     // slot -> pool.
     Slot& slot = *slots_[i];
-    MutexLock slot_lock(slot.mutex);
+    absl::MutexLock slot_lock(slot.mutex);
     uint32_t epoch = slot.epoch.load(std::memory_order_relaxed) + 1;
     if (epoch == 0) ++epoch;
     slot.epoch.store(epoch, std::memory_order_release);
@@ -165,7 +166,7 @@ class VisitPool {
       return false;
     slot.visit = Visit{};
     // Publish only after resetting the visit.
-    MutexLock pool_lock(pool_mutex_);
+    absl::MutexLock pool_lock(pool_mutex_);
     free_indices_.push_back(id.slot());
     std::push_heap(free_indices_.begin(), free_indices_.end(),
                    std::greater<uint32_t>{});
@@ -177,7 +178,7 @@ class VisitPool {
   std::vector<VisitId> ActiveIds() const {
     std::vector<VisitId> ids;
     for (const auto& ptr : slots_) {
-      MutexLock lock(ptr->mutex);
+      absl::MutexLock lock(ptr->mutex);
       if (ptr->visit.state != VisitState::kFree) ids.push_back(ptr->visit.id);
     }
     return ids;

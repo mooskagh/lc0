@@ -208,8 +208,13 @@ files += [
 
 includes += include_directories('src')
 
+# 20250814 added absl::Mutex::lock() and reference-taking MutexLock; newer
+# releases deprecate the older spellings. All abseil deps share this floor so
+# they come from the same installation.
+absl_min_version = '>=20250814'
 absl_flat_hash_map_dep = dependency(
   'absl_flat_hash_map', 'absl', modules:['absl::flat_hash_map'],
+  version: absl_min_version,
   include_type: 'system',
   fallback: ['abseil-cpp', 'absl_container_dep'],
   default_options : ['warning_level=0', 'cpp_std=c++20'])
@@ -222,6 +227,7 @@ deps += dependency('threads')
 if get_option('lc5')
   absl_synchronization_dep = dependency(
     'absl_synchronization', 'absl', modules:['absl::synchronization'],
+    version: absl_min_version,
     include_type: 'system',
     fallback: ['abseil-cpp', 'absl_synchronization_dep'],
     default_options : ['warning_level=0', 'cpp_std=c++20'])

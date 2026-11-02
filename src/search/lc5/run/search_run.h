@@ -28,6 +28,7 @@
 #pragma once
 
 #include <absl/container/flat_hash_map.h>
+#include <absl/synchronization/mutex.h>
 
 #include <atomic>
 #include <chrono>
@@ -46,7 +47,6 @@
 #include "search/lc5/run/metrics.h"
 #include "search/lc5/run/work_queue.h"
 #include "search/lc5/store/node_store.h"
-#include "search/lc5/sync.h"
 #include "search/lc5/time_manager.h"
 #include "search/lc5/visit.h"
 #include "search/lc5/visit_engine.h"
@@ -156,7 +156,7 @@ class SearchRun {
   struct Mailbox {
     // Makes the owner re-evaluate its wait condition after external state
     // (stop, shutdown) changed.
-    void Wake() { MutexLock lock(mutex); }
+    void Wake() { absl::MutexLock lock(mutex); }
 
     absl::Mutex mutex;
     std::vector<Continuation> continuations ABSL_GUARDED_BY(mutex);

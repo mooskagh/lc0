@@ -27,6 +27,8 @@
 
 #pragma once
 
+#include <absl/synchronization/mutex.h>
+
 #include <algorithm>
 #include <cassert>
 #include <cstddef>
@@ -39,7 +41,6 @@
 
 #include "search/lc5/graph/graph.h"
 #include "search/lc5/graph/node_record.h"
-#include "search/lc5/sync.h"
 #include "search/lc5/visit_engine.h"
 
 namespace lczero::lc5 {
@@ -95,7 +96,7 @@ class PolicyEngine final : public VisitEngine {
         std::min(1.0, static_cast<double>(max) / static_cast<double>(size));
     std::vector<std::pair<NodeKey, NodeState<P>>> nodes;
     {
-      MutexLock lock(evict_mutex_);
+      absl::MutexLock lock(evict_mutex_);
       nodes = graph_.EvictCandidates(&evict_cursor_, max, fraction, keep);
     }
     std::vector<EvictCandidate> result;

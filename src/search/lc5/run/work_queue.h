@@ -27,14 +27,15 @@
 
 #pragma once
 
+#include <absl/synchronization/mutex.h>
+#include <absl/time/time.h>
+
 #include <atomic>
 #include <cassert>
 #include <chrono>
 #include <cstddef>
 #include <deque>
 #include <utility>
-
-#include "search/lc5/sync.h"
 
 namespace lczero::lc5 {
 
@@ -46,19 +47,19 @@ class WorkQueue {
  public:
   // Must not be called after Close().
   void Push(T value) {
-    MutexLock lock(mutex_);
+    absl::MutexLock lock(mutex_);
     assert(!closed_);
     queue_.push_back(std::move(value));
     size_.store(queue_.size(), std::memory_order_relaxed);
   }
   // Blocks until an item is available; false once closed and empty.
   bool Pop(T* value) {
-    MutexLock lock(mutex_);
+    absl::MutexLock lock(mutex_);
     mutex_.Await(absl::Condition(this, &WorkQueue::ReadyLocked));
     return TakeFrontLocked(value);
   }
   bool TryPop(T* value) {
-    MutexLock lock(mutex_);
+    absl::MutexLock lock(mutex_);
     return TakeFrontLocked(value);
   }
   // Like Pop, but also gives up at `deadline` or once `give_up()` holds.
@@ -67,19 +68,21 @@ class WorkQueue {
   template <typename Predicate>
   bool PopUntil(T* value, std::chrono::steady_clock::time_point deadline,
                 Predicate give_up) {
-    MutexLock lock(mutex_);
+    absl::MutexLock lock(mutex_);
     const auto ready = [&] {
       mutex_.AssertReaderHeld();
       return ReadyLocked() || give_up();
     };
-    AwaitUntil(mutex_, absl::Condition(&ready), deadline);
+    mutex_.AwaitWithTimeout(
+        absl::Condition(&ready),
+        absl::FromChrono(deadline - std::chrono::steady_clock::now()));
     return TakeFrontLocked(value);
   }
   // Makes PopUntil() waiters re-check `give_up` after external state changed:
   // the mutex re-evaluates waiters' conditions when it is unlocked.
-  void NotifyPredicateChanged() { MutexLock lock(mutex_); }
+  void NotifyPredicateChanged() { absl::MutexLock lock(mutex_); }
   void Close() {
-    MutexLock lock(mutex_);
+    absl::MutexLock lock(mutex_);
     closed_ = true;
   }
   size_t Size() const { return size_.load(std::memory_order_relaxed); }

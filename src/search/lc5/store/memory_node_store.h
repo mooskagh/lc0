@@ -28,11 +28,11 @@
 #pragma once
 
 #include <absl/container/flat_hash_map.h>
+#include <absl/synchronization/mutex.h>
 
 #include <array>
 
 #include "search/lc5/store/node_store.h"
-#include "search/lc5/sync.h"
 
 namespace lczero::lc5 {
 
