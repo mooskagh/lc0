@@ -39,7 +39,8 @@
 
 namespace lczero::lc5 {
 
-Lc5Engine::~Lc5Engine() { AbortAndWait(); }
+// ~SearchRun aborts and waits, and run_ is destroyed before what it uses.
+Lc5Engine::~Lc5Engine() = default;
 
 void Lc5Engine::AbortAndWait() {
   if (!run_) return;
@@ -61,8 +62,8 @@ void Lc5Engine::SetBackend(Backend* backend) {
 
 void Lc5Engine::SetPosition(const GameState& state) {
   AbortAndWait();
-  // The graph survives position changes within the same game.
-  if (game_start_ != state.startpos) ClearGraph();
+  // The graph and saved time survive position changes within the same game.
+  if (game_start_ != state.startpos) NewGame();
   game_start_ = state.startpos;
   root_history_.emplace();
   root_history_->Reset(state.startpos);
@@ -75,7 +76,6 @@ void Lc5Engine::NewGame() {
   ClearGraph();
   game_start_.reset();
   root_history_.reset();
-  clock_start_.reset();
   saved_time_ms_ = 0;
 }
 
@@ -89,6 +89,7 @@ void Lc5Engine::StartSearch(const GoParams& params) {
   run_.reset();
   if (!backend_) throw Exception("Lc5 requires a backend");
   if (!root_history_) throw Exception("Lc5 position was not set");
+  if (params.depth || params.mate) throw Exception("Lc5 has no go depth/mate");
 
   // A different policy keeps different statistics, so it starts a new graph.
   const std::string policy = PolicyName(*options_);
