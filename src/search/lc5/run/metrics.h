@@ -33,13 +33,24 @@
 
 namespace lczero::lc5 {
 
+// Counters for one search run. A "high water" metric is the largest value the
+// quantity ever reached during the run (see RaiseHighWater), not a current
+// value or a sum.
 struct Metrics {
+  // Visits started, i.e. given a slot in the visit pool. Every admitted visit
+  // ends up either completed (backed up) or cancelled.
   std::atomic<uint64_t> visits_admitted{0};
   std::atomic<uint64_t> visits_completed{0};
   std::atomic<uint64_t> visits_cancelled{0};
+  // The longest a worker's queue of runnable visits got after admission.
   std::atomic<uint64_t> visits_ready_high_water{0};
+  // Visits parked waiting for a node to be materialized (evaluated or loaded
+  // from the store), either as the ticket owner or as a waiter on it.
   std::atomic<uint64_t> visits_suspended{0};
+  // Suspended visits that continued selecting below the now-expanded node.
   std::atomic<uint64_t> visits_resumed{0};
+  // Visits that dropped their path and started selecting again from their
+  // origin, without being re-admitted.
   std::atomic<uint64_t> visits_restarted{0};
   // Waiters that switched edges at their node's parent (WaiterResume=reselect).
   std::atomic<uint64_t> visits_reselected{0};
@@ -50,10 +61,16 @@ struct Metrics {
   std::atomic<uint64_t> two_fold_visits{0};
   std::atomic<uint64_t> selection_node_steps{0};
   std::atomic<uint64_t> backup_node_steps{0};
+  // Backup steps skipped because the node (or its edge) was gone or replaced
+  // by a newer generation since the visit selected through it.
   std::atomic<uint64_t> stale_generation_node_updates{0};
   std::atomic<uint64_t> stale_generation_edge_updates{0};
+  // Releases of an edge reservation that had none. Should stay 0; a non-zero
+  // value means a bug in in-flight bookkeeping.
   std::atomic<uint64_t> invariant_underflow_prevented{0};
   std::atomic<uint64_t> tickets_created{0};
+  // Visits that hit a node already being materialized by another visit and
+  // waited on its ticket instead of creating one.
   std::atomic<uint64_t> ticket_waiters{0};
   std::atomic<uint64_t> maximum_waiters_per_ticket{0};
   std::atomic<uint64_t> node_store_load_batches{0};
@@ -74,14 +91,24 @@ struct Metrics {
   std::atomic<uint64_t> cache_hits{0};
   std::atomic<uint64_t> nn_evaluations{0};
   std::atomic<uint64_t> evaluation_batches{0};
+  // NN batches run below the minibatch size, because no more requests were
+  // coming (starvation) or because the wait for them timed out.
   std::atomic<uint64_t> partial_starvation_flushes{0};
   std::atomic<uint64_t> partial_timeout_flushes{0};
+  // Longest path of a completed visit (UCI depth) and of any selection (UCI
+  // seldepth).
   std::atomic<uint64_t> max_depth{0};
   std::atomic<uint64_t> max_selected_depth{0};
+  // Eval jobs queued for the evaluator, not yet taken.
   std::atomic<uint64_t> ready_eval_high_water{0};
   std::atomic<uint64_t> active_visits_high_water{0};
+  // Posts to a worker's mailbox from another thread (continuations or
+  // finished jobs).
   std::atomic<uint64_t> mailbox_notifications{0};
+  // Load and eval jobs in flight across all workers.
   std::atomic<uint64_t> io_jobs_high_water{0};
+  // Materialization results that were not installed because the node was no
+  // longer materializing under that ticket.
   std::atomic<uint64_t> publications_rejected{0};
 
   std::string Format(size_t graph_size, size_t active, size_t ready_eval) const;
