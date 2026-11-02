@@ -81,7 +81,7 @@ class SearchRun {
   void Wait();
   bool Finished() const { return finished_.load(std::memory_order_acquire); }
   const Metrics& metrics() const { return metrics_; }
-  // Time budget left unused because the search stopped early.
+  // Time to save for the next move (TimeManager::UnusedMs at stop).
   int64_t unused_time_ms() const { return unused_time_ms_.load(); }
 
   // Admits a visit from an arbitrary origin, sharing the node budget with
@@ -217,8 +217,6 @@ class SearchRun {
 
   // Controller.
   void Controller();
-  bool BestMoveDecided(const RootStats& root,
-                       std::chrono::steady_clock::time_point now) const;
   void Respond();
   bool FullyDrained();
   void Shutdown();

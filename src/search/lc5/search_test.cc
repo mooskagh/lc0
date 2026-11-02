@@ -36,13 +36,13 @@
 #include <vector>
 
 #include "search/lc5/engine.h"
-#include "search/lc5/store/memory_node_store.h"
 #include "search/lc5/graph/node_record.h"
 #include "search/lc5/policies/policy_engine.h"
 #include "search/lc5/policies/puct.h"
 #include "search/lc5/policies/puct_dag.h"
 #include "search/lc5/policies/registry.h"
 #include "search/lc5/run/search_run.h"
+#include "search/lc5/store/memory_node_store.h"
 
 namespace lczero::lc5 {
 
@@ -979,7 +979,8 @@ TEST(Lc5SearchTest, BlockedBackendStopAndAbortDrainReservations) {
     child.history.Append(moves[0]);
     child.key = MakeNodeKey(child.history, 7);
     SearchRun run(&engine, &store, &backend, &responder, TestSettings(),
-                  TestTimeManagement(), root, GoParams{.nodes = 4},
+                  TestTimeManagement(), root,
+                  GoParams{.nodes = 4, .infinite = true},
                   std::chrono::steady_clock::now());
     for (int i = 0; i < 4; ++i) ASSERT_TRUE(run.Admit(root));
     run.Start();
@@ -1375,7 +1376,8 @@ TEST(Lc5SearchTest, BlockedStoreLoadsDrainAfterStopOrAbort) {
         store.recording.entries.emplace(child.key, EncodeNode(stored));
       }
       SearchRun run(&engine, &store, &backend, &responder, TestSettings(),
-                    TestTimeManagement(), root, GoParams{.nodes = 4},
+                    TestTimeManagement(), root,
+                    GoParams{.nodes = 4, .infinite = true},
                     std::chrono::steady_clock::now());
       for (int i = 0; i < 4; ++i) ASSERT_TRUE(run.Admit(root));
       run.Start();
@@ -1498,10 +1500,10 @@ TEST(Lc5SearchTest, AuthorizedEvaluationsBackUpToRootAfterStop) {
   // Uniform priors, so edge order is by move encoding.
   auto legal = root.history.Last().GetBoard().GenerateLegalMoves();
   std::ranges::sort(legal, {}, &Move::raw_data);
-  graph.InstallPayload(root.key, 1,
-                       {.moves = {legal.begin(), legal.end()},
-                        .priors = std::vector<float>(legal.size(),
-                                                     1.0f / legal.size())});
+  graph.InstallPayload(
+      root.key, 1,
+      {.moves = {legal.begin(), legal.end()},
+       .priors = std::vector<float>(legal.size(), 1.0f / legal.size())});
   SearchRun run(&engine, nullptr, &backend, &responder, TestSettings(4, 20),
                 TestTimeManagement(), root, GoParams{.nodes = 20},
                 std::chrono::steady_clock::now());

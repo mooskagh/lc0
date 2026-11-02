@@ -46,26 +46,31 @@ class TimeManager {
     // root move can still be overtaken; 0 disables early stopping.
     float smart_pruning_factor = 1.33f;
   };
-  struct Decision {
-    bool should_stop;
-    std::optional<std::chrono::steady_clock::time_point> next_check;
-  };
+  using Clock = std::chrono::steady_clock;
 
-  // `saved_ms` is time left unused by earlier early stops; it extends a
-  // clock-based budget.
+  // `saved_ms`: unused time from earlier moves, added to a clock budget.
   TimeManager(Config config, const GoParams& params, bool black_to_move,
-              std::chrono::steady_clock::time_point start_time,
-              int64_t saved_ms = 0);
-  Decision Evaluate(std::chrono::steady_clock::time_point now) const;
+              Clock::time_point start_time, int64_t saved_ms = 0);
 
-  const std::optional<std::chrono::steady_clock::time_point>& deadline() const {
-    return deadline_;
+  // When the search must stop; nullopt if only an external stop ends it.
+  const std::optional<Clock::time_point>& deadline() const { return deadline_; }
+  bool ShouldStop(Clock::time_point now) const {
+    return deadline_ && now >= *deadline_;
   }
-  // Early stopping applies only to budgets allocated from the clock.
-  float smart_pruning_factor() const { return smart_pruning_factor_; }
+  // Whether `visits` more visits likely fit before the deadline, at the rate of
+  // `visits_done` so far over the pruning factor. True if there's no estimate.
+  bool CanAffordVisits(uint64_t visits, uint64_t visits_done,
+                       Clock::time_point now) const;
+  // Time to save for the next move if the search ends at `stop_time`: the
+  // rest of a clock budget, or `saved_ms` untouched if there's none.
+  int64_t UnusedMs(Clock::time_point stop_time) const;
 
  private:
-  std::optional<std::chrono::steady_clock::time_point> deadline_;
+  const Clock::time_point start_time_;
+  const int64_t saved_ms_;
+  std::optional<Clock::time_point> deadline_;
+  // The budget was allocated from the clock (not movetime, ponder, infinite).
+  bool clock_budget_ = false;
   float smart_pruning_factor_ = 0.0f;
 };
 

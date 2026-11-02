@@ -48,26 +48,22 @@ void ExpectDeadline(const GoParams& params, bool black_to_move,
                     int64_t budget_ms, TimeManager::Config config = kConfig) {
   const TimeManager manager(config, params, black_to_move, kStart);
   const auto deadline = kStart + milliseconds(budget_ms);
-  const auto before = manager.Evaluate(deadline - nanoseconds(1));
-  EXPECT_FALSE(before.should_stop);
-  EXPECT_EQ(before.next_check, deadline);
+  EXPECT_EQ(manager.deadline(), deadline);
+  EXPECT_FALSE(manager.ShouldStop(deadline - nanoseconds(1)));
   for (const auto now : {deadline, deadline + nanoseconds(1),
                          deadline + std::chrono::hours(1)}) {
-    const auto decision = manager.Evaluate(now);
-    EXPECT_TRUE(decision.should_stop);
-    EXPECT_EQ(decision.next_check, std::nullopt);
+    EXPECT_TRUE(manager.ShouldStop(now));
   }
-  EXPECT_EQ(manager.Evaluate(kStart).should_stop, budget_ms <= 0);
+  EXPECT_EQ(manager.ShouldStop(kStart), budget_ms <= 0);
 }
 
 void ExpectNoDeadline(const GoParams& params, bool black_to_move) {
   const TimeManager manager(kConfig, params, black_to_move, kStart);
   for (const auto now :
        {kStart - nanoseconds(1), kStart, kStart + std::chrono::hours(24)}) {
-    const auto decision = manager.Evaluate(now);
-    EXPECT_FALSE(decision.should_stop);
-    EXPECT_EQ(decision.next_check, std::nullopt);
+    EXPECT_FALSE(manager.ShouldStop(now));
   }
+  EXPECT_EQ(manager.deadline(), std::nullopt);
 }
 
 TEST(Lc5TimeManagerTest, ComputesBudgetFromActiveClock) {
@@ -135,11 +131,10 @@ TEST(Lc5TimeManagerTest, IncrementMaintainsBudgetOverLongGame) {
   for (int move = 0; move < 200; ++move) {
     SCOPED_TRACE(move);
     const TimeManager manager(kConfig, params, false, kStart);
-    const auto decision = manager.Evaluate(kStart);
-    ASSERT_FALSE(decision.should_stop);
-    ASSERT_TRUE(decision.next_check.has_value());
+    ASSERT_FALSE(manager.ShouldStop(kStart));
+    ASSERT_TRUE(manager.deadline().has_value());
     const auto budget =
-        std::chrono::duration_cast<milliseconds>(*decision.next_check - kStart)
+        std::chrono::duration_cast<milliseconds>(*manager.deadline() - kStart)
             .count();
     EXPECT_GE(budget, 80);
     EXPECT_LE(budget, *params.wtime - 200);
@@ -234,12 +229,72 @@ TEST(Lc5TimeManagerTest, NodeParametersDoNotAffectTimePolicy) {
 
 TEST(Lc5TimeManagerTest, SuppliedStartTimeChargesPreparation) {
   const TimeManager manager(kConfig, GoParams{.movetime = 700}, false, kStart);
-  const auto preparing = manager.Evaluate(kStart + milliseconds(499));
-  EXPECT_FALSE(preparing.should_stop);
-  EXPECT_EQ(preparing.next_check, kStart + milliseconds(500));
-  const auto initialized = manager.Evaluate(kStart + milliseconds(600));
-  EXPECT_TRUE(initialized.should_stop);
-  EXPECT_EQ(initialized.next_check, std::nullopt);
+  EXPECT_FALSE(manager.ShouldStop(kStart + milliseconds(499)));
+  EXPECT_EQ(manager.deadline(), kStart + milliseconds(500));
+  EXPECT_TRUE(manager.ShouldStop(kStart + milliseconds(600)));
+}
+
+TEST(Lc5TimeManagerTest, SavedTimeExtendsOnlyClockBudgets) {
+  // 3% of 10000 + 400 saved.
+  ExpectDeadline(GoParams{.wtime = 10200}, false, 300);
+  const TimeManager manager(kConfig, GoParams{.wtime = 10200}, false, kStart,
+                            400);
+  EXPECT_EQ(manager.deadline(), kStart + milliseconds(700));
+  const TimeManager movetime(kConfig, GoParams{.movetime = 700}, false, kStart,
+                             400);
+  EXPECT_EQ(movetime.deadline(), kStart + milliseconds(500));
+}
+
+TEST(Lc5TimeManagerTest, SavedTimeIsKeptWithoutClockBudget) {
+  for (const GoParams& params : {GoParams{.wtime = 10200, .ponder = true},
+                                 GoParams{.wtime = 10200, .infinite = true},
+                                 GoParams{.wtime = 10200, .movetime = 700},
+                                 GoParams{.nodes = 100}, GoParams{}}) {
+    const TimeManager manager(kConfig, params, false, kStart, 400);
+    EXPECT_EQ(manager.UnusedMs(kStart + milliseconds(10)), 400);
+    EXPECT_EQ(manager.UnusedMs(kStart + std::chrono::hours(1)), 400);
+  }
+}
+
+TEST(Lc5TimeManagerTest, UnusedTimeIsRestOfClockBudget) {
+  // Budget 300 + 400 saved.
+  const TimeManager manager(kConfig, GoParams{.wtime = 10200}, false, kStart,
+                            400);
+  EXPECT_EQ(manager.UnusedMs(kStart), 700);
+  EXPECT_EQ(manager.UnusedMs(kStart + milliseconds(650)), 50);
+  EXPECT_EQ(manager.UnusedMs(kStart + milliseconds(700)), 0);
+  EXPECT_EQ(manager.UnusedMs(kStart + milliseconds(800)), 0);
+}
+
+TEST(Lc5TimeManagerTest, AnyVisitsAffordableWithoutEstimate) {
+  const auto now = kStart + milliseconds(100);
+  for (const GoParams& params :
+       {GoParams{.wtime = 10200, .ponder = true},
+        GoParams{.wtime = 10200, .infinite = true},
+        GoParams{.wtime = 10200, .movetime = 700}, GoParams{}}) {
+    const TimeManager manager(kConfig, params, false, kStart);
+    EXPECT_TRUE(manager.CanAffordVisits(1'000'000, 1000, now));
+  }
+  TimeManager::Config disabled = kConfig;
+  disabled.smart_pruning_factor = 0.0f;
+  const TimeManager manager(disabled, GoParams{.wtime = 10200}, false, kStart);
+  EXPECT_TRUE(manager.CanAffordVisits(1'000'000, 1000, now));
+}
+
+TEST(Lc5TimeManagerTest, AffordableVisitsFollowRateAndFactor) {
+  TimeManager::Config config = kConfig;
+  config.smart_pruning_factor = 2.0f;
+  // Budget 300 ms; at 100 ms, 1000 visits leave 2000 more, 1000 after the
+  // factor.
+  const TimeManager manager(config, GoParams{.wtime = 10200}, false, kStart);
+  const auto now = kStart + milliseconds(100);
+  EXPECT_TRUE(manager.CanAffordVisits(1000, 1000, now));
+  EXPECT_FALSE(manager.CanAffordVisits(1001, 1000, now));
+  // The rate isn't trusted before 100 visits, nor with no time elapsed.
+  EXPECT_TRUE(manager.CanAffordVisits(1'000'000, 99, now));
+  EXPECT_FALSE(
+      manager.CanAffordVisits(1'000'000, 100, kStart + milliseconds(1)));
+  EXPECT_TRUE(manager.CanAffordVisits(1'000'000, 1000, kStart));
 }
 
 }  // namespace

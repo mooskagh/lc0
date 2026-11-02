@@ -39,8 +39,6 @@ constexpr auto kInfoInterval = std::chrono::seconds(1);
 constexpr auto kSmartPruningInterval = std::chrono::milliseconds(10);
 // How often the controller checks the graph against its node limit.
 constexpr auto kEvictionInterval = std::chrono::milliseconds(10);
-// Visits to complete before the visit rate is trusted for early stopping.
-constexpr uint64_t kSmartPruningMinVisits = 100;
 // Root visits are counted in uint32_t; classic caps a search the same way.
 constexpr uint64_t kMaxRootVisits = 4'000'000'000;
 
@@ -72,6 +70,7 @@ SearchRun::SearchRun(VisitEngine* engine, NodeStore* store, Backend* backend,
     workers_.push_back(std::make_unique<Worker>(i));
   }
   root_visits_at_start_ = engine_->Root(root_.key).visits;
+  // Kept unless the search stops early with a clock budget.
   may_stop_early_ = !go_params.infinite && !go_params.ponder;
   node_limit_ =
       kMaxRootVisits - std::min(root_visits_at_start_, kMaxRootVisits);
@@ -147,28 +146,21 @@ void SearchRun::Controller() {
     const auto now = steady_clock::now();
     std::optional<steady_clock::time_point> next_check;
     if (!Stopping()) {
-      const auto decision = time_manager_.Evaluate(now);
-      next_check = decision.next_check;
+      next_check = time_manager_.deadline();
       const RootStats root = engine_->Root(root_.key);
-      // Early stops bank the unused time only for budgets from the clock.
-      const auto stop_early = [&] {
-        if (time_manager_.smart_pruning_factor() > 0.0f) {
-          unused_time_ms_.store(
-              std::chrono::duration_cast<std::chrono::milliseconds>(
-                  *time_manager_.deadline() - now)
-                  .count());
-        }
-        Stop();
-      };
-      if (decision.should_stop ||
+      if (time_manager_.ShouldStop(now) ||
           (node_limit_ && metrics_.visits_completed.load() >= *node_limit_)) {
         Stop();
-      } else if (may_stop_early_ && root.decided) {
-        // The root's result is proven; more visits can't change the move.
-        stop_early();
-      } else if (time_manager_.smart_pruning_factor() > 0.0f &&
-                 BestMoveDecided(root, now)) {
-        stop_early();
+      } else if (may_stop_early_ &&
+                 (root.decided || (root.expanded && root.edges == 1))) {
+        // The root's result is proven, or there is only one move to play.
+        Stop();
+      } else if (root.expanded &&
+                 !time_manager_.CanAffordVisits(
+                     root.best_edge_visits - root.second_edge_visits,
+                     metrics_.visits_completed.load(), now)) {
+        // The runner-up can't catch up within the remaining budget.
+        Stop();
       } else if (may_stop_early_) {
         // Polls for a decided root, and for smart pruning.
         next_check = std::min(next_check.value_or(now + kSmartPruningInterval),
@@ -203,22 +195,9 @@ void SearchRun::Controller() {
   Shutdown();
 }
 
-// Whether the most visited root edge stays ahead even if all remaining visits,
-// estimated from this run's rate so far, go to the runner-up.
-bool SearchRun::BestMoveDecided(const RootStats& root,
-                                steady_clock::time_point now) const {
-  if (!root.expanded) return false;
-  if (root.edges == 1) return true;
-  const uint64_t visits = metrics_.visits_completed.load();
-  const auto elapsed = now - start_time_;
-  if (visits < kSmartPruningMinVisits || elapsed.count() <= 0) return false;
-  const double remaining =
-      static_cast<double>(visits) * (*time_manager_.deadline() - now).count() /
-      elapsed.count() / time_manager_.smart_pruning_factor();
-  return root.best_edge_visits - root.second_edge_visits > remaining;
-}
-
 void SearchRun::Respond() {
+  // The search ends here as far as the clock is concerned.
+  unused_time_ms_.store(time_manager_.UnusedMs(steady_clock::now()));
   // Capture once, without waiting for any executor or eviction. Abort can
   // suppress this response until commitment, but cannot retract it.
   if (stop_mode_.load() == StopMode::kRespondBestmove) {

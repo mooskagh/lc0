@@ -183,10 +183,12 @@ earlier (below). `movetime` minus `MoveOverheadMs` is used, as in classic;
 `infinite` and `ponder` have no deadline. `AlphaZeroTimePct` sets the 3%.
 
 **Early stop.** Classic-style smart pruning, checked every 10 ms against the
-run's visit rate (`SmartPruningFactor`, 1.33). Unused time goes to the next
-move. With `StickyEndgames`, a search whose root is proven also stops
-(checked every 10 ms, also under `go nodes` and `movetime`, but not in
-`infinite` or `ponder`).
+run's visit rate (`SmartPruningFactor`, 1.33), for clock budgets only. A root
+with a single legal move, or with `StickyEndgames` a proven root, also stops
+the search (checked every 10 ms, also under `go nodes` and `movetime`, but not
+in `infinite` or `ponder`). Whatever stops a clock-budget search, the rest of
+its budget goes to the next move; a search without a clock budget (ponder,
+infinite, movetime) passes the saved time on untouched.
 
 ## Stopping and output
 
@@ -229,7 +231,7 @@ has the engine, configuration, and the seam between `run/` and `policies/`
 | `visit_engine.h` | `VisitEngine` interface: descent, backup, cancel, report. |
 | `visit.h` | Visit state and the fixed pool of visit slots. |
 | `settings.cc` | Machinery options and their automatic values. |
-| `time_manager.cc` | Per-move deadline. |
+| `time_manager.cc` | Per-move deadline, smart pruning's visit estimate, saved time. |
 | `run/search_run.h/.cc` | `SearchRun`: setup, controller, early stop, `info`/`bestmove`. |
 | `run/visits.cc` | Admission, worker loop, driving each visit through the engine. |
 | `run/materialization.cc` | Creating nodes, terminal detection, jobs, evaluator batching. |

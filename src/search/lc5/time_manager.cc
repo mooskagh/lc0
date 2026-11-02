@@ -34,9 +34,12 @@
 namespace lczero::lc5 {
 namespace {
 
-std::optional<int64_t> GetTimeBudget(TimeManager::Config config,
-                                     const GoParams& params, bool black_to_move,
-                                     int64_t saved_ms) {
+// Visits to complete before the visit rate is trusted for early stopping.
+constexpr uint64_t kSmartPruningMinVisits = 100;
+
+std::optional<int64_t> GetTimeBudgetMs(TimeManager::Config config,
+                                       const GoParams& params,
+                                       bool black_to_move, int64_t saved_ms) {
   if (params.ponder) return std::nullopt;
   if (params.movetime) {
     return std::max<int64_t>(0, *params.movetime - config.move_overhead_ms);
@@ -55,8 +58,8 @@ std::optional<int64_t> GetTimeBudget(TimeManager::Config config,
   }
   // Divide the clock and future increments over the implied move horizon.
   // The current move's increment is only received after we finish searching.
-  const long double budget = usable * fraction + increment * (1 - fraction) +
-                             std::max<int64_t>(0, saved_ms);
+  const long double budget =
+      usable * fraction + increment * (1 - fraction) + saved_ms;
   return static_cast<int64_t>(
       std::clamp(budget, 1.0L, static_cast<long double>(usable)));
 }
@@ -64,22 +67,36 @@ std::optional<int64_t> GetTimeBudget(TimeManager::Config config,
 }  // namespace
 
 TimeManager::TimeManager(Config config, const GoParams& params,
-                         bool black_to_move,
-                         std::chrono::steady_clock::time_point start_time,
-                         int64_t saved_ms) {
+                         bool black_to_move, Clock::time_point start_time,
+                         int64_t saved_ms)
+    : start_time_(start_time), saved_ms_(std::max<int64_t>(0, saved_ms)) {
   if (const auto budget =
-          GetTimeBudget(config, params, black_to_move, saved_ms)) {
+          GetTimeBudgetMs(config, params, black_to_move, saved_ms_)) {
     deadline_ = start_time + std::chrono::milliseconds(*budget);
-    if (!params.movetime) smart_pruning_factor_ = config.smart_pruning_factor;
+    clock_budget_ = !params.movetime;
+    if (clock_budget_) smart_pruning_factor_ = config.smart_pruning_factor;
   }
 }
 
-TimeManager::Decision TimeManager::Evaluate(
-    std::chrono::steady_clock::time_point now) const {
-  if (deadline_ && now >= *deadline_) {
-    return {.should_stop = true, .next_check = std::nullopt};
+bool TimeManager::CanAffordVisits(uint64_t visits, uint64_t visits_done,
+                                  Clock::time_point now) const {
+  if (!clock_budget_ || smart_pruning_factor_ <= 0.0f) return true;
+  const auto elapsed = now - start_time_;
+  if (visits_done < kSmartPruningMinVisits || elapsed.count() <= 0) {
+    return true;
   }
-  return {.should_stop = false, .next_check = deadline_};
+  const double remaining = static_cast<double>(visits_done) *
+                           (*deadline_ - now).count() / elapsed.count() /
+                           smart_pruning_factor_;
+  return visits <= remaining;
+}
+
+int64_t TimeManager::UnusedMs(Clock::time_point stop_time) const {
+  if (!clock_budget_) return saved_ms_;
+  return std::max<int64_t>(
+      0, std::chrono::duration_cast<std::chrono::milliseconds>(*deadline_ -
+                                                               stop_time)
+             .count());
 }
 
 }  // namespace lczero::lc5
