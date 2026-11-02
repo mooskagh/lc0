@@ -60,17 +60,19 @@ class Lc5Engine final : public SearchBase {
   // Drops the graph and the stored nodes.
   void ClearGraph();
 
+  // The UCI options.
   const OptionsDict* options_;
-  // Created on the first search and whenever Lc5Policy changes. Its graph is
-  // retained for the whole game.
+  // Owns the graph, kept for the whole game; recreated when Lc5Policy changes.
   std::unique_ptr<VisitEngine> visit_engine_;
-  // The graph's cold tier: nodes evicted to keep the graph within
-  // Lc5GraphNodeLimit, with their statistics. Created when a search first
-  // runs with a limit, and cleared with the graph.
+  // Evicted nodes; created by the first search with Lc5GraphNodeLimit set.
   std::unique_ptr<NodeStore> store_;
+  // The current search, or the last one until the next go.
   std::unique_ptr<SearchRun> run_;
+  // The start position the graph belongs to.
   std::optional<Position> game_start_;
+  // The history up to the root of the next search.
   std::optional<PositionHistory> root_history_;
+  // When the clock for the next search started, if StartClock was called.
   std::optional<std::chrono::steady_clock::time_point> clock_start_;
   // Time a previous search left unused by stopping early.
   int64_t saved_time_ms_ = 0;
