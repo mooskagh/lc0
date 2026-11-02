@@ -36,7 +36,7 @@
 #include "chess/callbacks.h"
 #include "neural/backend.h"
 #include "search/lc5/graph/graph.h"
-#include "search/lc5/run/metrics.h"
+#include "search/lc5/metrics.h"
 #include "search/lc5/settings.h"
 #include "search/lc5/store/node_store.h"
 #include "search/lc5/visit.h"
@@ -73,11 +73,6 @@ struct RootStats {
 // and edge statistics, and owns the graph. SearchRun owns visits, tickets,
 // batching and threads, and calls only this. Implementations must be
 // thread-safe; each call locks at most one graph shard at a time.
-// What a policy asks for when a waiting visit's node finishes materializing:
-// continue selecting below that node, reselect at its parent with the node's
-// value known (possibly switching edges), or restart from the root.
-enum class WaiterResume { kSelect, kReselect, kRestart };
-
 class VisitEngine {
  public:
   enum class DescendResult { kMaterialize, kBackup };

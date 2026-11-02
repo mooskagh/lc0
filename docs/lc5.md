@@ -223,7 +223,7 @@ graph's cold tier, `run/` is the `SearchRun` machinery, and `policies/` holds
 the search policies. `store/` sees only node keys and opaque records; the
 graph does not include it. The root
 has the engine, configuration, and the seam between `run/` and `policies/`
-(`visit_engine.h`, `visit.h`).
+(`visit_engine.h`, `visit.h`, and `metrics.h`, which both sides bump).
 
 | File | What's there |
 |---|---|
@@ -231,13 +231,13 @@ has the engine, configuration, and the seam between `run/` and `policies/`
 | `visit_engine.h` | `VisitEngine` interface: descent, backup, cancel, report. |
 | `visit.h` | Visit state passed to the visit engine. |
 | `settings.cc` | Machinery options and their automatic values. |
+| `metrics.h/.cc` | Debug counters, bumped by both `run/` and the policies. |
 | `time_manager.cc` | Per-move deadline, smart pruning's visit estimate, saved time. |
 | `run/search_run.h/.cc` | `SearchRun`: setup, controller, early stop, `info`/`bestmove`. |
 | `run/visit_pool.h/.cc` | `VisitPool`: fixed visit slots addressed by epoch-tagged `VisitId`s. |
 | `run/visits.cc` | Admission, worker loop, driving each visit through the engine. |
 | `run/materialization.cc` | Creating nodes, terminal detection, jobs, evaluator batching. |
 | `run/work_queue.h` | Closable MPMC queue for requests and jobs. |
-| `run/metrics.h` | Debug counters. |
 | `graph/graph.h` | `GameGraph<P>`: sharded node map, reservations, per-node updates, tried-edge stats; node and edge stats belong to the policy. |
 | `graph/key.h`, `graph/value.h`, `graph/prior.h` | Node keys; value sums and perspective flips; fp16 priors. |
 | `graph/node.h`, `graph/expansion.h` | Node, edge and tried-edge state; expansion payloads and terminal kinds. |

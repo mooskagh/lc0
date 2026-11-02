@@ -25,7 +25,7 @@
   Program grant you additional permission to convey the resulting work.
 */
 
-#include "search/lc5/run/metrics.h"
+#include "search/lc5/metrics.h"
 
 #include <sstream>
 

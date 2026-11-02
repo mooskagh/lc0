@@ -45,6 +45,11 @@
 
 namespace lczero::lc5 {
 
+// What a policy asks for when a waiting visit's node finishes materializing:
+// continue selecting below that node, reselect at its parent with the node's
+// value known (possibly switching edges), or restart from the root.
+enum class WaiterResume { kSelect, kReselect, kRestart };
+
 // Search over a GameGraph it owns, with node and edge statistics, selection
 // and backup supplied by the policy P (see PuctPolicy and PuctAveraging in
 // puct.h for the interface).

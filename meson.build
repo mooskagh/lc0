@@ -234,12 +234,12 @@ if get_option('lc5')
   deps += absl_synchronization_dep
   files += [
     'src/search/lc5/engine.cc',
+    'src/search/lc5/metrics.cc',
     'src/search/lc5/store/memory_node_store.cc',
     'src/search/lc5/policies/puct.cc',
     'src/search/lc5/policies/puct_dag.cc',
     'src/search/lc5/policies/registry.cc',
     'src/search/lc5/run/materialization.cc',
-    'src/search/lc5/run/metrics.cc',
     'src/search/lc5/run/search_run.cc',
     'src/search/lc5/run/visit_pool.cc',
     'src/search/lc5/run/visits.cc',
@@ -1232,7 +1232,7 @@ if get_option('gtest')
         'src/search/lc5/run/materialization.cc',
         'src/search/lc5/engine.cc',
         'src/search/lc5/store/memory_node_store.cc',
-        'src/search/lc5/run/metrics.cc',
+        'src/search/lc5/metrics.cc',
         'src/search/lc5/policies/registry.cc',
         'src/search/lc5/policies/puct.cc',
         'src/search/lc5/policies/puct_dag.cc',
