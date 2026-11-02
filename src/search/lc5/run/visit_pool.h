@@ -30,6 +30,7 @@
 #include <absl/synchronization/mutex.h>
 
 #include <atomic>
+#include <cassert>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -55,11 +56,11 @@ class VisitPool {
 
   // Reserves the lowest free slot and initializes its visit from `origin`.
   // Returns nullopt when the pool is full.
-  std::optional<VisitId> Allocate(const VisitOrigin& origin,
-                                  size_t worker = 0);
+  std::optional<VisitId> Allocate(const VisitOrigin& origin);
 
+  // Returns the slot if `id` is still its current visit, else nullptr.
   Slot* Lookup(VisitId id) {
-    if (!id || id.slot() >= slots_.size()) return nullptr;
+    assert(id && id.slot() < slots_.size());
     Slot* slot = slots_[id.slot()].get();
     return slot->epoch.load(std::memory_order_acquire) == id.epoch() ? slot
                                                                      : nullptr;

@@ -225,7 +225,7 @@ class SearchRun {
   // Live visits allowed now: grows with the root's visits, as classic search
   // grows its collision limit, so small trees are not flooded.
   size_t ActiveLimit() const;
-  std::optional<VisitId> Allocate(const VisitOrigin& origin, size_t worker)
+  std::optional<VisitId> Allocate(const VisitOrigin& origin)
       ABSL_EXCLUSIVE_LOCKS_REQUIRED(admission_mutex_);
   void AdmitMore(Worker& worker);
   void WakeAdmissionWaiters();

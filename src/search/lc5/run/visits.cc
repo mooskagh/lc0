@@ -42,13 +42,12 @@ bool SearchRun::AdmissionClosed() const {
   return Stopping() || (node_limit_ && admitted_ >= *node_limit_);
 }
 
-std::optional<VisitId> SearchRun::Allocate(const VisitOrigin& origin,
-                                           size_t worker) {
+std::optional<VisitId> SearchRun::Allocate(const VisitOrigin& origin) {
   // Allocate never holds pool -> slot.
   if (AdmissionClosed() || visits_.active() >= ActiveLimit()) {
     return std::nullopt;
   }
-  const auto id = visits_.Allocate(origin, worker);
+  const auto id = visits_.Allocate(origin);
   if (!id) return std::nullopt;
   ++admitted_;
   metrics_.visits_admitted.fetch_add(1);
@@ -71,7 +70,7 @@ bool SearchRun::Admit(const VisitOrigin& origin) {
   {
     absl::MutexLock lock(admission_mutex_);
     owner = next_owner_++ % workers_.size();
-    const auto id = Allocate(origin, owner);
+    const auto id = Allocate(origin);
     if (!id) return false;
     admitted.push_back({.id = *id, .worker = owner});
   }
@@ -88,7 +87,7 @@ void SearchRun::AdmitMore(Worker& worker) {
   const size_t share =
       (visits_.capacity() + workers_.size() - 1) / workers_.size();
   for (size_t i = 0; i < kWorkChunk && worker.active.size() < share; ++i) {
-    const auto id = Allocate(root_, worker.index);
+    const auto id = Allocate(root_);
     if (!id) {
       // The pool is full. Registration shares admission_mutex_ with the
       // capacity check in WakeAdmissionWaiters, so it cannot miss a release.
@@ -156,7 +155,6 @@ void SearchRun::Resume(Worker& worker, const Continuation& event) {
   absl::MutexLock lock(slot->mutex);
   if (!visits_.IsLiveLocked(*slot, event.id)) return;
   Visit& visit = slot->visit;
-  assert(visit.worker == worker.index);
   if (event.kind == Continuation::Kind::kAdmit) {
     worker.active.insert(event.id.value);
   } else {
@@ -303,7 +301,6 @@ void SearchRun::AdvanceVisit(Worker& worker, VisitId id) {
   absl::MutexLock lock(slot->mutex);
   if (!visits_.IsLiveLocked(*slot, id)) return;
   Visit& visit = slot->visit;
-  assert(visit.worker == worker.index);
   if (visit.state == VisitState::kReadyBackup) {
     Backup(worker, *slot);
     return;

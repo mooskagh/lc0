@@ -101,8 +101,6 @@ TEST(Lc5VisitPoolTest, RejectsStaleDuplicateAndMismatchedIds) {
   EXPECT_EQ(current->slot(), old->slot());
   EXPECT_NE(current->epoch(), old->epoch());
   EXPECT_EQ(pool.Lookup(*old), nullptr);
-  EXPECT_EQ(pool.Lookup({}), nullptr);
-  EXPECT_EQ(pool.Lookup(VisitId{(uint64_t{1} << 32) | 2}), nullptr);
   {
     absl::MutexLock lock(slot->mutex);
     EXPECT_FALSE(pool.ReleaseLocked(*slot, *old));

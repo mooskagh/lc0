@@ -70,7 +70,6 @@ enum class VisitState : uint8_t {
 
 struct Visit {
   VisitId id;
-  size_t worker = 0;
   VisitState state = VisitState::kFree;
   VisitOrigin origin;
   PositionHistory history;

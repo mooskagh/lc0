@@ -42,8 +42,7 @@ VisitPool::VisitPool(size_t capacity) {
   // Ascending indices already form a min-heap.
 }
 
-std::optional<VisitId> VisitPool::Allocate(const VisitOrigin& origin,
-                                           size_t worker) {
+std::optional<VisitId> VisitPool::Allocate(const VisitOrigin& origin) {
   uint32_t i;
   {
     absl::MutexLock pool_lock(pool_mutex_);
@@ -64,7 +63,6 @@ std::optional<VisitId> VisitPool::Allocate(const VisitOrigin& origin,
   slot.epoch.store(epoch, std::memory_order_release);
   VisitId id{(static_cast<uint64_t>(epoch) << 32) | i};
   slot.visit = Visit{.id = id,
-                     .worker = worker,
                      .state = VisitState::kReadySelect,
                      .origin = origin,
                      .history = origin.history,
