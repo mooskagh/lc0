@@ -949,11 +949,11 @@ TEST(Lc5GraphTest, EvictCandidatesSkipReservedMaterializingAndKeptNodes) {
   size_t cursor = 0;
   const auto candidates = graph.EvictCandidates(&cursor, 10, 1.0, keep);
   ASSERT_EQ(candidates.size(), 1u);
-  EXPECT_EQ(candidates[0].stored.key, idle);
+  EXPECT_EQ(candidates[0].first, idle);
   const auto node = graph.SnapshotNode(idle);
-  EXPECT_EQ(candidates[0].generation, node->generation);
-  EXPECT_EQ(candidates[0].version, node->version);
-  EXPECT_EQ(candidates[0].stored.record, EncodeNode(*node));
+  EXPECT_EQ(candidates[0].second.generation, node->generation);
+  EXPECT_EQ(candidates[0].second.version, node->version);
+  EXPECT_EQ(EncodeNode(candidates[0].second), EncodeNode(*node));
   // Nothing is erased until the eviction is confirmed.
   EXPECT_EQ(graph.Size(), 4u);
 }
@@ -983,7 +983,7 @@ TEST(Lc5GraphTest, EvictCandidatesPreferFewVisits) {
   ASSERT_EQ(candidates.size(), 2u);
   std::vector<uint32_t> visits;
   for (const auto& candidate : candidates) {
-    visits.push_back(graph.SnapshotNode(candidate.stored.key)->stats.visits);
+    visits.push_back(graph.SnapshotNode(candidate.first)->stats.visits);
   }
   std::ranges::sort(visits);
   // Visits are 4, 3, 2 and 9; the two lowest are taken.

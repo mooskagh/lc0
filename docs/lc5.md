@@ -216,8 +216,10 @@ Reading the `info` line:
 
 ## Code map
 
-Three subdirectories: `graph/` is the node data model, `run/` is the
-`SearchRun` machinery, and `policies/` holds the search policies. The root
+Four subdirectories: `graph/` is the node data model, `store/` is the
+graph's cold tier, `run/` is the `SearchRun` machinery, and `policies/` holds
+the search policies. `store/` sees only node keys and opaque records; the
+graph does not include it. The root
 has the engine, configuration, and the seam between `run/` and `policies/`
 (`visit_engine.h`, `visit.h`).
 
@@ -236,7 +238,8 @@ has the engine, configuration, and the seam between `run/` and `policies/`
 | `graph/graph.h` | `GameGraph<P>`: sharded node map, reservations, per-node updates, tried-edge stats; node and edge stats belong to the policy. |
 | `graph/key.h`, `graph/value.h`, `graph/prior.h` | Node keys; value sums and perspective flips; fp16 priors. |
 | `graph/node.h`, `graph/expansion.h` | Node, edge and tried-edge state; expansion payloads and terminal kinds. |
-| `graph/node_store.h`, `graph/memory_node_store.cc`, `graph/node_record.h` | The node store (the graph's cold tier), its in-RAM implementation, and the node record format. |
+| `graph/node_record.h` | The node record format: encoding and decoding a node's statistics and edges for the policy. |
+| `store/node_store.h`, `store/memory_node_store.cc` | The node store (the graph's cold tier) and its in-RAM implementation. |
 | `policies/policy_engine.h` | `PolicyEngine<P>` implements `VisitEngine` on a `GameGraph<P>` it owns: descent, two-fold check, backup, PV walk. |
 | `policies/puct.h/.cc` | `PuctPolicy<Self>`: PUCT selection, PV edge, bounds, score/WDL and the PUCT options (`PuctParams`), shared by the policies; `PuctAveraging` (`puct`) adds the averaging backup. |
 | `policies/puct_dag.h/.cc` | `PuctDag` (`puct-dag`): edges cache the child's value; see "Policies". |

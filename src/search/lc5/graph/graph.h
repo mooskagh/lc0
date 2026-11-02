@@ -42,8 +42,6 @@
 
 #include "search/lc5/graph/key.h"
 #include "search/lc5/graph/node.h"
-#include "search/lc5/graph/node_record.h"
-#include "search/lc5/graph/node_store.h"
 
 namespace lczero::lc5 {
 
@@ -57,14 +55,6 @@ struct FindOrCreateResult {
 struct InstallResult {
   uint64_t generation;
   bool accepted;
-};
-
-// The record of a node chosen for eviction, and the node's generation and
-// version when the record was taken.
-struct EvictCandidate {
-  StoredNode stored;
-  uint64_t generation;
-  uint32_t version;
 };
 
 enum class SelectStatus {
@@ -164,15 +154,16 @@ class GameGraph {
 
   std::optional<Node> SnapshotNode(NodeKey key) const;
 
-  // Records of up to `max` evictable nodes: expanded, not `keep`, with no
-  // edge reserved. Scans shards from `*cursor` on, at most all of them once,
+  // Copies of up to `max` evictable nodes: expanded, not `keep`, with no edge
+  // reserved. Scans shards from `*cursor` on, at most all of them once,
   // and leaves the cursor after the last one scanned. From each shard it takes
   // the `fraction` of its nodes with the fewest visits (at least one node).
-  std::vector<EvictCandidate> EvictCandidates(size_t* cursor, size_t max,
-                                              double fraction,
-                                              NodeKey keep) const;
+  std::vector<std::pair<NodeKey, Node>> EvictCandidates(size_t* cursor,
+                                                        size_t max,
+                                                        double fraction,
+                                                        NodeKey keep) const;
   // Erases the node if it still is `generation` at `version` and has no
-  // reservations, as when its record was taken.
+  // reservations, as when it was copied.
   bool EraseIfUnchanged(NodeKey key, uint64_t generation, uint32_t version);
   // Calls fn(key, node) for every expanded node, with its shard locked.
   template <typename F>
@@ -452,11 +443,9 @@ std::optional<NodeState<P>> GameGraph<P>::SnapshotNode(NodeKey key) const {
 }
 
 template <typename P>
-std::vector<EvictCandidate> GameGraph<P>::EvictCandidates(size_t* cursor,
-                                                          size_t max,
-                                                          double fraction,
-                                                          NodeKey keep) const {
-  std::vector<EvictCandidate> result;
+std::vector<std::pair<NodeKey, NodeState<P>>> GameGraph<P>::EvictCandidates(
+    size_t* cursor, size_t max, double fraction, NodeKey keep) const {
+  std::vector<std::pair<NodeKey, Node>> result;
   std::vector<std::pair<uint64_t, const std::pair<const NodeKey, Node>*>>
       evictable;
   for (size_t scanned = 0; scanned < kShardCount && result.size() < max;
@@ -477,10 +466,7 @@ std::vector<EvictCandidate> GameGraph<P>::EvictCandidates(size_t* cursor,
     std::ranges::nth_element(evictable, evictable.begin() + take, {},
                              &decltype(evictable)::value_type::first);
     for (size_t i = 0; i < take; ++i) {
-      const auto& [key, node] = *evictable[i].second;
-      result.push_back({.stored = {key, EncodeNode(node)},
-                        .generation = node.generation,
-                        .version = node.version});
+      result.push_back(*evictable[i].second);
     }
   }
   return result;

@@ -25,7 +25,7 @@
   Program grant you additional permission to convey the resulting work.
 */
 
-#include "search/lc5/graph/memory_node_store.h"
+#include "search/lc5/store/memory_node_store.h"
 
 namespace lczero::lc5 {
 

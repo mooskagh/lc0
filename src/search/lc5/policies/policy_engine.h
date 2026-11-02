@@ -39,6 +39,7 @@
 #include <vector>
 
 #include "search/lc5/graph/graph.h"
+#include "search/lc5/graph/node_record.h"
 #include "search/lc5/visit_engine.h"
 
 namespace lczero::lc5 {
@@ -92,8 +93,19 @@ class PolicyEngine final : public VisitEngine {
     if (size == 0 || max == 0) return {};
     const double fraction =
         std::min(1.0, static_cast<double>(max) / static_cast<double>(size));
-    std::lock_guard lock(evict_mutex_);
-    return graph_.EvictCandidates(&evict_cursor_, max, fraction, keep);
+    std::vector<std::pair<NodeKey, NodeState<P>>> nodes;
+    {
+      std::lock_guard lock(evict_mutex_);
+      nodes = graph_.EvictCandidates(&evict_cursor_, max, fraction, keep);
+    }
+    std::vector<EvictCandidate> result;
+    result.reserve(nodes.size());
+    for (const auto& [key, node] : nodes) {
+      result.push_back({.stored = {key, EncodeNode(node)},
+                        .generation = node.generation,
+                        .version = node.version});
+    }
+    return result;
   }
   size_t ConfirmEvicted(std::span<const EvictCandidate> evicted) override {
     size_t erased = 0;

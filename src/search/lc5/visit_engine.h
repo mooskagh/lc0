@@ -36,13 +36,21 @@
 #include "chess/callbacks.h"
 #include "neural/backend.h"
 #include "search/lc5/graph/graph.h"
-#include "search/lc5/graph/node_store.h"
 #include "search/lc5/run/metrics.h"
 #include "search/lc5/settings.h"
+#include "search/lc5/store/node_store.h"
 #include "search/lc5/visit.h"
 #include "utils/optionsdict.h"
 
 namespace lczero::lc5 {
+
+// The record of a node chosen for eviction, and the node's generation and
+// version when the record was taken.
+struct EvictCandidate {
+  StoredNode stored;
+  uint64_t generation;
+  uint32_t version;
+};
 
 // Per-search state the engine reads or updates on each call.
 struct VisitContext {

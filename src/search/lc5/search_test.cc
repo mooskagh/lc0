@@ -36,7 +36,7 @@
 #include <vector>
 
 #include "search/lc5/engine.h"
-#include "search/lc5/graph/memory_node_store.h"
+#include "search/lc5/store/memory_node_store.h"
 #include "search/lc5/graph/node_record.h"
 #include "search/lc5/policies/policy_engine.h"
 #include "search/lc5/policies/puct.h"

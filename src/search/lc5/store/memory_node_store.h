@@ -32,7 +32,7 @@
 #include <array>
 #include <mutex>
 
-#include "search/lc5/graph/node_store.h"
+#include "search/lc5/store/node_store.h"
 
 namespace lczero::lc5 {
 

@@ -32,8 +32,8 @@
 
 #include "chess/callbacks.h"
 #include "chess/uciloop.h"
-#include "search/lc5/graph/memory_node_store.h"
 #include "search/lc5/settings.h"
+#include "search/lc5/store/memory_node_store.h"
 #include "search/register.h"
 #include "utils/exception.h"
 
