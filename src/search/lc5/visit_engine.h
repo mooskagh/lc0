@@ -62,16 +62,10 @@ struct RootStats {
 // thread-safe; each call locks at most one graph shard at a time.
 class VisitEngine {
  public:
-  enum class DescendResult { kUnexpandedLeaf, kValuedLeaf };
-  // kSelect: continue selecting from visit.current_key; kRestart: restart
-  // from the root; kBackup: visit.result holds a value to back up (an
-  // in-search repetition reached by reselection).
-  enum class ResumeAction { kSelect, kRestart, kBackup };
-
   virtual ~VisitEngine() = default;
 
   // The policy name, as in the Lc5Policy option.
-  virtual std::string_view name() const = 0;
+  virtual std::string_view GetName() const = 0;
   // Reads the policy's options and what the backend provides; called only
   // while no search runs.
   virtual void Configure(const OptionsDict& options,
@@ -79,31 +73,36 @@ class VisitEngine {
   // Drops the whole graph and its store; called only while no search runs.
   virtual void Clear() = 0;
 
-  // Selects and reserves edges from visit.current_key down to a node to
-  // materialize, or to a leaf whose value is in visit.result.
-  virtual DescendResult Descend(Visit& visit, Metrics& metrics) = 0;
+  // Selects and reserves edges down to a node to materialize
+  // (kUnexpandedLeaf) or a leaf whose value is in visit.result (kValuedLeaf).
+  enum class DescendResult { kUnexpandedLeaf, kValuedLeaf };
+  virtual DescendResult DescendVisit(Visit& visit, Metrics& metrics) = 0;
   // Backs visit.result up visit.path.
-  virtual void Backup(const Visit& visit, Metrics& metrics) = 0;
+  virtual void BackupVisit(const Visit& visit, Metrics& metrics) = 0;
   // Releases every edge reservation on visit.path without committing a visit.
-  virtual void Cancel(const Visit& visit, Metrics& metrics) = 0;
-  // A waiter's node finished materializing, with its leaf value in
-  // visit.result. May first move the visit to another edge at the parent.
-  virtual ResumeAction OnResume(Visit& visit, Metrics& metrics) = 0;
-  // Fills the score, WDL and PV of `info`.
-  virtual void Report(const VisitOrigin& root, ThinkingInfo& info) const = 0;
-  virtual RootStats Root(NodeKey root) const = 0;
+  virtual void CancelVisit(const Visit& visit, Metrics& metrics) = 0;
+  // A waiter's node finished materializing; visit.result holds its leaf value.
+  // Selects on (kSelect, maybe from another edge at the parent), restarts from
+  // the root (kRestart), or backs up visit.result (kBackup: a repetition).
+  enum class ResumeAction { kSelect, kRestart, kBackup };
+  virtual ResumeAction ResumeVisit(Visit& visit, Metrics& metrics) = 0;
+  // Fills the score, WDL and PV of `info`; the caller fills the rest.
+  virtual void FillThinkingInfo(const VisitOrigin& root,
+                                ThinkingInfo& info) const = 0;
+  virtual RootStats GetRootStats(NodeKey root) const = 0;
 
   // Node lifecycle for the materialization machinery.
-  virtual FindOrCreateResult FindOrCreateMaterializing(
+  virtual FindOrCreateResult FindOrCreateMaterialization(
       NodeKey key, MaterializationTicketId ticket) = 0;
-  // Expands the node; an accepted install counts `payload.leaf` as the node's
-  // first visit.
-  virtual InstallResult Install(NodeKey key, MaterializationTicketId ticket,
-                                const ExpansionPayload& payload) = 0;
+  // Expands the node from `payload`; if accepted, `payload.leaf` counts as
+  // the node's first visit.
+  virtual MaterializationResult CompleteMaterialization(
+      NodeKey key, MaterializationTicketId ticket,
+      const ExpansionPayload& payload) = 0;
   // Drops the node if it is still materializing under `ticket`; on stop.
   virtual void CancelMaterialization(NodeKey key,
                                      MaterializationTicketId ticket) = 0;
-  virtual size_t GraphSize() const = 0;
+  virtual size_t GetGraphSize() const = 0;
 
   // The NodeStore, the graph's cold tier: nodes evicted from the graph, kept
   // with their statistics. Set only while no search runs; Clear() clears it.
@@ -114,9 +113,9 @@ class VisitEngine {
       std::span<const NodeKey> keys) = 0;
   // Expands the node from a stored record with its old statistics; not
   // accepted if the record is not this policy's (then evaluate the node).
-  virtual InstallResult RestoreFromRecord(NodeKey key,
-                                          MaterializationTicketId ticket,
-                                          std::span<const uint8_t> record) = 0;
+  virtual MaterializationResult RestoreFromRecord(
+      NodeKey key, MaterializationTicketId ticket,
+      std::span<const uint8_t> record) = 0;
   // Moves up to `max` nodes from the graph to the store: fewest visits first,
   // never `keep` or a node with a reserved edge. Needs a store.
   virtual void EvictToStore(size_t max, NodeKey keep, Metrics& metrics) = 0;

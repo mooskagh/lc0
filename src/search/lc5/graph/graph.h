@@ -52,7 +52,7 @@ struct FindOrCreateResult {
   MaterializationTicketId ticket;
 };
 
-struct InstallResult {
+struct MaterializationResult {
   uint64_t generation;
   bool accepted;
 };
@@ -105,8 +105,8 @@ class GameGraph {
   static constexpr size_t kShardCount = 1024;
 
   // Finds an existing node or creates a kMaterializing one owned by `ticket`.
-  FindOrCreateResult FindOrCreateMaterializing(NodeKey key,
-                                               MaterializationTicketId ticket);
+  FindOrCreateResult FindOrCreateMaterialization(
+      NodeKey key, MaterializationTicketId ticket);
 
   // Erases only the matching materializing placeholder, never an expansion.
   bool CancelMaterialization(NodeKey key, MaterializationTicketId ticket);
@@ -115,15 +115,16 @@ class GameGraph {
   // `ticket`, creating it if absent. Publication is one-shot per generation.
   // An accepted install also updates the node with `payload.leaf` as its
   // first visit.
-  InstallResult InstallPayload(NodeKey key, MaterializationTicketId ticket,
-                               const ExpansionPayload& payload);
+  MaterializationResult CompleteMaterialization(
+      NodeKey key, MaterializationTicketId ticket,
+      const ExpansionPayload& payload);
 
-  // Like InstallPayload, but the node takes the statistics, edges and terminal
-  // kind of `restored` (an evicted node) instead of counting a leaf. The node
-  // keeps the generation of its materializing placeholder, which is new, so
-  // updates for the evicted node stay rejected.
-  InstallResult RestoreNode(NodeKey key, MaterializationTicketId ticket,
-                            Node restored);
+  // Like CompleteMaterialization, but the node takes the statistics, edges and
+  // terminal kind of `restored` (an evicted node) instead of counting a leaf.
+  // The node keeps the generation of its materializing placeholder, which is
+  // new, so updates for the evicted node stay rejected.
+  MaterializationResult RestoreNode(NodeKey key, MaterializationTicketId ticket,
+                                    Node restored);
 
   // Selects an edge by the policy and reserves it (in_flight += 1); otherwise
   // reports why the node can't be selected from. Every result but kMissing
@@ -246,7 +247,7 @@ NodeState<P>& GameGraph<P>::InsertLocked(Shard& shard, NodeKey key,
 }
 
 template <typename P>
-FindOrCreateResult GameGraph<P>::FindOrCreateMaterializing(
+FindOrCreateResult GameGraph<P>::FindOrCreateMaterialization(
     NodeKey key, MaterializationTicketId ticket) {
   auto& shard = ShardFor(key);
   absl::MutexLock lock(shard.mutex);
@@ -273,9 +274,9 @@ bool GameGraph<P>::CancelMaterialization(NodeKey key,
 }
 
 template <typename P>
-InstallResult GameGraph<P>::InstallPayload(NodeKey key,
-                                           MaterializationTicketId ticket,
-                                           const ExpansionPayload& payload) {
+MaterializationResult GameGraph<P>::CompleteMaterialization(
+    NodeKey key, MaterializationTicketId ticket,
+    const ExpansionPayload& payload) {
   assert(payload.moves.size() == payload.priors.size());
   assert(payload.terminal == TerminalKind::kNonTerminal ||
          payload.moves.empty());
@@ -307,9 +308,9 @@ InstallResult GameGraph<P>::InstallPayload(NodeKey key,
 }
 
 template <typename P>
-InstallResult GameGraph<P>::RestoreNode(NodeKey key,
-                                        MaterializationTicketId ticket,
-                                        Node restored) {
+MaterializationResult GameGraph<P>::RestoreNode(NodeKey key,
+                                                MaterializationTicketId ticket,
+                                                Node restored) {
   auto& shard = ShardFor(key);
   absl::MutexLock lock(shard.mutex);
   Node* existing = FindNode(shard.nodes, key);

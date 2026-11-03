@@ -92,7 +92,7 @@ void Lc5Engine::StartSearch(const GoParams& params) {
 
   // A different policy keeps different statistics, so it starts a new graph.
   const std::string policy = PolicyName(*options_);
-  if (!visit_engine_ || visit_engine_->name() != policy) {
+  if (!visit_engine_ || visit_engine_->GetName() != policy) {
     visit_engine_ = MakeVisitEngine(policy);
   }
   visit_engine_->Configure(*options_, backend_->GetAttributes());

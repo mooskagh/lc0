@@ -104,7 +104,7 @@ bool SearchRun::SuspendForMaterialization(Worker& worker,
     owner = existing == ticket_by_key_.end();
     ticket_id = owner ? next_ticket_++ : existing->second;
     const auto node =
-        engine_->FindOrCreateMaterializing(visit.current_key, ticket_id);
+        engine_->FindOrCreateMaterialization(visit.current_key, ticket_id);
     if (node.created) metrics_.graph_nodes_created.fetch_add(1);
     if (node.lifecycle == NodeLifecycle::kExpanded) return false;
     assert(node.ticket == ticket_id);
@@ -127,7 +127,8 @@ bool SearchRun::SuspendForMaterialization(Worker& worker,
   metrics_.visits_suspended.fetch_add(1);
   // Wakes the controller once the graph outgrows its limit, so eviction keeps
   // up with fast searches between its periodic checks.
-  if (owner && Evicts() && engine_->GraphSize() > settings_.graph_node_limit &&
+  if (owner && Evicts() &&
+      engine_->GetGraphSize() > settings_.graph_node_limit &&
       !eviction_requested_.exchange(true)) {
     worker.controller_event = true;
   }
@@ -144,12 +145,12 @@ bool SearchRun::SuspendForMaterialization(Worker& worker,
 
 void SearchRun::PrepareEvaluation(Worker& worker, Request request) {
   if (Stopping()) {
-    CancelMaterialization(worker, request.ticket);
+    CancelTicket(worker, request.ticket);
     return;
   }
   request.payload = DetectTerminal(request.history);
   if (request.payload.terminal != TerminalKind::kNonTerminal) {
-    CompleteMaterialization(worker, request.ticket, std::move(request.payload));
+    CompleteTicket(worker, request.ticket, std::move(request.payload));
     return;
   }
   request.payload.priors.resize(request.payload.moves.size());
@@ -158,22 +159,23 @@ void SearchRun::PrepareEvaluation(Worker& worker, Request request) {
   worker.evals.push_back(std::move(request));
 }
 
-void SearchRun::CompleteMaterialization(Worker& worker,
-                                        MaterializationTicketId ticket_id,
-                                        ExpansionPayload payload) {
+void SearchRun::CompleteTicket(Worker& worker,
+                               MaterializationTicketId ticket_id,
+                               ExpansionPayload payload) {
   Ticket ticket;
-  InstallResult installed;
+  MaterializationResult installed;
   {
     absl::MutexLock lock(tickets_mutex_);
     const auto it = tickets_.find(ticket_id);
     if (it == tickets_.end()) return;
     assert(it->second.owner.worker == worker.index);
-    installed = engine_->Install(it->second.key, ticket_id, payload);
+    installed =
+        engine_->CompleteMaterialization(it->second.key, ticket_id, payload);
     ticket = std::move(it->second);
     tickets_.erase(it);
     ticket_by_key_.erase(ticket.key);
   }
-  RaiseHighWater(metrics_.graph_size_high_water, engine_->GraphSize());
+  RaiseHighWater(metrics_.graph_size_high_water, engine_->GetGraphSize());
   if (!installed.accepted) metrics_.publications_rejected.fetch_add(1);
   // The install already counted the leaf value on the node, so the owner
   // backs it up only through the steps above. Waiters select below the node
@@ -200,7 +202,7 @@ bool SearchRun::CompleteRestore(Worker& worker,
                                 MaterializationTicketId ticket_id,
                                 std::span<const uint8_t> record) {
   Ticket ticket;
-  InstallResult restored;
+  MaterializationResult restored;
   {
     absl::MutexLock lock(tickets_mutex_);
     const auto it = tickets_.find(ticket_id);
@@ -213,7 +215,7 @@ bool SearchRun::CompleteRestore(Worker& worker,
     ticket_by_key_.erase(ticket.key);
   }
   metrics_.nodes_restored.fetch_add(1);
-  RaiseHighWater(metrics_.graph_size_high_water, engine_->GraphSize());
+  RaiseHighWater(metrics_.graph_size_high_water, engine_->GetGraphSize());
   // The node has its statistics back and nothing new to back up, so the owner
   // and the waiters all select below it.
   const auto wake = [&](Continuation event) {
@@ -226,8 +228,8 @@ bool SearchRun::CompleteRestore(Worker& worker,
   return true;
 }
 
-void SearchRun::CancelMaterialization(Worker& worker,
-                                      MaterializationTicketId ticket_id) {
+void SearchRun::CancelTicket(Worker& worker,
+                             MaterializationTicketId ticket_id) {
   // Only called on stop, for evaluations that will never be computed. The
   // owner and waiters are still alive and must be woken to cancel.
   Ticket ticket;
@@ -251,7 +253,7 @@ void SearchRun::CancelMaterialization(Worker& worker,
 void SearchRun::CancelPendingRequests(Worker& worker) {
   for (auto* requests : {&worker.unprepared, &worker.loads, &worker.evals}) {
     for (const auto& request : *requests) {
-      CancelMaterialization(worker, request.ticket);
+      CancelTicket(worker, request.ticket);
     }
     requests->clear();
   }
@@ -333,8 +335,7 @@ void SearchRun::ConsumeJob(Worker& worker, std::unique_ptr<Job> job) {
     switch (request.state) {
       case Request::State::kEvaluated:
         SortByPrior(request.payload);
-        CompleteMaterialization(worker, request.ticket,
-                                std::move(request.payload));
+        CompleteTicket(worker, request.ticket, std::move(request.payload));
         break;
       case Request::State::kStoreHit:
         metrics_.node_store_hits.fetch_add(1);
@@ -351,7 +352,7 @@ void SearchRun::ConsumeJob(Worker& worker, std::unique_ptr<Job> job) {
         break;
       case Request::State::kPending:
       case Request::State::kQueued:
-        CancelMaterialization(worker, request.ticket);
+        CancelTicket(worker, request.ticket);
         break;
     }
   }
@@ -394,7 +395,7 @@ void SearchRun::QueueEvictions() {
   if (!Evicts() || Stopping() || evictions_in_flight_.load() > 0) return;
   eviction_requested_.store(false);
   const size_t limit = settings_.graph_node_limit;
-  const size_t size = engine_->GraphSize();
+  const size_t size = engine_->GetGraphSize();
   if (size <= limit) return;
   // Evict down to a low-water mark, so the next round is not due right away.
   const size_t target = limit - limit / 10;

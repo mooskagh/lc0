@@ -805,11 +805,11 @@ TEST(Lc5SearchTest, ContainedTwoFoldDrawStopsAtFirstOccurrence) {
     Visit visit;
     for (size_t i = 0; i < kNodes; ++i) {
       const NodeKey key{100 + i};
-      const auto created = graph.FindOrCreateMaterializing(key, 1);
-      graph.InstallPayload(key, 1,
-                           {.leaf = {.q = 0.5f, .d = 0.0f, .m = 10.0f},
-                            .moves = {move},
-                            .priors = {1.0f}});
+      const auto created = graph.FindOrCreateMaterialization(key, 1);
+      graph.CompleteMaterialization(key, 1,
+                                    {.leaf = {.q = 0.5f, .d = 0.0f, .m = 10.0f},
+                                     .moves = {move},
+                                     .priors = {1.0f}});
       ASSERT_EQ(graph.SelectAndReserve(key, TestParams()).status,
                 SelectStatus::kSelected);
       visit.path.push_back({.key = key,
@@ -820,7 +820,7 @@ TEST(Lc5SearchTest, ContainedTwoFoldDrawStopsAtFirstOccurrence) {
     visit.result = draw;
     if (contained) visit.two_fold_origin = kOrigin;
     Metrics metrics;
-    engine.Backup(visit, metrics);
+    engine.BackupVisit(visit, metrics);
 
     // Nodes from the first occurrence down, and their edges, take the draw;
     // its M grows by one per ply up.
@@ -989,7 +989,8 @@ TEST(Lc5SearchTest, BlockedBackendStopAndAbortDrainReservations) {
     const auto root = Origin();
     const auto moves = root.history.Last().GetBoard().GenerateLegalMoves();
     // All visits reserve the same root edge and share the child ticket.
-    graph.InstallPayload(root.key, 1, {.moves = {moves[0]}, .priors = {1.0f}});
+    graph.CompleteMaterialization(root.key, 1,
+                                  {.moves = {moves[0]}, .priors = {1.0f}});
     auto child = root;
     child.history.Append(moves[0]);
     child.key = MakeNodeKey(child.history, 7);
@@ -1109,7 +1110,7 @@ TEST(Lc5SearchTest, RecordFromAnotherPolicyIsEvaluatedInstead) {
   const auto root = Origin();
   {
     PolicyEngine<PuctAveraging> other(TestParams());
-    other.graph().InstallPayload(
+    other.graph().CompleteMaterialization(
         root.key, 1, {.leaf = {0.5f, 0.0f, 0.0f}, .moves = {}, .priors = {}});
     SeedStore(other.graph(), store);
   }
@@ -1370,7 +1371,8 @@ TEST(Lc5SearchTest, BlockedStoreLoadsDrainAfterStopOrAbort) {
       RecordingResponder responder;
       const auto root = Origin();
       const auto move = root.history.Last().GetBoard().GenerateLegalMoves()[0];
-      graph.InstallPayload(root.key, 1, {.moves = {move}, .priors = {1.0f}});
+      graph.CompleteMaterialization(root.key, 1,
+                                    {.moves = {move}, .priors = {1.0f}});
       auto child = root;
       child.history.Append(move);
       child.key = MakeNodeKey(child.history, 7);
@@ -1512,7 +1514,7 @@ TEST(Lc5SearchTest, AuthorizedEvaluationsBackUpToRootAfterStop) {
   // Uniform priors, so edge order is by move encoding.
   auto legal = root.history.Last().GetBoard().GenerateLegalMoves();
   std::ranges::sort(legal, {}, &Move::raw_data);
-  graph.InstallPayload(
+  graph.CompleteMaterialization(
       root.key, 1,
       {.moves = {legal.begin(), legal.end()},
        .priors = std::vector<float>(legal.size(), 1.0f / legal.size())});
@@ -1650,13 +1652,13 @@ TEST(Lc5SearchTest, RespondsBeforeBlockedEvictionDrains) {
   const auto legal = root.history.Last().GetBoard().GenerateLegalMoves();
   // The one visit takes the first edge and blocks in the backend; the
   // sibling below the second edge is the node to evict.
-  graph.InstallPayload(root.key, 1,
-                       {.moves = {legal[0], legal[1]}, .priors = {0.9f, 0.1f}});
+  graph.CompleteMaterialization(
+      root.key, 1, {.moves = {legal[0], legal[1]}, .priors = {0.9f, 0.1f}});
   auto sibling = root;
   sibling.history.Append(legal[1]);
   sibling.key = MakeNodeKey(sibling.history, 7);
-  graph.InstallPayload(sibling.key, 2,
-                       {.leaf = {0.5f, 0.0f, 0.0f}, .moves = {}, .priors = {}});
+  graph.CompleteMaterialization(
+      sibling.key, 2, {.leaf = {0.5f, 0.0f, 0.0f}, .moves = {}, .priors = {}});
   auto settings = TestSettings(1, 1);
   settings.graph_node_limit = 1;
   SearchRun run(&engine, &backend, &responder, settings, TestTimeManagement(),

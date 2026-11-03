@@ -252,13 +252,13 @@ class SearchRun {
   bool SuspendForMaterialization(Worker& worker, VisitPool::Slot& slot)
       ABSL_EXCLUSIVE_LOCKS_REQUIRED(slot.mutex);
   void PrepareEvaluation(Worker& worker, Request request);
-  void CompleteMaterialization(Worker& worker, MaterializationTicketId ticket,
-                               ExpansionPayload payload);
+  void CompleteTicket(Worker& worker, MaterializationTicketId ticket,
+                      ExpansionPayload payload);
   // Publishes a node restored from the store; returns false, with the ticket
   // still open, if the record was rejected.
   bool CompleteRestore(Worker& worker, MaterializationTicketId ticket,
                        std::span<const uint8_t> record);
-  void CancelMaterialization(Worker& worker, MaterializationTicketId ticket);
+  void CancelTicket(Worker& worker, MaterializationTicketId ticket);
   void CancelPendingRequests(Worker& worker);
   void SubmitJobs(Worker& worker);
   std::unique_ptr<Job> TakeJob(Worker& worker) const;

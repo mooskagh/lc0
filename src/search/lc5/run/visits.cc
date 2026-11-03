@@ -182,7 +182,7 @@ void SearchRun::Resume(Worker& worker, const Continuation& event) {
       visit.state = VisitState::kReadySelect;
       metrics_.visits_resumed.fetch_add(1);
     } else {
-      switch (engine_->OnResume(visit, metrics_)) {
+      switch (engine_->ResumeVisit(visit, metrics_)) {
         case VisitEngine::ResumeAction::kRestart:
           Restart(*slot);
           break;
@@ -316,7 +316,7 @@ void SearchRun::AdvanceVisit(Worker& worker, VisitId id) {
       Cancel(worker, *slot);
       return;
     }
-    if (engine_->Descend(visit, metrics_) ==
+    if (engine_->DescendVisit(visit, metrics_) ==
         VisitEngine::DescendResult::kValuedLeaf) {
       Backup(worker, *slot);
       return;
@@ -328,19 +328,19 @@ void SearchRun::AdvanceVisit(Worker& worker, VisitId id) {
 void SearchRun::Backup(Worker& worker, VisitPool::Slot& slot) {
   Visit& visit = slot.visit;
   visit.state = VisitState::kBackingUp;
-  engine_->Backup(visit, metrics_);
+  engine_->BackupVisit(visit, metrics_);
   RaiseHighWater(metrics_.max_depth, visit.path.size());
   FinishVisit(worker, slot, true);
 }
 
 void SearchRun::Cancel(Worker& worker, VisitPool::Slot& slot) {
-  engine_->Cancel(slot.visit, metrics_);
+  engine_->CancelVisit(slot.visit, metrics_);
   FinishVisit(worker, slot, false);
 }
 
 void SearchRun::Restart(VisitPool::Slot& slot) {
   Visit& visit = slot.visit;
-  engine_->Cancel(visit, metrics_);
+  engine_->CancelVisit(visit, metrics_);
   visit.history = visit.origin.history;
   visit.current_key = visit.origin.key;
   visit.path = visit.origin.backup_prefix;

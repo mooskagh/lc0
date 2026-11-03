@@ -62,7 +62,7 @@ class PolicyEngine final : public VisitEngine {
                         int history_key_length = 7)
       : params_(params), history_key_length_(history_key_length) {}
 
-  std::string_view name() const override { return P::kName; }
+  std::string_view GetName() const override { return P::kName; }
   void Configure(const OptionsDict& options,
                  const BackendAttributes& backend) override {
     params_ = P::Params::FromOptions(options, backend);
@@ -73,26 +73,28 @@ class PolicyEngine final : public VisitEngine {
     if (store_) store_->Clear();
   }
 
-  DescendResult Descend(Visit& visit, Metrics& metrics) override;
-  void Backup(const Visit& visit, Metrics& metrics) override;
-  void Cancel(const Visit& visit, Metrics& metrics) override;
-  ResumeAction OnResume(Visit& visit, Metrics& metrics) override;
-  void Report(const VisitOrigin& root, ThinkingInfo& info) const override;
-  RootStats Root(NodeKey root) const override;
+  DescendResult DescendVisit(Visit& visit, Metrics& metrics) override;
+  void BackupVisit(const Visit& visit, Metrics& metrics) override;
+  void CancelVisit(const Visit& visit, Metrics& metrics) override;
+  ResumeAction ResumeVisit(Visit& visit, Metrics& metrics) override;
+  void FillThinkingInfo(const VisitOrigin& root,
+                        ThinkingInfo& info) const override;
+  RootStats GetRootStats(NodeKey root) const override;
 
-  FindOrCreateResult FindOrCreateMaterializing(
+  FindOrCreateResult FindOrCreateMaterialization(
       NodeKey key, MaterializationTicketId ticket) override {
-    return graph_.FindOrCreateMaterializing(key, ticket);
+    return graph_.FindOrCreateMaterialization(key, ticket);
   }
-  InstallResult Install(NodeKey key, MaterializationTicketId ticket,
-                        const ExpansionPayload& payload) override {
-    return graph_.InstallPayload(key, ticket, payload);
+  MaterializationResult CompleteMaterialization(
+      NodeKey key, MaterializationTicketId ticket,
+      const ExpansionPayload& payload) override {
+    return graph_.CompleteMaterialization(key, ticket, payload);
   }
   void CancelMaterialization(NodeKey key,
                              MaterializationTicketId ticket) override {
     graph_.CancelMaterialization(key, ticket);
   }
-  size_t GraphSize() const override { return graph_.Size(); }
+  size_t GetGraphSize() const override { return graph_.Size(); }
 
   void SetStore(std::unique_ptr<NodeStore> store) override {
     store_ = std::move(store);
@@ -103,8 +105,9 @@ class PolicyEngine final : public VisitEngine {
     assert(store_);
     return store_->LoadBatch(keys);
   }
-  InstallResult RestoreFromRecord(NodeKey key, MaterializationTicketId ticket,
-                                  std::span<const uint8_t> record) override {
+  MaterializationResult RestoreFromRecord(
+      NodeKey key, MaterializationTicketId ticket,
+      std::span<const uint8_t> record) override {
     auto node = DecodeNode<P>(record);
     if (!node) return {0, false};
     return graph_.RestoreNode(key, ticket, std::move(*node));
@@ -165,8 +168,8 @@ class PolicyEngine final : public VisitEngine {
 };
 
 template <typename P>
-VisitEngine::DescendResult PolicyEngine<P>::Descend(Visit& visit,
-                                                    Metrics& metrics) {
+VisitEngine::DescendResult PolicyEngine<P>::DescendVisit(Visit& visit,
+                                                         Metrics& metrics) {
   for (;;) {
     if (visit.path.empty() || visit.path.back().key != visit.current_key) {
       visit.path.push_back({.key = visit.current_key});
@@ -235,8 +238,8 @@ bool PolicyEngine<P>::Advance(Visit& visit, PathStep& step, Move move,
 }
 
 template <typename P>
-VisitEngine::ResumeAction PolicyEngine<P>::OnResume(Visit& visit,
-                                                    Metrics& metrics) {
+VisitEngine::ResumeAction PolicyEngine<P>::ResumeVisit(Visit& visit,
+                                                       Metrics& metrics) {
   switch (P::OnResume(params_)) {
     case WaiterResume::kSelect:
       return ResumeAction::kSelect;
@@ -271,7 +274,7 @@ VisitEngine::ResumeAction PolicyEngine<P>::OnResume(Visit& visit,
 }
 
 template <typename P>
-void PolicyEngine<P>::Backup(const Visit& visit, Metrics& metrics) {
+void PolicyEngine<P>::BackupVisit(const Visit& visit, Metrics& metrics) {
   typename P::Message message = P::Leaf(visit.result, visit.result_exact);
   for (size_t i = visit.path.size(); i-- > 0;) {
     const PathStep& step = visit.path[i];
@@ -307,7 +310,7 @@ void PolicyEngine<P>::Backup(const Visit& visit, Metrics& metrics) {
 }
 
 template <typename P>
-void PolicyEngine<P>::Cancel(const Visit& visit, Metrics& metrics) {
+void PolicyEngine<P>::CancelVisit(const Visit& visit, Metrics& metrics) {
   for (const PathStep& step : visit.path) {
     if (step.selected_move &&
         graph_.CancelEdge(step.key, step.generation, *step.selected_move) ==
@@ -318,8 +321,8 @@ void PolicyEngine<P>::Cancel(const Visit& visit, Metrics& metrics) {
 }
 
 template <typename P>
-void PolicyEngine<P>::Report(const VisitOrigin& root,
-                             ThinkingInfo& info) const {
+void PolicyEngine<P>::FillThinkingInfo(const VisitOrigin& root,
+                                       ThinkingInfo& info) const {
   auto node = graph_.SnapshotNode(root.key);
   if (node) P::Describe(*node, params_, info);
   std::vector<Move>& pv = info.pv;
@@ -344,7 +347,7 @@ void PolicyEngine<P>::Report(const VisitOrigin& root,
 }
 
 template <typename P>
-RootStats PolicyEngine<P>::Root(NodeKey root) const {
+RootStats PolicyEngine<P>::GetRootStats(NodeKey root) const {
   RootStats stats;
   const auto node = graph_.SnapshotNode(root);
   if (!node) return stats;

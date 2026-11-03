@@ -497,8 +497,8 @@ TEST(Lc5PuctTest, PoliciesShareThePuctOptions) {
   EXPECT_EQ(PolicyName(parser.GetOptionsDict()), "puct-dag");
   EXPECT_EQ(PuctDag::Params::FromOptions(parser.GetOptionsDict(), kMlh).cpuct,
             3.0f);
-  EXPECT_EQ(MakeVisitEngine("puct")->name(), "puct");
-  EXPECT_EQ(MakeVisitEngine("puct-dag")->name(), "puct-dag");
+  EXPECT_EQ(MakeVisitEngine("puct")->GetName(), "puct");
+  EXPECT_EQ(MakeVisitEngine("puct-dag")->GetName(), "puct-dag");
 }
 
 using DagNode = NodeState<PuctDag>;

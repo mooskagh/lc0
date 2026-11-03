@@ -71,7 +71,7 @@ SearchRun::SearchRun(VisitEngine* engine, Backend* backend,
   for (int i = 0; i < settings_.threads; ++i) {
     workers_.push_back(std::make_unique<Worker>(i));
   }
-  root_visits_at_start_ = engine_->Root(root_.key).visits;
+  root_visits_at_start_ = engine_->GetRootStats(root_.key).visits;
   // Kept unless the search stops early with a clock budget.
   may_stop_early_ = !go_params.infinite && !go_params.ponder;
   node_limit_ =
@@ -146,7 +146,7 @@ void SearchRun::Controller() {
     std::optional<steady_clock::time_point> next_check;
     if (!Stopping()) {
       next_check = time_manager_.deadline();
-      const RootStats root = engine_->Root(root_.key);
+      const RootStats root = engine_->GetRootStats(root_.key);
       if (time_manager_.ShouldStop(now) ||
           (node_limit_ && metrics_.visits_completed.load() >= *node_limit_)) {
         Stop();
@@ -277,8 +277,8 @@ ThinkingInfo SearchRun::BuildInfo(bool final) const {
   info.eps = ms > 0 ? static_cast<int>(evals * 1000 / ms) : 0;
   info.depth = static_cast<int>(metrics_.max_depth.load());
   info.seldepth = static_cast<int>(metrics_.max_selected_depth.load());
-  engine_->Report(root_, info);
-  info.comment = metrics_.Format(engine_->GraphSize(), visits_.active(),
+  engine_->FillThinkingInfo(root_, info);
+  info.comment = metrics_.Format(engine_->GetGraphSize(), visits_.active(),
                                  eval_jobs_.Size());
   if (final) info.comment += " final";
   return info;

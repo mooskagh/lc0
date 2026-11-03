@@ -78,14 +78,14 @@ TEST(Lc5GraphTest, PackedPriorRoundsMonotonically) {
 TEST(Lc5GraphTest, CancellationOnlyErasesMatchingPlaceholder) {
   Graph graph;
   const NodeKey key{123};
-  graph.FindOrCreateMaterializing(key, 7);
+  graph.FindOrCreateMaterialization(key, 7);
   EXPECT_FALSE(graph.CancelMaterialization(key, 8));
   EXPECT_TRUE(graph.CancelMaterialization(key, 7));
   EXPECT_EQ(graph.Size(), 0u);
-  graph.FindOrCreateMaterializing(key, 8);
+  graph.FindOrCreateMaterialization(key, 8);
   EXPECT_FALSE(graph.CancelMaterialization(key, 7));
-  graph.InstallPayload(key, 8,
-                       {.moves = {M(kFileA, kFileA)}, .priors = {1.0f}});
+  graph.CompleteMaterialization(
+      key, 8, {.moves = {M(kFileA, kFileA)}, .priors = {1.0f}});
   EXPECT_FALSE(graph.CancelMaterialization(key, 8));
   ASSERT_TRUE(graph.SnapshotNode(key));
   EXPECT_EQ(graph.SnapshotNode(key)->lifecycle, NodeLifecycle::kExpanded);
@@ -135,9 +135,9 @@ TEST(Lc5GraphTest, PublicationAcceptanceIsIndependentOfReturnedGeneration) {
   const ExpansionPayload payload{.moves = {move}, .priors = {1.0f}};
   const ExpansionPayload replacement{.moves = {M(kFileB, kFileB)},
                                      .priors = {0.5f}};
-  const auto created = graph.FindOrCreateMaterializing(key, 7);
+  const auto created = graph.FindOrCreateMaterialization(key, 7);
 
-  auto installed = graph.InstallPayload(key, 8, replacement);
+  auto installed = graph.CompleteMaterialization(key, 8, replacement);
   EXPECT_EQ(installed.generation, created.generation);
   EXPECT_FALSE(installed.accepted);
   auto node = graph.SnapshotNode(key);
@@ -146,7 +146,7 @@ TEST(Lc5GraphTest, PublicationAcceptanceIsIndependentOfReturnedGeneration) {
   EXPECT_EQ(node->ticket, 7u);
   EXPECT_TRUE(node->edges.empty());
 
-  installed = graph.InstallPayload(key, 7, payload);
+  installed = graph.CompleteMaterialization(key, 7, payload);
   EXPECT_EQ(installed.generation, created.generation);
   EXPECT_TRUE(installed.accepted);
   ASSERT_EQ(graph.SelectAndReserve(key, TestParams()).status,
@@ -160,7 +160,7 @@ TEST(Lc5GraphTest, PublicationAcceptanceIsIndependentOfReturnedGeneration) {
   // as success; only `accepted` distinguishes them. Rejection must not
   // disturb statistics or live reservations.
   for (const auto ticket : {7u, 8u}) {
-    installed = graph.InstallPayload(key, ticket, replacement);
+    installed = graph.CompleteMaterialization(key, ticket, replacement);
     EXPECT_EQ(installed.generation, created.generation);
     EXPECT_FALSE(installed.accepted);
     node = graph.SnapshotNode(key);
@@ -179,18 +179,19 @@ TEST(Lc5GraphTest, PublicationAcceptanceIsIndependentOfReturnedGeneration) {
             UpdateResult::kApplied);
 
   ASSERT_TRUE(graph.Erase(key));
-  const auto recreated = graph.FindOrCreateMaterializing(key, 9);
+  const auto recreated = graph.FindOrCreateMaterialization(key, 9);
   ASSERT_NE(recreated.generation, created.generation);
-  installed = graph.InstallPayload(key, 7, payload);
+  installed = graph.CompleteMaterialization(key, 7, payload);
   EXPECT_EQ(installed.generation, recreated.generation);
   EXPECT_FALSE(installed.accepted);
   EXPECT_EQ(graph.SnapshotNode(key)->ticket, 9u);
-  installed = graph.InstallPayload(key, 9, replacement);
+  installed = graph.CompleteMaterialization(key, 9, replacement);
   EXPECT_EQ(installed.generation, recreated.generation);
   EXPECT_TRUE(installed.accepted);
 
   // The insertion path also reports acceptance, not just existing tickets.
-  EXPECT_TRUE(graph.InstallPayload(NodeKey{456}, 10, payload).accepted);
+  EXPECT_TRUE(
+      graph.CompleteMaterialization(NodeKey{456}, 10, payload).accepted);
   EXPECT_EQ(graph.Size(), 2u);
 }
 
@@ -200,7 +201,7 @@ TEST(Lc5GraphTest, SelectionReportsLifecycleAndGeneration) {
   EXPECT_EQ(graph.SelectAndReserve(key, TestParams()).status,
             SelectStatus::kMissing);
 
-  const auto created = graph.FindOrCreateMaterializing(key, 7);
+  const auto created = graph.FindOrCreateMaterialization(key, 7);
   const auto materializing = graph.SelectAndReserve(key, TestParams());
   EXPECT_EQ(materializing.status, SelectStatus::kMaterializing);
   EXPECT_EQ(materializing.generation, created.generation);
@@ -208,7 +209,7 @@ TEST(Lc5GraphTest, SelectionReportsLifecycleAndGeneration) {
 
   const ExpansionPayload payload{.moves = {M(kFileA, kFileA)},
                                  .priors = {1.0f}};
-  graph.InstallPayload(key, 7, payload);
+  graph.CompleteMaterialization(key, 7, payload);
   const auto selected = graph.SelectAndReserve(key, TestParams());
   EXPECT_EQ(selected.status, SelectStatus::kSelected);
   EXPECT_EQ(selected.move, M(kFileA, kFileA));
@@ -225,8 +226,8 @@ TEST(Lc5GraphTest, SelectionReportsLifecycleAndGeneration) {
 TEST(Lc5GraphTest, SelectionReportsExpandedTerminalKind) {
   Graph graph;
   const NodeKey key{123};
-  const auto created = graph.FindOrCreateMaterializing(key, 7);
-  graph.InstallPayload(
+  const auto created = graph.FindOrCreateMaterialization(key, 7);
+  graph.CompleteMaterialization(
       key, 7,
       ExpansionPayload{
           .terminal = TerminalKind::kCheckmate, .moves = {}, .priors = {}});
@@ -245,14 +246,15 @@ TEST(Lc5GraphTest, ProvenBoundsGoUpAndStopSelectionWhenAsked) {
   const NodeKey parent{1};
   const NodeKey child{2};
   const Move move = M(kFileA, kFileA);
-  const auto parent_created = graph.FindOrCreateMaterializing(parent, 1);
-  graph.InstallPayload(parent, 1, {.moves = {move}, .priors = {1.0f}});
-  const auto child_created = graph.FindOrCreateMaterializing(child, 2);
-  graph.InstallPayload(child, 2,
-                       {.terminal = TerminalKind::kCheckmate,
-                        .leaf = TerminalValue(TerminalKind::kCheckmate),
-                        .moves = {},
-                        .priors = {}});
+  const auto parent_created = graph.FindOrCreateMaterialization(parent, 1);
+  graph.CompleteMaterialization(parent, 1, {.moves = {move}, .priors = {1.0f}});
+  const auto child_created = graph.FindOrCreateMaterialization(child, 2);
+  graph.CompleteMaterialization(
+      child, 2,
+      {.terminal = TerminalKind::kCheckmate,
+       .leaf = TerminalValue(TerminalKind::kCheckmate),
+       .moves = {},
+       .priors = {}});
   // The install proves the checkmate; the leaf's own backup keeps it.
   ASSERT_EQ(graph.SelectAndReserve(parent, TestParams()).move, move);
   const auto from_child = graph.BackupNode(
@@ -294,16 +296,16 @@ TEST(Lc5GraphTest, ProvenBoundsGoUpAndStopSelectionWhenAsked) {
 TEST(Lc5GraphTest, SelectionReturnsNewGenerationAfterRecreation) {
   Graph graph;
   const NodeKey key{123};
-  const auto created = graph.FindOrCreateMaterializing(key, 7);
+  const auto created = graph.FindOrCreateMaterialization(key, 7);
   const ExpansionPayload payload{.moves = {M(kFileA, kFileA)},
                                  .priors = {1.0f}};
-  graph.InstallPayload(key, 7, payload);
+  graph.CompleteMaterialization(key, 7, payload);
   ASSERT_TRUE(graph.Erase(key));
   EXPECT_FALSE(graph.SnapshotNode(key));
 
-  const auto recreated = graph.FindOrCreateMaterializing(key, 8);
+  const auto recreated = graph.FindOrCreateMaterialization(key, 8);
   ASSERT_NE(recreated.generation, created.generation);
-  graph.InstallPayload(key, 8, payload);
+  graph.CompleteMaterialization(key, 8, payload);
   const auto selected = graph.SelectAndReserve(key, TestParams());
   EXPECT_EQ(selected.status, SelectStatus::kSelected);
   EXPECT_EQ(selected.generation, recreated.generation);
@@ -316,25 +318,25 @@ TEST(Lc5GraphTest, SelectionReturnsNewGenerationAfterRecreation) {
 TEST(Lc5GraphTest, SizeCountsOnlyNewNodes) {
   Graph graph;
   EXPECT_EQ(graph.Size(), 0u);
-  EXPECT_TRUE(graph.FindOrCreateMaterializing(NodeKey{1}, 7).created);
+  EXPECT_TRUE(graph.FindOrCreateMaterialization(NodeKey{1}, 7).created);
   EXPECT_EQ(graph.Size(), 1u);
-  EXPECT_FALSE(graph.FindOrCreateMaterializing(NodeKey{1}, 8).created);
+  EXPECT_FALSE(graph.FindOrCreateMaterialization(NodeKey{1}, 8).created);
   EXPECT_EQ(graph.Size(), 1u);
-  EXPECT_TRUE(graph.FindOrCreateMaterializing(NodeKey{2}, 9).created);
+  EXPECT_TRUE(graph.FindOrCreateMaterialization(NodeKey{2}, 9).created);
   EXPECT_EQ(graph.Size(), 2u);
 
   ExpansionPayload payload{.moves = {M(kFileA, kFileA)}, .priors = {1.0f}};
-  graph.InstallPayload(NodeKey{1}, 8, payload);
+  graph.CompleteMaterialization(NodeKey{1}, 8, payload);
   EXPECT_EQ(graph.SnapshotNode(NodeKey{1})->lifecycle,
             NodeLifecycle::kMaterializing);
   EXPECT_EQ(graph.Size(), 2u);
-  graph.InstallPayload(NodeKey{1}, 7, payload);
+  graph.CompleteMaterialization(NodeKey{1}, 7, payload);
   EXPECT_EQ(graph.SnapshotNode(NodeKey{1})->lifecycle,
             NodeLifecycle::kExpanded);
   EXPECT_EQ(graph.Size(), 2u);
-  graph.InstallPayload(NodeKey{1}, 7, payload);
+  graph.CompleteMaterialization(NodeKey{1}, 7, payload);
   EXPECT_EQ(graph.Size(), 2u);
-  EXPECT_FALSE(graph.FindOrCreateMaterializing(NodeKey{1}, 10).created);
+  EXPECT_FALSE(graph.FindOrCreateMaterialization(NodeKey{1}, 10).created);
   EXPECT_EQ(graph.Size(), 2u);
 }
 
@@ -342,9 +344,11 @@ TEST(Lc5GraphTest, SizeCountsPayloadInsertionAndSuccessfulErasure) {
   Graph graph;
   NodeKey key{123};
   ExpansionPayload payload{.moves = {M(kFileA, kFileA)}, .priors = {1.0f}};
-  const auto generation = graph.InstallPayload(key, 7, payload).generation;
+  const auto generation =
+      graph.CompleteMaterialization(key, 7, payload).generation;
   EXPECT_EQ(graph.Size(), 1u);
-  EXPECT_EQ(graph.InstallPayload(key, 7, payload).generation, generation);
+  EXPECT_EQ(graph.CompleteMaterialization(key, 7, payload).generation,
+            generation);
   EXPECT_EQ(graph.Size(), 1u);
   EXPECT_FALSE(graph.Erase(NodeKey{456}));
   EXPECT_EQ(graph.Size(), 1u);
@@ -352,9 +356,10 @@ TEST(Lc5GraphTest, SizeCountsPayloadInsertionAndSuccessfulErasure) {
   EXPECT_EQ(graph.Size(), 0u);
   EXPECT_FALSE(graph.Erase(key));
   EXPECT_EQ(graph.Size(), 0u);
-  EXPECT_NE(graph.InstallPayload(key, 8, payload).generation, generation);
+  EXPECT_NE(graph.CompleteMaterialization(key, 8, payload).generation,
+            generation);
   EXPECT_EQ(graph.Size(), 1u);
-  EXPECT_TRUE(graph.FindOrCreateMaterializing(NodeKey{456}, 9).created);
+  EXPECT_TRUE(graph.FindOrCreateMaterialization(NodeKey{456}, 9).created);
   EXPECT_EQ(graph.Size(), 2u);
   EXPECT_TRUE(graph.Erase(NodeKey{456}));
   EXPECT_EQ(graph.Size(), 1u);
@@ -368,9 +373,9 @@ TEST(Lc5GraphTest, ClearResetsSizeAndAllowsReuse) {
   // Populate multiple shards with both materializing and expanded nodes.
   for (uint64_t hash = 0; hash < 32; ++hash) {
     if (hash % 2 == 0) {
-      graph.FindOrCreateMaterializing(NodeKey{hash}, hash + 1);
+      graph.FindOrCreateMaterialization(NodeKey{hash}, hash + 1);
     } else {
-      graph.InstallPayload(NodeKey{hash}, hash + 1, payload);
+      graph.CompleteMaterialization(NodeKey{hash}, hash + 1, payload);
     }
   }
   EXPECT_EQ(graph.Size(), 32u);
@@ -380,9 +385,9 @@ TEST(Lc5GraphTest, ClearResetsSizeAndAllowsReuse) {
   EXPECT_TRUE(graph.SnapshotAllForTesting().empty());
   graph.Clear();
   EXPECT_EQ(graph.Size(), 0u);
-  EXPECT_TRUE(graph.FindOrCreateMaterializing(NodeKey{0}, 33).created);
+  EXPECT_TRUE(graph.FindOrCreateMaterialization(NodeKey{0}, 33).created);
   EXPECT_EQ(graph.Size(), 1u);
-  graph.InstallPayload(NodeKey{1}, 34, payload);
+  graph.CompleteMaterialization(NodeKey{1}, 34, payload);
   EXPECT_EQ(graph.Size(), 2u);
   EXPECT_TRUE(graph.Erase(NodeKey{0}));
   EXPECT_EQ(graph.Size(), 1u);
@@ -393,7 +398,7 @@ TEST(Lc5GraphTest, ClearResetsSizeAndAllowsReuse) {
 TEST(Lc5GraphTest, LateMaterializationPreservesPublishedEdges) {
   Graph graph;
   const NodeKey key{123};
-  const auto created = graph.FindOrCreateMaterializing(key, 7);
+  const auto created = graph.FindOrCreateMaterialization(key, 7);
   ASSERT_TRUE(created.created);
   const auto stale_snapshot = graph.SnapshotNode(key);
   ASSERT_TRUE(stale_snapshot);
@@ -401,7 +406,7 @@ TEST(Lc5GraphTest, LateMaterializationPreservesPublishedEdges) {
 
   const Move move = M(kFileA, kFileA);
   const ExpansionPayload payload{.moves = {move}, .priors = {1.0f}};
-  graph.InstallPayload(key, 7, payload);
+  graph.CompleteMaterialization(key, 7, payload);
   ASSERT_EQ(graph.SelectAndReserve(key, TestParams()).status,
             SelectStatus::kSelected);
   ASSERT_EQ(
@@ -413,7 +418,7 @@ TEST(Lc5GraphTest, LateMaterializationPreservesPublishedEdges) {
 
   // A caller with the old materializing snapshot must observe publication,
   // not create a second materialization. Even a late payload cannot reset it.
-  const auto late = graph.FindOrCreateMaterializing(key, 8);
+  const auto late = graph.FindOrCreateMaterialization(key, 8);
   EXPECT_FALSE(late.created);
   EXPECT_EQ(late.lifecycle, NodeLifecycle::kExpanded);
   EXPECT_EQ(late.ticket, 0u);
@@ -421,8 +426,9 @@ TEST(Lc5GraphTest, LateMaterializationPreservesPublishedEdges) {
   const ExpansionPayload replacement{.moves = {M(kFileB, kFileB)},
                                      .priors = {1.0f}};
   for (const auto ticket : {7u, 8u}) {
-    EXPECT_EQ(graph.InstallPayload(key, ticket, replacement).generation,
-              created.generation);
+    EXPECT_EQ(
+        graph.CompleteMaterialization(key, ticket, replacement).generation,
+        created.generation);
     const auto node = graph.SnapshotNode(key);
     ASSERT_TRUE(node);
     ASSERT_EQ(node->edges.size(), 1u);
@@ -443,13 +449,13 @@ TEST(Lc5GraphTest, AcceptedInstallCountsLeafValueOnce) {
   const ExpansionPayload payload{.leaf = {0.5f, 0.25f, 6.0f},
                                  .moves = {M(kFileA, kFileA)},
                                  .priors = {1.0f}};
-  graph.FindOrCreateMaterializing(key, 7);
-  EXPECT_FALSE(graph.InstallPayload(key, 8, payload).accepted);
+  graph.FindOrCreateMaterialization(key, 7);
+  EXPECT_FALSE(graph.CompleteMaterialization(key, 8, payload).accepted);
   auto node = graph.SnapshotNode(key);
   ASSERT_TRUE(node);
   EXPECT_EQ(node->stats.visits, 0u);
 
-  EXPECT_TRUE(graph.InstallPayload(key, 7, payload).accepted);
+  EXPECT_TRUE(graph.CompleteMaterialization(key, 7, payload).accepted);
   node = graph.SnapshotNode(key);
   ASSERT_TRUE(node);
   EXPECT_EQ(node->stats.visits, 1u);
@@ -459,7 +465,7 @@ TEST(Lc5GraphTest, AcceptedInstallCountsLeafValueOnce) {
 
   // Duplicate and wrong-ticket publications do not count the leaf again.
   for (const auto ticket : {7u, 8u}) {
-    EXPECT_FALSE(graph.InstallPayload(key, ticket, payload).accepted);
+    EXPECT_FALSE(graph.CompleteMaterialization(key, ticket, payload).accepted);
     node = graph.SnapshotNode(key);
     ASSERT_TRUE(node);
     EXPECT_EQ(node->stats.visits, 1u);
@@ -470,12 +476,13 @@ TEST(Lc5GraphTest, AcceptedInstallCountsLeafValueOnce) {
 TEST(Lc5GraphTest, GenerationChecksProtectRecreatedNodes) {
   Graph graph;
   NodeKey key{123};
-  auto first = graph.FindOrCreateMaterializing(key, 7);
+  auto first = graph.FindOrCreateMaterialization(key, 7);
   ASSERT_TRUE(first.created);
   ExpansionPayload payload{.moves = {M(kFileA, kFileA)}, .priors = {1.0f}};
-  EXPECT_EQ(graph.InstallPayload(key, 7, payload).generation, first.generation);
+  EXPECT_EQ(graph.CompleteMaterialization(key, 7, payload).generation,
+            first.generation);
   EXPECT_TRUE(graph.Erase(key));
-  auto second = graph.FindOrCreateMaterializing(key, 8);
+  auto second = graph.FindOrCreateMaterialization(key, 8);
   EXPECT_NE(first.generation, second.generation);
   const auto stale = graph.BackupNode(key, first.generation, {}, std::nullopt);
   EXPECT_EQ(stale.node, UpdateResult::kStale);
@@ -488,8 +495,8 @@ TEST(Lc5GraphTest, BackupCommitsNodeAndOptionalEdgeSums) {
   Graph graph;
   NodeKey key{456};
   Move move = M(kFileA, kFileA);
-  auto created = graph.FindOrCreateMaterializing(key, 1);
-  graph.InstallPayload(key, 1, {.moves = {move}, .priors = {1.0f}});
+  auto created = graph.FindOrCreateMaterialization(key, 1);
+  graph.CompleteMaterialization(key, 1, {.moves = {move}, .priors = {1.0f}});
   auto result = graph.BackupNode(key, created.generation, {0.25f, 0.5f, 3.0f},
                                  std::nullopt);
   EXPECT_EQ(result.node, UpdateResult::kApplied);
@@ -528,12 +535,12 @@ TEST(Lc5GraphTest, BackupCanSendTheNodesCurrentValue) {
   Graph graph;
   NodeKey key{457};
   Move move = M(kFileA, kFileA);
-  auto created = graph.FindOrCreateMaterializing(key, 1);
+  auto created = graph.FindOrCreateMaterialization(key, 1);
   // The install counts the leaf value once: Q 0.25, D 0.5, M 2.
-  graph.InstallPayload(key, 1,
-                       {.leaf = {.q = 0.25f, .d = 0.5f, .m = 2.0f},
-                        .moves = {move},
-                        .priors = {1.0f}});
+  graph.CompleteMaterialization(key, 1,
+                                {.leaf = {.q = 0.25f, .d = 0.5f, .m = 2.0f},
+                                 .moves = {move},
+                                 .priors = {1.0f}});
   ASSERT_EQ(graph.SelectAndReserve(key, TestParams()).status,
             SelectStatus::kSelected);
   const auto result = graph.BackupNode(key, created.generation,
@@ -561,16 +568,16 @@ TEST(Lc5GraphTest, BackupRejectsMissingAndStaleGenerations) {
   Graph graph;
   NodeKey key{456};
   Move move = M(kFileA, kFileA);
-  auto first = graph.FindOrCreateMaterializing(key, 1);
+  auto first = graph.FindOrCreateMaterialization(key, 1);
   ASSERT_TRUE(graph.Erase(key));
   auto result =
       graph.BackupNode(key, first.generation, {0.25f, 0.5f, 3.0f}, move);
   EXPECT_EQ(result.node, UpdateResult::kMissing);
   EXPECT_EQ(result.edge, UpdateResult::kMissing);
   EXPECT_FALSE(graph.SnapshotNode(key));
-  auto second = graph.FindOrCreateMaterializing(key, 2);
+  auto second = graph.FindOrCreateMaterialization(key, 2);
   ASSERT_NE(first.generation, second.generation);
-  graph.InstallPayload(key, 2, {.moves = {move}, .priors = {1.0f}});
+  graph.CompleteMaterialization(key, 2, {.moves = {move}, .priors = {1.0f}});
   ASSERT_EQ(graph.SelectAndReserve(key, TestParams()).status,
             SelectStatus::kSelected);
   result = graph.BackupNode(key, first.generation, {0.25f, 0.5f, 3.0f}, move);
@@ -596,8 +603,8 @@ TEST(Lc5GraphTest, BackupCommitsNodeDespiteEdgeFailure) {
   Graph graph;
   NodeKey key{456};
   Move move = M(kFileA, kFileA);
-  auto created = graph.FindOrCreateMaterializing(key, 1);
-  graph.InstallPayload(key, 1, {.moves = {move}, .priors = {1.0f}});
+  auto created = graph.FindOrCreateMaterialization(key, 1);
+  graph.CompleteMaterialization(key, 1, {.moves = {move}, .priors = {1.0f}});
   auto result =
       graph.BackupNode(key, created.generation, {0.25f, 0.5f, 3.0f}, move);
   EXPECT_EQ(result.node, UpdateResult::kApplied);
@@ -623,11 +630,11 @@ TEST(Lc5GraphTest, BackupCommitsNodeDespiteEdgeFailure) {
 TEST(Lc5GraphTest, ReservationsAreExactAndCancellationDoesNotCommit) {
   Graph graph;
   NodeKey key{456};
-  auto created = graph.FindOrCreateMaterializing(key, 1);
+  auto created = graph.FindOrCreateMaterialization(key, 1);
   Move first = M(kFileA, kFileA);
   Move second = M(kFileB, kFileB);
   ExpansionPayload payload{.moves = {first, second}, .priors = {0.5f, 0.5f}};
-  graph.InstallPayload(key, 1, payload);
+  graph.CompleteMaterialization(key, 1, payload);
   auto params = TestParams();
   auto selection1 = graph.SelectAndReserve(key, params);
   auto selection2 = graph.SelectAndReserve(key, params);
@@ -659,9 +666,9 @@ ExpansionPayload FourEdges() {
 TEST(Lc5GraphTest, TriedPrefixGrowsInPriorOrder) {
   Graph graph;
   const NodeKey key{456};
-  const auto created = graph.FindOrCreateMaterializing(key, 1);
+  const auto created = graph.FindOrCreateMaterialization(key, 1);
   const auto payload = FourEdges();
-  graph.InstallPayload(key, 1, payload);
+  graph.CompleteMaterialization(key, 1, payload);
   // Untried edges score above every tried one, so each is tried in turn.
   auto params = TestParams();
   params.fpu_value = 1.0f;
@@ -681,9 +688,9 @@ TEST(Lc5GraphTest, TriedPrefixGrowsInPriorOrder) {
 TEST(Lc5GraphTest, CancelledTriedEdgeIsStillSelectable) {
   Graph graph;
   const NodeKey key{456};
-  const auto created = graph.FindOrCreateMaterializing(key, 1);
+  const auto created = graph.FindOrCreateMaterialization(key, 1);
   const auto payload = FourEdges();
-  graph.InstallPayload(key, 1, payload);
+  graph.CompleteMaterialization(key, 1, payload);
   auto params = TestParams();
   params.fpu_value = 1.0f;
   EXPECT_EQ(graph.SelectAndReserve(key, params).move, payload.moves[0]);
@@ -702,11 +709,11 @@ TEST(Lc5GraphTest, FirstUntriedEdgeCompetesWithTriedOnes) {
     SCOPED_TRACE(q);
     Graph graph;
     const NodeKey key{456};
-    const auto created = graph.FindOrCreateMaterializing(key, 1);
+    const auto created = graph.FindOrCreateMaterialization(key, 1);
     const ExpansionPayload payload{
         .moves = {M(kFileA, kFileA), M(kFileB, kFileB), M(kFileC, kFileC)},
         .priors = {0.5f, 0.3f, 0.2f}};
-    graph.InstallPayload(key, 1, payload);
+    graph.CompleteMaterialization(key, 1, payload);
     const auto params = TestParams();
     ASSERT_EQ(graph.SelectAndReserve(key, params).move, payload.moves[0]);
     graph.BackupNode(key, created.generation, {q, 0.0f, 0.0f},
@@ -722,11 +729,11 @@ TEST(Lc5GraphTest, FirstUntriedEdgeCompetesWithTriedOnes) {
 TEST(Lc5GraphTest, ReselectionMovesOnlyTheWaitersReservation) {
   Graph graph;
   const NodeKey key{456};
-  const auto created = graph.FindOrCreateMaterializing(key, 1);
+  const auto created = graph.FindOrCreateMaterialization(key, 1);
   const ExpansionPayload payload{
       .moves = {M(kFileA, kFileA), M(kFileB, kFileB), M(kFileC, kFileC)},
       .priors = {0.8f, 0.1f, 0.1f}};
-  graph.InstallPayload(key, 1, payload);
+  graph.CompleteMaterialization(key, 1, payload);
   const Move a = payload.moves[0];
   const Move b = payload.moves[1];
   const auto params = TestParams();
@@ -773,10 +780,10 @@ TEST(Lc5GraphTest, IncomingParentsKeepIndependentEdgeStatistics) {
   Graph graph;
   Move move = M(kFileC, kFileC);
   ExpansionPayload payload{.moves = {move}, .priors = {1.0f}};
-  auto p1 = graph.FindOrCreateMaterializing(NodeKey{1}, 1);
-  graph.FindOrCreateMaterializing(NodeKey{2}, 2);
-  graph.InstallPayload(NodeKey{1}, 1, payload);
-  graph.InstallPayload(NodeKey{2}, 2, payload);
+  auto p1 = graph.FindOrCreateMaterialization(NodeKey{1}, 1);
+  graph.FindOrCreateMaterialization(NodeKey{2}, 2);
+  graph.CompleteMaterialization(NodeKey{1}, 1, payload);
+  graph.CompleteMaterialization(NodeKey{2}, 2, payload);
   auto params = TestParams();
   graph.SelectAndReserve(NodeKey{1}, params);
   graph.BackupNode(NodeKey{1}, p1.generation, {}, move);
@@ -786,7 +793,7 @@ TEST(Lc5GraphTest, IncomingParentsKeepIndependentEdgeStatistics) {
 
 // A node with two of its three edges tried, visits and proven bounds.
 Graph::Node BackedUpNode(Graph& graph, NodeKey key) {
-  graph.InstallPayload(
+  graph.CompleteMaterialization(
       key, 1,
       {.leaf = {0.5f, 0.25f, 6.0f},
        .moves = {M(kFileA, kFileA), M(kFileB, kFileB), M(kFileC, kFileC)},
@@ -832,11 +839,12 @@ TEST(Lc5NodeRecordTest, RoundTripKeepsStatisticsAndEdges) {
   EXPECT_TRUE(decoded->tried[0].stats.bounds.Proven());
 
   // A terminal node has no edges.
-  graph.InstallPayload(NodeKey{43}, 1,
-                       {.terminal = TerminalKind::kCheckmate,
-                        .leaf = TerminalValue(TerminalKind::kCheckmate),
-                        .moves = {},
-                        .priors = {}});
+  graph.CompleteMaterialization(
+      NodeKey{43}, 1,
+      {.terminal = TerminalKind::kCheckmate,
+       .leaf = TerminalValue(TerminalKind::kCheckmate),
+       .moves = {},
+       .priors = {}});
   const auto terminal =
       DecodeNode<PuctAveraging>(EncodeNode(*graph.SnapshotNode(NodeKey{43})));
   ASSERT_TRUE(terminal);
@@ -871,7 +879,7 @@ TEST(Lc5GraphTest, RestoreKeepsStatisticsUnderANewGeneration) {
       graph.EraseIfUnchanged(key, original.generation, original.version));
   EXPECT_EQ(graph.Size(), 0u);
 
-  const auto placeholder = graph.FindOrCreateMaterializing(key, 9);
+  const auto placeholder = graph.FindOrCreateMaterialization(key, 9);
   ASSERT_TRUE(placeholder.created);
   EXPECT_NE(placeholder.generation, original.generation);
   auto decoded = DecodeNode<PuctAveraging>(record);
@@ -940,10 +948,10 @@ TEST(Lc5GraphTest, EvictCandidatesSkipReservedMaterializingAndKeptNodes) {
   const auto params = TestParams();
   const NodeKey keep{1}, reserved{2}, materializing{3}, idle{4};
   for (const NodeKey key : {keep, reserved, idle}) {
-    graph.InstallPayload(key, 1,
-                         {.moves = {M(kFileA, kFileA)}, .priors = {1.0f}});
+    graph.CompleteMaterialization(
+        key, 1, {.moves = {M(kFileA, kFileA)}, .priors = {1.0f}});
   }
-  graph.FindOrCreateMaterializing(materializing, 5);
+  graph.FindOrCreateMaterialization(materializing, 5);
   ASSERT_EQ(graph.SelectAndReserve(reserved, params).status,
             SelectStatus::kSelected);
   size_t cursor = 0;
@@ -968,8 +976,8 @@ TEST(Lc5GraphTest, EvictCandidatesPreferFewVisits) {
     if ((i * 11400714819323198485ull) >> 54 == 0) keys.push_back(NodeKey{i});
   }
   for (size_t i = 0; i < keys.size(); ++i) {
-    graph.InstallPayload(keys[i], 1,
-                         {.moves = {M(kFileA, kFileA)}, .priors = {1.0f}});
+    graph.CompleteMaterialization(
+        keys[i], 1, {.moves = {M(kFileA, kFileA)}, .priors = {1.0f}});
     for (size_t visit = 0; visit < 3 - i % 3 + (i == 3 ? 5 : 0); ++visit) {
       const auto selected = graph.SelectAndReserve(keys[i], params);
       graph.BackupNode(keys[i], selected.generation,
