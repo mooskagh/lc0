@@ -43,7 +43,6 @@ class Settings {
     int eval_threads;           // Concurrent evaluators (and store threads).
     int minibatch_size;         // Target NN batch size.
     int max_active_visits;      // VisitPool capacity: live visits, hard cap.
-    int history_key_length;     // Earlier positions hashed into a NodeKey.
     int max_batch_delay_ms;     // Longest wait to fill a partial batch.
     float active_visits_ratio;  // Live visits <= 16 + this * root visits.
     // Graph nodes kept in RAM; above it, nodes move to the NodeStore. 0 means
@@ -56,13 +55,15 @@ class Settings {
   // Fills automatic (zero) sizes from the backend and validates them.
   Resolved Resolve(const BackendAttributes& backend) const;
 
-  int history_key_length() const { return configured_.history_key_length; }
+  // Earlier positions hashed into a NodeKey.
+  int history_key_length() const { return history_key_length_; }
   const TimeManager::Config& time_management() const {
     return time_management_;
   }
 
  private:
   Resolved configured_;  // As set by the user; zero sizes are automatic.
+  int history_key_length_;
   TimeManager::Config time_management_;
 };
 

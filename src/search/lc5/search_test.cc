@@ -118,7 +118,6 @@ Settings::Resolved TestSettings(int threads = 1, int capacity = 4) {
           .eval_threads = 1,
           .minibatch_size = 4,
           .max_active_visits = capacity,
-          .history_key_length = 7,
           .max_batch_delay_ms = 0,
           .active_visits_ratio = 0.0f};
 }
@@ -390,6 +389,25 @@ class BlockingStore final : public NodeStore {
   std::atomic<size_t> load_calls_{0};
 };
 
+// Records every expanded node of `graph` in `store`.
+template <typename P>
+void SeedStore(const GameGraph<P>& graph, RecordingStore& store) {
+  for (const auto& [key, node] : graph.SnapshotAllForTesting()) {
+    if (node.lifecycle == NodeLifecycle::kExpanded) {
+      store.entries.insert_or_assign(key, EncodeNode(node));
+    }
+  }
+}
+
+// Gives `engine` a new store and returns it.
+template <typename S, typename... Args>
+S& InstallStore(VisitEngine& engine, Args&&... args) {
+  auto store = std::make_unique<S>(std::forward<Args>(args)...);
+  S& result = *store;
+  engine.SetStore(std::move(store));
+  return result;
+}
+
 template <typename P>
 void ExpectDrained(const SearchRun& run, const GameGraph<P>& graph) {
   ASSERT_TRUE(run.Finished());
@@ -432,12 +450,12 @@ TEST(Lc5SearchTest, ExpiredTimeBudgetStopsAndDrains) {
         GoParams{.wtime = 0, .btime = 0}, GoParams{.movetime = 60000}}) {
     PolicyEngine<PuctAveraging> engine(TestParams());
     auto& graph = engine.graph();
-    RecordingStore store;
+    auto& store = InstallStore<RecordingStore>(engine);
     ControlledBackend backend;
     RecordingResponder responder;
     const auto root = Origin();
     // A synthetic old origin also verifies that preparation time is charged.
-    SearchRun run(&engine, &store, &backend, &responder, TestSettings(),
+    SearchRun run(&engine, &backend, &responder, TestSettings(),
                   TestTimeManagement(), root, params,
                   std::chrono::steady_clock::now() - std::chrono::minutes(2));
     ASSERT_TRUE(run.Admit(root));
@@ -456,11 +474,11 @@ TEST(Lc5SearchTest, ExpiredTimeBudgetStopsAndDrains) {
 TEST(Lc5SearchTest, AbortSuppressesOutputWithExpiredTimeBudget) {
   PolicyEngine<PuctAveraging> engine(TestParams());
   auto& graph = engine.graph();
-  RecordingStore store;
+  InstallStore<RecordingStore>(engine);
   ControlledBackend backend;
   RecordingResponder responder;
   const auto root = Origin();
-  SearchRun run(&engine, &store, &backend, &responder, TestSettings(),
+  SearchRun run(&engine, &backend, &responder, TestSettings(),
                 TestTimeManagement(), root, GoParams{.movetime = 0},
                 std::chrono::steady_clock::now() - std::chrono::minutes(2));
   ASSERT_TRUE(run.Admit(root));
@@ -493,7 +511,7 @@ TEST(Lc5SearchTest, ExplicitMovetimeAndInfiniteOverrideExhaustedClock) {
       ControlledBackend backend;
       RecordingResponder responder;
       const auto root = Origin(fen);
-      SearchRun run(&engine, nullptr, &backend, &responder, TestSettings(),
+      SearchRun run(&engine, &backend, &responder, TestSettings(),
                     TestTimeManagement(), root, params,
                     std::chrono::steady_clock::now());
       run.Start();
@@ -515,8 +533,8 @@ TEST(Lc5SearchTest, PonderIgnoresZeroNodeAndTimeLimits) {
   RecordingResponder responder;
   const auto root = Origin();
   SearchRun run(
-      &engine, nullptr, &backend, &responder, TestSettings(1, 1),
-      TestTimeManagement(), root,
+      &engine, &backend, &responder, TestSettings(1, 1), TestTimeManagement(),
+      root,
       GoParams{
           .wtime = 0, .btime = 0, .nodes = 0, .movetime = 0, .ponder = true},
       std::chrono::steady_clock::now() - std::chrono::minutes(2));
@@ -549,7 +567,7 @@ TEST(Lc5SearchTest, ExactNodeBudgetWithMoreWorkersThanCapacity) {
     ControlledBackend backend;
     RecordingResponder responder;
     auto root = Origin();
-    SearchRun run(&engine, nullptr, &backend, &responder, TestSettings(8, 2),
+    SearchRun run(&engine, &backend, &responder, TestSettings(8, 2),
                   TestTimeManagement(), root, GoParams{.nodes = nodes},
                   std::chrono::steady_clock::now());
     run.Start();
@@ -596,7 +614,7 @@ TEST(Lc5SearchTest, ReportsCentipawnsAndWdlFromRootSideToMove) {
       ControlledBackend backend;
       backend.q = test.q;
       RecordingResponder responder;
-      SearchRun run(&engine, nullptr, &backend, &responder, TestSettings(),
+      SearchRun run(&engine, &backend, &responder, TestSettings(),
                     TestTimeManagement(), Origin(fen), GoParams{.nodes = 1},
                     std::chrono::steady_clock::now());
       run.Start();
@@ -620,7 +638,7 @@ TEST(Lc5SearchTest, OwnerBacksUpLeafWhileWaitersResumeSelection) {
   ControlledBackend backend;
   RecordingResponder responder;
   auto root = Origin();
-  SearchRun run(&engine, nullptr, &backend, &responder, TestSettings(),
+  SearchRun run(&engine, &backend, &responder, TestSettings(),
                 TestTimeManagement(), root, GoParams{.nodes = 4},
                 std::chrono::steady_clock::now());
   // One worker consumes all four admissions before submitting the root job.
@@ -657,9 +675,8 @@ TEST(Lc5SearchTest, WaitersDrainAndCountOnceInEveryResumeMode) {
       RecordingResponder responder;
       auto root = Origin();
       constexpr int64_t kNodes = 64;
-      SearchRun run(&engine, nullptr, &backend, &responder,
-                    TestSettings(threads, 16), TestTimeManagement(), root,
-                    GoParams{.nodes = kNodes},
+      SearchRun run(&engine, &backend, &responder, TestSettings(threads, 16),
+                    TestTimeManagement(), root, GoParams{.nodes = kNodes},
                     std::chrono::steady_clock::now());
       run.Start();
       run.Wait();
@@ -677,7 +694,6 @@ TEST(Lc5SearchTest, PuctDagDrainsAndKeepsNodeMeans) {
   // Kings and blocked pawns: with HistoryKeyLength 0, king routes that
   // commute share a node from the fourth ply.
   auto settings = TestSettings();
-  settings.history_key_length = 0;
   PositionHistory history;
   history.Reset(Position::FromFen("k7/p7/P7/8/8/8/8/7K w - - 0 1"));
   const VisitOrigin root{.key = MakeNodeKey(history, 0),
@@ -687,13 +703,13 @@ TEST(Lc5SearchTest, PuctDagDrainsAndKeepsNodeMeans) {
     SCOPED_TRACE(threads);
     settings.threads = threads;
     settings.max_active_visits = 16;
-    PolicyEngine<PuctDag> engine(TestParams());
+    PolicyEngine<PuctDag> engine(TestParams(), /*history_key_length=*/0);
     auto& graph = engine.graph();
     ControlledBackend backend;
     RecordingResponder responder;
     constexpr int64_t kNodes = 2000;
-    SearchRun run(&engine, nullptr, &backend, &responder, settings,
-                  TestTimeManagement(), root, GoParams{.nodes = kNodes},
+    SearchRun run(&engine, &backend, &responder, settings, TestTimeManagement(),
+                  root, GoParams{.nodes = kNodes},
                   std::chrono::steady_clock::now());
     run.Start();
     run.Wait();
@@ -753,7 +769,7 @@ TEST(Lc5SearchTest, StickyEndgamesPlaysMateAndStopsEarly) {
     RecordingResponder responder;
     // Without the option the search runs to the limit, so keep it small.
     const int nodes = sticky ? 1'000'000 : 500;
-    SearchRun run(&engine, nullptr, &backend, &responder, TestSettings(),
+    SearchRun run(&engine, &backend, &responder, TestSettings(),
                   TestTimeManagement(), root, GoParams{.nodes = nodes},
                   std::chrono::steady_clock::now());
     run.Start();
@@ -803,9 +819,8 @@ TEST(Lc5SearchTest, ContainedTwoFoldDrawStopsAtFirstOccurrence) {
     visit.path.push_back({.key = NodeKey{200}});
     visit.result = draw;
     if (contained) visit.two_fold_origin = kOrigin;
-    const auto settings = TestSettings();
     Metrics metrics;
-    engine.Backup(visit, VisitContext{settings, metrics});
+    engine.Backup(visit, metrics);
 
     // Nodes from the first occurrence down, and their edges, take the draw;
     // its M grows by one per ply up.
@@ -852,9 +867,8 @@ TEST(Lc5SearchTest, TwoFoldDrawsFromRealCyclesDrain) {
       ControlledBackend backend;
       RecordingResponder responder;
       constexpr int64_t kNodes = 2000;
-      SearchRun run(&engine, nullptr, &backend, &responder,
-                    TestSettings(threads, 16), TestTimeManagement(), root,
-                    GoParams{.nodes = kNodes},
+      SearchRun run(&engine, &backend, &responder, TestSettings(threads, 16),
+                    TestTimeManagement(), root, GoParams{.nodes = kNodes},
                     std::chrono::steady_clock::now());
       run.Start();
       run.Wait();
@@ -889,7 +903,7 @@ TEST(Lc5SearchTest, TerminalOwnerAndWaitersNeverEvaluate) {
     ControlledBackend backend;
     RecordingResponder responder;
     const auto root = Origin(test.fen);
-    SearchRun run(&engine, nullptr, &backend, &responder, TestSettings(),
+    SearchRun run(&engine, &backend, &responder, TestSettings(),
                   TestTimeManagement(), root, GoParams{.nodes = 4},
                   std::chrono::steady_clock::now());
     for (int i = 0; i < 4; ++i) ASSERT_TRUE(run.Admit(root));
@@ -929,7 +943,7 @@ TEST(Lc5SearchTest, ImmediateAndMixedResultsKeepJobStorageAlive) {
     ControlledBackend backend(cache);
     RecordingResponder responder;
     const auto root = Origin();
-    SearchRun run(&engine, nullptr, &backend, &responder, TestSettings(),
+    SearchRun run(&engine, &backend, &responder, TestSettings(),
                   TestTimeManagement(), root, GoParams{.nodes = 4},
                   std::chrono::steady_clock::now());
     std::vector<VisitOrigin> origins;
@@ -969,7 +983,7 @@ TEST(Lc5SearchTest, BlockedBackendStopAndAbortDrainReservations) {
     SCOPED_TRACE(abort);
     PolicyEngine<PuctAveraging> engine(TestParams());
     auto& graph = engine.graph();
-    RecordingStore store;
+    auto& store = InstallStore<RecordingStore>(engine);
     ControlledBackend backend(ControlledBackend::Cache::kNone, true);
     RecordingResponder responder;
     const auto root = Origin();
@@ -979,7 +993,7 @@ TEST(Lc5SearchTest, BlockedBackendStopAndAbortDrainReservations) {
     auto child = root;
     child.history.Append(moves[0]);
     child.key = MakeNodeKey(child.history, 7);
-    SearchRun run(&engine, &store, &backend, &responder, TestSettings(),
+    SearchRun run(&engine, &backend, &responder, TestSettings(),
                   TestTimeManagement(), root,
                   GoParams{.nodes = 4, .infinite = true},
                   std::chrono::steady_clock::now());
@@ -1036,32 +1050,33 @@ TEST(Lc5SearchTest, BlockedBackendStopAndAbortDrainReservations) {
 }
 
 TEST(Lc5SearchTest, SavedGraphRestoresWithStatisticsInFreshGraph) {
-  RecordingStore store;
   ControlledBackend backend;
   const auto root = Origin();
   PolicyEngine<PuctAveraging> saved_engine(TestParams());
   {
+    auto& saved_store = InstallStore<RecordingStore>(saved_engine);
     RecordingResponder responder;
-    SearchRun run(&saved_engine, &store, &backend, &responder, TestSettings(),
+    SearchRun run(&saved_engine, &backend, &responder, TestSettings(),
                   TestTimeManagement(), root, GoParams{.nodes = 3},
                   std::chrono::steady_clock::now());
     run.Start();
     run.Wait();
     ExpectDrained(run, saved_engine.graph());
-    EXPECT_EQ(store.stored, 0u);
+    EXPECT_EQ(saved_store.stored, 0u);
   }
-  saved_engine.SaveAll(store);
-  EXPECT_EQ(store.stored, saved_engine.graph().Size());
-  const auto saved = *saved_engine.graph().SnapshotNode(root.key);
-  ASSERT_EQ(saved.stats.visits, 3u);
-  const size_t evaluated = backend.inputs.load();
-
   // A fresh graph restores the root with its statistics instead of
   // evaluating it, and the new visit goes below it.
   PolicyEngine<PuctAveraging> engine(TestParams());
   auto& graph = engine.graph();
+  auto& store = InstallStore<RecordingStore>(engine);
+  SeedStore(saved_engine.graph(), store);
+  EXPECT_EQ(store.entries.size(), saved_engine.graph().Size());
+  const auto saved = *saved_engine.graph().SnapshotNode(root.key);
+  ASSERT_EQ(saved.stats.visits, 3u);
+  const size_t evaluated = backend.inputs.load();
+
   RecordingResponder responder;
-  SearchRun run(&engine, &store, &backend, &responder, TestSettings(),
+  SearchRun run(&engine, &backend, &responder, TestSettings(),
                 TestTimeManagement(), root, GoParams{.nodes = 1},
                 std::chrono::steady_clock::now());
   run.Start();
@@ -1088,19 +1103,19 @@ TEST(Lc5SearchTest, SavedGraphRestoresWithStatisticsInFreshGraph) {
 }
 
 TEST(Lc5SearchTest, RecordFromAnotherPolicyIsEvaluatedInstead) {
-  RecordingStore store;
+  PolicyEngine<PuctDag> engine(TestParams());
+  auto& store = InstallStore<RecordingStore>(engine);
   ControlledBackend backend;
   const auto root = Origin();
   {
     PolicyEngine<PuctAveraging> other(TestParams());
     other.graph().InstallPayload(
         root.key, 1, {.leaf = {0.5f, 0.0f, 0.0f}, .moves = {}, .priors = {}});
-    other.SaveAll(store);
+    SeedStore(other.graph(), store);
   }
-  ASSERT_EQ(store.stored, 1u);
-  PolicyEngine<PuctDag> engine(TestParams());
+  ASSERT_EQ(store.entries.size(), 1u);
   RecordingResponder responder;
-  SearchRun run(&engine, &store, &backend, &responder, TestSettings(),
+  SearchRun run(&engine, &backend, &responder, TestSettings(),
                 TestTimeManagement(), root, GoParams{.nodes = 1},
                 std::chrono::steady_clock::now());
   run.Start();
@@ -1126,9 +1141,8 @@ TEST(Lc5SearchTest, RootBootstrapFlushesDependencyWithoutWaitingForTimer) {
     const auto root = Origin();
     auto settings = TestSettings(4);
     settings.max_batch_delay_ms = delay;
-    SearchRun run(&engine, nullptr, &backend, &responder, settings,
-                  TestTimeManagement(), root, GoParams{.nodes = 1},
-                  std::chrono::steady_clock::now());
+    SearchRun run(&engine, &backend, &responder, settings, TestTimeManagement(),
+                  root, GoParams{.nodes = 1}, std::chrono::steady_clock::now());
     run.Start();
     const bool entered = backend.WaitForCompute();
     if (entered) {
@@ -1159,7 +1173,7 @@ TEST(Lc5SearchTest, CollectionFlushesWhileAnotherWorkerIsBlockedInStore) {
     // First load misses; the other worker's load remains executing. With a
     // positive delay it prevents dependency-starvation detection, so the
     // collector must actually time out. Zero must flush without that timer.
-    BlockingStore store(2, false);
+    auto& store = InstallStore<BlockingStore>(engine, 2, false);
     ControlledBackend backend(ControlledBackend::Cache::kNone, true);
     RecordingResponder responder;
     const auto root = Origin();
@@ -1169,9 +1183,8 @@ TEST(Lc5SearchTest, CollectionFlushesWhileAnotherWorkerIsBlockedInStore) {
     other.key = MakeNodeKey(other.history, 7);
     auto settings = TestSettings(2, 2);
     settings.max_batch_delay_ms = delay;
-    SearchRun run(&engine, &store, &backend, &responder, settings,
-                  TestTimeManagement(), root, GoParams{.nodes = 2},
-                  std::chrono::steady_clock::now());
+    SearchRun run(&engine, &backend, &responder, settings, TestTimeManagement(),
+                  root, GoParams{.nodes = 2}, std::chrono::steady_clock::now());
     ASSERT_TRUE(run.Admit(root));
     ASSERT_TRUE(run.Admit(other));
     run.Start();
@@ -1210,7 +1223,7 @@ TEST(Lc5SearchTest, CollectionFlushesWhileAnotherWorkerIsBlockedInStore) {
 TEST(Lc5SearchTest, PositiveDelayCollectsAnotherWorkersStoreMissIntoSameBatch) {
   PolicyEngine<PuctAveraging> engine(TestParams());
   auto& graph = engine.graph();
-  BlockingStore store(2, false);
+  auto& store = InstallStore<BlockingStore>(engine, 2, false);
   ControlledBackend backend(ControlledBackend::Cache::kNone, true);
   RecordingResponder responder;
   const auto root = Origin();
@@ -1220,9 +1233,8 @@ TEST(Lc5SearchTest, PositiveDelayCollectsAnotherWorkersStoreMissIntoSameBatch) {
   auto settings = TestSettings(2, 2);
   settings.minibatch_size = 2;
   settings.max_batch_delay_ms = 60000;
-  SearchRun run(&engine, &store, &backend, &responder, settings,
-                TestTimeManagement(), root, GoParams{.nodes = 2},
-                std::chrono::steady_clock::now());
+  SearchRun run(&engine, &backend, &responder, settings, TestTimeManagement(),
+                root, GoParams{.nodes = 2}, std::chrono::steady_clock::now());
   ASSERT_TRUE(run.Admit(root));
   ASSERT_TRUE(run.Admit(other));
   run.Start();
@@ -1272,10 +1284,9 @@ TEST(Lc5SearchTest, MultiworkerMixedCacheResultsRespectBatchAndItemCredits) {
       settings.eval_threads = test.evaluators;
       settings.minibatch_size = test.batch_size;
       settings.max_batch_delay_ms = delay;
-      SearchRun run(&engine, nullptr, &backend, &responder, settings,
-                    TestTimeManagement(), root,
-                    GoParams{.nodes = test.capacity},
-                    std::chrono::steady_clock::now());
+      SearchRun run(
+          &engine, &backend, &responder, settings, TestTimeManagement(), root,
+          GoParams{.nodes = test.capacity}, std::chrono::steady_clock::now());
       std::vector<VisitOrigin> origins;
       const auto moves = root.history.Last().GetBoard().GenerateLegalMoves();
       ASSERT_EQ(moves.size(), 20u);
@@ -1354,7 +1365,7 @@ TEST(Lc5SearchTest, BlockedStoreLoadsDrainAfterStopOrAbort) {
       SCOPED_TRACE(abort);
       PolicyEngine<PuctAveraging> engine(TestParams());
       auto& graph = engine.graph();
-      BlockingStore store;
+      auto& store = InstallStore<BlockingStore>(engine);
       ControlledBackend backend(ControlledBackend::Cache::kAll);
       RecordingResponder responder;
       const auto root = Origin();
@@ -1376,7 +1387,7 @@ TEST(Lc5SearchTest, BlockedStoreLoadsDrainAfterStopOrAbort) {
         }
         store.recording.entries.emplace(child.key, EncodeNode(stored));
       }
-      SearchRun run(&engine, &store, &backend, &responder, TestSettings(),
+      SearchRun run(&engine, &backend, &responder, TestSettings(),
                     TestTimeManagement(), root,
                     GoParams{.nodes = 4, .infinite = true},
                     std::chrono::steady_clock::now());
@@ -1463,8 +1474,8 @@ TEST(Lc5SearchTest, QueuedBacklogCannotComputeAgainAfterStop) {
     const auto root = Origin();
     auto settings = TestSettings(4, 20);
     settings.eval_threads = evaluators;
-    SearchRun run(&engine, nullptr, &backend, &responder, settings,
-                  TestTimeManagement(), root, GoParams{.nodes = 20},
+    SearchRun run(&engine, &backend, &responder, settings, TestTimeManagement(),
+                  root, GoParams{.nodes = 20},
                   std::chrono::steady_clock::now());
     AdmitChildren(run, root, 20);
     run.Start();
@@ -1505,7 +1516,7 @@ TEST(Lc5SearchTest, AuthorizedEvaluationsBackUpToRootAfterStop) {
       root.key, 1,
       {.moves = {legal.begin(), legal.end()},
        .priors = std::vector<float>(legal.size(), 1.0f / legal.size())});
-  SearchRun run(&engine, nullptr, &backend, &responder, TestSettings(4, 20),
+  SearchRun run(&engine, &backend, &responder, TestSettings(4, 20),
                 TestTimeManagement(), root, GoParams{.nodes = 20},
                 std::chrono::steady_clock::now());
   for (int i = 0; i < 20; ++i) ASSERT_TRUE(run.Admit(root));
@@ -1543,9 +1554,8 @@ TEST(Lc5SearchTest, StopDuringAddInputKeepsOnlyImmediateResults) {
   const auto root = Origin();
   auto settings = TestSettings(1, 4);
   settings.minibatch_size = 8;
-  SearchRun run(&engine, nullptr, &backend, &responder, settings,
-                TestTimeManagement(), root, GoParams{.nodes = 4},
-                std::chrono::steady_clock::now());
+  SearchRun run(&engine, &backend, &responder, settings, TestTimeManagement(),
+                root, GoParams{.nodes = 4}, std::chrono::steady_clock::now());
   const auto origins = AdmitChildren(run, root, 4);
   run.Start();
   // The first job has an immediate hit and an AddInput that will enqueue only
@@ -1583,9 +1593,8 @@ TEST(Lc5SearchTest, RetainedNonfittingJobIsCancelledAfterAuthorizedBatch) {
   const auto root = Origin();
   auto settings = TestSettings(1, 6);
   settings.minibatch_size = 5;
-  SearchRun run(&engine, nullptr, &backend, &responder, settings,
-                TestTimeManagement(), root, GoParams{.nodes = 6},
-                std::chrono::steady_clock::now());
+  SearchRun run(&engine, &backend, &responder, settings, TestTimeManagement(),
+                root, GoParams{.nodes = 6}, std::chrono::steady_clock::now());
   const auto origins = AdmitChildren(run, root, 6);
   run.Start();
   // Three whole jobs of two inputs: after adding four inputs, the collector
@@ -1612,7 +1621,7 @@ TEST(Lc5SearchTest, AbortOverridesRepeatedStopBeforeCommitment) {
   ControlledBackend backend;
   RecordingResponder responder;
   const auto root = Origin();
-  SearchRun run(&engine, nullptr, &backend, &responder, TestSettings(),
+  SearchRun run(&engine, &backend, &responder, TestSettings(),
                 TestTimeManagement(), root, GoParams{.nodes = 4},
                 std::chrono::steady_clock::now());
   AdmitChildren(run, root, 4);
@@ -1634,7 +1643,7 @@ TEST(Lc5SearchTest, AbortOverridesRepeatedStopBeforeCommitment) {
 TEST(Lc5SearchTest, RespondsBeforeBlockedEvictionDrains) {
   PolicyEngine<PuctAveraging> engine(TestParams());
   auto& graph = engine.graph();
-  BlockingStore store(0);
+  auto& store = InstallStore<BlockingStore>(engine, 0);
   ControlledBackend backend(ControlledBackend::Cache::kNone, true);
   RecordingResponder responder;
   const auto root = Origin();
@@ -1650,9 +1659,8 @@ TEST(Lc5SearchTest, RespondsBeforeBlockedEvictionDrains) {
                        {.leaf = {0.5f, 0.0f, 0.0f}, .moves = {}, .priors = {}});
   auto settings = TestSettings(1, 1);
   settings.graph_node_limit = 1;
-  SearchRun run(&engine, &store, &backend, &responder, settings,
-                TestTimeManagement(), root, GoParams{.nodes = 1},
-                std::chrono::steady_clock::now());
+  SearchRun run(&engine, &backend, &responder, settings, TestTimeManagement(),
+                root, GoParams{.nodes = 1}, std::chrono::steady_clock::now());
   run.Start();
   const bool persisting = store.persist.WaitForArrival();
   const bool computing = backend.WaitForCompute();
@@ -1679,14 +1687,14 @@ TEST(Lc5SearchTest, EvictionKeepsGraphSmallAndLosesNoVisits) {
     SCOPED_TRACE(threads);
     PolicyEngine<PuctAveraging> engine(TestParams());
     auto& graph = engine.graph();
-    MemoryNodeStore store;
+    auto& store = InstallStore<MemoryNodeStore>(engine);
     ControlledBackend backend;
     RecordingResponder responder;
     const auto root = Origin();
     auto settings = TestSettings(threads, 8);
     settings.graph_node_limit = 32;
-    SearchRun run(&engine, &store, &backend, &responder, settings,
-                  TestTimeManagement(), root, GoParams{.nodes = 3000},
+    SearchRun run(&engine, &backend, &responder, settings, TestTimeManagement(),
+                  root, GoParams{.nodes = 3000},
                   std::chrono::steady_clock::now());
     run.Start();
     run.Wait();
@@ -1719,7 +1727,7 @@ TEST(Lc5SearchTest, SingleNodeSearchPlaysTopPriorMove) {
   // Black to move, so the PV move is flipped back for UCI.
   const auto root =
       Origin("rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1");
-  SearchRun run(&engine, nullptr, &backend, &responder, TestSettings(),
+  SearchRun run(&engine, &backend, &responder, TestSettings(),
                 TestTimeManagement(), root, GoParams{.nodes = 1},
                 std::chrono::steady_clock::now());
   run.Start();
@@ -1744,7 +1752,7 @@ TEST(Lc5SearchTest,
   ControlledBackend backend;
   RecordingResponder responder;
   const auto root = Origin();
-  SearchRun run(&engine, nullptr, &backend, &responder, TestSettings(),
+  SearchRun run(&engine, &backend, &responder, TestSettings(),
                 TestTimeManagement(), root, GoParams{},
                 std::chrono::steady_clock::now());
   ASSERT_TRUE(run.Admit(root));

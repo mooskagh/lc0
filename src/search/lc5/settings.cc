@@ -91,11 +91,11 @@ Settings::Settings(const OptionsDict& options)
                   .eval_threads = options.Get<int>(kEvalThreads),
                   .minibatch_size = options.Get<int>(kMinibatchSize),
                   .max_active_visits = options.Get<int>(kMaxActiveVisits),
-                  .history_key_length = options.Get<int>(kHistoryKeyLength),
                   .max_batch_delay_ms = options.Get<int>(kMaxBatchDelay),
                   .active_visits_ratio = options.Get<float>(kActiveVisitsRatio),
                   .graph_node_limit =
                       static_cast<size_t>(options.Get<int>(kGraphNodeLimit))},
+      history_key_length_(options.Get<int>(kHistoryKeyLength)),
       time_management_{
           .move_overhead_ms = options.Get<int>(kMoveOverhead),
           .alphazero_time_pct = options.Get<float>(kAlphazeroTimePct),

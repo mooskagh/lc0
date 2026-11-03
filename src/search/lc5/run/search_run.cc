@@ -52,13 +52,13 @@ Move ToUci(Move move, const Position& position) {
 
 }  // namespace
 
-SearchRun::SearchRun(VisitEngine* engine, NodeStore* store, Backend* backend,
+SearchRun::SearchRun(VisitEngine* engine, Backend* backend,
                      UciResponder* responder, Settings::Resolved settings,
                      TimeManager::Config time_management, VisitOrigin root,
                      GoParams go_params, steady_clock::time_point start_time,
                      int64_t saved_ms)
     : engine_(engine),
-      store_(store),
+      has_store_(engine->HasStore()),
       backend_(backend),
       responder_(responder),
       settings_(settings),
@@ -90,7 +90,7 @@ SearchRun::~SearchRun() {
 void SearchRun::Start() {
   if (started_.exchange(true)) return;
   for (int i = 0; i < settings_.eval_threads; ++i) {
-    if (store_) store_threads_.emplace_back(&SearchRun::StoreWorker, this);
+    if (has_store_) store_threads_.emplace_back(&SearchRun::StoreWorker, this);
     evaluator_threads_.emplace_back(&SearchRun::EvaluatorWorker, this);
   }
   for (auto& worker : workers_) {
@@ -277,7 +277,7 @@ ThinkingInfo SearchRun::BuildInfo(bool final) const {
   info.eps = ms > 0 ? static_cast<int>(evals * 1000 / ms) : 0;
   info.depth = static_cast<int>(metrics_.max_depth.load());
   info.seldepth = static_cast<int>(metrics_.max_selected_depth.load());
-  engine_->Report(root_, context_, info);
+  engine_->Report(root_, info);
   info.comment = metrics_.Format(engine_->GraphSize(), visits_.active(),
                                  eval_jobs_.Size());
   if (final) info.comment += " final";

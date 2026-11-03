@@ -29,6 +29,8 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <memory>
+#include <optional>
 #include <span>
 #include <string_view>
 #include <vector>
@@ -37,26 +39,11 @@
 #include "neural/backend.h"
 #include "search/lc5/graph/graph.h"
 #include "search/lc5/metrics.h"
-#include "search/lc5/settings.h"
 #include "search/lc5/store/node_store.h"
 #include "search/lc5/visit.h"
 #include "utils/optionsdict.h"
 
 namespace lczero::lc5 {
-
-// The record of a node chosen for eviction, and the node's generation and
-// version when the record was taken.
-struct EvictCandidate {
-  StoredNode stored;
-  uint64_t generation;
-  uint32_t version;
-};
-
-// Per-search state the engine reads or updates on each call.
-struct VisitContext {
-  const Settings::Resolved& settings;
-  Metrics& metrics;
-};
 
 // Root numbers the controller needs for limits and early stopping.
 struct RootStats {
@@ -75,7 +62,7 @@ struct RootStats {
 // thread-safe; each call locks at most one graph shard at a time.
 class VisitEngine {
  public:
-  enum class DescendResult { kMaterialize, kBackup };
+  enum class DescendResult { kUnexpandedLeaf, kValuedLeaf };
   // kSelect: continue selecting from visit.current_key; kRestart: restart
   // from the root; kBackup: visit.result holds a value to back up (an
   // in-search repetition reached by reselection).
@@ -89,25 +76,21 @@ class VisitEngine {
   // while no search runs.
   virtual void Configure(const OptionsDict& options,
                          const BackendAttributes& backend) = 0;
-  // Drops the whole graph; called only while no search runs.
+  // Drops the whole graph and its store; called only while no search runs.
   virtual void Clear() = 0;
 
-  // Selects and reserves edges from visit.current_key downwards, extending
-  // visit.path and visit.history, until the last path step is a node that has
-  // to be materialized (kMaterialize) or visit.result holds a value to back up
-  // (kBackup: a terminal node or an in-search repetition).
-  virtual DescendResult Descend(Visit& visit, const VisitContext& ctx) = 0;
+  // Selects and reserves edges from visit.current_key down to a node to
+  // materialize, or to a leaf whose value is in visit.result.
+  virtual DescendResult Descend(Visit& visit, Metrics& metrics) = 0;
   // Backs visit.result up visit.path.
-  virtual void Backup(const Visit& visit, const VisitContext& ctx) = 0;
+  virtual void Backup(const Visit& visit, Metrics& metrics) = 0;
   // Releases every edge reservation on visit.path without committing a visit.
-  virtual void Cancel(const Visit& visit, const VisitContext& ctx) = 0;
-  // A waiter's node finished materializing and it is about to select again;
-  // visit.result holds that node's leaf value. The engine may move the visit
-  // to another edge at the node's parent first.
-  virtual ResumeAction OnResume(Visit& visit, const VisitContext& ctx) = 0;
+  virtual void Cancel(const Visit& visit, Metrics& metrics) = 0;
+  // A waiter's node finished materializing, with its leaf value in
+  // visit.result. May first move the visit to another edge at the parent.
+  virtual ResumeAction OnResume(Visit& visit, Metrics& metrics) = 0;
   // Fills the score, WDL and PV of `info`.
-  virtual void Report(const VisitOrigin& root, const VisitContext& ctx,
-                      ThinkingInfo& info) const = 0;
+  virtual void Report(const VisitOrigin& root, ThinkingInfo& info) const = 0;
   virtual RootStats Root(NodeKey root) const = 0;
 
   // Node lifecycle for the materialization machinery.
@@ -117,27 +100,26 @@ class VisitEngine {
   // first visit.
   virtual InstallResult Install(NodeKey key, MaterializationTicketId ticket,
                                 const ExpansionPayload& payload) = 0;
+  // Drops the node if it is still materializing under `ticket`; on stop.
   virtual void CancelMaterialization(NodeKey key,
                                      MaterializationTicketId ticket) = 0;
   virtual size_t GraphSize() const = 0;
 
-  // Node records for the NodeStore, the graph's cold tier.
-  //
-  // Expands the node from a record that CollectEvictable or SaveAll produced,
-  // with the statistics it had; no leaf is counted. Not accepted if the record
-  // does not decode for this policy, and the caller then evaluates the node.
-  virtual InstallResult Restore(NodeKey key, MaterializationTicketId ticket,
-                                std::span<const uint8_t> record) = 0;
-  // Records of up to `max` nodes that may leave the graph (fewest visits
-  // first, never `keep` or a node with a reserved edge). Nothing is erased
-  // until ConfirmEvicted, which must come after the records are stored.
-  virtual std::vector<EvictCandidate> CollectEvictable(size_t max,
-                                                       NodeKey keep) = 0;
-  // Erases the nodes that did not change since CollectEvictable; returns how
-  // many were erased.
-  virtual size_t ConfirmEvicted(std::span<const EvictCandidate> evicted) = 0;
-  // Stores a record of every expanded node; called only while no search runs.
-  virtual void SaveAll(NodeStore& store) const = 0;
+  // The NodeStore, the graph's cold tier: nodes evicted from the graph, kept
+  // with their statistics. Set only while no search runs; Clear() clears it.
+  virtual void SetStore(std::unique_ptr<NodeStore> store) = 0;
+  virtual bool HasStore() const = 0;
+  // The stored records of `keys`, nullopt where there is none. Needs a store.
+  virtual std::vector<std::optional<std::vector<uint8_t>>> ReadFromStore(
+      std::span<const NodeKey> keys) = 0;
+  // Expands the node from a stored record with its old statistics; not
+  // accepted if the record is not this policy's (then evaluate the node).
+  virtual InstallResult RestoreFromRecord(NodeKey key,
+                                          MaterializationTicketId ticket,
+                                          std::span<const uint8_t> record) = 0;
+  // Moves up to `max` nodes from the graph to the store: fewest visits first,
+  // never `keep` or a node with a reserved edge. Needs a store.
+  virtual void EvictToStore(size_t max, NodeKey keep, Metrics& metrics) = 0;
 };
 
 }  // namespace lczero::lc5

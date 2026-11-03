@@ -50,7 +50,6 @@ void Lc5Engine::AbortAndWait() {
 
 void Lc5Engine::ClearGraph() {
   if (visit_engine_) visit_engine_->Clear();
-  if (store_) store_->Clear();
 }
 
 void Lc5Engine::SetBackend(Backend* backend) {
@@ -95,15 +94,14 @@ void Lc5Engine::StartSearch(const GoParams& params) {
   const std::string policy = PolicyName(*options_);
   if (!visit_engine_ || visit_engine_->name() != policy) {
     visit_engine_ = MakeVisitEngine(policy);
-    if (store_) store_->Clear();
   }
   visit_engine_->Configure(*options_, backend_->GetAttributes());
   const Settings settings(*options_);
   const Settings::Resolved resolved =
       settings.Resolve(backend_->GetAttributes());
   // Kept when the limit is lifted: the graph may still miss stored nodes.
-  if (resolved.graph_node_limit > 0 && !store_) {
-    store_ = std::make_unique<MemoryNodeStore>();
+  if (resolved.graph_node_limit > 0 && !visit_engine_->HasStore()) {
+    visit_engine_->SetStore(std::make_unique<MemoryNodeStore>());
   }
   VisitOrigin root{
       .key = MakeNodeKey(*root_history_, settings.history_key_length()),
@@ -112,7 +110,7 @@ void Lc5Engine::StartSearch(const GoParams& params) {
   const auto start = clock_start_.value_or(std::chrono::steady_clock::now());
   clock_start_.reset();
   run_ = std::make_unique<SearchRun>(
-      visit_engine_.get(), store_.get(), backend_, uci_responder_, resolved,
+      visit_engine_.get(), backend_, uci_responder_, resolved,
       settings.time_management(), std::move(root), params, start,
       std::exchange(saved_time_ms_, 0));
   run_->Start();

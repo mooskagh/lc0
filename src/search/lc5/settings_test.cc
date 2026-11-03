@@ -49,7 +49,7 @@ TEST(Lc5SettingsTest, DefaultsResolveAgainstBackend) {
   EXPECT_EQ(resolved.eval_threads, 2);
   EXPECT_EQ(resolved.minibatch_size, 64);
   EXPECT_GE(resolved.max_active_visits, 256);
-  EXPECT_EQ(resolved.history_key_length, 7);
+  EXPECT_EQ(settings.history_key_length(), 7);
 }
 
 TEST(Lc5SettingsTest, CapsDefaultMaxActiveVisits) {

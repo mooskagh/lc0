@@ -47,6 +47,7 @@
 #include "search/lc5/metrics.h"
 #include "search/lc5/run/visit_pool.h"
 #include "search/lc5/run/work_queue.h"
+#include "search/lc5/settings.h"
 #include "search/lc5/store/node_store.h"
 #include "search/lc5/time_manager.h"
 #include "search/lc5/visit_engine.h"
@@ -66,10 +67,9 @@ namespace lczero::lc5 {
 // (eviction), and a graph miss restores a stored node with its statistics.
 class SearchRun {
  public:
-  SearchRun(VisitEngine* engine, NodeStore* store, Backend* backend,
-            UciResponder* responder, Settings::Resolved settings,
-            TimeManager::Config time_management, VisitOrigin root,
-            GoParams go_params,
+  SearchRun(VisitEngine* engine, Backend* backend, UciResponder* responder,
+            Settings::Resolved settings, TimeManager::Config time_management,
+            VisitOrigin root, GoParams go_params,
             std::chrono::steady_clock::time_point start_time,
             int64_t saved_ms = 0);
   ~SearchRun();
@@ -137,9 +137,9 @@ class SearchRun {
     std::vector<uint8_t> record{};
     State state = State::kPending;
   };
-  // kPersist jobs store evicted nodes and then erase them from the graph. The
-  // controller creates them, and a store thread finishes them without
-  // returning them to a worker.
+  // A kPersist job evicts `evict_count` nodes from the graph to the store. The
+  // controller creates it, and a store thread finishes it without returning it
+  // to a worker.
   enum class JobKind { kEval, kLoad, kPersist };
   // Storage is fixed before AddInput; the whole job lives through compute
   // and completion consumption, including immediate-cache results.
@@ -148,7 +148,7 @@ class SearchRun {
     size_t worker;
     std::chrono::steady_clock::time_point queued_at;
     std::vector<Request> requests;
-    std::vector<EvictCandidate> evictions;
+    size_t evict_count = 0;
     size_t items() const { return requests.size(); }
   };
   // A worker's inbox. Senders lock `mutex` and add to it; unlocking wakes the
@@ -200,8 +200,6 @@ class SearchRun {
   static constexpr size_t kBatchCredits = 16;
   static constexpr size_t kWorkChunk = 32;
   static constexpr size_t kMinActiveVisits = 16;
-  // Nodes per eviction job.
-  static constexpr size_t kEvictionBatch = 1024;
 
   bool Stopping() const { return stop_mode_.load() != StopMode::kRunning; }
   void RequestStop(StopMode mode);
@@ -215,7 +213,7 @@ class SearchRun {
   void NotifyController();
   ThinkingInfo BuildInfo(bool final) const;
   // Whether the graph has a node limit to keep, by evicting to the store.
-  bool Evicts() const { return store_ && settings_.graph_node_limit > 0; }
+  bool Evicts() const { return has_store_ && settings_.graph_node_limit > 0; }
   // Queues eviction jobs when the graph is over its node limit.
   void QueueEvictions();
   Move FallbackMove() const;
@@ -277,7 +275,7 @@ class SearchRun {
   bool EvaluationStarved() const;
 
   VisitEngine* const engine_;
-  NodeStore* const store_;
+  const bool has_store_;
   Backend* const backend_;
   UciResponder* const responder_;
   const Settings::Resolved settings_;
@@ -287,7 +285,6 @@ class SearchRun {
   const TimeManager time_manager_;
   VisitPool visits_;
   Metrics metrics_;
-  const VisitContext context_{settings_, metrics_};
 
   std::vector<std::unique_ptr<Worker>> workers_;
   WorkQueue<std::unique_ptr<Job>> store_jobs_;

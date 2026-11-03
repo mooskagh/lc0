@@ -62,10 +62,10 @@ class Lc5Engine final : public SearchBase {
 
   // The UCI options.
   const OptionsDict* options_;
-  // Owns the graph, kept for the whole game; recreated when Lc5Policy changes.
+  // Owns the graph and its store, kept for the whole game; recreated when
+  // Lc5Policy changes. The store is created by the first search with
+  // Lc5GraphNodeLimit set.
   std::unique_ptr<VisitEngine> visit_engine_;
-  // Evicted nodes; created by the first search with Lc5GraphNodeLimit set.
-  std::unique_ptr<NodeStore> store_;
   // The current search, or the last one until the next go.
   std::unique_ptr<SearchRun> run_;
   // The start position the graph belongs to.

@@ -152,17 +152,18 @@ the policy and a format version, and a record that does not match is treated
 as a miss, so one policy never reads another's statistics. The store sees
 records only as bytes; `MemoryNodeStore` keeps them in RAM.
 
-With `Lc5GraphNodeLimit` > 0, the engine creates a store and keeps the graph
-near that size:
+With `Lc5GraphNodeLimit` > 0, the engine gives the `VisitEngine` a store,
+which it owns and clears with the graph, and keeps the graph near that size:
 
 - **Eviction.** When the graph grows past the limit (the controller checks
   every 10 ms, and a worker wakes it when it sees the graph over the limit),
-  the controller picks nodes down to 90% of the limit, fewest visits first.
-  It never picks the root, a materializing node, or a node with a reserved
-  edge. Eviction has two phases, so a miss can never race ahead of the write:
-  the records are taken under the shard lock along with each node's
-  generation and version, a store thread writes them, and then each node is
-  erased only if its version is unchanged. A node that changed stays in the
+  the controller queues an eviction down to 90% of the limit, and a store
+  thread runs `VisitEngine::EvictToStore`. It picks nodes with the fewest visits,
+  never the root, a materializing node, or a node with a reserved edge.
+  Eviction has two phases, so a miss can never race ahead of the write: the
+  records are taken under the shard lock along with each node's generation
+  and version, written to the store, and then each node is erased only if its
+  version is unchanged. A node that changed stays in the
   graph. Its stale record does no harm because the graph is always checked
   first.
 - **Restore.** With a store, a graph miss loads from the store before
@@ -172,8 +173,8 @@ near that size:
   selecting below the node.
 
 Fresh evaluations are not stored; that is the NN cache's job. The store is
-cleared with the graph. Saving the whole graph (`VisitEngine::SaveAll`) to a
-file and loading it later to continue a search is the planned next step.
+cleared with the graph. Saving the whole graph to a file and loading it later
+to continue a search is the planned next step.
 
 ## Time management
 

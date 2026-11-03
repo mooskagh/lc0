@@ -165,9 +165,6 @@ class GameGraph {
   // Erases the node if it still is `generation` at `version` and has no
   // reservations, as when it was copied.
   bool EraseIfUnchanged(NodeKey key, uint64_t generation, uint32_t version);
-  // Calls fn(key, node) for every expanded node, with its shard locked.
-  template <typename F>
-  void ForEachExpanded(F&& fn) const;
 
   bool Erase(NodeKey key);
   void Clear();
@@ -486,17 +483,6 @@ bool GameGraph<P>::EraseIfUnchanged(NodeKey key, uint64_t generation,
   shard.nodes.erase(key);
   size_.fetch_sub(1, std::memory_order_relaxed);
   return true;
-}
-
-template <typename P>
-template <typename F>
-void GameGraph<P>::ForEachExpanded(F&& fn) const {
-  for (const auto& shard : shards_) {
-    absl::MutexLock lock(shard.mutex);
-    for (const auto& [key, node] : shard.nodes) {
-      if (node.lifecycle == NodeLifecycle::kExpanded) fn(key, node);
-    }
-  }
 }
 
 template <typename P>
