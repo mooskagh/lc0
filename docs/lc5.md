@@ -34,7 +34,7 @@ organized. Code is in `src/search/lc5/`.
 
 ## Following one visit
 
-Code: `run/visits.cc`, `policies/policy_engine.h`, `policies/puct.cc`, `run/materialization.cc`.
+Code: `run/search_run.cc`, `policies/policy_engine.h`, `policies/puct.cc`.
 
 1. **Admission.** A worker lets a new visit in at the root, if limits allow
    (see "How many visits are in flight"). Under `go nodes N`, at most N
@@ -234,10 +234,9 @@ has the engine, configuration, and the seam between `run/` and `policies/`
 | `settings.cc` | Machinery options and their automatic values. |
 | `metrics.h/.cc` | Debug counters, bumped by both `run/` and the policies. |
 | `time_manager.cc` | Per-move deadline, smart pruning's visit estimate, saved time. |
-| `run/search_run.h/.cc` | `SearchRun`: setup, controller, early stop, `info`/`bestmove`. |
+| `run/search_run.h/.cc` | `SearchRun`: setup, controller, early stop, `info`/`bestmove`; admission, the worker loop and each visit's steps; creating nodes, terminal detection, jobs, evaluator batching. |
+| `run/messages.h` | What `SearchRun`'s threads pass to each other: continuations, tickets, materialization requests, jobs, batches, worker inboxes. |
 | `run/visit_pool.h/.cc` | `VisitPool`: fixed visit slots addressed by epoch-tagged `VisitId`s. |
-| `run/visits.cc` | Admission, worker loop, driving each visit through the engine. |
-| `run/materialization.cc` | Creating nodes, terminal detection, jobs, evaluator batching. |
 | `run/work_queue.h` | Closable MPMC queue for requests and jobs. |
 | `graph/graph.h` | `GameGraph<P>`: sharded node map, reservations, per-node updates, tried-edge stats; node and edge stats belong to the policy. |
 | `graph/key.h`, `graph/value.h`, `graph/prior.h` | Node keys; value sums and perspective flips; fp16 priors. |

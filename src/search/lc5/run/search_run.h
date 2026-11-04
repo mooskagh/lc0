@@ -79,33 +79,9 @@ class SearchRun {
   friend class SearchRunTestPeer;
   enum class StopMode : uint8_t { kRunning, kRespondBestmove, kAbort };
 
-  struct Worker {
-    explicit Worker(size_t index) : index(index) {}
-    bool HasQueuedIo() const {
-      return !unprepared.empty() || !loads.empty() || !evals.empty();
-    }
+  // A visit thread's state; defined below the class.
+  struct Worker;
 
-    const size_t index;
-    WorkerInbox inbox;
-    // All fields below are touched only by this worker.
-    std::deque<VisitId> runnable;
-    std::unordered_set<uint64_t> active;
-    std::deque<MaterializationRequest> unprepared;  // Await terminal detection.
-    std::deque<MaterializationRequest> loads;
-    std::deque<MaterializationRequest> evals;
-    std::vector<std::vector<Continuation>> outgoing;  // Indexed by worker.
-    size_t outstanding = 0;
-    size_t outstanding_items = 0;
-    bool cancelled = false;
-    bool released_capacity = false;
-    bool controller_event = false;
-    std::atomic<bool> drained{false};
-    // Conservative signal: this worker can submit without a collected job's
-    // completion. Initially true until the first work chunk is inspected.
-    std::atomic<bool> producing{true};
-    // Guarded by SearchRun::admission_mutex_, not worker-owned.
-    bool admission_waiting = false;
-  };
   // Cap on whole jobs in flight per worker; items are capped separately at
   // two minibatches.
   static constexpr size_t kBatchCredits = 16;
@@ -113,12 +89,12 @@ class SearchRun {
   static constexpr size_t kMinActiveVisits = 16;
 
   // Thread entry points.
-  void ControllerThread();           // search_run.cc
-  void VisitThread(Worker& worker);  // visits.cc
-  void EvaluatorThread();            // materialization.cc
-  void StoreThread();                // materialization.cc
+  void ControllerThread();
+  void VisitThread(Worker& worker);
+  void EvaluatorThread();
+  void StoreThread();
 
-  // Search: stop, output and shutdown (search_run.cc).
+  // Search: stop, output and shutdown.
   bool IsStopping() const { return stop_mode_.load() != StopMode::kRunning; }
   void RequestStop(StopMode mode);
   void RespondBestMove();
@@ -133,7 +109,7 @@ class SearchRun {
     return has_store_ && settings_.graph_node_limit > 0;
   }
 
-  // Admission (visits.cc).
+  // Admission.
   bool IsAdmissionClosed() const
       ABSL_EXCLUSIVE_LOCKS_REQUIRED(admission_mutex_);
   // Live visits allowed now: grows with the root's visits, as classic search
@@ -144,14 +120,14 @@ class SearchRun {
   void AdmitVisits(Worker& worker);
   void WakeAdmissionWaiters();
 
-  // Worker loop (visits.cc).
+  // Worker loop.
   void ProcessInbox(Worker& worker);
   void AdvanceRunnableVisits(Worker& worker, size_t limit);
   void CancelWorkerVisits(Worker& worker);
   void PublishWorkerState(Worker& worker);
   bool HasLocalWork(const Worker& worker) const;
 
-  // Visit (visits.cc; SuspendVisit in materialization.cc).
+  // Visit.
   void AdvanceVisit(Worker& worker, VisitId id);
   void ResumeVisit(Worker& worker, const Continuation& continuation);
   bool SuspendVisit(Worker& worker, VisitPool::Slot& slot)
@@ -166,11 +142,11 @@ class SearchRun {
   void FinishVisit(Worker& worker, VisitPool::Slot& slot, bool completed)
       ABSL_EXCLUSIVE_LOCKS_REQUIRED(slot.mutex);
 
-  // Continuation (visits.cc).
+  // Continuation.
   void DeliverContinuation(Worker& worker, const Continuation& continuation);
   void SendContinuations(size_t worker, std::vector<Continuation>& batch);
 
-  // Ticket (materialization.cc).
+  // Ticket.
   void CompleteTicket(Worker& worker, MaterializationTicketId ticket,
                       ExpansionPayload payload);
   // Publishes a node restored from the store; returns false, with the ticket
@@ -179,11 +155,11 @@ class SearchRun {
                      std::span<const uint8_t> record);
   void CancelTicket(Worker& worker, MaterializationTicketId ticket);
 
-  // MaterializationRequest (materialization.cc).
+  // MaterializationRequest.
   void PrepareRequest(Worker& worker, MaterializationRequest request);
   void CancelPendingRequests(Worker& worker);
 
-  // Job (materialization.cc).
+  // Job.
   void SubmitJobs(Worker& worker);
   std::unique_ptr<Job> TakeJob(Worker& worker) const;
   bool HasJobCredit(const Worker& worker) const;
@@ -194,7 +170,7 @@ class SearchRun {
   void QueueEvictionJobs();
   void RunEvictionJob(Job& job);
 
-  // Batch (materialization.cc).
+  // Batch.
   Batch CollectBatch(std::unique_ptr<Job> first, std::unique_ptr<Job>* next);
   void AddJobInputs(BackendComputation& computation, Job& job);
   void RunBatch(Batch batch);
@@ -264,6 +240,34 @@ class SearchRun {
   std::atomic<int64_t> unused_time_ms_{0};
   absl::Mutex controller_mutex_;
   uint64_t controller_generation_ ABSL_GUARDED_BY(controller_mutex_) = 0;
+};
+
+struct SearchRun::Worker {
+  explicit Worker(size_t index) : index(index) {}
+  bool HasQueuedIo() const {
+    return !unprepared.empty() || !loads.empty() || !evals.empty();
+  }
+
+  const size_t index;
+  WorkerInbox inbox;
+  // All fields below are touched only by this worker.
+  std::deque<VisitId> runnable;
+  std::unordered_set<uint64_t> active;
+  std::deque<MaterializationRequest> unprepared;  // Await terminal detection.
+  std::deque<MaterializationRequest> loads;
+  std::deque<MaterializationRequest> evals;
+  std::vector<std::vector<Continuation>> outgoing;  // Indexed by worker.
+  size_t outstanding = 0;
+  size_t outstanding_items = 0;
+  bool cancelled = false;
+  bool released_capacity = false;
+  bool controller_event = false;
+  std::atomic<bool> drained{false};
+  // Conservative signal: this worker can submit without a collected job's
+  // completion. Initially true until the first work chunk is inspected.
+  std::atomic<bool> producing{true};
+  // Guarded by SearchRun::admission_mutex_, not worker-owned.
+  bool admission_waiting = false;
 };
 
 }  // namespace lczero::lc5
