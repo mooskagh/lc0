@@ -25,7 +25,7 @@
   Program grant you additional permission to convey the resulting work.
 */
 
-#include "search/lc5/run/search_run.h"
+#include "search/lc5/session/search_session.h"
 
 #include <absl/time/time.h>
 
@@ -112,14 +112,16 @@ void MoveFront(std::deque<T>& from, std::vector<T>& to, size_t limit) {
 }  // namespace
 
 //////////////////////////////////////////////////////////////////////////////
-// The run: construction, stop, the controller and output.
+// The session: construction, stop, the controller and output.
 //////////////////////////////////////////////////////////////////////////////
 
-SearchRun::SearchRun(VisitEngine* engine, Backend* backend,
-                     UciResponder* responder, Settings::Resolved settings,
-                     TimeManager::Config time_management, VisitOrigin root,
-                     GoParams go_params, steady_clock::time_point start_time,
-                     int64_t saved_ms)
+SearchSession::SearchSession(VisitEngine* engine, Backend* backend,
+                             UciResponder* responder,
+                             Settings::Resolved settings,
+                             TimeManager::Config time_management,
+                             VisitOrigin root, GoParams go_params,
+                             steady_clock::time_point start_time,
+                             int64_t saved_ms)
     : engine_(engine),
       has_store_(engine->HasStore()),
       backend_(backend),
@@ -145,26 +147,27 @@ SearchRun::SearchRun(VisitEngine* engine, Backend* backend,
   }
 }
 
-SearchRun::~SearchRun() {
+SearchSession::~SearchSession() {
   Abort();
   Wait();
 }
 
-void SearchRun::Start() {
+void SearchSession::Start() {
   if (started_.exchange(true)) return;
   for (int i = 0; i < settings_.eval_threads; ++i) {
-    if (has_store_) store_threads_.emplace_back(&SearchRun::StoreThread, this);
-    evaluator_threads_.emplace_back(&SearchRun::EvaluatorThread, this);
+    if (has_store_)
+      store_threads_.emplace_back(&SearchSession::StoreThread, this);
+    evaluator_threads_.emplace_back(&SearchSession::EvaluatorThread, this);
   }
   for (auto& worker : workers_) {
-    visit_threads_.emplace_back(&SearchRun::VisitThread, this,
+    visit_threads_.emplace_back(&SearchSession::VisitThread, this,
                                 std::ref(*worker));
   }
   if (node_limit_ == 0) Stop();
-  controller_thread_ = std::thread(&SearchRun::ControllerThread, this);
+  controller_thread_ = std::thread(&SearchSession::ControllerThread, this);
 }
 
-void SearchRun::RequestStop(StopMode requested) {
+void SearchSession::RequestStop(StopMode requested) {
   {
     // Admission and stop have one linearization point. Abort may override a
     // bestmove response until its output is committed.
@@ -177,24 +180,24 @@ void SearchRun::RequestStop(StopMode requested) {
   WakeController();
 }
 
-void SearchRun::Stop() { RequestStop(StopMode::kRespondBestmove); }
+void SearchSession::Stop() { RequestStop(StopMode::kRespondBestmove); }
 
-void SearchRun::Abort() { RequestStop(StopMode::kAbort); }
+void SearchSession::Abort() { RequestStop(StopMode::kAbort); }
 
-void SearchRun::Wait() {
+void SearchSession::Wait() {
   if (controller_thread_.joinable()) controller_thread_.join();
 }
 
-void SearchRun::WakeController() {
+void SearchSession::WakeController() {
   absl::MutexLock lock(controller_mutex_);
   ++controller_generation_;
 }
 
-void SearchRun::WakeAllWorkers() {
+void SearchSession::WakeAllWorkers() {
   for (auto& worker : workers_) worker->inbox.Wake();
 }
 
-void SearchRun::ControllerThread() {
+void SearchSession::ControllerThread() {
   auto next_info = steady_clock::now() + kInfoInterval;
   bool responded = false;
   for (;;) {
@@ -262,7 +265,7 @@ void SearchRun::ControllerThread() {
   JoinThreads();
 }
 
-void SearchRun::RespondBestMove() {
+void SearchSession::RespondBestMove() {
   // The search ends here as far as the clock is concerned.
   unused_time_ms_.store(time_manager_.UnusedMs(steady_clock::now()));
   // Capture once, without waiting for any executor or eviction. Abort can
@@ -288,7 +291,7 @@ void SearchRun::RespondBestMove() {
   eval_jobs_.NotifyPredicateChanged();
 }
 
-bool SearchRun::IsFullyDrained() {
+bool SearchSession::IsFullyDrained() {
   if (visits_.active() != 0) return false;
   {
     absl::MutexLock lock(tickets_mutex_);
@@ -307,7 +310,7 @@ bool SearchRun::IsFullyDrained() {
   return true;
 }
 
-void SearchRun::JoinThreads() {
+void SearchSession::JoinThreads() {
   shutdown_.store(true);
   WakeAllWorkers();
   for (auto& thread : visit_threads_) thread.join();
@@ -320,14 +323,14 @@ void SearchRun::JoinThreads() {
 
 // Deterministic legal move for when the root has no PV: it was never
 // expanded, or it is terminal.
-Move SearchRun::FallbackMove() const {
+Move SearchSession::FallbackMove() const {
   const Position& position = root_.history.Last();
   const auto legal = position.GetBoard().GenerateLegalMoves();
   if (legal.empty()) return Move{};
   return ToUci(std::ranges::min(legal, {}, &Move::raw_data), position);
 }
 
-ThinkingInfo SearchRun::BuildThinkingInfo(bool final) const {
+ThinkingInfo SearchSession::BuildThinkingInfo(bool final) const {
   const int64_t ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                          steady_clock::now() - start_time_)
                          .count();
@@ -351,11 +354,11 @@ ThinkingInfo SearchRun::BuildThinkingInfo(bool final) const {
 // Visits: admission, the worker loop and each visit's steps.
 //////////////////////////////////////////////////////////////////////////////
 
-bool SearchRun::IsAdmissionClosed() const {
+bool SearchSession::IsAdmissionClosed() const {
   return IsStopping() || (node_limit_ && admitted_ >= *node_limit_);
 }
 
-std::optional<VisitId> SearchRun::AllocateVisit(const VisitOrigin& origin) {
+std::optional<VisitId> SearchSession::AllocateVisit(const VisitOrigin& origin) {
   // Allocate never holds pool -> slot.
   if (IsAdmissionClosed() || visits_.active() >= ActiveVisitLimit()) {
     return std::nullopt;
@@ -368,7 +371,7 @@ std::optional<VisitId> SearchRun::AllocateVisit(const VisitOrigin& origin) {
   return id;
 }
 
-size_t SearchRun::ActiveVisitLimit() const {
+size_t SearchSession::ActiveVisitLimit() const {
   if (settings_.active_visits_ratio <= 0.0f) return visits_.capacity();
   const double tree = static_cast<double>(root_visits_at_start_ +
                                           metrics_.visits_completed.load());
@@ -377,7 +380,7 @@ size_t SearchRun::ActiveVisitLimit() const {
                                          tree * settings_.active_visits_ratio));
 }
 
-void SearchRun::AdmitVisits(Worker& worker) {
+void SearchSession::AdmitVisits(Worker& worker) {
   absl::MutexLock lock(admission_mutex_);
   worker.admission_waiting = false;
   // A modest per-worker share prevents one worker from monopolizing the pool.
@@ -397,7 +400,7 @@ void SearchRun::AdmitVisits(Worker& worker) {
   RaiseHighWater(metrics_.visits_ready_high_water, worker.runnable.size());
 }
 
-void SearchRun::WakeAdmissionWaiters() {
+void SearchSession::WakeAdmissionWaiters() {
   std::vector<size_t> wake;
   {
     absl::MutexLock lock(admission_mutex_);
@@ -425,8 +428,8 @@ void SearchRun::WakeAdmissionWaiters() {
   }
 }
 
-void SearchRun::SendContinuations(size_t worker,
-                                  std::vector<Continuation>& batch) {
+void SearchSession::SendContinuations(size_t worker,
+                                      std::vector<Continuation>& batch) {
   if (batch.empty()) return;
   {
     auto& inbox = workers_[worker]->inbox;
@@ -438,8 +441,8 @@ void SearchRun::SendContinuations(size_t worker,
   metrics_.inbox_notifications.fetch_add(1);
 }
 
-void SearchRun::DeliverContinuation(Worker& worker,
-                                    const Continuation& continuation) {
+void SearchSession::DeliverContinuation(Worker& worker,
+                                        const Continuation& continuation) {
   if (continuation.worker == worker.index) {
     ResumeVisit(worker, continuation);
   } else {
@@ -447,7 +450,7 @@ void SearchRun::DeliverContinuation(Worker& worker,
   }
 }
 
-void SearchRun::ResumeVisit(Worker& worker, const Continuation& event) {
+void SearchSession::ResumeVisit(Worker& worker, const Continuation& event) {
   VisitPool::Slot* slot = visits_.Lookup(event.id);
   if (!slot) return;
   absl::MutexLock lock(slot->mutex);
@@ -499,7 +502,7 @@ void SearchRun::ResumeVisit(Worker& worker, const Continuation& event) {
   worker.runnable.push_back(event.id);
 }
 
-void SearchRun::VisitThread(Worker& worker) {
+void SearchSession::VisitThread(Worker& worker) {
   worker.outgoing.resize(workers_.size());
   for (;;) {
     ProcessInbox(worker);
@@ -532,7 +535,7 @@ void SearchRun::VisitThread(Worker& worker) {
   }
 }
 
-void SearchRun::ProcessInbox(Worker& worker) {
+void SearchSession::ProcessInbox(Worker& worker) {
   std::vector<Continuation> continuations;
   std::vector<std::unique_ptr<Job>> completions;
   bool admission_ready;
@@ -552,7 +555,7 @@ void SearchRun::ProcessInbox(Worker& worker) {
   for (auto& job : completions) ConsumeJob(worker, std::move(job));
 }
 
-void SearchRun::AdvanceRunnableVisits(Worker& worker, size_t limit) {
+void SearchSession::AdvanceRunnableVisits(Worker& worker, size_t limit) {
   for (size_t i = 0; i < limit && !worker.runnable.empty(); ++i) {
     const VisitId id = worker.runnable.front();
     worker.runnable.pop_front();
@@ -560,7 +563,7 @@ void SearchRun::AdvanceRunnableVisits(Worker& worker, size_t limit) {
   }
 }
 
-void SearchRun::CancelWorkerVisits(Worker& worker) {
+void SearchSession::CancelWorkerVisits(Worker& worker) {
   // Only the owner ever cancels or mutates a visit. Epochs make later ticket
   // completions harmless even after the slot has been reused. Ready backups
   // finish; waiting visits stay until their ticket completes or is cancelled,
@@ -576,7 +579,7 @@ void SearchRun::CancelWorkerVisits(Worker& worker) {
   AdvanceRunnableVisits(worker, std::numeric_limits<size_t>::max());
 }
 
-void SearchRun::PublishWorkerState(Worker& worker) {
+void SearchSession::PublishWorkerState(Worker& worker) {
   const bool drained = worker.cancelled && worker.active.empty() &&
                        worker.outstanding == 0 && !worker.HasQueuedIo();
   if (worker.drained.exchange(drained) != drained) {
@@ -589,12 +592,12 @@ void SearchRun::PublishWorkerState(Worker& worker) {
                          (!worker.runnable.empty() || worker.HasQueuedIo()));
 }
 
-bool SearchRun::HasLocalWork(const Worker& worker) const {
+bool SearchSession::HasLocalWork(const Worker& worker) const {
   return (!IsStopping() && !worker.runnable.empty()) ||
          (HasJobCredit(worker) && worker.HasQueuedIo());
 }
 
-void SearchRun::AdvanceVisit(Worker& worker, VisitId id) {
+void SearchSession::AdvanceVisit(Worker& worker, VisitId id) {
   VisitPool::Slot* slot = visits_.Lookup(id);
   if (!slot) return;
   absl::MutexLock lock(slot->mutex);
@@ -624,7 +627,7 @@ void SearchRun::AdvanceVisit(Worker& worker, VisitId id) {
   }
 }
 
-void SearchRun::BackupVisit(Worker& worker, VisitPool::Slot& slot) {
+void SearchSession::BackupVisit(Worker& worker, VisitPool::Slot& slot) {
   Visit& visit = slot.visit;
   visit.state = VisitState::kBackingUp;
   engine_->BackupVisit(visit, metrics_);
@@ -632,12 +635,12 @@ void SearchRun::BackupVisit(Worker& worker, VisitPool::Slot& slot) {
   FinishVisit(worker, slot, true);
 }
 
-void SearchRun::CancelVisit(Worker& worker, VisitPool::Slot& slot) {
+void SearchSession::CancelVisit(Worker& worker, VisitPool::Slot& slot) {
   engine_->CancelVisit(slot.visit, metrics_);
   FinishVisit(worker, slot, false);
 }
 
-void SearchRun::RestartVisit(VisitPool::Slot& slot) {
+void SearchSession::RestartVisit(VisitPool::Slot& slot) {
   Visit& visit = slot.visit;
   engine_->CancelVisit(visit, metrics_);
   visit.history = visit.origin.history;
@@ -648,8 +651,8 @@ void SearchRun::RestartVisit(VisitPool::Slot& slot) {
   metrics_.visits_restarted.fetch_add(1);
 }
 
-void SearchRun::FinishVisit(Worker& worker, VisitPool::Slot& slot,
-                            bool completed) {
+void SearchSession::FinishVisit(Worker& worker, VisitPool::Slot& slot,
+                                bool completed) {
   const VisitId id = slot.visit.id;
   if (completed) {
     const uint64_t count = metrics_.visits_completed.fetch_add(1) + 1;
@@ -667,7 +670,7 @@ void SearchRun::FinishVisit(Worker& worker, VisitPool::Slot& slot,
 // Materialization: tickets, requests, jobs and batches.
 //////////////////////////////////////////////////////////////////////////////
 
-bool SearchRun::SuspendVisit(Worker& worker, VisitPool::Slot& slot) {
+bool SearchSession::SuspendVisit(Worker& worker, VisitPool::Slot& slot) {
   Visit& visit = slot.visit;
   bool owner;
   MaterializationTicketId ticket_id;
@@ -717,7 +720,8 @@ bool SearchRun::SuspendVisit(Worker& worker, VisitPool::Slot& slot) {
   return true;
 }
 
-void SearchRun::PrepareRequest(Worker& worker, MaterializationRequest request) {
+void SearchSession::PrepareRequest(Worker& worker,
+                                   MaterializationRequest request) {
   if (IsStopping()) {
     CancelTicket(worker, request.ticket);
     return;
@@ -733,9 +737,9 @@ void SearchRun::PrepareRequest(Worker& worker, MaterializationRequest request) {
   worker.evals.push_back(std::move(request));
 }
 
-void SearchRun::CompleteTicket(Worker& worker,
-                               MaterializationTicketId ticket_id,
-                               ExpansionPayload payload) {
+void SearchSession::CompleteTicket(Worker& worker,
+                                   MaterializationTicketId ticket_id,
+                                   ExpansionPayload payload) {
   Ticket ticket;
   MaterializationResult installed;
   {
@@ -772,8 +776,9 @@ void SearchRun::CompleteTicket(Worker& worker,
   for (const auto& event : ticket.waiters) wake(event, false);
 }
 
-bool SearchRun::RestoreTicket(Worker& worker, MaterializationTicketId ticket_id,
-                              std::span<const uint8_t> record) {
+bool SearchSession::RestoreTicket(Worker& worker,
+                                  MaterializationTicketId ticket_id,
+                                  std::span<const uint8_t> record) {
   Ticket ticket;
   MaterializationResult restored;
   {
@@ -801,8 +806,8 @@ bool SearchRun::RestoreTicket(Worker& worker, MaterializationTicketId ticket_id,
   return true;
 }
 
-void SearchRun::CancelTicket(Worker& worker,
-                             MaterializationTicketId ticket_id) {
+void SearchSession::CancelTicket(Worker& worker,
+                                 MaterializationTicketId ticket_id) {
   // Only called on stop, for evaluations that will never be computed. The
   // owner and waiters are still alive and must be woken to cancel.
   Ticket ticket;
@@ -823,7 +828,7 @@ void SearchRun::CancelTicket(Worker& worker,
   for (const auto& event : ticket.waiters) wake(event);
 }
 
-void SearchRun::CancelPendingRequests(Worker& worker) {
+void SearchSession::CancelPendingRequests(Worker& worker) {
   for (auto* requests : {&worker.unprepared, &worker.loads, &worker.evals}) {
     for (const auto& request : *requests) {
       CancelTicket(worker, request.ticket);
@@ -832,20 +837,20 @@ void SearchRun::CancelPendingRequests(Worker& worker) {
   }
 }
 
-bool SearchRun::HasJobCredit(const Worker& worker) const {
+bool SearchSession::HasJobCredit(const Worker& worker) const {
   return worker.outstanding < kBatchCredits &&
          worker.outstanding_items <
              2 * static_cast<size_t>(settings_.minibatch_size);
 }
 
-void SearchRun::SetWorkerProducing(Worker& worker, bool producing) {
+void SearchSession::SetWorkerProducing(Worker& worker, bool producing) {
   // Only true -> false enables the collectors' starvation predicate, so only
   // that edge needs the queue-mutex handshake.
   if (worker.producing.exchange(producing) && !producing)
     eval_jobs_.NotifyPredicateChanged();
 }
 
-void SearchRun::SubmitJobs(Worker& worker) {
+void SearchSession::SubmitJobs(Worker& worker) {
   if (IsStopping()) CancelPendingRequests(worker);
   // Detect terminals and generate legal moves for fresh requests outside any
   // slot lock. Terminal ones publish right away; the rest join `evals`.
@@ -872,7 +877,7 @@ void SearchRun::SubmitJobs(Worker& worker) {
   }
 }
 
-std::unique_ptr<Job> SearchRun::TakeJob(Worker& worker) const {
+std::unique_ptr<Job> SearchSession::TakeJob(Worker& worker) const {
   // Small whole jobs leave room to collect more cache misses without exceeding
   // the backend batch. Item credits bound loads and evaluations.
   const size_t batch_size = settings_.minibatch_size;
@@ -893,7 +898,7 @@ std::unique_ptr<Job> SearchRun::TakeJob(Worker& worker) const {
   return job;
 }
 
-void SearchRun::ReturnJob(std::unique_ptr<Job> job) {
+void SearchSession::ReturnJob(std::unique_ptr<Job> job) {
   {
     auto& inbox = workers_[job->worker]->inbox;
     absl::MutexLock lock(inbox.mutex);
@@ -902,7 +907,7 @@ void SearchRun::ReturnJob(std::unique_ptr<Job> job) {
   metrics_.inbox_notifications.fetch_add(1);
 }
 
-void SearchRun::ConsumeJob(Worker& worker, std::unique_ptr<Job> job) {
+void SearchSession::ConsumeJob(Worker& worker, std::unique_ptr<Job> job) {
   assert(worker.outstanding > 0);
   for (auto& request : job->requests) {
     switch (request.state) {
@@ -936,7 +941,7 @@ void SearchRun::ConsumeJob(Worker& worker, std::unique_ptr<Job> job) {
   jobs_in_flight_.fetch_sub(1);
 }
 
-void SearchRun::StoreThread() {
+void SearchSession::StoreThread() {
   std::unique_ptr<Job> job;
   while (store_jobs_.Pop(&job)) {
     if (job->kind == JobKind::kPersist) {
@@ -964,7 +969,7 @@ void SearchRun::StoreThread() {
   }
 }
 
-void SearchRun::QueueEvictionJobs() {
+void SearchSession::QueueEvictionJobs() {
   if (!HasNodeLimit() || IsStopping() || evictions_in_flight_.load() > 0)
     return;
   eviction_requested_.store(false);
@@ -982,7 +987,7 @@ void SearchRun::QueueEvictionJobs() {
   store_jobs_.Push(std::move(job));
 }
 
-void SearchRun::RunEvictionJob(Job& job) {
+void SearchSession::RunEvictionJob(Job& job) {
   engine_->EvictToStore(job.evict_count, root_.key, metrics_);
   jobs_in_flight_.fetch_sub(1);
   // The controller may queue the next round, or finish draining.
@@ -990,7 +995,7 @@ void SearchRun::RunEvictionJob(Job& job) {
   WakeController();
 }
 
-void SearchRun::EvaluatorThread() {
+void SearchSession::EvaluatorThread() {
   // A popped job that did not fit the previous batch. Retained jobs remain
   // counted as collecting and in flight.
   std::unique_ptr<Job> next;
@@ -1008,8 +1013,8 @@ void SearchRun::EvaluatorThread() {
   }
 }
 
-Batch SearchRun::CollectBatch(std::unique_ptr<Job> job,
-                              std::unique_ptr<Job>* next) {
+Batch SearchSession::CollectBatch(std::unique_ptr<Job> job,
+                                  std::unique_ptr<Job>* next) {
   const size_t target = settings_.minibatch_size;
   const auto deadline =
       settings_.max_batch_delay_ms == 0
@@ -1051,7 +1056,7 @@ Batch SearchRun::CollectBatch(std::unique_ptr<Job> job,
   return batch;
 }
 
-void SearchRun::AddJobInputs(BackendComputation& computation, Job& job) {
+void SearchSession::AddJobInputs(BackendComputation& computation, Job& job) {
   for (auto& request : job.requests) {
     if (IsStopping()) break;
     auto& payload = request.payload;
@@ -1071,7 +1076,7 @@ void SearchRun::AddJobInputs(BackendComputation& computation, Job& job) {
   }
 }
 
-void SearchRun::RunBatch(Batch batch) {
+void SearchSession::RunBatch(Batch batch) {
   const size_t used = batch.computation->UsedBatchSize();
   bool authorized = false;
   if (used > 0) {
@@ -1102,7 +1107,7 @@ void SearchRun::RunBatch(Batch batch) {
   for (auto& job : batch.jobs) ReturnJob(std::move(job));
 }
 
-bool SearchRun::IsEvaluationStarved() const {
+bool SearchSession::IsEvaluationStarved() const {
   // Executing, store or returned jobs can still unblock a producer. Only
   // predict starvation when every outstanding job is held by a collector and
   // no worker can submit independently; the deadline bounds the uncertainty.

@@ -45,9 +45,9 @@
 #include "chess/uciloop.h"
 #include "neural/backend.h"
 #include "search/lc5/metrics.h"
-#include "search/lc5/run/messages.h"
-#include "search/lc5/run/visit_pool.h"
-#include "search/lc5/run/work_queue.h"
+#include "search/lc5/session/messages.h"
+#include "search/lc5/session/visit_pool.h"
+#include "search/lc5/session/work_queue.h"
 #include "search/lc5/settings.h"
 #include "search/lc5/store/node_store.h"
 #include "search/lc5/time_manager.h"
@@ -57,14 +57,15 @@ namespace lczero::lc5 {
 
 // One `go` command's search: runs visits on worker threads, batches their
 // leaves for the store and the network, and reports through the responder.
-class SearchRun {
+class SearchSession {
  public:
-  SearchRun(VisitEngine* engine, Backend* backend, UciResponder* responder,
-            Settings::Resolved settings, TimeManager::Config time_management,
-            VisitOrigin root, GoParams go_params,
-            std::chrono::steady_clock::time_point start_time,
-            int64_t saved_ms = 0);
-  ~SearchRun();
+  SearchSession(VisitEngine* engine, Backend* backend, UciResponder* responder,
+                Settings::Resolved settings,
+                TimeManager::Config time_management, VisitOrigin root,
+                GoParams go_params,
+                std::chrono::steady_clock::time_point start_time,
+                int64_t saved_ms = 0);
+  ~SearchSession();
 
   void Start();  // Spawns the threads and returns; later calls do nothing.
   void Stop();   // Non-blocking: output bestmove, then drain.
@@ -76,7 +77,7 @@ class SearchRun {
   int64_t unused_time_ms() const { return unused_time_ms_.load(); }
 
  private:
-  friend class SearchRunTestPeer;
+  friend class SearchSessionTestPeer;
   enum class StopMode : uint8_t { kRunning, kRespondBestmove, kAbort };
 
   // A visit thread's state; defined below the class.
@@ -176,7 +177,7 @@ class SearchRun {
   void RunBatch(Batch batch);
   bool IsEvaluationStarved() const;
 
-  // Configuration, fixed for the run (constructor only).
+  // Configuration, fixed for the session (constructor only).
   VisitEngine* const engine_;
   const bool has_store_;
   Backend* const backend_;
@@ -242,7 +243,7 @@ class SearchRun {
   uint64_t controller_generation_ ABSL_GUARDED_BY(controller_mutex_) = 0;
 };
 
-struct SearchRun::Worker {
+struct SearchSession::Worker {
   explicit Worker(size_t index) : index(index) {}
   bool HasQueuedIo() const {
     return !unprepared.empty() || !loads.empty() || !evals.empty();
@@ -266,7 +267,7 @@ struct SearchRun::Worker {
   // Conservative signal: this worker can submit without a collected job's
   // completion. Initially true until the first work chunk is inspected.
   std::atomic<bool> producing{true};
-  // Guarded by SearchRun::admission_mutex_, not worker-owned.
+  // Guarded by SearchSession::admission_mutex_, not worker-owned.
   bool admission_waiting = false;
 };
 

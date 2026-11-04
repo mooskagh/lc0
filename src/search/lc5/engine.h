@@ -33,7 +33,7 @@
 
 #include "chess/gamestate.h"
 #include "search/lc5/policies/registry.h"
-#include "search/lc5/run/search_run.h"
+#include "search/lc5/session/search_session.h"
 #include "search/lc5/visit_engine.h"
 #include "search/search.h"
 
@@ -55,7 +55,7 @@ class Lc5Engine final : public SearchBase {
   void NewGame() override;
 
  private:
-  friend class SearchRunTestPeer;
+  friend class SearchSessionTestPeer;
   void AbortAndWait();
   // Drops the graph and the stored nodes.
   void ClearGraph();
@@ -67,7 +67,7 @@ class Lc5Engine final : public SearchBase {
   // Lc5GraphNodeLimit set.
   std::unique_ptr<VisitEngine> visit_engine_;
   // The current search, or the last one until the next go.
-  std::unique_ptr<SearchRun> run_;
+  std::unique_ptr<SearchSession> session_;
   // The start position the graph belongs to.
   std::optional<Position> game_start_;
   // The history up to the root of the next search.

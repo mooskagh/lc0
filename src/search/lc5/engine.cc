@@ -39,13 +39,14 @@
 
 namespace lczero::lc5 {
 
-// ~SearchRun aborts and waits, and run_ is destroyed before what it uses.
+// ~SearchSession aborts and waits, and session_ is destroyed before what it
+// uses.
 Lc5Engine::~Lc5Engine() = default;
 
 void Lc5Engine::AbortAndWait() {
-  if (!run_) return;
-  run_->Abort();
-  run_->Wait();
+  if (!session_) return;
+  session_->Abort();
+  session_->Wait();
 }
 
 void Lc5Engine::ClearGraph() {
@@ -71,7 +72,7 @@ void Lc5Engine::SetPosition(const GameState& state) {
 
 void Lc5Engine::NewGame() {
   AbortAndWait();
-  run_.reset();
+  session_.reset();
   ClearGraph();
   game_start_.reset();
   root_history_.reset();
@@ -84,8 +85,8 @@ void Lc5Engine::StartClock() {
 
 void Lc5Engine::StartSearch(const GoParams& params) {
   AbortAndWait();
-  if (run_) saved_time_ms_ += run_->unused_time_ms();
-  run_.reset();
+  if (session_) saved_time_ms_ += session_->unused_time_ms();
+  session_.reset();
   if (!backend_) throw Exception("Lc5 requires a backend");
   if (!root_history_) throw Exception("Lc5 position was not set");
   if (params.depth || params.mate) throw Exception("Lc5 has no go depth/mate");
@@ -109,23 +110,23 @@ void Lc5Engine::StartSearch(const GoParams& params) {
       .backup_prefix = {}};
   const auto start = clock_start_.value_or(std::chrono::steady_clock::now());
   clock_start_.reset();
-  run_ = std::make_unique<SearchRun>(
+  session_ = std::make_unique<SearchSession>(
       visit_engine_.get(), backend_, uci_responder_, resolved,
       settings.time_management(), std::move(root), params, start,
       std::exchange(saved_time_ms_, 0));
-  run_->Start();
+  session_->Start();
 }
 
 void Lc5Engine::StopSearch() {
-  if (run_) run_->Stop();
+  if (session_) session_->Stop();
 }
 
 void Lc5Engine::AbortSearch() {
-  if (run_) run_->Abort();
+  if (session_) session_->Abort();
 }
 
 void Lc5Engine::WaitSearch() {
-  if (run_) run_->Wait();
+  if (session_) session_->Wait();
 }
 
 namespace {

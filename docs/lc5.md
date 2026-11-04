@@ -34,7 +34,7 @@ organized. Code is in `src/search/lc5/`.
 
 ## Following one visit
 
-Code: `run/search_run.cc`, `policies/policy_engine.h`, `policies/puct.cc`.
+Code: `session/search_session.cc`, `policies/policy_engine.h`, `policies/puct.cc`.
 
 1. **Admission.** A worker lets a new visit in at the root, if limits allow
    (see "How many visits are in flight"). Under `go nodes N`, at most N
@@ -184,7 +184,7 @@ earlier (below). `movetime` minus `MoveOverheadMs` is used, as in classic;
 `infinite` and `ponder` have no deadline. `AlphaZeroTimePct` sets the 3%.
 
 **Early stop.** Classic-style smart pruning, checked every 10 ms against the
-run's visit rate (`SmartPruningFactor`, 1.33), for clock budgets only. A root
+session's visit rate (`SmartPruningFactor`, 1.33), for clock budgets only. A root
 with a single legal move, or with `StickyEndgames` a proven root, also stops
 the search (checked every 10 ms, also under `go nodes` and `movetime`, but not
 in `infinite` or `ponder`). Whatever stops a clock-budget search, the rest of
@@ -196,7 +196,7 @@ infinite, movetime) passes the saved time on untouched.
 On a stop (deadline, node limit or UCI `stop`), the controller takes one
 snapshot of the root and prints the final `info` and `bestmove` immediately.
 It does not wait for in-flight work. After that, workers cancel their visits
-and the run drains; any batch already sent to the GPU still finishes and is
+and the session drains; any batch already sent to the GPU still finishes and is
 installed. Only when everything has drained is the graph safe for the next
 search.
 
@@ -220,24 +220,24 @@ Reading the `info` line:
 ## Code map
 
 Four subdirectories: `graph/` is the node data model, `store/` is the
-graph's cold tier, `run/` is the `SearchRun` machinery, and `policies/` holds
+graph's cold tier, `session/` is the `SearchSession` machinery, and `policies/` holds
 the search policies. `store/` sees only node keys and opaque records; the
 graph does not include it. The root
-has the engine, configuration, and the seam between `run/` and `policies/`
+has the engine, configuration, and the seam between `session/` and `policies/`
 (`visit_engine.h`, `visit.h`, and `metrics.h`, which both sides bump).
 
 | File | What's there |
 |---|---|
-| `engine.cc` | UCI glue: keeps the visit engine (and its graph), starts a `SearchRun` per `go`, carries saved time. |
+| `engine.cc` | UCI glue: keeps the visit engine (and its graph), starts a `SearchSession` per `go`, carries saved time. |
 | `visit_engine.h` | `VisitEngine` interface: descent, backup, cancel, report. |
 | `visit.h` | Visit state passed to the visit engine. |
 | `settings.cc` | Machinery options and their automatic values. |
-| `metrics.h/.cc` | Debug counters, bumped by both `run/` and the policies. |
+| `metrics.h/.cc` | Debug counters, bumped by both `session/` and the policies. |
 | `time_manager.cc` | Per-move deadline, smart pruning's visit estimate, saved time. |
-| `run/search_run.h/.cc` | `SearchRun`: setup, controller, early stop, `info`/`bestmove`; admission, the worker loop and each visit's steps; creating nodes, terminal detection, jobs, evaluator batching. |
-| `run/messages.h` | What `SearchRun`'s threads pass to each other: continuations, tickets, materialization requests, jobs, batches, worker inboxes. |
-| `run/visit_pool.h/.cc` | `VisitPool`: fixed visit slots addressed by epoch-tagged `VisitId`s. |
-| `run/work_queue.h` | Closable MPMC queue for requests and jobs. |
+| `session/search_session.h/.cc` | `SearchSession`: setup, controller, early stop, `info`/`bestmove`; admission, the worker loop and each visit's steps; creating nodes, terminal detection, jobs, evaluator batching. |
+| `session/messages.h` | What `SearchSession`'s threads pass to each other: continuations, tickets, materialization requests, jobs, batches, worker inboxes. |
+| `session/visit_pool.h/.cc` | `VisitPool`: fixed visit slots addressed by epoch-tagged `VisitId`s. |
+| `session/work_queue.h` | Closable MPMC queue for requests and jobs. |
 | `graph/graph.h` | `GameGraph<P>`: sharded node map, reservations, per-node updates, tried-edge stats; node and edge stats belong to the policy. |
 | `graph/key.h`, `graph/value.h`, `graph/prior.h` | Node keys; value sums and perspective flips; fp16 priors. |
 | `graph/node.h`, `graph/expansion.h` | Node, edge and tried-edge state; expansion payloads and terminal kinds. |

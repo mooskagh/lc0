@@ -25,7 +25,7 @@
   Program grant you additional permission to convey the resulting work.
 */
 
-#include "search/lc5/run/visit_pool.h"
+#include "search/lc5/session/visit_pool.h"
 
 #include <gtest/gtest.h>
 

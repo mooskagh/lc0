@@ -57,7 +57,7 @@ struct RootStats {
 };
 
 // The search-algorithm side of a visit: everything that reads or writes node
-// and edge statistics, and owns the graph. SearchRun owns visits, tickets,
+// and edge statistics, and owns the graph. SearchSession owns visits, tickets,
 // batching and threads, and calls only this. Implementations must be
 // thread-safe; each call locks at most one graph shard at a time.
 class VisitEngine {

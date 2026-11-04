@@ -45,7 +45,7 @@
 
 namespace lczero::lc5 {
 
-// The messages SearchRun's threads pass to each other.
+// The messages SearchSession's threads pass to each other.
 
 // Tells a visit's owner how to continue it.
 struct Continuation {
