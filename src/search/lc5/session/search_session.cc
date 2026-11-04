@@ -156,15 +156,15 @@ void SearchSession::Start() {
   if (started_.exchange(true)) return;
   for (int i = 0; i < settings_.eval_threads; ++i) {
     if (has_store_)
-      store_threads_.emplace_back(&SearchSession::StoreThread, this);
-    evaluator_threads_.emplace_back(&SearchSession::EvaluatorThread, this);
+      store_threads_.emplace_back(&SearchSession::StoreLoop, this);
+    evaluator_threads_.emplace_back(&SearchSession::EvaluatorLoop, this);
   }
   for (auto& worker : workers_) {
-    visit_threads_.emplace_back(&SearchSession::VisitThread, this,
+    visit_threads_.emplace_back(&SearchSession::VisitLoop, this,
                                 std::ref(*worker));
   }
   if (node_limit_ == 0) Stop();
-  controller_thread_ = std::thread(&SearchSession::ControllerThread, this);
+  controller_thread_ = std::thread(&SearchSession::ControllerLoop, this);
 }
 
 void SearchSession::RequestStop(StopMode requested) {
@@ -197,7 +197,7 @@ void SearchSession::WakeAllWorkers() {
   for (auto& worker : workers_) worker->inbox.Wake();
 }
 
-void SearchSession::ControllerThread() {
+void SearchSession::ControllerLoop() {
   auto next_info = steady_clock::now() + kInfoInterval;
   bool responded = false;
   for (;;) {
@@ -273,7 +273,7 @@ void SearchSession::RespondBestMove() {
   if (stop_mode_.load() == StopMode::kRespondBestmove) {
     std::vector<ThinkingInfo> infos{BuildThinkingInfo(true)};
     const auto& pv = infos.front().pv;
-    BestMoveInfo best(pv.empty() ? FallbackMove() : pv.front(),
+    BestMoveInfo best(pv.empty() ? GetFallbackMove() : pv.front(),
                       pv.size() > 1 ? pv[1] : Move{});
     bool respond;
     {
@@ -323,7 +323,7 @@ void SearchSession::JoinThreads() {
 
 // Deterministic legal move for when the root has no PV: it was never
 // expanded, or it is terminal.
-Move SearchSession::FallbackMove() const {
+Move SearchSession::GetFallbackMove() const {
   const Position& position = root_.history.Last();
   const auto legal = position.GetBoard().GenerateLegalMoves();
   if (legal.empty()) return Move{};
@@ -360,7 +360,7 @@ bool SearchSession::IsAdmissionClosed() const {
 
 std::optional<VisitId> SearchSession::AllocateVisit(const VisitOrigin& origin) {
   // Allocate never holds pool -> slot.
-  if (IsAdmissionClosed() || visits_.active() >= ActiveVisitLimit()) {
+  if (IsAdmissionClosed() || visits_.active() >= GetActiveVisitLimit()) {
     return std::nullopt;
   }
   const auto id = visits_.Allocate(origin);
@@ -371,7 +371,7 @@ std::optional<VisitId> SearchSession::AllocateVisit(const VisitOrigin& origin) {
   return id;
 }
 
-size_t SearchSession::ActiveVisitLimit() const {
+size_t SearchSession::GetActiveVisitLimit() const {
   if (settings_.active_visits_ratio <= 0.0f) return visits_.capacity();
   const double tree = static_cast<double>(root_visits_at_start_ +
                                           metrics_.visits_completed.load());
@@ -380,7 +380,7 @@ size_t SearchSession::ActiveVisitLimit() const {
                                          tree * settings_.active_visits_ratio));
 }
 
-void SearchSession::AdmitVisits(Worker& worker) {
+void SearchSession::AdmitNewRootVisits(Worker& worker) {
   absl::MutexLock lock(admission_mutex_);
   worker.admission_waiting = false;
   // A modest per-worker share prevents one worker from monopolizing the pool.
@@ -405,7 +405,7 @@ void SearchSession::WakeAdmissionWaiters() {
   {
     absl::MutexLock lock(admission_mutex_);
     if (IsAdmissionClosed()) return;
-    const size_t limit = ActiveVisitLimit();
+    const size_t limit = GetActiveVisitLimit();
     const size_t active = visits_.active();
     size_t available = limit > active ? limit - active : 0;
     for (size_t n = 0; n < workers_.size() && available > 0; ++n) {
@@ -500,7 +500,7 @@ void SearchSession::ResumeVisit(Worker& worker, const VisitWakeup& wakeup) {
   worker.runnable.push_back(wakeup.id);
 }
 
-void SearchSession::VisitThread(Worker& worker) {
+void SearchSession::VisitLoop(Worker& worker) {
   worker.outgoing.resize(workers_.size());
   for (;;) {
     ProcessInbox(worker);
@@ -508,7 +508,7 @@ void SearchSession::VisitThread(Worker& worker) {
       CancelWorkerVisits(worker);
     } else {
       AdvanceRunnableVisits(worker, kVisitsPerPass);
-      AdmitVisits(worker);
+      AdmitNewRootVisits(worker);
     }
     SendJobs(worker);
     for (size_t i = 0; i < workers_.size(); ++i) {
@@ -940,7 +940,7 @@ void SearchSession::FinishJob(Worker& worker, std::unique_ptr<Job> job) {
   jobs_in_flight_.fetch_sub(1);
 }
 
-void SearchSession::StoreThread() {
+void SearchSession::StoreLoop() {
   std::unique_ptr<Job> job;
   while (store_jobs_.Pop(&job)) {
     if (job->kind == JobKind::kPersist) {
@@ -996,7 +996,7 @@ void SearchSession::RunEvictionJob(Job& job) {
   WakeController();
 }
 
-void SearchSession::EvaluatorThread() {
+void SearchSession::EvaluatorLoop() {
   std::unique_ptr<Job> job;
   while (eval_jobs_.Pop(&job)) {
     if (IsStopping()) {

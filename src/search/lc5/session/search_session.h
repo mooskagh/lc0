@@ -83,11 +83,11 @@ class SearchSession {
   // A visit thread's state; defined below the class.
   struct Worker;
 
-  // Thread entry points.
-  void ControllerThread();
-  void VisitThread(Worker& worker);
-  void EvaluatorThread();
-  void StoreThread();
+  // Thread bodies; each runs until its thread exits. Start() spawns them.
+  void ControllerLoop();
+  void VisitLoop(Worker& worker);
+  void EvaluatorLoop();
+  void StoreLoop();
 
   // Search: stop, output and shutdown.
   bool IsStopping() const { return stop_mode_.load() != StopMode::kRunning; }
@@ -98,24 +98,29 @@ class SearchSession {
   void WakeController();
   void WakeAllWorkers();
   ThinkingInfo BuildThinkingInfo(bool final) const;
-  Move FallbackMove() const;
+  Move GetFallbackMove() const;
   // Whether the graph has a node limit to keep, by evicting to the store.
   bool HasNodeLimit() const {
     return has_store_ && settings_.graph_node_limit > 0;
   }
 
   // Admission.
-  // Live visits allowed while the tree is still empty; see ActiveVisitLimit.
+  // Live visits allowed while the tree is still empty; see GetActiveVisitLimit.
   static constexpr size_t kMinActiveVisits = 16;
 
   bool IsAdmissionClosed() const
       ABSL_EXCLUSIVE_LOCKS_REQUIRED(admission_mutex_);
   // Live visits allowed now: grows with the root's visits, as classic search
   // grows its collision limit, so small trees are not flooded.
-  size_t ActiveVisitLimit() const;
+  size_t GetActiveVisitLimit() const;
+  // A new visit from `origin`; nullopt if admission is closed (stopping, or the
+  // node budget is spent), GetActiveVisitLimit() visits are alive, or the pool
+  // has no free slot.
   std::optional<VisitId> AllocateVisit(const VisitOrigin& origin)
       ABSL_EXCLUSIVE_LOCKS_REQUIRED(admission_mutex_);
-  void AdmitVisits(Worker& worker);
+  // Allocates new visits from the root for `worker`, up to kVisitsPerPass and
+  // its share of the pool.
+  void AdmitNewRootVisits(Worker& worker);
   void WakeAdmissionWaiters();
 
   // Worker loop.
