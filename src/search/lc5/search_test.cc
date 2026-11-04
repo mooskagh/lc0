@@ -48,13 +48,31 @@ namespace lczero::lc5 {
 
 class SearchRunTestPeer {
  public:
+  // Admits a visit from an arbitrary origin, sharing the node budget with
+  // root visits. May be called before Start(). Returns false if admission is
+  // closed, the budget is exhausted or the pool is full.
+  static bool AdmitVisit(SearchRun& run, const VisitOrigin& origin) {
+    size_t owner;
+    std::vector<Continuation> admitted;
+    {
+      absl::MutexLock lock(run.admission_mutex_);
+      owner = run.next_owner_++ % run.workers_.size();
+      const auto id = run.AllocateVisit(origin);
+      if (!id) return false;
+      admitted.push_back({.id = *id, .worker = owner});
+    }
+    // The allocated visit keeps active() nonzero until this is consumed, so
+    // stop cannot declare a drain before the mailbox publication.
+    run.SendContinuations(owner, admitted);
+    return true;
+  }
   // Before Start only: make the entire backlog ready before collectors run.
   static void PrepareAdmissions(SearchRun& run) ABSL_NO_THREAD_SAFETY_ANALYSIS {
     for (auto& ptr : run.workers_) {
       auto& worker = *ptr;
       worker.outgoing.resize(run.workers_.size());
       for (const auto& event : worker.mailbox.continuations)
-        run.Resume(worker, event);
+        run.ResumeVisit(worker, event);
       worker.mailbox.continuations.clear();
       while (!worker.runnable.empty()) {
         auto id = worker.runnable.front();
@@ -62,7 +80,7 @@ class SearchRunTestPeer {
         run.AdvanceVisit(worker, id);
       }
       run.SubmitJobs(worker);
-      run.SetProducing(worker, false);
+      run.SetWorkerProducing(worker, false);
     }
   }
   // Inspect owner-local state only after Wait's full join barrier.
@@ -90,7 +108,7 @@ class SearchRunTestPeer {
   }
   static void ExpectDrained(const Lc5Engine& engine) {
     ASSERT_TRUE(engine.run_);
-    ASSERT_TRUE(engine.run_->Finished());
+    ASSERT_TRUE(engine.run_->IsFinished());
     ExpectDrained(*engine.run_);
     ASSERT_TRUE(engine.visit_engine_);
     for (const auto& [key, node] :
@@ -410,7 +428,7 @@ S& InstallStore(VisitEngine& engine, Args&&... args) {
 
 template <typename P>
 void ExpectDrained(const SearchRun& run, const GameGraph<P>& graph) {
-  ASSERT_TRUE(run.Finished());
+  ASSERT_TRUE(run.IsFinished());
   SearchRunTestPeer::ExpectDrained(run);
   const auto& m = run.metrics();
   EXPECT_EQ(m.visits_admitted.load(),
@@ -458,7 +476,7 @@ TEST(Lc5SearchTest, ExpiredTimeBudgetStopsAndDrains) {
     SearchRun run(&engine, &backend, &responder, TestSettings(),
                   TestTimeManagement(), root, params,
                   std::chrono::steady_clock::now() - std::chrono::minutes(2));
-    ASSERT_TRUE(run.Admit(root));
+    ASSERT_TRUE(SearchRunTestPeer::AdmitVisit(run, root));
     run.Start();
     run.Wait();
     // Startup can race expiration; neither completed visits nor evaluations
@@ -481,7 +499,7 @@ TEST(Lc5SearchTest, AbortSuppressesOutputWithExpiredTimeBudget) {
   SearchRun run(&engine, &backend, &responder, TestSettings(),
                 TestTimeManagement(), root, GoParams{.movetime = 0},
                 std::chrono::steady_clock::now() - std::chrono::minutes(2));
-  ASSERT_TRUE(run.Admit(root));
+  ASSERT_TRUE(SearchRunTestPeer::AdmitVisit(run, root));
   // Abort before startup so output commitment cannot race the assertion.
   run.Abort();
   run.Start();
@@ -541,7 +559,7 @@ TEST(Lc5SearchTest, PonderIgnoresZeroNodeAndTimeLimits) {
   run.Start();
   const bool computing = backend.WaitForCompute();
   if (computing) {
-    EXPECT_FALSE(run.Finished());
+    EXPECT_FALSE(run.IsFinished());
     EXPECT_EQ(responder.bestmove_count.load(), 0u);
   } else {
     run.Abort();
@@ -577,7 +595,7 @@ TEST(Lc5SearchTest, ExactNodeBudgetWithMoreWorkersThanCapacity) {
     EXPECT_EQ(run.metrics().visits_completed.load(), nodes);
     EXPECT_EQ(run.metrics().visits_cancelled.load(), 0u);
     EXPECT_LE(run.metrics().active_visits_high_water.load(), 2u);
-    EXPECT_FALSE(run.Admit(root));
+    EXPECT_FALSE(SearchRunTestPeer::AdmitVisit(run, root));
     ExpectFinalOutput(responder, nodes);
     if (nodes == 0) {
       EXPECT_FALSE(responder.thinking.back().score.has_value());
@@ -642,8 +660,9 @@ TEST(Lc5SearchTest, OwnerBacksUpLeafWhileWaitersResumeSelection) {
                 TestTimeManagement(), root, GoParams{.nodes = 4},
                 std::chrono::steady_clock::now());
   // One worker consumes all four admissions before submitting the root job.
-  for (int i = 0; i < 4; ++i) ASSERT_TRUE(run.Admit(root));
-  EXPECT_FALSE(run.Admit(root));
+  for (int i = 0; i < 4; ++i)
+    ASSERT_TRUE(SearchRunTestPeer::AdmitVisit(run, root));
+  EXPECT_FALSE(SearchRunTestPeer::AdmitVisit(run, root));
   run.Start();
   run.Wait();
   ExpectDrained(run, graph);
@@ -906,7 +925,8 @@ TEST(Lc5SearchTest, TerminalOwnerAndWaitersNeverEvaluate) {
     SearchRun run(&engine, &backend, &responder, TestSettings(),
                   TestTimeManagement(), root, GoParams{.nodes = 4},
                   std::chrono::steady_clock::now());
-    for (int i = 0; i < 4; ++i) ASSERT_TRUE(run.Admit(root));
+    for (int i = 0; i < 4; ++i)
+      ASSERT_TRUE(SearchRunTestPeer::AdmitVisit(run, root));
     run.Start();
     run.Wait();
     ExpectDrained(run, graph);
@@ -952,10 +972,10 @@ TEST(Lc5SearchTest, ImmediateAndMixedResultsKeepJobStorageAlive) {
       auto origin = root;
       origin.history.Append(moves[i]);
       origin.key = MakeNodeKey(origin.history, 7);
-      ASSERT_TRUE(run.Admit(origin));
+      ASSERT_TRUE(SearchRunTestPeer::AdmitVisit(run, origin));
       origins.push_back(std::move(origin));
     }
-    EXPECT_FALSE(run.Admit(root));
+    EXPECT_FALSE(SearchRunTestPeer::AdmitVisit(run, root));
     run.Start();
     run.Wait();
     ExpectDrained(run, graph);
@@ -998,7 +1018,8 @@ TEST(Lc5SearchTest, BlockedBackendStopAndAbortDrainReservations) {
                   TestTimeManagement(), root,
                   GoParams{.nodes = 4, .infinite = true},
                   std::chrono::steady_clock::now());
-    for (int i = 0; i < 4; ++i) ASSERT_TRUE(run.Admit(root));
+    for (int i = 0; i < 4; ++i)
+      ASSERT_TRUE(SearchRunTestPeer::AdmitVisit(run, root));
     run.Start();
     const bool entered = backend.WaitForCompute();
     // Always unblock before any fatal assertion or SearchRun destruction.
@@ -1018,8 +1039,8 @@ TEST(Lc5SearchTest, BlockedBackendStopAndAbortDrainReservations) {
       run.Abort();  // A committed response cannot be retracted.
       run.Stop();
     }
-    EXPECT_FALSE(run.Admit(root));
-    EXPECT_FALSE(run.Finished());
+    EXPECT_FALSE(SearchRunTestPeer::AdmitVisit(run, root));
+    EXPECT_FALSE(run.IsFinished());
     EXPECT_EQ(responder.bestmove_count.load(), abort ? 0u : 1u);
     backend.Release();
     run.Wait();
@@ -1148,7 +1169,7 @@ TEST(Lc5SearchTest, RootBootstrapFlushesDependencyWithoutWaitingForTimer) {
     const bool entered = backend.WaitForCompute();
     if (entered) {
       // Assert before stop: stop/drain must not be what unblocks collection.
-      EXPECT_FALSE(run.Finished());
+      EXPECT_FALSE(run.IsFinished());
       EXPECT_EQ(run.metrics().nn_evaluations.load(), 1u);
       EXPECT_EQ(run.metrics().partial_starvation_flushes.load(), 1u);
       EXPECT_EQ(run.metrics().partial_timeout_flushes.load(), 0u);
@@ -1186,13 +1207,13 @@ TEST(Lc5SearchTest, CollectionFlushesWhileAnotherWorkerIsBlockedInStore) {
     settings.max_batch_delay_ms = delay;
     SearchRun run(&engine, &backend, &responder, settings, TestTimeManagement(),
                   root, GoParams{.nodes = 2}, std::chrono::steady_clock::now());
-    ASSERT_TRUE(run.Admit(root));
-    ASSERT_TRUE(run.Admit(other));
+    ASSERT_TRUE(SearchRunTestPeer::AdmitVisit(run, root));
+    ASSERT_TRUE(SearchRunTestPeer::AdmitVisit(run, other));
     run.Start();
     const bool loading = store.load.WaitForArrival();
     const bool computing = backend.WaitForCompute();
     if (loading && computing) {
-      EXPECT_FALSE(run.Finished());
+      EXPECT_FALSE(run.IsFinished());
       EXPECT_EQ(run.metrics().nn_evaluations.load(), 1u);
       EXPECT_EQ(run.metrics().partial_timeout_flushes.load(), delay ? 1u : 0u);
       EXPECT_EQ(run.metrics().partial_starvation_flushes.load(),
@@ -1236,8 +1257,8 @@ TEST(Lc5SearchTest, PositiveDelayCollectsAnotherWorkersStoreMissIntoSameBatch) {
   settings.max_batch_delay_ms = 60000;
   SearchRun run(&engine, &backend, &responder, settings, TestTimeManagement(),
                 root, GoParams{.nodes = 2}, std::chrono::steady_clock::now());
-  ASSERT_TRUE(run.Admit(root));
-  ASSERT_TRUE(run.Admit(other));
+  ASSERT_TRUE(SearchRunTestPeer::AdmitVisit(run, root));
+  ASSERT_TRUE(SearchRunTestPeer::AdmitVisit(run, other));
   run.Start();
   const bool loading = store.load.WaitForArrival();
   const bool first_input = backend.WaitForInputs(1);
@@ -1304,13 +1325,13 @@ TEST(Lc5SearchTest, MultiworkerMixedCacheResultsRespectBatchAndItemCredits) {
           auto origin = parent;
           origin.history.Append(replies[i]);
           origin.key = MakeNodeKey(origin.history, 7);
-          ASSERT_TRUE(run.Admit(origin));
+          ASSERT_TRUE(SearchRunTestPeer::AdmitVisit(run, origin));
           origins.push_back(std::move(origin));
         }
         if (origins.size() == static_cast<size_t>(test.capacity)) break;
       }
       ASSERT_EQ(origins.size(), static_cast<size_t>(test.capacity));
-      EXPECT_FALSE(run.Admit(root));
+      EXPECT_FALSE(SearchRunTestPeer::AdmitVisit(run, root));
       run.Start();
       const bool computing = backend.WaitForCompute();
       if (!computing) run.Abort();
@@ -1393,7 +1414,8 @@ TEST(Lc5SearchTest, BlockedStoreLoadsDrainAfterStopOrAbort) {
                     TestTimeManagement(), root,
                     GoParams{.nodes = 4, .infinite = true},
                     std::chrono::steady_clock::now());
-      for (int i = 0; i < 4; ++i) ASSERT_TRUE(run.Admit(root));
+      for (int i = 0; i < 4; ++i)
+        ASSERT_TRUE(SearchRunTestPeer::AdmitVisit(run, root));
       run.Start();
       const bool loading = store.load.WaitForArrival();
       if (loading) {
@@ -1407,8 +1429,8 @@ TEST(Lc5SearchTest, BlockedStoreLoadsDrainAfterStopOrAbort) {
         run.Stop();
         EXPECT_TRUE(responder.WaitForBestmove());
       }
-      EXPECT_FALSE(run.Admit(root));
-      EXPECT_FALSE(run.Finished());
+      EXPECT_FALSE(SearchRunTestPeer::AdmitVisit(run, root));
+      EXPECT_FALSE(run.IsFinished());
       store.load.Release();
       store.Release();
       run.Wait();
@@ -1458,7 +1480,7 @@ std::vector<VisitOrigin> AdmitChildren(SearchRun& run, const VisitOrigin& root,
     auto origin = root;
     origin.history.Append(legal[i]);
     origin.key = MakeNodeKey(origin.history, 7);
-    EXPECT_TRUE(run.Admit(origin));
+    EXPECT_TRUE(SearchRunTestPeer::AdmitVisit(run, origin));
     origins.push_back(std::move(origin));
   }
   SearchRunTestPeer::PrepareAdmissions(run);
@@ -1486,7 +1508,7 @@ TEST(Lc5SearchTest, QueuedBacklogCannotComputeAgainAfterStop) {
     const bool computing = backend.WaitForCompute(evaluators);
     run.Stop();
     const bool responding = responder.WaitForBestmove();
-    EXPECT_FALSE(run.Finished());
+    EXPECT_FALSE(run.IsFinished());
     backend.Release();
     run.Wait();
     ASSERT_TRUE(computing);
@@ -1521,14 +1543,15 @@ TEST(Lc5SearchTest, AuthorizedEvaluationsBackUpToRootAfterStop) {
   SearchRun run(&engine, &backend, &responder, TestSettings(4, 20),
                 TestTimeManagement(), root, GoParams{.nodes = 20},
                 std::chrono::steady_clock::now());
-  for (int i = 0; i < 20; ++i) ASSERT_TRUE(run.Admit(root));
+  for (int i = 0; i < 20; ++i)
+    ASSERT_TRUE(SearchRunTestPeer::AdmitVisit(run, root));
   run.Start();
   // One authorized batch of four children is computing; the other visits wait
   // on tickets of any worker, or are still queued, and must cancel.
   const bool computing = backend.WaitForCompute();
   run.Stop();
   const bool responding = responder.WaitForBestmove();
-  EXPECT_FALSE(run.Finished());
+  EXPECT_FALSE(run.IsFinished());
   backend.Release();
   run.Wait();
   ASSERT_TRUE(computing);
@@ -1565,7 +1588,7 @@ TEST(Lc5SearchTest, StopDuringAddInputKeepsOnlyImmediateResults) {
   const bool adding = backend.input.WaitForArrival();
   run.Stop();
   const bool responding = responder.WaitForBestmove();
-  EXPECT_FALSE(run.Finished());
+  EXPECT_FALSE(run.IsFinished());
   backend.Release();
   run.Wait();
   ASSERT_TRUE(adding);
@@ -1668,7 +1691,7 @@ TEST(Lc5SearchTest, RespondsBeforeBlockedEvictionDrains) {
   const bool computing = backend.WaitForCompute();
   run.Stop();
   const bool responding = responder.WaitForBestmove();
-  EXPECT_FALSE(run.Finished());
+  EXPECT_FALSE(run.IsFinished());
   store.Release();
   backend.Release();
   run.Wait();
@@ -1757,7 +1780,7 @@ TEST(Lc5SearchTest,
   SearchRun run(&engine, &backend, &responder, TestSettings(),
                 TestTimeManagement(), root, GoParams{},
                 std::chrono::steady_clock::now());
-  ASSERT_TRUE(run.Admit(root));
+  ASSERT_TRUE(SearchRunTestPeer::AdmitVisit(run, root));
   run.Stop();
   run.Start();
   run.Wait();

@@ -45,6 +45,7 @@
 #include "chess/uciloop.h"
 #include "neural/backend.h"
 #include "search/lc5/metrics.h"
+#include "search/lc5/run/messages.h"
 #include "search/lc5/run/visit_pool.h"
 #include "search/lc5/run/work_queue.h"
 #include "search/lc5/settings.h"
@@ -54,17 +55,8 @@
 
 namespace lczero::lc5 {
 
-// One `go` command's search, reaching node and edge state only through a
-// VisitEngine.
-//
-// Visit workers own their visits from admission to backup or cancellation.
-// A visit that reaches an unexpanded node suspends on a materialization
-// ticket; the ticket's owner submits the node to the store and/or evaluator
-// as part of a whole I/O job and later publishes the expansion, resuming all
-// waiters through their owners' mailboxes. The controller thread enforces
-// limits, reports info and coordinates shutdown. With a store and a graph
-// node limit, the controller also moves nodes out of the graph into the store
-// (eviction), and a graph miss restores a stored node with its statistics.
+// One `go` command's search: runs visits on worker threads, batches their
+// leaves for the store and the network, and reports through the responder.
 class SearchRun {
  public:
   SearchRun(VisitEngine* engine, Backend* backend, UciResponder* responder,
@@ -74,95 +66,19 @@ class SearchRun {
             int64_t saved_ms = 0);
   ~SearchRun();
 
-  void Start();
-  void Stop();
-  void Abort();
-  void Wait();
-  bool Finished() const { return finished_.load(std::memory_order_acquire); }
+  void Start();  // Spawns the threads and returns; later calls do nothing.
+  void Stop();   // Non-blocking: output bestmove, then drain.
+  void Abort();  // Non-blocking: drain with no bestmove, unless already sent.
+  void Wait();   // Blocks until drained and all threads are joined.
+  bool IsFinished() const { return finished_.load(std::memory_order_acquire); }
   const Metrics& metrics() const { return metrics_; }
   // Time to save for the next move (TimeManager::UnusedMs at stop).
   int64_t unused_time_ms() const { return unused_time_ms_.load(); }
-
-  // Admits a visit from an arbitrary origin, sharing the node budget with
-  // root visits. May be called before Start(). Returns false if admission is
-  // closed, the budget is exhausted or the pool is full.
-  bool Admit(const VisitOrigin& origin);
 
  private:
   friend class SearchRunTestPeer;
   enum class StopMode : uint8_t { kRunning, kRespondBestmove, kAbort };
 
-  // Tells a visit's owner how to continue it.
-  struct Continuation {
-    enum class Kind : uint8_t {
-      kAdmit,   // Newly admitted visit.
-      kSelect,  // Materialization finished; select below the node.
-      // The node was restored from the store with its statistics; select
-      // below it without resuming through the policy, as nothing new is known.
-      kRestored,
-      kBackup,  // Materialization finished; back up `value`.
-      // Materialization finished and the node already holds `value`; back
-      // up through the steps above it.
-      kBackupAbove,
-      // Materialization was cancelled on stop; cancel the visit.
-      kCancel,
-    };
-    VisitId id;
-    size_t worker;
-    Kind kind = Kind::kAdmit;
-    MaterializationTicketId ticket = 0;
-    uint64_t generation = 0;
-    SearchValue value{};
-    bool exact = false;  // `value` is an exact terminal value.
-    bool terminal = false;
-  };
-  struct Ticket {
-    NodeKey key;
-    Continuation owner;
-    std::vector<Continuation> waiters;
-  };
-  // One node to materialize, travelling through load and evaluation jobs.
-  struct Request {
-    enum class State : uint8_t {
-      kPending,    // Not (yet) processed, or abandoned on stop.
-      kStoreHit,   // `record` was loaded from the store.
-      kStoreMiss,  // Not in the store; needs evaluation.
-      kQueued,     // Added to a computation that has not run yet.
-      kEvaluated,  // `payload` holds the evaluation.
-    };
-    MaterializationTicketId ticket;
-    NodeKey key;
-    PositionHistory history;
-    ExpansionPayload payload{};
-    std::vector<uint8_t> record{};
-    State state = State::kPending;
-  };
-  // A kPersist job evicts `evict_count` nodes from the graph to the store. The
-  // controller creates it, and a store thread finishes it without returning it
-  // to a worker.
-  enum class JobKind { kEval, kLoad, kPersist };
-  // Storage is fixed before AddInput; the whole job lives through compute
-  // and completion consumption, including immediate-cache results.
-  struct Job {
-    JobKind kind;
-    size_t worker;
-    std::chrono::steady_clock::time_point queued_at;
-    std::vector<Request> requests;
-    size_t evict_count = 0;
-    size_t items() const { return requests.size(); }
-  };
-  // A worker's inbox. Senders lock `mutex` and add to it; unlocking wakes the
-  // owner if its wait condition now holds.
-  struct Mailbox {
-    // Makes the owner re-evaluate its wait condition after external state
-    // (stop, shutdown) changed.
-    void Wake() { absl::MutexLock lock(mutex); }
-
-    absl::Mutex mutex;
-    std::vector<Continuation> continuations ABSL_GUARDED_BY(mutex);
-    std::vector<std::unique_ptr<Job>> completions ABSL_GUARDED_BY(mutex);
-    bool admission_ready ABSL_GUARDED_BY(mutex) = false;
-  };
   struct Worker {
     explicit Worker(size_t index) : index(index) {}
     bool HasQueuedIo() const {
@@ -190,90 +106,101 @@ class SearchRun {
     // Guarded by SearchRun::admission_mutex_, not worker-owned.
     bool admission_waiting = false;
   };
-  struct Batch {
-    std::unique_ptr<BackendComputation> computation;
-    std::vector<std::unique_ptr<Job>> jobs{};
-    bool timed_out = false;
-  };
   // Cap on whole jobs in flight per worker; items are capped separately at
   // two minibatches.
   static constexpr size_t kBatchCredits = 16;
   static constexpr size_t kWorkChunk = 32;
   static constexpr size_t kMinActiveVisits = 16;
 
-  bool Stopping() const { return stop_mode_.load() != StopMode::kRunning; }
-  void RequestStop(StopMode mode);
+  // Thread entry points.
+  void ControllerThread();           // search_run.cc
+  void VisitThread(Worker& worker);  // visits.cc
+  void EvaluatorThread();            // materialization.cc
+  void StoreThread();                // materialization.cc
 
-  // Controller.
-  void Controller();
-  void Respond();
-  bool FullyDrained();
-  void Shutdown();
+  // Search: stop, output and shutdown (search_run.cc).
+  bool IsStopping() const { return stop_mode_.load() != StopMode::kRunning; }
+  void RequestStop(StopMode mode);
+  void RespondBestMove();
+  bool IsFullyDrained();
+  void JoinThreads();
+  void WakeController();
   void WakeAllWorkers();
-  void NotifyController();
-  ThinkingInfo BuildInfo(bool final) const;
-  // Whether the graph has a node limit to keep, by evicting to the store.
-  bool Evicts() const { return has_store_ && settings_.graph_node_limit > 0; }
-  // Queues eviction jobs when the graph is over its node limit.
-  void QueueEvictions();
+  ThinkingInfo BuildThinkingInfo(bool final) const;
   Move FallbackMove() const;
+  // Whether the graph has a node limit to keep, by evicting to the store.
+  bool HasNodeLimit() const {
+    return has_store_ && settings_.graph_node_limit > 0;
+  }
 
   // Admission (visits.cc).
-  bool AdmissionClosed() const ABSL_EXCLUSIVE_LOCKS_REQUIRED(admission_mutex_);
+  bool IsAdmissionClosed() const
+      ABSL_EXCLUSIVE_LOCKS_REQUIRED(admission_mutex_);
   // Live visits allowed now: grows with the root's visits, as classic search
   // grows its collision limit, so small trees are not flooded.
-  size_t ActiveLimit() const;
-  std::optional<VisitId> Allocate(const VisitOrigin& origin)
+  size_t ActiveVisitLimit() const;
+  std::optional<VisitId> AllocateVisit(const VisitOrigin& origin)
       ABSL_EXCLUSIVE_LOCKS_REQUIRED(admission_mutex_);
-  void AdmitMore(Worker& worker);
+  void AdmitVisits(Worker& worker);
   void WakeAdmissionWaiters();
 
-  // Visit workers (visits.cc).
-  void VisitWorker(Worker& worker);
+  // Worker loop (visits.cc).
   void ProcessMailbox(Worker& worker);
-  void AdvanceRunnable(Worker& worker, size_t limit);
-  void CancelVisits(Worker& worker);
+  void AdvanceRunnableVisits(Worker& worker, size_t limit);
+  void CancelWorkerVisits(Worker& worker);
   void PublishWorkerState(Worker& worker);
   bool HasLocalWork(const Worker& worker) const;
+
+  // Visit (visits.cc; SuspendVisit in materialization.cc).
   void AdvanceVisit(Worker& worker, VisitId id);
-  void Backup(Worker& worker, VisitPool::Slot& slot)
+  void ResumeVisit(Worker& worker, const Continuation& continuation);
+  bool SuspendVisit(Worker& worker, VisitPool::Slot& slot)
       ABSL_EXCLUSIVE_LOCKS_REQUIRED(slot.mutex);
-  void Cancel(Worker& worker, VisitPool::Slot& slot)
+  void BackupVisit(Worker& worker, VisitPool::Slot& slot)
+      ABSL_EXCLUSIVE_LOCKS_REQUIRED(slot.mutex);
+  void CancelVisit(Worker& worker, VisitPool::Slot& slot)
       ABSL_EXCLUSIVE_LOCKS_REQUIRED(slot.mutex);
   // Releases the visit's reservations and returns it to its origin.
-  void Restart(VisitPool::Slot& slot) ABSL_EXCLUSIVE_LOCKS_REQUIRED(slot.mutex);
+  void RestartVisit(VisitPool::Slot& slot)
+      ABSL_EXCLUSIVE_LOCKS_REQUIRED(slot.mutex);
   void FinishVisit(Worker& worker, VisitPool::Slot& slot, bool completed)
       ABSL_EXCLUSIVE_LOCKS_REQUIRED(slot.mutex);
-  void Resume(Worker& worker, const Continuation& continuation);
-  void Deliver(Worker& worker, const Continuation& continuation);
+
+  // Continuation (visits.cc).
+  void DeliverContinuation(Worker& worker, const Continuation& continuation);
   void SendContinuations(size_t worker, std::vector<Continuation>& batch);
 
-  // Materialization and I/O (materialization.cc).
-  bool SuspendForMaterialization(Worker& worker, VisitPool::Slot& slot)
-      ABSL_EXCLUSIVE_LOCKS_REQUIRED(slot.mutex);
-  void PrepareEvaluation(Worker& worker, Request request);
+  // Ticket (materialization.cc).
   void CompleteTicket(Worker& worker, MaterializationTicketId ticket,
                       ExpansionPayload payload);
   // Publishes a node restored from the store; returns false, with the ticket
   // still open, if the record was rejected.
-  bool CompleteRestore(Worker& worker, MaterializationTicketId ticket,
-                       std::span<const uint8_t> record);
+  bool RestoreTicket(Worker& worker, MaterializationTicketId ticket,
+                     std::span<const uint8_t> record);
   void CancelTicket(Worker& worker, MaterializationTicketId ticket);
+
+  // Request (materialization.cc).
+  void PrepareRequest(Worker& worker, Request request);
   void CancelPendingRequests(Worker& worker);
+
+  // Job (materialization.cc).
   void SubmitJobs(Worker& worker);
   std::unique_ptr<Job> TakeJob(Worker& worker) const;
   bool HasJobCredit(const Worker& worker) const;
-  void SetProducing(Worker& worker, bool producing);
+  void SetWorkerProducing(Worker& worker, bool producing);
   void ConsumeJob(Worker& worker, std::unique_ptr<Job> job);
   void ReturnJob(std::unique_ptr<Job> job);
-  void StoreWorker();
-  void Evict(Job& job);
-  void EvaluatorWorker();
-  Batch CollectBatch(std::unique_ptr<Job> first, std::unique_ptr<Job>* next);
-  void AddInputs(BackendComputation& computation, Job& job);
-  void RunBatch(Batch batch);
-  bool EvaluationStarved() const;
+  // Queues eviction jobs when the graph is over its node limit.
+  void QueueEvictionJobs();
+  void RunEvictionJob(Job& job);
 
+  // Batch (materialization.cc).
+  Batch CollectBatch(std::unique_ptr<Job> first, std::unique_ptr<Job>* next);
+  void AddJobInputs(BackendComputation& computation, Job& job);
+  void RunBatch(Batch batch);
+  bool IsEvaluationStarved() const;
+
+  // Configuration, fixed for the run (constructor only).
   VisitEngine* const engine_;
   const bool has_store_;
   Backend* const backend_;
@@ -283,9 +210,16 @@ class SearchRun {
   uint64_t root_visits_at_start_ = 0;
   const std::chrono::steady_clock::time_point start_time_;
   const TimeManager time_manager_;
+  std::optional<uint64_t> node_limit_;
+  // Not in infinite or ponder searches: a decided root or smart pruning may
+  // stop the search before its limits.
+  bool may_stop_early_ = true;
+
+  // Visits and counters.
   VisitPool visits_;
   Metrics metrics_;
 
+  // Threads and the queues between them.
   std::vector<std::unique_ptr<Worker>> workers_;
   WorkQueue<std::unique_ptr<Job>> store_jobs_;
   WorkQueue<std::unique_ptr<Job>> eval_jobs_;
@@ -294,6 +228,16 @@ class SearchRun {
   std::vector<std::thread> evaluator_threads_;
   std::thread controller_thread_;
 
+  // Admission and stop. admission_mutex_ serializes admission, stop requests
+  // and NN authorization. Also guards Worker::admission_waiting.
+  absl::Mutex admission_mutex_;
+  uint64_t admitted_ ABSL_GUARDED_BY(admission_mutex_) = 0;
+  size_t next_owner_ ABSL_GUARDED_BY(admission_mutex_) = 0;
+  size_t next_admission_waiter_ ABSL_GUARDED_BY(admission_mutex_) = 0;
+  std::atomic<StopMode> stop_mode_{StopMode::kRunning};
+  std::atomic<bool> output_committed_{false};
+
+  // Tickets.
   absl::Mutex tickets_mutex_;
   absl::flat_hash_map<NodeKey, MaterializationTicketId> ticket_by_key_
       ABSL_GUARDED_BY(tickets_mutex_);
@@ -301,35 +245,23 @@ class SearchRun {
       ABSL_GUARDED_BY(tickets_mutex_);
   MaterializationTicketId next_ticket_ ABSL_GUARDED_BY(tickets_mutex_) = 1;
 
-  // Set in the constructor only.
-  std::optional<uint64_t> node_limit_;
-  // Not in infinite or ponder searches: a decided root or smart pruning may
-  // stop the search before its limits.
-  bool may_stop_early_ = true;
-
-  // Serializes admission, stop requests and NN authorization. Also guards
-  // Worker::admission_waiting.
-  absl::Mutex admission_mutex_;
-  uint64_t admitted_ ABSL_GUARDED_BY(admission_mutex_) = 0;
-  size_t next_owner_ ABSL_GUARDED_BY(admission_mutex_) = 0;
-  size_t next_admission_waiter_ ABSL_GUARDED_BY(admission_mutex_) = 0;
-
-  std::atomic<StopMode> stop_mode_{StopMode::kRunning};
-  std::atomic<bool> started_{false};
-  std::atomic<bool> finished_{false};
-  std::atomic<bool> output_committed_{false};
-  std::atomic<bool> shutdown_{false};
-  std::atomic<int64_t> unused_time_ms_{0};
+  // Jobs and evictions in flight.
   // Includes queued, executing, and returned-but-unconsumed jobs.
   std::atomic<size_t> jobs_in_flight_{0};
-  // Eviction jobs queued or running; the controller queues more only at zero.
-  std::atomic<size_t> evictions_in_flight_{0};
-  // A worker saw the graph over its limit and woke the controller.
-  std::atomic<bool> eviction_requested_{false};
   // Jobs held by collectors (including retained whole jobs), not computing or
   // returned. If these are all remaining jobs and producers are blocked,
   // further collection depends on flushing at least one computation.
   std::atomic<size_t> collecting_jobs_{0};
+  // Eviction jobs queued or running; the controller queues more only at zero.
+  std::atomic<size_t> evictions_in_flight_{0};
+  // A worker saw the graph over its limit and woke the controller.
+  std::atomic<bool> eviction_requested_{false};
+
+  // Lifecycle and the controller's wakeups.
+  std::atomic<bool> started_{false};
+  std::atomic<bool> shutdown_{false};
+  std::atomic<bool> finished_{false};
+  std::atomic<int64_t> unused_time_ms_{0};
   absl::Mutex controller_mutex_;
   uint64_t controller_generation_ ABSL_GUARDED_BY(controller_mutex_) = 0;
 };

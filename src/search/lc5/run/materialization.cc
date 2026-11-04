@@ -92,8 +92,7 @@ void MoveFront(std::deque<T>& from, std::vector<T>& to, size_t limit) {
 
 }  // namespace
 
-bool SearchRun::SuspendForMaterialization(Worker& worker,
-                                          VisitPool::Slot& slot) {
+bool SearchRun::SuspendVisit(Worker& worker, VisitPool::Slot& slot) {
   Visit& visit = slot.visit;
   bool owner;
   MaterializationTicketId ticket_id;
@@ -127,7 +126,7 @@ bool SearchRun::SuspendForMaterialization(Worker& worker,
   metrics_.visits_suspended.fetch_add(1);
   // Wakes the controller once the graph outgrows its limit, so eviction keeps
   // up with fast searches between its periodic checks.
-  if (owner && Evicts() &&
+  if (owner && HasNodeLimit() &&
       engine_->GetGraphSize() > settings_.graph_node_limit &&
       !eviction_requested_.exchange(true)) {
     worker.controller_event = true;
@@ -143,8 +142,8 @@ bool SearchRun::SuspendForMaterialization(Worker& worker,
   return true;
 }
 
-void SearchRun::PrepareEvaluation(Worker& worker, Request request) {
-  if (Stopping()) {
+void SearchRun::PrepareRequest(Worker& worker, Request request) {
+  if (IsStopping()) {
     CancelTicket(worker, request.ticket);
     return;
   }
@@ -192,15 +191,14 @@ void SearchRun::CompleteTicket(Worker& worker,
     event.value = payload.leaf;
     event.terminal = terminal;
     event.exact = installed.accepted && IsExact(payload.terminal);
-    Deliver(worker, event);
+    DeliverContinuation(worker, event);
   };
   wake(ticket.owner, true);
   for (const auto& event : ticket.waiters) wake(event, false);
 }
 
-bool SearchRun::CompleteRestore(Worker& worker,
-                                MaterializationTicketId ticket_id,
-                                std::span<const uint8_t> record) {
+bool SearchRun::RestoreTicket(Worker& worker, MaterializationTicketId ticket_id,
+                              std::span<const uint8_t> record) {
   Ticket ticket;
   MaterializationResult restored;
   {
@@ -221,7 +219,7 @@ bool SearchRun::CompleteRestore(Worker& worker,
   const auto wake = [&](Continuation event) {
     event.kind = Continuation::Kind::kRestored;
     event.generation = restored.generation;
-    Deliver(worker, event);
+    DeliverContinuation(worker, event);
   };
   wake(ticket.owner);
   for (const auto& event : ticket.waiters) wake(event);
@@ -244,7 +242,7 @@ void SearchRun::CancelTicket(Worker& worker,
   }
   const auto wake = [&](Continuation event) {
     event.kind = Continuation::Kind::kCancel;
-    Deliver(worker, event);
+    DeliverContinuation(worker, event);
   };
   wake(ticket.owner);
   for (const auto& event : ticket.waiters) wake(event);
@@ -265,7 +263,7 @@ bool SearchRun::HasJobCredit(const Worker& worker) const {
              2 * static_cast<size_t>(settings_.minibatch_size);
 }
 
-void SearchRun::SetProducing(Worker& worker, bool producing) {
+void SearchRun::SetWorkerProducing(Worker& worker, bool producing) {
   // Only true -> false enables the collectors' starvation predicate, so only
   // that edge needs the queue-mutex handshake.
   if (worker.producing.exchange(producing) && !producing)
@@ -273,16 +271,16 @@ void SearchRun::SetProducing(Worker& worker, bool producing) {
 }
 
 void SearchRun::SubmitJobs(Worker& worker) {
-  if (Stopping()) CancelPendingRequests(worker);
+  if (IsStopping()) CancelPendingRequests(worker);
   // Detect terminals and generate legal moves for fresh requests outside any
   // slot lock. Terminal ones publish right away; the rest join `evals`.
   while (!worker.unprepared.empty()) {
     Request request = std::move(worker.unprepared.front());
     worker.unprepared.pop_front();
-    PrepareEvaluation(worker, std::move(request));
+    PrepareRequest(worker, std::move(request));
   }
   while (HasJobCredit(worker)) {
-    if (Stopping()) CancelPendingRequests(worker);
+    if (IsStopping()) CancelPendingRequests(worker);
     auto job = TakeJob(worker);
     if (!job) break;
     ++worker.outstanding;
@@ -299,7 +297,7 @@ void SearchRun::SubmitJobs(Worker& worker) {
   }
 }
 
-std::unique_ptr<SearchRun::Job> SearchRun::TakeJob(Worker& worker) const {
+std::unique_ptr<Job> SearchRun::TakeJob(Worker& worker) const {
   // Small whole jobs leave room to collect more cache misses without exceeding
   // the backend batch. Item credits bound loads and evaluations.
   const size_t batch_size = settings_.minibatch_size;
@@ -339,16 +337,16 @@ void SearchRun::ConsumeJob(Worker& worker, std::unique_ptr<Job> job) {
         break;
       case Request::State::kStoreHit:
         metrics_.node_store_hits.fetch_add(1);
-        if (!CompleteRestore(worker, request.ticket, request.record)) {
+        if (!RestoreTicket(worker, request.ticket, request.record)) {
           // Not a record for this policy or format: evaluate the node.
           metrics_.restores_rejected.fetch_add(1);
           request.record.clear();
-          PrepareEvaluation(worker, std::move(request));
+          PrepareRequest(worker, std::move(request));
         }
         break;
       case Request::State::kStoreMiss:
         metrics_.node_store_misses.fetch_add(1);
-        PrepareEvaluation(worker, std::move(request));
+        PrepareRequest(worker, std::move(request));
         break;
       case Request::State::kPending:
       case Request::State::kQueued:
@@ -363,14 +361,14 @@ void SearchRun::ConsumeJob(Worker& worker, std::unique_ptr<Job> job) {
   jobs_in_flight_.fetch_sub(1);
 }
 
-void SearchRun::StoreWorker() {
+void SearchRun::StoreThread() {
   std::unique_ptr<Job> job;
   while (store_jobs_.Pop(&job)) {
     if (job->kind == JobKind::kPersist) {
-      Evict(*job);
+      RunEvictionJob(*job);
       continue;
     }
-    if (!Stopping()) {
+    if (!IsStopping()) {
       std::vector<NodeKey> keys;
       for (const auto& request : job->requests) keys.push_back(request.key);
       auto loaded = engine_->ReadFromStore(keys);
@@ -391,8 +389,9 @@ void SearchRun::StoreWorker() {
   }
 }
 
-void SearchRun::QueueEvictions() {
-  if (!Evicts() || Stopping() || evictions_in_flight_.load() > 0) return;
+void SearchRun::QueueEvictionJobs() {
+  if (!HasNodeLimit() || IsStopping() || evictions_in_flight_.load() > 0)
+    return;
   eviction_requested_.store(false);
   const size_t limit = settings_.graph_node_limit;
   const size_t size = engine_->GetGraphSize();
@@ -408,15 +407,15 @@ void SearchRun::QueueEvictions() {
   store_jobs_.Push(std::move(job));
 }
 
-void SearchRun::Evict(Job& job) {
+void SearchRun::RunEvictionJob(Job& job) {
   engine_->EvictToStore(job.evict_count, root_.key, metrics_);
   jobs_in_flight_.fetch_sub(1);
   // The controller may queue the next round, or finish draining.
   evictions_in_flight_.fetch_sub(1);
-  NotifyController();
+  WakeController();
 }
 
-void SearchRun::EvaluatorWorker() {
+void SearchRun::EvaluatorThread() {
   // A popped job that did not fit the previous batch. Retained jobs remain
   // counted as collecting and in flight.
   std::unique_ptr<Job> next;
@@ -425,7 +424,7 @@ void SearchRun::EvaluatorWorker() {
       if (!eval_jobs_.Pop(&next)) break;
       collecting_jobs_.fetch_add(1);
     }
-    if (Stopping()) {
+    if (IsStopping()) {
       collecting_jobs_.fetch_sub(1);
       ReturnJob(std::move(next));
       continue;
@@ -434,8 +433,8 @@ void SearchRun::EvaluatorWorker() {
   }
 }
 
-SearchRun::Batch SearchRun::CollectBatch(std::unique_ptr<Job> job,
-                                         std::unique_ptr<Job>* next) {
+Batch SearchRun::CollectBatch(std::unique_ptr<Job> job,
+                              std::unique_ptr<Job>* next) {
   const size_t target = settings_.minibatch_size;
   const auto deadline =
       settings_.max_batch_delay_ms == 0
@@ -444,20 +443,20 @@ SearchRun::Batch SearchRun::CollectBatch(std::unique_ptr<Job> job,
                 std::chrono::milliseconds(settings_.max_batch_delay_ms);
   Batch batch{.computation = backend_->CreateComputation()};
   for (;;) {
-    AddInputs(*batch.computation, *job);
+    AddJobInputs(*batch.computation, *job);
     batch.jobs.push_back(std::move(job));
     const size_t used = batch.computation->UsedBatchSize();
-    if (used >= target || Stopping()) break;
+    if (used >= target || IsStopping()) break;
     // Consume already-ready jobs first, even past the deadline, rather than
     // fragmenting an accumulated backlog into single-job batches.
     if (!eval_jobs_.TryPop(&job)) {
       // Immediate-only batches return credits instead of waiting on producers
       // that need those cache results. The oldest job's deadline is absolute;
       // zero disables it, but dependency starvation still flushes.
-      if (used == 0 || Stopping()) break;
+      if (used == 0 || IsStopping()) break;
       eval_jobs_.NotifyPredicateChanged();
       if (!eval_jobs_.PopUntil(&job, deadline, [&] {
-            return Stopping() || EvaluationStarved();
+            return IsStopping() || IsEvaluationStarved();
           })) {
         batch.timed_out = std::chrono::steady_clock::now() >= deadline;
         break;
@@ -477,9 +476,9 @@ SearchRun::Batch SearchRun::CollectBatch(std::unique_ptr<Job> job,
   return batch;
 }
 
-void SearchRun::AddInputs(BackendComputation& computation, Job& job) {
+void SearchRun::AddJobInputs(BackendComputation& computation, Job& job) {
   for (auto& request : job.requests) {
-    if (Stopping()) break;
+    if (IsStopping()) break;
     auto& payload = request.payload;
     const auto result =
         computation.AddInput(EvalPosition{.pos = request.history.GetPositions(),
@@ -504,7 +503,7 @@ void SearchRun::RunBatch(Batch batch) {
     // The final gate shares stop's linearization point. A serial evaluator
     // cannot authorize again until this computation has returned.
     absl::MutexLock lock(admission_mutex_);
-    authorized = !Stopping();
+    authorized = !IsStopping();
   }
   if (authorized) {
     if (used < static_cast<size_t>(settings_.minibatch_size)) {
@@ -528,7 +527,7 @@ void SearchRun::RunBatch(Batch batch) {
   for (auto& job : batch.jobs) ReturnJob(std::move(job));
 }
 
-bool SearchRun::EvaluationStarved() const {
+bool SearchRun::IsEvaluationStarved() const {
   // Executing, store or returned jobs can still unblock a producer. Only
   // predict starvation when every outstanding job is held by a collector and
   // no worker can submit independently; the deadline bounds the uncertainty.

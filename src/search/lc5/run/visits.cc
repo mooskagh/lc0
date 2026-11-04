@@ -38,13 +38,13 @@
 
 namespace lczero::lc5 {
 
-bool SearchRun::AdmissionClosed() const {
-  return Stopping() || (node_limit_ && admitted_ >= *node_limit_);
+bool SearchRun::IsAdmissionClosed() const {
+  return IsStopping() || (node_limit_ && admitted_ >= *node_limit_);
 }
 
-std::optional<VisitId> SearchRun::Allocate(const VisitOrigin& origin) {
+std::optional<VisitId> SearchRun::AllocateVisit(const VisitOrigin& origin) {
   // Allocate never holds pool -> slot.
-  if (AdmissionClosed() || visits_.active() >= ActiveLimit()) {
+  if (IsAdmissionClosed() || visits_.active() >= ActiveVisitLimit()) {
     return std::nullopt;
   }
   const auto id = visits_.Allocate(origin);
@@ -55,7 +55,7 @@ std::optional<VisitId> SearchRun::Allocate(const VisitOrigin& origin) {
   return id;
 }
 
-size_t SearchRun::ActiveLimit() const {
+size_t SearchRun::ActiveVisitLimit() const {
   if (settings_.active_visits_ratio <= 0.0f) return visits_.capacity();
   const double tree = static_cast<double>(root_visits_at_start_ +
                                           metrics_.visits_completed.load());
@@ -64,34 +64,18 @@ size_t SearchRun::ActiveLimit() const {
                                          tree * settings_.active_visits_ratio));
 }
 
-bool SearchRun::Admit(const VisitOrigin& origin) {
-  size_t owner;
-  std::vector<Continuation> admitted;
-  {
-    absl::MutexLock lock(admission_mutex_);
-    owner = next_owner_++ % workers_.size();
-    const auto id = Allocate(origin);
-    if (!id) return false;
-    admitted.push_back({.id = *id, .worker = owner});
-  }
-  // The allocated visit keeps active() nonzero until this is consumed, so stop
-  // cannot declare a drain before the mailbox publication.
-  SendContinuations(owner, admitted);
-  return true;
-}
-
-void SearchRun::AdmitMore(Worker& worker) {
+void SearchRun::AdmitVisits(Worker& worker) {
   absl::MutexLock lock(admission_mutex_);
   worker.admission_waiting = false;
   // A modest per-worker share prevents one worker from monopolizing the pool.
   const size_t share =
       (visits_.capacity() + workers_.size() - 1) / workers_.size();
   for (size_t i = 0; i < kWorkChunk && worker.active.size() < share; ++i) {
-    const auto id = Allocate(root_);
+    const auto id = AllocateVisit(root_);
     if (!id) {
       // The pool is full. Registration shares admission_mutex_ with the
       // capacity check in WakeAdmissionWaiters, so it cannot miss a release.
-      worker.admission_waiting = !AdmissionClosed();
+      worker.admission_waiting = !IsAdmissionClosed();
       break;
     }
     worker.active.insert(id->value);
@@ -104,8 +88,8 @@ void SearchRun::WakeAdmissionWaiters() {
   std::vector<size_t> wake;
   {
     absl::MutexLock lock(admission_mutex_);
-    if (AdmissionClosed()) return;
-    const size_t limit = ActiveLimit();
+    if (IsAdmissionClosed()) return;
+    const size_t limit = ActiveVisitLimit();
     const size_t active = visits_.active();
     size_t available = limit > active ? limit - active : 0;
     for (size_t n = 0; n < workers_.size() && available > 0; ++n) {
@@ -141,15 +125,16 @@ void SearchRun::SendContinuations(size_t worker,
   metrics_.mailbox_notifications.fetch_add(1);
 }
 
-void SearchRun::Deliver(Worker& worker, const Continuation& continuation) {
+void SearchRun::DeliverContinuation(Worker& worker,
+                                    const Continuation& continuation) {
   if (continuation.worker == worker.index) {
-    Resume(worker, continuation);
+    ResumeVisit(worker, continuation);
   } else {
     worker.outgoing[continuation.worker].push_back(continuation);
   }
 }
 
-void SearchRun::Resume(Worker& worker, const Continuation& event) {
+void SearchRun::ResumeVisit(Worker& worker, const Continuation& event) {
   VisitPool::Slot* slot = visits_.Lookup(event.id);
   if (!slot) return;
   absl::MutexLock lock(slot->mutex);
@@ -165,9 +150,9 @@ void SearchRun::Resume(Worker& worker, const Continuation& event) {
     visit.waiting_ticket = 0;
     // On stop, visits finish only when their evaluation already exists.
     if (event.kind == Continuation::Kind::kCancel ||
-        (Stopping() && (event.kind == Continuation::Kind::kSelect ||
-                        event.kind == Continuation::Kind::kRestored))) {
-      Cancel(worker, *slot);
+        (IsStopping() && (event.kind == Continuation::Kind::kSelect ||
+                          event.kind == Continuation::Kind::kRestored))) {
+      CancelVisit(worker, *slot);
       return;
     }
     visit.path.back().generation = event.generation;
@@ -184,7 +169,7 @@ void SearchRun::Resume(Worker& worker, const Continuation& event) {
     } else {
       switch (engine_->ResumeVisit(visit, metrics_)) {
         case VisitEngine::ResumeAction::kRestart:
-          Restart(*slot);
+          RestartVisit(*slot);
           break;
         case VisitEngine::ResumeAction::kBackup:
           visit.leaf_counted = false;
@@ -201,15 +186,15 @@ void SearchRun::Resume(Worker& worker, const Continuation& event) {
   worker.runnable.push_back(event.id);
 }
 
-void SearchRun::VisitWorker(Worker& worker) {
+void SearchRun::VisitThread(Worker& worker) {
   worker.outgoing.resize(workers_.size());
   for (;;) {
     ProcessMailbox(worker);
-    if (Stopping()) {
-      CancelVisits(worker);
+    if (IsStopping()) {
+      CancelWorkerVisits(worker);
     } else {
-      AdvanceRunnable(worker, kWorkChunk);
-      AdmitMore(worker);
+      AdvanceRunnableVisits(worker, kWorkChunk);
+      AdmitVisits(worker);
     }
     SubmitJobs(worker);
     for (size_t i = 0; i < workers_.size(); ++i) {
@@ -228,7 +213,7 @@ void SearchRun::VisitWorker(Worker& worker) {
       mailbox.mutex.AssertReaderHeld();
       return shutdown_.load() || mailbox.admission_ready ||
              !mailbox.continuations.empty() || !mailbox.completions.empty() ||
-             (!worker.cancelled && Stopping());
+             (!worker.cancelled && IsStopping());
     };
     mailbox.mutex.Await(absl::Condition(&ready));
   }
@@ -247,14 +232,14 @@ void SearchRun::ProcessMailbox(Worker& worker) {
   if (admission_ready || !continuations.empty() || !completions.empty()) {
     // Actual incoming work can enable preparation or refill. This transition
     // disables starvation and needs no broadcast.
-    SetProducing(worker, true);
+    SetWorkerProducing(worker, true);
     if (worker.drained.exchange(false)) worker.controller_event = true;
   }
-  for (const auto& event : continuations) Resume(worker, event);
+  for (const auto& event : continuations) ResumeVisit(worker, event);
   for (auto& job : completions) ConsumeJob(worker, std::move(job));
 }
 
-void SearchRun::AdvanceRunnable(Worker& worker, size_t limit) {
+void SearchRun::AdvanceRunnableVisits(Worker& worker, size_t limit) {
   for (size_t i = 0; i < limit && !worker.runnable.empty(); ++i) {
     const VisitId id = worker.runnable.front();
     worker.runnable.pop_front();
@@ -262,11 +247,11 @@ void SearchRun::AdvanceRunnable(Worker& worker, size_t limit) {
   }
 }
 
-void SearchRun::CancelVisits(Worker& worker) {
+void SearchRun::CancelWorkerVisits(Worker& worker) {
   // Only the owner ever cancels or mutates a visit. Epochs make later ticket
   // completions harmless even after the slot has been reused. Ready backups
   // finish; waiting visits stay until their ticket completes or is cancelled,
-  // and come back through Resume.
+  // and come back through ResumeVisit.
   if (!worker.cancelled) {
     const std::vector<uint64_t> active(worker.active.begin(),
                                        worker.active.end());
@@ -275,7 +260,7 @@ void SearchRun::CancelVisits(Worker& worker) {
     worker.cancelled = true;
   }
   // External admissions published just before stop still need cancellation.
-  AdvanceRunnable(worker, std::numeric_limits<size_t>::max());
+  AdvanceRunnableVisits(worker, std::numeric_limits<size_t>::max());
 }
 
 void SearchRun::PublishWorkerState(Worker& worker) {
@@ -285,13 +270,14 @@ void SearchRun::PublishWorkerState(Worker& worker) {
     worker.controller_event = true;
   }
   if (std::exchange(worker.released_capacity, false)) WakeAdmissionWaiters();
-  if (std::exchange(worker.controller_event, false)) NotifyController();
-  SetProducing(worker, HasJobCredit(worker) &&
-                           (!worker.runnable.empty() || worker.HasQueuedIo()));
+  if (std::exchange(worker.controller_event, false)) WakeController();
+  SetWorkerProducing(worker,
+                     HasJobCredit(worker) &&
+                         (!worker.runnable.empty() || worker.HasQueuedIo()));
 }
 
 bool SearchRun::HasLocalWork(const Worker& worker) const {
-  return (!Stopping() && !worker.runnable.empty()) ||
+  return (!IsStopping() && !worker.runnable.empty()) ||
          (HasJobCredit(worker) && worker.HasQueuedIo());
 }
 
@@ -302,30 +288,30 @@ void SearchRun::AdvanceVisit(Worker& worker, VisitId id) {
   if (!visits_.IsLiveLocked(*slot, id)) return;
   Visit& visit = slot->visit;
   if (visit.state == VisitState::kReadyBackup) {
-    Backup(worker, *slot);
+    BackupVisit(worker, *slot);
     return;
   }
   if (visit.state == VisitState::kWaitingMaterialization) return;
-  if (Stopping()) {
-    Cancel(worker, *slot);
+  if (IsStopping()) {
+    CancelVisit(worker, *slot);
     return;
   }
   if (visit.state != VisitState::kReadySelect) return;
   for (;;) {
-    if (Stopping()) {
-      Cancel(worker, *slot);
+    if (IsStopping()) {
+      CancelVisit(worker, *slot);
       return;
     }
     if (engine_->DescendVisit(visit, metrics_) ==
         VisitEngine::DescendResult::kValuedLeaf) {
-      Backup(worker, *slot);
+      BackupVisit(worker, *slot);
       return;
     }
-    if (SuspendForMaterialization(worker, *slot)) return;
+    if (SuspendVisit(worker, *slot)) return;
   }
 }
 
-void SearchRun::Backup(Worker& worker, VisitPool::Slot& slot) {
+void SearchRun::BackupVisit(Worker& worker, VisitPool::Slot& slot) {
   Visit& visit = slot.visit;
   visit.state = VisitState::kBackingUp;
   engine_->BackupVisit(visit, metrics_);
@@ -333,12 +319,12 @@ void SearchRun::Backup(Worker& worker, VisitPool::Slot& slot) {
   FinishVisit(worker, slot, true);
 }
 
-void SearchRun::Cancel(Worker& worker, VisitPool::Slot& slot) {
+void SearchRun::CancelVisit(Worker& worker, VisitPool::Slot& slot) {
   engine_->CancelVisit(slot.visit, metrics_);
   FinishVisit(worker, slot, false);
 }
 
-void SearchRun::Restart(VisitPool::Slot& slot) {
+void SearchRun::RestartVisit(VisitPool::Slot& slot) {
   Visit& visit = slot.visit;
   engine_->CancelVisit(visit, metrics_);
   visit.history = visit.origin.history;

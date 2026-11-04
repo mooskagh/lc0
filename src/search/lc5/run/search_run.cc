@@ -90,15 +90,15 @@ SearchRun::~SearchRun() {
 void SearchRun::Start() {
   if (started_.exchange(true)) return;
   for (int i = 0; i < settings_.eval_threads; ++i) {
-    if (has_store_) store_threads_.emplace_back(&SearchRun::StoreWorker, this);
-    evaluator_threads_.emplace_back(&SearchRun::EvaluatorWorker, this);
+    if (has_store_) store_threads_.emplace_back(&SearchRun::StoreThread, this);
+    evaluator_threads_.emplace_back(&SearchRun::EvaluatorThread, this);
   }
   for (auto& worker : workers_) {
-    visit_threads_.emplace_back(&SearchRun::VisitWorker, this,
+    visit_threads_.emplace_back(&SearchRun::VisitThread, this,
                                 std::ref(*worker));
   }
   if (node_limit_ == 0) Stop();
-  controller_thread_ = std::thread(&SearchRun::Controller, this);
+  controller_thread_ = std::thread(&SearchRun::ControllerThread, this);
 }
 
 void SearchRun::RequestStop(StopMode requested) {
@@ -107,11 +107,11 @@ void SearchRun::RequestStop(StopMode requested) {
     // bestmove response until its output is committed.
     absl::MutexLock lock(admission_mutex_);
     if (requested == StopMode::kAbort ? !output_committed_.load()
-                                      : !Stopping()) {
+                                      : !IsStopping()) {
       stop_mode_.store(requested);
     }
   }
-  NotifyController();
+  WakeController();
 }
 
 void SearchRun::Stop() { RequestStop(StopMode::kRespondBestmove); }
@@ -122,7 +122,7 @@ void SearchRun::Wait() {
   if (controller_thread_.joinable()) controller_thread_.join();
 }
 
-void SearchRun::NotifyController() {
+void SearchRun::WakeController() {
   absl::MutexLock lock(controller_mutex_);
   ++controller_generation_;
 }
@@ -131,7 +131,7 @@ void SearchRun::WakeAllWorkers() {
   for (auto& worker : workers_) worker->mailbox.Wake();
 }
 
-void SearchRun::Controller() {
+void SearchRun::ControllerThread() {
   auto next_info = steady_clock::now() + kInfoInterval;
   bool responded = false;
   for (;;) {
@@ -144,7 +144,7 @@ void SearchRun::Controller() {
     }
     const auto now = steady_clock::now();
     std::optional<steady_clock::time_point> next_check;
-    if (!Stopping()) {
+    if (!IsStopping()) {
       next_check = time_manager_.deadline();
       const RootStats root = engine_->GetRootStats(root_.key);
       if (time_manager_.ShouldStop(now) ||
@@ -165,26 +165,26 @@ void SearchRun::Controller() {
         next_check = std::min(next_check.value_or(now + kSmartPruningInterval),
                               now + kSmartPruningInterval);
       }
-      if (Evicts()) {
-        QueueEvictions();
+      if (HasNodeLimit()) {
+        QueueEvictionJobs();
         next_check = std::min(next_check.value_or(now + kEvictionInterval),
                               now + kEvictionInterval);
       }
     }
-    if (!Stopping() && now >= next_info) {
-      std::vector<ThinkingInfo> infos{BuildInfo(false)};
+    if (!IsStopping() && now >= next_info) {
+      std::vector<ThinkingInfo> infos{BuildThinkingInfo(false)};
       responder_->OutputThinkingInfo(&infos);
       next_info = now + kInfoInterval;
     }
-    if (Stopping() && !responded) {
-      Respond();
+    if (IsStopping() && !responded) {
+      RespondBestMove();
       responded = true;
     }
     // Stop may arrive after the check above. Never finish draining before
     // output has been committed or suppressed and sleepers were woken.
-    if (responded && FullyDrained()) break;
+    if (responded && IsFullyDrained()) break;
     auto wake_at = steady_clock::time_point::max();
-    if (!Stopping()) {
+    if (!IsStopping()) {
       wake_at = std::min(next_info, next_check.value_or(wake_at));
     }
     absl::MutexLock lock(controller_mutex_);
@@ -196,16 +196,16 @@ void SearchRun::Controller() {
         absl::Condition(&notified),
         absl::FromChrono(wake_at - steady_clock::now()));
   }
-  Shutdown();
+  JoinThreads();
 }
 
-void SearchRun::Respond() {
+void SearchRun::RespondBestMove() {
   // The search ends here as far as the clock is concerned.
   unused_time_ms_.store(time_manager_.UnusedMs(steady_clock::now()));
   // Capture once, without waiting for any executor or eviction. Abort can
   // suppress this response until commitment, but cannot retract it.
   if (stop_mode_.load() == StopMode::kRespondBestmove) {
-    std::vector<ThinkingInfo> infos{BuildInfo(true)};
+    std::vector<ThinkingInfo> infos{BuildThinkingInfo(true)};
     const auto& pv = infos.front().pv;
     BestMoveInfo best(pv.empty() ? FallbackMove() : pv.front(),
                       pv.size() > 1 ? pv[1] : Move{});
@@ -225,7 +225,7 @@ void SearchRun::Respond() {
   eval_jobs_.NotifyPredicateChanged();
 }
 
-bool SearchRun::FullyDrained() {
+bool SearchRun::IsFullyDrained() {
   if (visits_.active() != 0) return false;
   {
     absl::MutexLock lock(tickets_mutex_);
@@ -244,7 +244,7 @@ bool SearchRun::FullyDrained() {
   return true;
 }
 
-void SearchRun::Shutdown() {
+void SearchRun::JoinThreads() {
   shutdown_.store(true);
   WakeAllWorkers();
   for (auto& thread : visit_threads_) thread.join();
@@ -264,7 +264,7 @@ Move SearchRun::FallbackMove() const {
   return ToUci(std::ranges::min(legal, {}, &Move::raw_data), position);
 }
 
-ThinkingInfo SearchRun::BuildInfo(bool final) const {
+ThinkingInfo SearchRun::BuildThinkingInfo(bool final) const {
   const int64_t ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                          steady_clock::now() - start_time_)
                          .count();
