@@ -1696,6 +1696,9 @@ TEST(Lc5SearchTest, RespondsBeforeBlockedEvictionDrains) {
       sibling.key, 2, {.leaf = {0.5f, 0.0f, 0.0f}, .moves = {}, .priors = {}});
   auto settings = TestSettings(1, 1);
   settings.graph_node_limit = 1;
+  // Store threads come one per eval thread. With only one, the visit's store
+  // load could queue behind the blocked eviction and never reach the backend.
+  settings.eval_threads = 2;
   SearchSession session(&engine, &backend, &responder, settings,
                         TestTimeManagement(), root, GoParams{.nodes = 1},
                         std::chrono::steady_clock::now());
