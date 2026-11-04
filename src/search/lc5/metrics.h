@@ -102,7 +102,7 @@ struct Metrics {
   // Eval jobs queued for the evaluator, not yet taken.
   std::atomic<uint64_t> ready_eval_high_water{0};
   std::atomic<uint64_t> active_visits_high_water{0};
-  // Posts to a worker's inbox from another thread (continuations or
+  // Posts to a worker's inbox from another thread (wakeups or
   // finished jobs).
   std::atomic<uint64_t> inbox_notifications{0};
   // Load and eval jobs in flight across all workers.

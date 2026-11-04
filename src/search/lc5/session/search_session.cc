@@ -302,8 +302,8 @@ bool SearchSession::IsFullyDrained() {
   // explicit idle acknowledgement, not merely empty executor queues.
   for (auto& worker : workers_) {
     absl::MutexLock lock(worker->inbox.mutex);
-    if (!worker->inbox.continuations.empty() ||
-        !worker->inbox.completions.empty() || !worker->drained.load()) {
+    if (!worker->inbox.wakeups.empty() || !worker->inbox.completions.empty() ||
+        !worker->drained.load()) {
       return false;
     }
   }
@@ -428,58 +428,56 @@ void SearchSession::WakeAdmissionWaiters() {
   }
 }
 
-void SearchSession::SendContinuations(size_t worker,
-                                      std::vector<Continuation>& batch) {
+void SearchSession::SendWakeups(size_t worker,
+                                std::vector<VisitWakeup>& batch) {
   if (batch.empty()) return;
   {
     auto& inbox = workers_[worker]->inbox;
     absl::MutexLock lock(inbox.mutex);
-    inbox.continuations.insert(inbox.continuations.end(), batch.begin(),
-                               batch.end());
+    inbox.wakeups.insert(inbox.wakeups.end(), batch.begin(), batch.end());
   }
   batch.clear();
   metrics_.inbox_notifications.fetch_add(1);
 }
 
-void SearchSession::DeliverContinuation(Worker& worker,
-                                        const Continuation& continuation) {
-  if (continuation.worker == worker.index) {
-    ResumeVisit(worker, continuation);
+void SearchSession::DeliverWakeup(Worker& worker, const VisitWakeup& wakeup) {
+  if (wakeup.worker == worker.index) {
+    ResumeVisit(worker, wakeup);
   } else {
-    worker.outgoing[continuation.worker].push_back(continuation);
+    worker.outgoing[wakeup.worker].push_back(wakeup);
   }
 }
 
-void SearchSession::ResumeVisit(Worker& worker, const Continuation& event) {
-  VisitPool::Slot* slot = visits_.Lookup(event.id);
+void SearchSession::ResumeVisit(Worker& worker, const VisitWakeup& wakeup) {
+  VisitPool::Slot* slot = visits_.Lookup(wakeup.id);
   if (!slot) return;
   absl::MutexLock lock(slot->mutex);
-  if (!visits_.IsLiveLocked(*slot, event.id)) return;
+  if (!visits_.IsLiveLocked(*slot, wakeup.id)) return;
   Visit& visit = slot->visit;
-  if (event.kind == Continuation::Kind::kAdmit) {
-    worker.active.insert(event.id.value);
+  if (wakeup.kind == VisitWakeup::Kind::kAdmit) {
+    worker.active.insert(wakeup.id.value);
   } else {
     if (visit.state != VisitState::kWaitingMaterialization ||
-        visit.waiting_ticket != event.ticket) {
+        visit.waiting_ticket != wakeup.ticket) {
       return;
     }
     visit.waiting_ticket = 0;
     // On stop, visits finish only when their evaluation already exists.
-    if (event.kind == Continuation::Kind::kCancel ||
-        (IsStopping() && (event.kind == Continuation::Kind::kSelect ||
-                          event.kind == Continuation::Kind::kRestored))) {
+    if (wakeup.kind == VisitWakeup::Kind::kCancel ||
+        (IsStopping() && (wakeup.kind == VisitWakeup::Kind::kSelect ||
+                          wakeup.kind == VisitWakeup::Kind::kRestored))) {
       CancelVisit(worker, *slot);
       return;
     }
-    visit.path.back().generation = event.generation;
+    visit.path.back().generation = wakeup.generation;
     visit.path.back().selected_move.reset();
-    visit.result = event.value;
-    visit.result_exact = event.exact;
-    if (event.kind == Continuation::Kind::kBackup ||
-        event.kind == Continuation::Kind::kBackupAbove) {
-      visit.leaf_counted = event.kind == Continuation::Kind::kBackupAbove;
+    visit.result = wakeup.value;
+    visit.result_exact = wakeup.exact;
+    if (wakeup.kind == VisitWakeup::Kind::kBackup ||
+        wakeup.kind == VisitWakeup::Kind::kBackupAbove) {
+      visit.leaf_counted = wakeup.kind == VisitWakeup::Kind::kBackupAbove;
       visit.state = VisitState::kReadyBackup;
-    } else if (event.kind == Continuation::Kind::kRestored) {
+    } else if (wakeup.kind == VisitWakeup::Kind::kRestored) {
       visit.state = VisitState::kReadySelect;
       metrics_.visits_resumed.fetch_add(1);
     } else {
@@ -497,9 +495,9 @@ void SearchSession::ResumeVisit(Worker& worker, const Continuation& event) {
           break;
       }
     }
-    if (event.terminal) metrics_.terminal_visits.fetch_add(1);
+    if (wakeup.terminal) metrics_.terminal_visits.fetch_add(1);
   }
-  worker.runnable.push_back(event.id);
+  worker.runnable.push_back(wakeup.id);
 }
 
 void SearchSession::VisitThread(Worker& worker) {
@@ -514,7 +512,7 @@ void SearchSession::VisitThread(Worker& worker) {
     }
     SubmitJobs(worker);
     for (size_t i = 0; i < workers_.size(); ++i) {
-      SendContinuations(i, worker.outgoing[i]);
+      SendWakeups(i, worker.outgoing[i]);
     }
     PublishWorkerState(worker);
     if (shutdown_.load()) break;
@@ -528,7 +526,7 @@ void SearchSession::VisitThread(Worker& worker) {
     const auto ready = [&] {
       inbox.mutex.AssertReaderHeld();
       return shutdown_.load() || inbox.admission_ready ||
-             !inbox.continuations.empty() || !inbox.completions.empty() ||
+             !inbox.wakeups.empty() || !inbox.completions.empty() ||
              (!worker.cancelled && IsStopping());
     };
     inbox.mutex.Await(absl::Condition(&ready));
@@ -536,22 +534,22 @@ void SearchSession::VisitThread(Worker& worker) {
 }
 
 void SearchSession::ProcessInbox(Worker& worker) {
-  std::vector<Continuation> continuations;
+  std::vector<VisitWakeup> wakeups;
   std::vector<std::unique_ptr<Job>> completions;
   bool admission_ready;
   {
     absl::MutexLock lock(worker.inbox.mutex);
-    continuations.swap(worker.inbox.continuations);
+    wakeups.swap(worker.inbox.wakeups);
     completions.swap(worker.inbox.completions);
     admission_ready = std::exchange(worker.inbox.admission_ready, false);
   }
-  if (admission_ready || !continuations.empty() || !completions.empty()) {
+  if (admission_ready || !wakeups.empty() || !completions.empty()) {
     // Actual incoming work can enable preparation or refill. This transition
     // disables starvation and needs no broadcast.
     SetWorkerProducing(worker, true);
     if (worker.drained.exchange(false)) worker.controller_event = true;
   }
-  for (const auto& event : continuations) ResumeVisit(worker, event);
+  for (const auto& wakeup : wakeups) ResumeVisit(worker, wakeup);
   for (auto& job : completions) ConsumeJob(worker, std::move(job));
 }
 
@@ -685,15 +683,15 @@ bool SearchSession::SuspendVisit(Worker& worker, VisitPool::Slot& slot) {
     if (node.created) metrics_.graph_nodes_created.fetch_add(1);
     if (node.lifecycle == NodeLifecycle::kExpanded) return false;
     assert(node.ticket == ticket_id);
-    const Continuation continuation{
+    const VisitWakeup wakeup{
         .id = visit.id, .worker = worker.index, .ticket = ticket_id};
     if (owner) {
-      tickets_.emplace(ticket_id, Ticket{visit.current_key, continuation, {}});
+      tickets_.emplace(ticket_id, Ticket{visit.current_key, wakeup, {}});
       ticket_by_key_.emplace(visit.current_key, ticket_id);
       metrics_.tickets_created.fetch_add(1);
     } else {
       auto& waiters = tickets_.at(ticket_id).waiters;
-      waiters.push_back(continuation);
+      waiters.push_back(wakeup);
       metrics_.ticket_waiters.fetch_add(1);
       RaiseHighWater(metrics_.maximum_waiters_per_ticket, waiters.size());
     }
@@ -761,19 +759,19 @@ void SearchSession::CompleteTicket(Worker& worker,
   // later visit to a terminal. A rejected publication resumes selection only.
   const bool terminal =
       installed.accepted && payload.terminal != TerminalKind::kNonTerminal;
-  const auto wake = [&](Continuation event, bool owner) {
-    event.kind = !installed.accepted ? Continuation::Kind::kSelect
-                 : owner             ? Continuation::Kind::kBackupAbove
-                 : terminal          ? Continuation::Kind::kBackup
-                                     : Continuation::Kind::kSelect;
-    event.generation = installed.generation;
-    event.value = payload.leaf;
-    event.terminal = terminal;
-    event.exact = installed.accepted && IsExact(payload.terminal);
-    DeliverContinuation(worker, event);
+  const auto wake = [&](VisitWakeup wakeup, bool owner) {
+    wakeup.kind = !installed.accepted ? VisitWakeup::Kind::kSelect
+                  : owner             ? VisitWakeup::Kind::kBackupAbove
+                  : terminal          ? VisitWakeup::Kind::kBackup
+                                      : VisitWakeup::Kind::kSelect;
+    wakeup.generation = installed.generation;
+    wakeup.value = payload.leaf;
+    wakeup.terminal = terminal;
+    wakeup.exact = installed.accepted && IsExact(payload.terminal);
+    DeliverWakeup(worker, wakeup);
   };
   wake(ticket.owner, true);
-  for (const auto& event : ticket.waiters) wake(event, false);
+  for (const auto& wakeup : ticket.waiters) wake(wakeup, false);
 }
 
 bool SearchSession::RestoreTicket(Worker& worker,
@@ -796,13 +794,13 @@ bool SearchSession::RestoreTicket(Worker& worker,
   RaiseHighWater(metrics_.graph_size_high_water, engine_->GetGraphSize());
   // The node has its statistics back and nothing new to back up, so the owner
   // and the waiters all select below it.
-  const auto wake = [&](Continuation event) {
-    event.kind = Continuation::Kind::kRestored;
-    event.generation = restored.generation;
-    DeliverContinuation(worker, event);
+  const auto wake = [&](VisitWakeup wakeup) {
+    wakeup.kind = VisitWakeup::Kind::kRestored;
+    wakeup.generation = restored.generation;
+    DeliverWakeup(worker, wakeup);
   };
   wake(ticket.owner);
-  for (const auto& event : ticket.waiters) wake(event);
+  for (const auto& wakeup : ticket.waiters) wake(wakeup);
   return true;
 }
 
@@ -820,12 +818,12 @@ void SearchSession::CancelTicket(Worker& worker,
     tickets_.erase(it);
     ticket_by_key_.erase(ticket.key);
   }
-  const auto wake = [&](Continuation event) {
-    event.kind = Continuation::Kind::kCancel;
-    DeliverContinuation(worker, event);
+  const auto wake = [&](VisitWakeup wakeup) {
+    wakeup.kind = VisitWakeup::Kind::kCancel;
+    DeliverWakeup(worker, wakeup);
   };
   wake(ticket.owner);
-  for (const auto& event : ticket.waiters) wake(event);
+  for (const auto& wakeup : ticket.waiters) wake(wakeup);
 }
 
 void SearchSession::CancelPendingRequests(Worker& worker) {

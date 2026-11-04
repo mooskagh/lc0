@@ -235,7 +235,7 @@ has the engine, configuration, and the seam between `session/` and `policies/`
 | `metrics.h/.cc` | Debug counters, bumped by both `session/` and the policies. |
 | `time_manager.cc` | Per-move deadline, smart pruning's visit estimate, saved time. |
 | `session/search_session.h/.cc` | `SearchSession`: setup, controller, early stop, `info`/`bestmove`; admission, the worker loop and each visit's steps; creating nodes, terminal detection, jobs, evaluator batching. |
-| `session/messages.h` | What `SearchSession`'s threads pass to each other: continuations, tickets, materialization requests, jobs, batches, worker inboxes. |
+| `session/messages.h` | What `SearchSession`'s threads pass to each other: visit wakeups, tickets, materialization requests, jobs, batches, worker inboxes. |
 | `session/visit_pool.h/.cc` | `VisitPool`: fixed visit slots addressed by epoch-tagged `VisitId`s. |
 | `session/work_queue.h` | Closable MPMC queue for requests and jobs. |
 | `graph/graph.h` | `GameGraph<P>`: sharded node map, reservations, per-node updates, tried-edge stats; node and edge stats belong to the policy. |

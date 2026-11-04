@@ -53,7 +53,7 @@ class SearchSessionTestPeer {
   // closed, the budget is exhausted or the pool is full.
   static bool AdmitVisit(SearchSession& session, const VisitOrigin& origin) {
     size_t owner;
-    std::vector<Continuation> admitted;
+    std::vector<VisitWakeup> admitted;
     {
       absl::MutexLock lock(session.admission_mutex_);
       owner = session.next_owner_++ % session.workers_.size();
@@ -63,7 +63,7 @@ class SearchSessionTestPeer {
     }
     // The allocated visit keeps active() nonzero until this is consumed, so
     // stop cannot declare a drain before the inbox publication.
-    session.SendContinuations(owner, admitted);
+    session.SendWakeups(owner, admitted);
     return true;
   }
   // Before Start only: make the entire backlog ready before collectors session.
@@ -72,9 +72,9 @@ class SearchSessionTestPeer {
     for (auto& ptr : session.workers_) {
       auto& worker = *ptr;
       worker.outgoing.resize(session.workers_.size());
-      for (const auto& event : worker.inbox.continuations)
-        session.ResumeVisit(worker, event);
-      worker.inbox.continuations.clear();
+      for (const auto& wakeup : worker.inbox.wakeups)
+        session.ResumeVisit(worker, wakeup);
+      worker.inbox.wakeups.clear();
       while (!worker.runnable.empty()) {
         auto id = worker.runnable.front();
         worker.runnable.pop_front();
@@ -103,7 +103,7 @@ class SearchSessionTestPeer {
       EXPECT_TRUE(worker->evals.empty());
       EXPECT_EQ(worker->jobs_in_flight, 0u);
       EXPECT_EQ(worker->items_in_flight, 0u);
-      EXPECT_TRUE(worker->inbox.continuations.empty());
+      EXPECT_TRUE(worker->inbox.wakeups.empty());
       EXPECT_TRUE(worker->inbox.completions.empty());
     }
   }

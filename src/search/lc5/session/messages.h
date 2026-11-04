@@ -48,7 +48,7 @@ namespace lczero::lc5 {
 // The messages SearchSession's threads pass to each other.
 
 // Tells a visit's owner how to continue it.
-struct Continuation {
+struct VisitWakeup {
   enum class Kind : uint8_t {
     kAdmit,        // New visit; start descending from its origin.
     kSelect,       // Materialization finished; select below the node.
@@ -68,9 +68,9 @@ struct Continuation {
 };
 
 struct Ticket {
-  NodeKey key;         // The node being materialized.
-  Continuation owner;  // The visit that opened the ticket; it does the I/O.
-  std::vector<Continuation> waiters;  // Later visits that reached the node.
+  NodeKey key;        // The node being materialized.
+  VisitWakeup owner;  // The visit that opened the ticket; it does the I/O.
+  std::vector<VisitWakeup> waiters;  // Later visits that reached the node.
 };
 
 // A ticket owner's request to the store and evaluator threads for one node's
@@ -125,7 +125,7 @@ struct WorkerInbox {
 
   absl::Mutex mutex;
   // For this worker's visits.
-  std::vector<Continuation> continuations ABSL_GUARDED_BY(mutex);
+  std::vector<VisitWakeup> wakeups ABSL_GUARDED_BY(mutex);
   // Jobs back from the store or the evaluator.
   std::vector<std::unique_ptr<Job>> completions ABSL_GUARDED_BY(mutex);
   // Capacity was freed; try to admit visits again.

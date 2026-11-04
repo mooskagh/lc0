@@ -131,7 +131,7 @@ class SearchSession {
 
   // Visit.
   void AdvanceVisit(Worker& worker, VisitId id);
-  void ResumeVisit(Worker& worker, const Continuation& continuation);
+  void ResumeVisit(Worker& worker, const VisitWakeup& wakeup);
   bool SuspendVisit(Worker& worker, VisitPool::Slot& slot)
       ABSL_EXCLUSIVE_LOCKS_REQUIRED(slot.mutex);
   void BackupVisit(Worker& worker, VisitPool::Slot& slot)
@@ -144,11 +144,12 @@ class SearchSession {
   void FinishVisit(Worker& worker, VisitPool::Slot& slot, bool completed)
       ABSL_EXCLUSIVE_LOCKS_REQUIRED(slot.mutex);
 
-  // Continuation.
-  void DeliverContinuation(Worker& worker, const Continuation& continuation);
-  void SendContinuations(size_t worker, std::vector<Continuation>& batch);
+  // VisitWakeup.
+  void DeliverWakeup(Worker& worker, const VisitWakeup& wakeup);
+  void SendWakeups(size_t worker, std::vector<VisitWakeup>& batch);
 
-  // Ticket.
+  // Materialization: a ticket and its request. SuspendVisit opens both.
+  void PrepareRequest(Worker& worker, MaterializationRequest request);
   void CompleteTicket(Worker& worker, MaterializationTicketId ticket,
                       ExpansionPayload payload);
   // Publishes a node restored from the store; returns false, with the ticket
@@ -156,9 +157,6 @@ class SearchSession {
   bool RestoreTicket(Worker& worker, MaterializationTicketId ticket,
                      std::span<const uint8_t> record);
   void CancelTicket(Worker& worker, MaterializationTicketId ticket);
-
-  // MaterializationRequest.
-  void PrepareRequest(Worker& worker, MaterializationRequest request);
   void CancelPendingRequests(Worker& worker);
 
   // Job.
@@ -266,7 +264,7 @@ struct SearchSession::Worker {
   std::deque<MaterializationRequest> unprepared;  // Await terminal detection.
   std::deque<MaterializationRequest> loads;
   std::deque<MaterializationRequest> evals;
-  std::vector<std::vector<Continuation>> outgoing;  // Indexed by worker.
+  std::vector<std::vector<VisitWakeup>> outgoing;  // Indexed by worker.
   size_t jobs_in_flight = 0;   // Submitted and not yet consumed.
   size_t items_in_flight = 0;  // The requests in those jobs.
   bool cancelled = false;
