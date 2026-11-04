@@ -93,8 +93,8 @@ struct MaterializationRequest {
 
 // The arrows show where a job travels; only kPersist does not come back.
 enum class JobKind {
-  kEval,     // Worker -> evaluator -> worker: evaluate `requests`.
-  kLoad,     // Worker -> store thread -> worker: load `requests`.
+  kEval,     // Visit worker -> evaluator -> worker: evaluate `requests`.
+  kLoad,     // Visit worker -> store thread -> worker: load `requests`.
   kPersist,  // Controller -> store thread: evict `evict_count` nodes.
 };
 

@@ -9,7 +9,7 @@ organized. Code is in `src/search/lc5/`.
 
 - **No gather/evaluate/backup loop.** Many independent **visits** are in
   flight at once. Each visit walks root→leaf, waits for the network if
-  needed, backs up and finishes. Worker threads advance visits; evaluator
+  needed, backs up and finishes. Visit workers advance visits; evaluator
   threads batch whatever positions are pending.
 - **A graph, not a tree.** Nodes live in a hash map keyed by the position
   plus the 7 before it, so transpositions with the same recent history share

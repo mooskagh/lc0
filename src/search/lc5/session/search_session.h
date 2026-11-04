@@ -81,13 +81,13 @@ class SearchSession {
   enum class StopMode : uint8_t { kRunning, kRespondBestmove, kAbort };
 
   // A visit thread's state; defined below the class.
-  struct Worker;
+  struct VisitWorker;
 
   // Thread bodies; each runs until its thread exits. Start() spawns them.
-  void ControllerLoop();
-  void VisitLoop(Worker& worker);
-  void EvaluatorLoop();
-  void StoreLoop();
+  void RunControllerWorker();
+  void RunVisitWorker(VisitWorker& worker);
+  void RunEvaluatorWorker();
+  void RunStoreWorker();
 
   // Search: stop, output and shutdown.
   bool IsStopping() const { return stop_mode_.load() != StopMode::kRunning; }
@@ -120,49 +120,49 @@ class SearchSession {
       ABSL_EXCLUSIVE_LOCKS_REQUIRED(admission_mutex_);
   // Allocates new visits from the root for `worker`, up to kVisitsPerPass and
   // its share of the pool.
-  void AdmitNewRootVisits(Worker& worker);
+  void AdmitNewRootVisits(VisitWorker& worker);
   void WakeAdmissionWaiters();
 
-  // Worker loop.
+  // Visit worker loop.
   // In one pass of its loop, a worker advances at most this many visits and
   // admits at most this many new ones, then checks its inbox again.
   static constexpr size_t kVisitsPerPass = 32;
 
-  void ProcessInbox(Worker& worker);
-  void AdvanceRunnableVisits(Worker& worker, size_t limit);
-  void CancelWorkerVisits(Worker& worker);
-  void PublishWorkerState(Worker& worker);
-  bool HasLocalWork(const Worker& worker) const;
+  void ProcessInbox(VisitWorker& worker);
+  void AdvanceRunnableVisits(VisitWorker& worker, size_t limit);
+  void CancelWorkerVisits(VisitWorker& worker);
+  void PublishWorkerState(VisitWorker& worker);
+  bool HasLocalWork(const VisitWorker& worker) const;
 
   // Visit.
-  void AdvanceVisit(Worker& worker, VisitId id);
-  void ResumeVisit(Worker& worker, const VisitWakeup& wakeup);
-  bool SuspendVisit(Worker& worker, VisitPool::Slot& slot)
+  void AdvanceVisit(VisitWorker& worker, VisitId id);
+  void ResumeVisit(VisitWorker& worker, const VisitWakeup& wakeup);
+  bool SuspendVisit(VisitWorker& worker, VisitPool::Slot& slot)
       ABSL_EXCLUSIVE_LOCKS_REQUIRED(slot.mutex);
-  void BackupVisit(Worker& worker, VisitPool::Slot& slot)
+  void BackupVisit(VisitWorker& worker, VisitPool::Slot& slot)
       ABSL_EXCLUSIVE_LOCKS_REQUIRED(slot.mutex);
-  void CancelVisit(Worker& worker, VisitPool::Slot& slot)
+  void CancelVisit(VisitWorker& worker, VisitPool::Slot& slot)
       ABSL_EXCLUSIVE_LOCKS_REQUIRED(slot.mutex);
   // Releases the visit's reservations and returns it to its origin.
   void RestartVisit(VisitPool::Slot& slot)
       ABSL_EXCLUSIVE_LOCKS_REQUIRED(slot.mutex);
-  void FinishVisit(Worker& worker, VisitPool::Slot& slot, bool completed)
+  void FinishVisit(VisitWorker& worker, VisitPool::Slot& slot, bool completed)
       ABSL_EXCLUSIVE_LOCKS_REQUIRED(slot.mutex);
 
   // VisitWakeup.
-  void DeliverWakeup(Worker& worker, const VisitWakeup& wakeup);
+  void DeliverWakeup(VisitWorker& worker, const VisitWakeup& wakeup);
   void SendWakeups(size_t worker, std::vector<VisitWakeup>& batch);
 
   // Materialization: a ticket and its request. SuspendVisit opens both.
-  void PrepareRequest(Worker& worker, MaterializationRequest request);
-  void CompleteTicket(Worker& worker, MaterializationTicketId ticket,
+  void PrepareRequest(VisitWorker& worker, MaterializationRequest request);
+  void CompleteTicket(VisitWorker& worker, MaterializationTicketId ticket,
                       ExpansionPayload payload);
   // Publishes a node restored from the store; returns false, with the ticket
   // still open, if the record was rejected.
-  bool RestoreTicket(Worker& worker, MaterializationTicketId ticket,
+  bool RestoreTicket(VisitWorker& worker, MaterializationTicketId ticket,
                      std::span<const uint8_t> record);
-  void CancelTicket(Worker& worker, MaterializationTicketId ticket);
-  void CancelPendingRequests(Worker& worker);
+  void CancelTicket(VisitWorker& worker, MaterializationTicketId ticket);
+  void CancelPendingRequests(VisitWorker& worker);
 
   // Job.
   // Per worker, at most this many jobs sent and not yet finished...
@@ -175,13 +175,13 @@ class SearchSession {
 
   // A visit thread builds and sends jobs; a store thread or an evaluator runs
   // them and returns them to the worker, which finishes them.
-  void SendJobs(Worker& worker);
-  bool CanSendJob(const Worker& worker) const;
-  std::unique_ptr<Job> BuildJob(Worker& worker) const;
-  void SetWorkerProducing(Worker& worker, bool producing);
+  void SendJobs(VisitWorker& worker);
+  bool CanSendJob(const VisitWorker& worker) const;
+  std::unique_ptr<Job> BuildJob(VisitWorker& worker) const;
+  void SetWorkerProducing(VisitWorker& worker, bool producing);
   void RunLoadJob(Job& job);
   void ReturnJobToWorker(std::unique_ptr<Job> job);
-  void FinishJob(Worker& worker, std::unique_ptr<Job> job);
+  void FinishJob(VisitWorker& worker, std::unique_ptr<Job> job);
   // The controller's job: evict when the graph is over its node limit.
   void SendEvictionJob();
   void RunEvictionJob(Job& job);
@@ -213,7 +213,7 @@ class SearchSession {
   Metrics metrics_;
 
   // Threads and the queues between them.
-  std::vector<std::unique_ptr<Worker>> workers_;
+  std::vector<std::unique_ptr<VisitWorker>> workers_;
   WorkQueue<std::unique_ptr<Job>> store_jobs_;
   WorkQueue<std::unique_ptr<Job>> eval_jobs_;
   std::vector<std::thread> visit_threads_;
@@ -222,7 +222,7 @@ class SearchSession {
   std::thread controller_thread_;
 
   // Admission and stop. admission_mutex_ serializes admission, stop requests
-  // and NN authorization. Also guards Worker::admission_waiting.
+  // and NN authorization. Also guards VisitWorker::admission_waiting.
   absl::Mutex admission_mutex_;
   uint64_t admitted_ ABSL_GUARDED_BY(admission_mutex_) = 0;
   size_t next_owner_ ABSL_GUARDED_BY(admission_mutex_) = 0;
@@ -259,8 +259,8 @@ class SearchSession {
   uint64_t controller_generation_ ABSL_GUARDED_BY(controller_mutex_) = 0;
 };
 
-struct SearchSession::Worker {
-  explicit Worker(size_t index) : index(index) {}
+struct SearchSession::VisitWorker {
+  explicit VisitWorker(size_t index) : index(index) {}
   bool HasQueuedIo() const {
     return !unprepared.empty() || !loads.empty() || !evals.empty();
   }
