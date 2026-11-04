@@ -101,8 +101,8 @@ class SearchSessionTestPeer {
       EXPECT_TRUE(worker->unprepared.empty());
       EXPECT_TRUE(worker->loads.empty());
       EXPECT_TRUE(worker->evals.empty());
-      EXPECT_EQ(worker->outstanding, 0u);
-      EXPECT_EQ(worker->outstanding_items, 0u);
+      EXPECT_EQ(worker->jobs_in_flight, 0u);
+      EXPECT_EQ(worker->items_in_flight, 0u);
       EXPECT_TRUE(worker->inbox.continuations.empty());
       EXPECT_TRUE(worker->inbox.completions.empty());
     }

@@ -83,12 +83,6 @@ class SearchSession {
   // A visit thread's state; defined below the class.
   struct Worker;
 
-  // Cap on whole jobs in flight per worker; items are capped separately at
-  // two minibatches.
-  static constexpr size_t kBatchCredits = 16;
-  static constexpr size_t kWorkChunk = 32;
-  static constexpr size_t kMinActiveVisits = 16;
-
   // Thread entry points.
   void ControllerThread();
   void VisitThread(Worker& worker);
@@ -111,6 +105,9 @@ class SearchSession {
   }
 
   // Admission.
+  // Live visits allowed while the tree is still empty; see ActiveVisitLimit.
+  static constexpr size_t kMinActiveVisits = 16;
+
   bool IsAdmissionClosed() const
       ABSL_EXCLUSIVE_LOCKS_REQUIRED(admission_mutex_);
   // Live visits allowed now: grows with the root's visits, as classic search
@@ -122,6 +119,10 @@ class SearchSession {
   void WakeAdmissionWaiters();
 
   // Worker loop.
+  // In one pass of its loop, a worker advances at most this many visits and
+  // admits at most this many new ones, then checks its inbox again.
+  static constexpr size_t kVisitsPerPass = 32;
+
   void ProcessInbox(Worker& worker);
   void AdvanceRunnableVisits(Worker& worker, size_t limit);
   void CancelWorkerVisits(Worker& worker);
@@ -161,6 +162,14 @@ class SearchSession {
   void CancelPendingRequests(Worker& worker);
 
   // Job.
+  // Per worker, at most this many jobs submitted and not yet consumed...
+  static constexpr size_t kMaxJobsInFlight = 16;
+  // ...holding at most this many minibatches of requests.
+  static constexpr size_t kMaxItemsInFlightBatches = 2;
+  // A job holds at most 1/kJobsPerBatch of a minibatch, so an evaluator can
+  // mix several jobs into one batch.
+  static constexpr size_t kJobsPerBatch = 4;
+
   void SubmitJobs(Worker& worker);
   std::unique_ptr<Job> TakeJob(Worker& worker) const;
   bool HasJobCredit(const Worker& worker) const;
@@ -258,8 +267,8 @@ struct SearchSession::Worker {
   std::deque<MaterializationRequest> loads;
   std::deque<MaterializationRequest> evals;
   std::vector<std::vector<Continuation>> outgoing;  // Indexed by worker.
-  size_t outstanding = 0;
-  size_t outstanding_items = 0;
+  size_t jobs_in_flight = 0;   // Submitted and not yet consumed.
+  size_t items_in_flight = 0;  // The requests in those jobs.
   bool cancelled = false;
   bool released_capacity = false;
   bool controller_event = false;

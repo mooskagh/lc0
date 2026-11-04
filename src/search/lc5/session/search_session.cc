@@ -386,7 +386,7 @@ void SearchSession::AdmitVisits(Worker& worker) {
   // A modest per-worker share prevents one worker from monopolizing the pool.
   const size_t share =
       (visits_.capacity() + workers_.size() - 1) / workers_.size();
-  for (size_t i = 0; i < kWorkChunk && worker.active.size() < share; ++i) {
+  for (size_t i = 0; i < kVisitsPerPass && worker.active.size() < share; ++i) {
     const auto id = AllocateVisit(root_);
     if (!id) {
       // The pool is full. Registration shares admission_mutex_ with the
@@ -509,7 +509,7 @@ void SearchSession::VisitThread(Worker& worker) {
     if (IsStopping()) {
       CancelWorkerVisits(worker);
     } else {
-      AdvanceRunnableVisits(worker, kWorkChunk);
+      AdvanceRunnableVisits(worker, kVisitsPerPass);
       AdmitVisits(worker);
     }
     SubmitJobs(worker);
@@ -581,7 +581,7 @@ void SearchSession::CancelWorkerVisits(Worker& worker) {
 
 void SearchSession::PublishWorkerState(Worker& worker) {
   const bool drained = worker.cancelled && worker.active.empty() &&
-                       worker.outstanding == 0 && !worker.HasQueuedIo();
+                       worker.jobs_in_flight == 0 && !worker.HasQueuedIo();
   if (worker.drained.exchange(drained) != drained) {
     worker.controller_event = true;
   }
@@ -838,9 +838,10 @@ void SearchSession::CancelPendingRequests(Worker& worker) {
 }
 
 bool SearchSession::HasJobCredit(const Worker& worker) const {
-  return worker.outstanding < kBatchCredits &&
-         worker.outstanding_items <
-             2 * static_cast<size_t>(settings_.minibatch_size);
+  return worker.jobs_in_flight < kMaxJobsInFlight &&
+         worker.items_in_flight <
+             kMaxItemsInFlightBatches *
+                 static_cast<size_t>(settings_.minibatch_size);
 }
 
 void SearchSession::SetWorkerProducing(Worker& worker, bool producing) {
@@ -863,8 +864,8 @@ void SearchSession::SubmitJobs(Worker& worker) {
     if (IsStopping()) CancelPendingRequests(worker);
     auto job = TakeJob(worker);
     if (!job) break;
-    ++worker.outstanding;
-    worker.outstanding_items += job->items();
+    ++worker.jobs_in_flight;
+    worker.items_in_flight += job->items();
     RaiseHighWater(metrics_.io_jobs_high_water,
                    jobs_in_flight_.fetch_add(1) + 1);
     if (job->kind == JobKind::kEval) {
@@ -879,10 +880,11 @@ void SearchSession::SubmitJobs(Worker& worker) {
 
 std::unique_ptr<Job> SearchSession::TakeJob(Worker& worker) const {
   // Small whole jobs leave room to collect more cache misses without exceeding
-  // the backend batch. Item credits bound loads and evaluations.
+  // the backend batch. The items-in-flight cap bounds loads and evaluations.
   const size_t batch_size = settings_.minibatch_size;
   const size_t limit =
-      std::min((batch_size + 3) / 4, 2 * batch_size - worker.outstanding_items);
+      std::min((batch_size + kJobsPerBatch - 1) / kJobsPerBatch,
+               kMaxItemsInFlightBatches * batch_size - worker.items_in_flight);
   auto job = std::make_unique<Job>();
   job->worker = worker.index;
   job->queued_at = std::chrono::steady_clock::now();
@@ -908,7 +910,7 @@ void SearchSession::ReturnJob(std::unique_ptr<Job> job) {
 }
 
 void SearchSession::ConsumeJob(Worker& worker, std::unique_ptr<Job> job) {
-  assert(worker.outstanding > 0);
+  assert(worker.jobs_in_flight > 0);
   for (auto& request : job->requests) {
     switch (request.state) {
       case MaterializationRequest::State::kEvaluated:
@@ -934,9 +936,9 @@ void SearchSession::ConsumeJob(Worker& worker, std::unique_ptr<Job> job) {
         break;
     }
   }
-  --worker.outstanding;
-  assert(worker.outstanding_items >= job->items());
-  worker.outstanding_items -= job->items();
+  --worker.jobs_in_flight;
+  assert(worker.items_in_flight >= job->items());
+  worker.items_in_flight -= job->items();
   // Decrement last: publication is part of the job.
   jobs_in_flight_.fetch_sub(1);
 }
