@@ -86,13 +86,13 @@ class SearchRun {
     }
 
     const size_t index;
-    Mailbox mailbox;
+    WorkerInbox inbox;
     // All fields below are touched only by this worker.
     std::deque<VisitId> runnable;
     std::unordered_set<uint64_t> active;
-    std::deque<Request> unprepared;  // Await terminal detection.
-    std::deque<Request> loads;
-    std::deque<Request> evals;
+    std::deque<MaterializationRequest> unprepared;  // Await terminal detection.
+    std::deque<MaterializationRequest> loads;
+    std::deque<MaterializationRequest> evals;
     std::vector<std::vector<Continuation>> outgoing;  // Indexed by worker.
     size_t outstanding = 0;
     size_t outstanding_items = 0;
@@ -145,7 +145,7 @@ class SearchRun {
   void WakeAdmissionWaiters();
 
   // Worker loop (visits.cc).
-  void ProcessMailbox(Worker& worker);
+  void ProcessInbox(Worker& worker);
   void AdvanceRunnableVisits(Worker& worker, size_t limit);
   void CancelWorkerVisits(Worker& worker);
   void PublishWorkerState(Worker& worker);
@@ -179,8 +179,8 @@ class SearchRun {
                      std::span<const uint8_t> record);
   void CancelTicket(Worker& worker, MaterializationTicketId ticket);
 
-  // Request (materialization.cc).
-  void PrepareRequest(Worker& worker, Request request);
+  // MaterializationRequest (materialization.cc).
+  void PrepareRequest(Worker& worker, MaterializationRequest request);
   void CancelPendingRequests(Worker& worker);
 
   // Job (materialization.cc).

@@ -97,7 +97,7 @@ bool SearchRun::SuspendVisit(Worker& worker, VisitPool::Slot& slot) {
   bool owner;
   MaterializationTicketId ticket_id;
   {
-    // Lock order: slot -> tickets -> one graph shard. No mailbox transfer here.
+    // Lock order: slot -> tickets -> one graph shard. No inbox transfer here.
     absl::MutexLock lock(tickets_mutex_);
     const auto existing = ticket_by_key_.find(visit.current_key);
     owner = existing == ticket_by_key_.end();
@@ -133,16 +133,16 @@ bool SearchRun::SuspendVisit(Worker& worker, VisitPool::Slot& slot) {
   }
   if (owner) {
     // Preparation and publication happen later, outside this slot's lock.
-    Request request{.ticket = ticket_id,
-                    .key = visit.current_key,
-                    .history = visit.history};
+    MaterializationRequest request{.ticket = ticket_id,
+                                   .key = visit.current_key,
+                                   .history = visit.history};
     (has_store_ ? worker.loads : worker.unprepared)
         .push_back(std::move(request));
   }
   return true;
 }
 
-void SearchRun::PrepareRequest(Worker& worker, Request request) {
+void SearchRun::PrepareRequest(Worker& worker, MaterializationRequest request) {
   if (IsStopping()) {
     CancelTicket(worker, request.ticket);
     return;
@@ -153,7 +153,7 @@ void SearchRun::PrepareRequest(Worker& worker, Request request) {
     return;
   }
   request.payload.priors.resize(request.payload.moves.size());
-  request.state = Request::State::kPending;
+  request.state = MaterializationRequest::State::kPending;
   metrics_.eval_requests.fetch_add(1);
   worker.evals.push_back(std::move(request));
 }
@@ -275,7 +275,7 @@ void SearchRun::SubmitJobs(Worker& worker) {
   // Detect terminals and generate legal moves for fresh requests outside any
   // slot lock. Terminal ones publish right away; the rest join `evals`.
   while (!worker.unprepared.empty()) {
-    Request request = std::move(worker.unprepared.front());
+    MaterializationRequest request = std::move(worker.unprepared.front());
     worker.unprepared.pop_front();
     PrepareRequest(worker, std::move(request));
   }
@@ -320,22 +320,22 @@ std::unique_ptr<Job> SearchRun::TakeJob(Worker& worker) const {
 
 void SearchRun::ReturnJob(std::unique_ptr<Job> job) {
   {
-    auto& mailbox = workers_[job->worker]->mailbox;
-    absl::MutexLock lock(mailbox.mutex);
-    mailbox.completions.push_back(std::move(job));
+    auto& inbox = workers_[job->worker]->inbox;
+    absl::MutexLock lock(inbox.mutex);
+    inbox.completions.push_back(std::move(job));
   }
-  metrics_.mailbox_notifications.fetch_add(1);
+  metrics_.inbox_notifications.fetch_add(1);
 }
 
 void SearchRun::ConsumeJob(Worker& worker, std::unique_ptr<Job> job) {
   assert(worker.outstanding > 0);
   for (auto& request : job->requests) {
     switch (request.state) {
-      case Request::State::kEvaluated:
+      case MaterializationRequest::State::kEvaluated:
         SortByPrior(request.payload);
         CompleteTicket(worker, request.ticket, std::move(request.payload));
         break;
-      case Request::State::kStoreHit:
+      case MaterializationRequest::State::kStoreHit:
         metrics_.node_store_hits.fetch_add(1);
         if (!RestoreTicket(worker, request.ticket, request.record)) {
           // Not a record for this policy or format: evaluate the node.
@@ -344,12 +344,12 @@ void SearchRun::ConsumeJob(Worker& worker, std::unique_ptr<Job> job) {
           PrepareRequest(worker, std::move(request));
         }
         break;
-      case Request::State::kStoreMiss:
+      case MaterializationRequest::State::kStoreMiss:
         metrics_.node_store_misses.fetch_add(1);
         PrepareRequest(worker, std::move(request));
         break;
-      case Request::State::kPending:
-      case Request::State::kQueued:
+      case MaterializationRequest::State::kPending:
+      case MaterializationRequest::State::kQueued:
         CancelTicket(worker, request.ticket);
         break;
     }
@@ -377,9 +377,9 @@ void SearchRun::StoreThread() {
         auto& request = job->requests[i];
         if (loaded[i]) {
           request.record = std::move(*loaded[i]);
-          request.state = Request::State::kStoreHit;
+          request.state = MaterializationRequest::State::kStoreHit;
         } else {
-          request.state = Request::State::kStoreMiss;
+          request.state = MaterializationRequest::State::kStoreMiss;
         }
       }
       metrics_.node_store_load_batches.fetch_add(1);
@@ -488,10 +488,10 @@ void SearchRun::AddJobInputs(BackendComputation& computation, Job& job) {
                                            .m = &payload.leaf.m,
                                            .p = payload.priors});
     if (result == BackendComputation::FETCHED_IMMEDIATELY) {
-      request.state = Request::State::kEvaluated;
+      request.state = MaterializationRequest::State::kEvaluated;
       metrics_.cache_hits.fetch_add(1);
     } else {
-      request.state = Request::State::kQueued;
+      request.state = MaterializationRequest::State::kQueued;
     }
   }
 }
@@ -516,8 +516,8 @@ void SearchRun::RunBatch(Batch batch) {
     batch.computation->ComputeBlocking();
     for (auto& job : batch.jobs) {
       for (auto& request : job->requests) {
-        if (request.state == Request::State::kQueued) {
-          request.state = Request::State::kEvaluated;
+        if (request.state == MaterializationRequest::State::kQueued) {
+          request.state = MaterializationRequest::State::kEvaluated;
         }
       }
     }

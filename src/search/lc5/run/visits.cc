@@ -106,9 +106,9 @@ void SearchRun::WakeAdmissionWaiters() {
   // A competing allocator may win the capacity; the woken worker then simply
   // re-registers on its next attempt.
   for (size_t index : wake) {
-    auto& mailbox = workers_[index]->mailbox;
-    absl::MutexLock lock(mailbox.mutex);
-    mailbox.admission_ready = true;
+    auto& inbox = workers_[index]->inbox;
+    absl::MutexLock lock(inbox.mutex);
+    inbox.admission_ready = true;
   }
 }
 
@@ -116,13 +116,13 @@ void SearchRun::SendContinuations(size_t worker,
                                   std::vector<Continuation>& batch) {
   if (batch.empty()) return;
   {
-    auto& mailbox = workers_[worker]->mailbox;
-    absl::MutexLock lock(mailbox.mutex);
-    mailbox.continuations.insert(mailbox.continuations.end(), batch.begin(),
-                                 batch.end());
+    auto& inbox = workers_[worker]->inbox;
+    absl::MutexLock lock(inbox.mutex);
+    inbox.continuations.insert(inbox.continuations.end(), batch.begin(),
+                               batch.end());
   }
   batch.clear();
-  metrics_.mailbox_notifications.fetch_add(1);
+  metrics_.inbox_notifications.fetch_add(1);
 }
 
 void SearchRun::DeliverContinuation(Worker& worker,
@@ -189,7 +189,7 @@ void SearchRun::ResumeVisit(Worker& worker, const Continuation& event) {
 void SearchRun::VisitThread(Worker& worker) {
   worker.outgoing.resize(workers_.size());
   for (;;) {
-    ProcessMailbox(worker);
+    ProcessInbox(worker);
     if (IsStopping()) {
       CancelWorkerVisits(worker);
     } else {
@@ -207,27 +207,27 @@ void SearchRun::VisitThread(Worker& worker) {
     if (HasLocalWork(worker)) continue;
     // Senders evaluate this on unlock; `cancelled` is written only by this
     // worker, never while it waits here.
-    auto& mailbox = worker.mailbox;
-    absl::MutexLock lock(mailbox.mutex);
+    auto& inbox = worker.inbox;
+    absl::MutexLock lock(inbox.mutex);
     const auto ready = [&] {
-      mailbox.mutex.AssertReaderHeld();
-      return shutdown_.load() || mailbox.admission_ready ||
-             !mailbox.continuations.empty() || !mailbox.completions.empty() ||
+      inbox.mutex.AssertReaderHeld();
+      return shutdown_.load() || inbox.admission_ready ||
+             !inbox.continuations.empty() || !inbox.completions.empty() ||
              (!worker.cancelled && IsStopping());
     };
-    mailbox.mutex.Await(absl::Condition(&ready));
+    inbox.mutex.Await(absl::Condition(&ready));
   }
 }
 
-void SearchRun::ProcessMailbox(Worker& worker) {
+void SearchRun::ProcessInbox(Worker& worker) {
   std::vector<Continuation> continuations;
   std::vector<std::unique_ptr<Job>> completions;
   bool admission_ready;
   {
-    absl::MutexLock lock(worker.mailbox.mutex);
-    continuations.swap(worker.mailbox.continuations);
-    completions.swap(worker.mailbox.completions);
-    admission_ready = std::exchange(worker.mailbox.admission_ready, false);
+    absl::MutexLock lock(worker.inbox.mutex);
+    continuations.swap(worker.inbox.continuations);
+    completions.swap(worker.inbox.completions);
+    admission_ready = std::exchange(worker.inbox.admission_ready, false);
   }
   if (admission_ready || !continuations.empty() || !completions.empty()) {
     // Actual incoming work can enable preparation or refill. This transition

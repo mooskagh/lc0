@@ -119,12 +119,12 @@ Two limits apply:
 
 - **Visit workers** (`Threads`) move visits forward. Each visit belongs to
   one worker, and only that worker touches it. Workers talk to each other
-  through mailboxes.
+  through inboxes.
 - **Evaluators** (`EvalThreads`) build and run backend batches.
 - **The controller** (one thread per search) watches the clock, prints `info`
   once a second, and handles stopping.
 
-A worker's loop: read its mailbox (evaluation results, visits handed over by
+A worker's loop: read its inbox (evaluation results, visits handed over by
 other workers), advance up to 32 visits, admit new ones, send queued
 positions to the evaluators, and sleep only when there is nothing to do.
 

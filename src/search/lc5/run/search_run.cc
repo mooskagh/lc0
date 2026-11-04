@@ -128,7 +128,7 @@ void SearchRun::WakeController() {
 }
 
 void SearchRun::WakeAllWorkers() {
-  for (auto& worker : workers_) worker->mailbox.Wake();
+  for (auto& worker : workers_) worker->inbox.Wake();
 }
 
 void SearchRun::ControllerThread() {
@@ -235,9 +235,9 @@ bool SearchRun::IsFullyDrained() {
   // Workers may hold unpublished local requests. Require their
   // explicit idle acknowledgement, not merely empty executor queues.
   for (auto& worker : workers_) {
-    absl::MutexLock lock(worker->mailbox.mutex);
-    if (!worker->mailbox.continuations.empty() ||
-        !worker->mailbox.completions.empty() || !worker->drained.load()) {
+    absl::MutexLock lock(worker->inbox.mutex);
+    if (!worker->inbox.continuations.empty() ||
+        !worker->inbox.completions.empty() || !worker->drained.load()) {
       return false;
     }
   }

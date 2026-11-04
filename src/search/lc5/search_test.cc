@@ -62,7 +62,7 @@ class SearchRunTestPeer {
       admitted.push_back({.id = *id, .worker = owner});
     }
     // The allocated visit keeps active() nonzero until this is consumed, so
-    // stop cannot declare a drain before the mailbox publication.
+    // stop cannot declare a drain before the inbox publication.
     run.SendContinuations(owner, admitted);
     return true;
   }
@@ -71,9 +71,9 @@ class SearchRunTestPeer {
     for (auto& ptr : run.workers_) {
       auto& worker = *ptr;
       worker.outgoing.resize(run.workers_.size());
-      for (const auto& event : worker.mailbox.continuations)
+      for (const auto& event : worker.inbox.continuations)
         run.ResumeVisit(worker, event);
-      worker.mailbox.continuations.clear();
+      worker.inbox.continuations.clear();
       while (!worker.runnable.empty()) {
         auto id = worker.runnable.front();
         worker.runnable.pop_front();
@@ -102,8 +102,8 @@ class SearchRunTestPeer {
       EXPECT_TRUE(worker->evals.empty());
       EXPECT_EQ(worker->outstanding, 0u);
       EXPECT_EQ(worker->outstanding_items, 0u);
-      EXPECT_TRUE(worker->mailbox.continuations.empty());
-      EXPECT_TRUE(worker->mailbox.completions.empty());
+      EXPECT_TRUE(worker->inbox.continuations.empty());
+      EXPECT_TRUE(worker->inbox.completions.empty());
     }
   }
   static void ExpectDrained(const Lc5Engine& engine) {

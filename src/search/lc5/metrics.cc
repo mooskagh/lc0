@@ -46,7 +46,7 @@ std::string Metrics::Format(size_t graph_size, size_t active,
       << " proven=" << proven_visits.load()
       << " twofold=" << two_fold_visits.load() << " active=" << active
       << " ready_eval=" << ready_eval << " graph=" << graph_size
-      << " mailbox=" << mailbox_notifications.load()
+      << " inbox=" << inbox_notifications.load()
       << " io_high=" << io_jobs_high_water.load()
       << " rejected=" << publications_rejected.load();
   return out.str();
