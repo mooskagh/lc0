@@ -73,9 +73,10 @@ struct Ticket {
   std::vector<VisitWakeup> waiters;  // Later visits that reached the node.
 };
 
-// A ticket owner's request to the store and evaluator threads for one node's
-// content: its stored record, or else an NN evaluation. Travels in jobs.
-struct MaterializationRequest {
+// One node being materialized: what its ticket owner sends, in jobs, to the
+// store and evaluator workers to get the node's content (its stored record,
+// or else an NN evaluation).
+struct Materialization {
   enum class State : uint8_t {
     kPending,    // Not (yet) processed, or abandoned on stop.
     kStoreHit,   // `record` was loaded from the store.
@@ -83,7 +84,7 @@ struct MaterializationRequest {
     kQueued,     // Added to a computation that has not run yet.
     kEvaluated,  // `payload` holds the evaluation.
   };
-  MaterializationTicketId ticket;  // The ticket this request completes.
+  MaterializationTicketId ticket;  // The ticket this materialization completes.
   NodeKey key;                     // The node to materialize.
   PositionHistory history;     // Down to the node: for terminals and NN input.
   ExpansionPayload payload{};  // Legal moves, then priors and leaf value.
@@ -93,8 +94,8 @@ struct MaterializationRequest {
 
 // The arrows show where a job travels; only kPersist does not come back.
 enum class JobKind {
-  kEval,     // Visit worker -> evaluator -> worker: evaluate `requests`.
-  kLoad,     // Visit worker -> store thread -> worker: load `requests`.
+  kEval,     // Visit worker -> evaluator -> worker: NN-evaluate.
+  kLoad,     // Visit worker -> store thread -> worker: look up in the store.
   kPersist,  // Controller -> store thread: evict `evict_count` nodes.
 };
 
@@ -105,9 +106,9 @@ struct Job {
   size_t worker;  // The owner, whose inbox gets the job back; not kPersist.
   // When queued; a batch's deadline counts from its first job's.
   std::chrono::steady_clock::time_point queued_at;
-  std::vector<MaterializationRequest> requests;  // kEval and kLoad.
-  size_t evict_count = 0;                        // kPersist.
-  size_t items() const { return requests.size(); }
+  std::vector<Materialization> materializations;  // kEval and kLoad.
+  size_t evict_count = 0;                         // kPersist.
+  size_t items() const { return materializations.size(); }
 };
 
 struct Batch {

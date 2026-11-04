@@ -153,8 +153,9 @@ class SearchSession {
   void DeliverWakeup(VisitWorker& worker, const VisitWakeup& wakeup);
   void SendWakeups(size_t worker, std::vector<VisitWakeup>& batch);
 
-  // Materialization: a ticket and its request. SuspendVisit opens both.
-  void PrepareRequest(VisitWorker& worker, MaterializationRequest request);
+  // Materialization. SuspendVisit opens a Ticket and its Materialization.
+  void PrepareMaterialization(VisitWorker& worker,
+                              Materialization materialization);
   void CompleteTicket(VisitWorker& worker, MaterializationTicketId ticket,
                       ExpansionPayload payload);
   // Publishes a node restored from the store; returns false, with the ticket
@@ -162,12 +163,12 @@ class SearchSession {
   bool RestoreTicket(VisitWorker& worker, MaterializationTicketId ticket,
                      std::span<const uint8_t> record);
   void CancelTicket(VisitWorker& worker, MaterializationTicketId ticket);
-  void CancelPendingRequests(VisitWorker& worker);
+  void CancelQueuedMaterializations(VisitWorker& worker);
 
   // Job.
   // Per worker, at most this many jobs sent and not yet finished...
   static constexpr size_t kMaxJobsInFlight = 16;
-  // ...holding at most this many minibatches of requests.
+  // ...holding at most this many minibatches of materializations.
   static constexpr size_t kMaxItemsInFlightBatches = 2;
   // A job holds at most 1/kJobsPerBatch of a minibatch, so an evaluator can
   // mix several jobs into one batch.
@@ -270,12 +271,12 @@ struct SearchSession::VisitWorker {
   // All fields below are touched only by this worker.
   std::deque<VisitId> runnable;
   std::unordered_set<uint64_t> active;
-  std::deque<MaterializationRequest> unprepared;  // Await terminal detection.
-  std::deque<MaterializationRequest> loads;
-  std::deque<MaterializationRequest> evals;
+  std::deque<Materialization> unprepared;  // Await terminal detection.
+  std::deque<Materialization> loads;
+  std::deque<Materialization> evals;
   std::vector<std::vector<VisitWakeup>> outgoing;  // Indexed by worker.
   size_t jobs_in_flight = 0;                       // Sent and not yet finished.
-  size_t items_in_flight = 0;  // The requests in those jobs.
+  size_t items_in_flight = 0;  // The materializations in those jobs.
   bool cancelled = false;
   bool released_capacity = false;
   bool controller_event = false;
