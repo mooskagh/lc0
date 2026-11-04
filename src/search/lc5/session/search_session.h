@@ -160,7 +160,7 @@ class SearchSession {
   void CancelPendingRequests(Worker& worker);
 
   // Job.
-  // Per worker, at most this many jobs submitted and not yet consumed...
+  // Per worker, at most this many jobs sent and not yet finished...
   static constexpr size_t kMaxJobsInFlight = 16;
   // ...holding at most this many minibatches of requests.
   static constexpr size_t kMaxItemsInFlightBatches = 2;
@@ -168,20 +168,23 @@ class SearchSession {
   // mix several jobs into one batch.
   static constexpr size_t kJobsPerBatch = 4;
 
-  void SubmitJobs(Worker& worker);
-  std::unique_ptr<Job> TakeJob(Worker& worker) const;
-  bool HasJobCredit(const Worker& worker) const;
+  // A visit thread builds and sends jobs; a store thread or an evaluator runs
+  // them and returns them to the worker, which finishes them.
+  void SendJobs(Worker& worker);
+  bool CanSendJob(const Worker& worker) const;
+  std::unique_ptr<Job> BuildJob(Worker& worker) const;
   void SetWorkerProducing(Worker& worker, bool producing);
-  void ConsumeJob(Worker& worker, std::unique_ptr<Job> job);
-  void ReturnJob(std::unique_ptr<Job> job);
-  // Queues eviction jobs when the graph is over its node limit.
-  void QueueEvictionJobs();
+  void RunLoadJob(Job& job);
+  void ReturnJobToWorker(std::unique_ptr<Job> job);
+  void FinishJob(Worker& worker, std::unique_ptr<Job> job);
+  // The controller's job: evict when the graph is over its node limit.
+  void SendEvictionJob();
   void RunEvictionJob(Job& job);
 
   // Batch.
   Batch CollectBatch(std::unique_ptr<Job> first, std::unique_ptr<Job>* next);
-  void AddJobInputs(BackendComputation& computation, Job& job);
-  void RunBatch(Batch batch);
+  void AddJobToBatch(BackendComputation& computation, Job& job);
+  void EvaluateBatch(Batch batch);
   bool IsEvaluationStarved() const;
 
   // Configuration, fixed for the session (constructor only).
@@ -230,7 +233,7 @@ class SearchSession {
   MaterializationTicketId next_ticket_ ABSL_GUARDED_BY(tickets_mutex_) = 1;
 
   // Jobs and evictions in flight.
-  // Includes queued, executing, and returned-but-unconsumed jobs.
+  // Includes queued, running, and returned-but-unfinished jobs.
   std::atomic<size_t> jobs_in_flight_{0};
   // Jobs held by collectors (including retained whole jobs), not computing or
   // returned. If these are all remaining jobs and producers are blocked,
@@ -265,13 +268,13 @@ struct SearchSession::Worker {
   std::deque<MaterializationRequest> loads;
   std::deque<MaterializationRequest> evals;
   std::vector<std::vector<VisitWakeup>> outgoing;  // Indexed by worker.
-  size_t jobs_in_flight = 0;   // Submitted and not yet consumed.
+  size_t jobs_in_flight = 0;                       // Sent and not yet finished.
   size_t items_in_flight = 0;  // The requests in those jobs.
   bool cancelled = false;
   bool released_capacity = false;
   bool controller_event = false;
   std::atomic<bool> drained{false};
-  // Conservative signal: this worker can submit without a collected job's
+  // Conservative signal: this worker can send a job without a collected job's
   // completion. Initially true until the first work chunk is inspected.
   std::atomic<bool> producing{true};
   // Guarded by SearchSession::admission_mutex_, not worker-owned.

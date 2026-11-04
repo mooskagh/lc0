@@ -232,7 +232,7 @@ void SearchSession::ControllerThread() {
                               now + kSmartPruningInterval);
       }
       if (HasNodeLimit()) {
-        QueueEvictionJobs();
+        SendEvictionJob();
         next_check = std::min(next_check.value_or(now + kEvictionInterval),
                               now + kEvictionInterval);
       }
@@ -510,14 +510,14 @@ void SearchSession::VisitThread(Worker& worker) {
       AdvanceRunnableVisits(worker, kVisitsPerPass);
       AdmitVisits(worker);
     }
-    SubmitJobs(worker);
+    SendJobs(worker);
     for (size_t i = 0; i < workers_.size(); ++i) {
       SendWakeups(i, worker.outgoing[i]);
     }
     PublishWorkerState(worker);
     if (shutdown_.load()) break;
     // Keep going locally without a wake or controller handoff. Suspended
-    // visits and exhausted credits wait for whole completions.
+    // visits and the in-flight limits wait for whole completions.
     if (HasLocalWork(worker)) continue;
     // Senders evaluate this on unlock; `cancelled` is written only by this
     // worker, never while it waits here.
@@ -550,7 +550,7 @@ void SearchSession::ProcessInbox(Worker& worker) {
     if (worker.drained.exchange(false)) worker.controller_event = true;
   }
   for (const auto& wakeup : wakeups) ResumeVisit(worker, wakeup);
-  for (auto& job : completions) ConsumeJob(worker, std::move(job));
+  for (auto& job : completions) FinishJob(worker, std::move(job));
 }
 
 void SearchSession::AdvanceRunnableVisits(Worker& worker, size_t limit) {
@@ -585,14 +585,13 @@ void SearchSession::PublishWorkerState(Worker& worker) {
   }
   if (std::exchange(worker.released_capacity, false)) WakeAdmissionWaiters();
   if (std::exchange(worker.controller_event, false)) WakeController();
-  SetWorkerProducing(worker,
-                     HasJobCredit(worker) &&
-                         (!worker.runnable.empty() || worker.HasQueuedIo()));
+  SetWorkerProducing(worker, CanSendJob(worker) && (!worker.runnable.empty() ||
+                                                    worker.HasQueuedIo()));
 }
 
 bool SearchSession::HasLocalWork(const Worker& worker) const {
   return (!IsStopping() && !worker.runnable.empty()) ||
-         (HasJobCredit(worker) && worker.HasQueuedIo());
+         (CanSendJob(worker) && worker.HasQueuedIo());
 }
 
 void SearchSession::AdvanceVisit(Worker& worker, VisitId id) {
@@ -835,7 +834,7 @@ void SearchSession::CancelPendingRequests(Worker& worker) {
   }
 }
 
-bool SearchSession::HasJobCredit(const Worker& worker) const {
+bool SearchSession::CanSendJob(const Worker& worker) const {
   return worker.jobs_in_flight < kMaxJobsInFlight &&
          worker.items_in_flight <
              kMaxItemsInFlightBatches *
@@ -849,7 +848,7 @@ void SearchSession::SetWorkerProducing(Worker& worker, bool producing) {
     eval_jobs_.NotifyPredicateChanged();
 }
 
-void SearchSession::SubmitJobs(Worker& worker) {
+void SearchSession::SendJobs(Worker& worker) {
   if (IsStopping()) CancelPendingRequests(worker);
   // Detect terminals and generate legal moves for fresh requests outside any
   // slot lock. Terminal ones publish right away; the rest join `evals`.
@@ -858,9 +857,9 @@ void SearchSession::SubmitJobs(Worker& worker) {
     worker.unprepared.pop_front();
     PrepareRequest(worker, std::move(request));
   }
-  while (HasJobCredit(worker)) {
+  while (CanSendJob(worker)) {
     if (IsStopping()) CancelPendingRequests(worker);
-    auto job = TakeJob(worker);
+    auto job = BuildJob(worker);
     if (!job) break;
     ++worker.jobs_in_flight;
     worker.items_in_flight += job->items();
@@ -876,7 +875,7 @@ void SearchSession::SubmitJobs(Worker& worker) {
   }
 }
 
-std::unique_ptr<Job> SearchSession::TakeJob(Worker& worker) const {
+std::unique_ptr<Job> SearchSession::BuildJob(Worker& worker) const {
   // Small whole jobs leave room to collect more cache misses without exceeding
   // the backend batch. The items-in-flight cap bounds loads and evaluations.
   const size_t batch_size = settings_.minibatch_size;
@@ -898,7 +897,7 @@ std::unique_ptr<Job> SearchSession::TakeJob(Worker& worker) const {
   return job;
 }
 
-void SearchSession::ReturnJob(std::unique_ptr<Job> job) {
+void SearchSession::ReturnJobToWorker(std::unique_ptr<Job> job) {
   {
     auto& inbox = workers_[job->worker]->inbox;
     absl::MutexLock lock(inbox.mutex);
@@ -907,7 +906,7 @@ void SearchSession::ReturnJob(std::unique_ptr<Job> job) {
   metrics_.inbox_notifications.fetch_add(1);
 }
 
-void SearchSession::ConsumeJob(Worker& worker, std::unique_ptr<Job> job) {
+void SearchSession::FinishJob(Worker& worker, std::unique_ptr<Job> job) {
   assert(worker.jobs_in_flight > 0);
   for (auto& request : job->requests) {
     switch (request.state) {
@@ -948,28 +947,30 @@ void SearchSession::StoreThread() {
       RunEvictionJob(*job);
       continue;
     }
-    if (!IsStopping()) {
-      std::vector<NodeKey> keys;
-      for (const auto& request : job->requests) keys.push_back(request.key);
-      auto loaded = engine_->ReadFromStore(keys);
-      assert(loaded.size() == job->requests.size());
-      for (size_t i = 0; i < loaded.size(); ++i) {
-        auto& request = job->requests[i];
-        if (loaded[i]) {
-          request.record = std::move(*loaded[i]);
-          request.state = MaterializationRequest::State::kStoreHit;
-        } else {
-          request.state = MaterializationRequest::State::kStoreMiss;
-        }
-      }
-      metrics_.node_store_load_batches.fetch_add(1);
-      metrics_.node_store_load_keys.fetch_add(keys.size());
-    }
-    ReturnJob(std::move(job));
+    if (!IsStopping()) RunLoadJob(*job);
+    ReturnJobToWorker(std::move(job));
   }
 }
 
-void SearchSession::QueueEvictionJobs() {
+void SearchSession::RunLoadJob(Job& job) {
+  std::vector<NodeKey> keys;
+  for (const auto& request : job.requests) keys.push_back(request.key);
+  auto loaded = engine_->ReadFromStore(keys);
+  assert(loaded.size() == job.requests.size());
+  for (size_t i = 0; i < loaded.size(); ++i) {
+    auto& request = job.requests[i];
+    if (loaded[i]) {
+      request.record = std::move(*loaded[i]);
+      request.state = MaterializationRequest::State::kStoreHit;
+    } else {
+      request.state = MaterializationRequest::State::kStoreMiss;
+    }
+  }
+  metrics_.node_store_load_batches.fetch_add(1);
+  metrics_.node_store_load_keys.fetch_add(keys.size());
+}
+
+void SearchSession::SendEvictionJob() {
   if (!HasNodeLimit() || IsStopping() || evictions_in_flight_.load() > 0)
     return;
   eviction_requested_.store(false);
@@ -1006,10 +1007,10 @@ void SearchSession::EvaluatorThread() {
     }
     if (IsStopping()) {
       collecting_jobs_.fetch_sub(1);
-      ReturnJob(std::move(next));
+      ReturnJobToWorker(std::move(next));
       continue;
     }
-    RunBatch(CollectBatch(std::move(next), &next));
+    EvaluateBatch(CollectBatch(std::move(next), &next));
   }
 }
 
@@ -1023,16 +1024,16 @@ Batch SearchSession::CollectBatch(std::unique_ptr<Job> job,
                 std::chrono::milliseconds(settings_.max_batch_delay_ms);
   Batch batch{.computation = backend_->CreateComputation()};
   for (;;) {
-    AddJobInputs(*batch.computation, *job);
+    AddJobToBatch(*batch.computation, *job);
     batch.jobs.push_back(std::move(job));
     const size_t used = batch.computation->UsedBatchSize();
     if (used >= target || IsStopping()) break;
     // Consume already-ready jobs first, even past the deadline, rather than
     // fragmenting an accumulated backlog into single-job batches.
     if (!eval_jobs_.TryPop(&job)) {
-      // Immediate-only batches return credits instead of waiting on producers
-      // that need those cache results. The oldest job's deadline is absolute;
-      // zero disables it, but dependency starvation still flushes.
+      // Immediate-only batches return their jobs instead of waiting on
+      // producers that need those cache results. The oldest job's deadline is
+      // absolute; zero disables it, but dependency starvation still flushes.
       if (used == 0 || IsStopping()) break;
       eval_jobs_.NotifyPredicateChanged();
       if (!eval_jobs_.PopUntil(&job, deadline, [&] {
@@ -1056,7 +1057,7 @@ Batch SearchSession::CollectBatch(std::unique_ptr<Job> job,
   return batch;
 }
 
-void SearchSession::AddJobInputs(BackendComputation& computation, Job& job) {
+void SearchSession::AddJobToBatch(BackendComputation& computation, Job& job) {
   for (auto& request : job.requests) {
     if (IsStopping()) break;
     auto& payload = request.payload;
@@ -1076,7 +1077,7 @@ void SearchSession::AddJobInputs(BackendComputation& computation, Job& job) {
   }
 }
 
-void SearchSession::RunBatch(Batch batch) {
+void SearchSession::EvaluateBatch(Batch batch) {
   const size_t used = batch.computation->UsedBatchSize();
   bool authorized = false;
   if (used > 0) {
@@ -1104,13 +1105,14 @@ void SearchSession::RunBatch(Batch batch) {
   }
   // Destroy the computation while the jobs it references are still alive.
   batch.computation.reset();
-  for (auto& job : batch.jobs) ReturnJob(std::move(job));
+  for (auto& job : batch.jobs) ReturnJobToWorker(std::move(job));
 }
 
 bool SearchSession::IsEvaluationStarved() const {
   // Executing, store or returned jobs can still unblock a producer. Only
   // predict starvation when every outstanding job is held by a collector and
-  // no worker can submit independently; the deadline bounds the uncertainty.
+  // no worker can send a job independently; the deadline bounds the
+  // uncertainty.
   for (const auto& worker : workers_) {
     if (worker->producing.load()) return false;
   }

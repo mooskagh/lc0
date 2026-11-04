@@ -80,7 +80,7 @@ class SearchSessionTestPeer {
         worker.runnable.pop_front();
         session.AdvanceVisit(worker, id);
       }
-      session.SubmitJobs(worker);
+      session.SendJobs(worker);
       session.SetWorkerProducing(worker, false);
     }
   }
@@ -662,7 +662,7 @@ TEST(Lc5SearchTest, OwnerBacksUpLeafWhileWaitersResumeSelection) {
   SearchSession session(&engine, &backend, &responder, TestSettings(),
                         TestTimeManagement(), root, GoParams{.nodes = 4},
                         std::chrono::steady_clock::now());
-  // One worker consumes all four admissions before submitting the root job.
+  // One worker consumes all four admissions before sending the root job.
   for (int i = 0; i < 4; ++i)
     ASSERT_TRUE(SearchSessionTestPeer::AdmitVisit(session, root));
   EXPECT_FALSE(SearchSessionTestPeer::AdmitVisit(session, root));
@@ -1271,7 +1271,7 @@ TEST(Lc5SearchTest, PositiveDelayCollectsAnotherWorkersStoreMissIntoSameBatch) {
   session.Start();
   const bool loading = store.load.WaitForArrival();
   const bool first_input = backend.WaitForInputs(1);
-  // The first miss has entered AddInput, but the other worker cannot submit
+  // The first miss has entered AddInput, but the other worker cannot send
   // its miss until this barrier opens. No helper thread or sleep is needed to
   // prove the collector retains its first job across the store dependency.
   if (!loading || !first_input) session.Abort();
@@ -1292,7 +1292,7 @@ TEST(Lc5SearchTest, PositiveDelayCollectsAnotherWorkersStoreMissIntoSameBatch) {
   EXPECT_EQ(store.recording.stored, 0u);
 }
 
-TEST(Lc5SearchTest, MultiworkerMixedCacheResultsRespectBatchAndItemCredits) {
+TEST(Lc5SearchTest, MultiworkerMixedCacheResultsRespectBatchAndItemLimits) {
   struct Case {
     int evaluators;
     int batch_size;
@@ -1322,7 +1322,7 @@ TEST(Lc5SearchTest, MultiworkerMixedCacheResultsRespectBatchAndItemCredits) {
       const auto moves = root.history.Last().GetBoard().GenerateLegalMoves();
       ASSERT_EQ(moves.size(), 20u);
       // Pre-admission gives every worker independent leaves before submission.
-      // Target 4 stresses credit replenishment with one-item jobs; targets
+      // Target 4 stresses the in-flight limits with one-item jobs; targets
       // 16/32 exercise mixed results in four/eight-item jobs across evaluators.
       for (const auto move : moves) {
         auto parent = root;
@@ -1363,9 +1363,9 @@ TEST(Lc5SearchTest, MultiworkerMixedCacheResultsRespectBatchAndItemCredits) {
                 test.capacity);
       EXPECT_EQ(graph.Size(), test.capacity);
       const size_t job_size = (test.batch_size + 3) / 4;
-      const size_t credit_jobs =
+      const size_t max_jobs =
           std::min<size_t>(16, 2 * test.batch_size / job_size);
-      EXPECT_LE(session.metrics().io_jobs_high_water.load(), 4 * credit_jobs);
+      EXPECT_LE(session.metrics().io_jobs_high_water.load(), 4 * max_jobs);
       if (delay == 0) {
         EXPECT_EQ(session.metrics().partial_timeout_flushes.load(), 0u);
       }
