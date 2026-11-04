@@ -41,7 +41,8 @@ namespace lczero::lc5 {
 
 // Closable multi-producer multi-consumer FIFO. PopUntil() can also wait on a
 // caller predicate over external state; whoever changes that state must call
-// NotifyPredicateChanged() afterwards.
+// NotifyPredicateChanged() afterwards. TryPopIf() and PopUntil() take the front
+// item only if `accept(front)` holds, and otherwise leave it in the queue.
 template <typename T>
 class WorkQueue {
  public:
@@ -58,16 +59,18 @@ class WorkQueue {
     mutex_.Await(absl::Condition(this, &WorkQueue::ReadyLocked));
     return TakeFrontLocked(value);
   }
-  bool TryPop(T* value) {
+  template <typename Accept>
+  bool TryPopIf(T* value, Accept accept) {
     absl::MutexLock lock(mutex_);
-    return TakeFrontLocked(value);
+    return TakeFrontLocked(value, accept);
   }
-  // Like Pop, but also gives up at `deadline` or once `give_up()` holds.
-  // `give_up` may run on any thread that unlocks the queue, under its mutex,
-  // and may read external state.
-  template <typename Predicate>
+  // Waits for an item like Pop, but also gives up at `deadline` or once
+  // `give_up()` holds. `give_up` may run on any thread that unlocks the queue,
+  // under its mutex, and may read external state. A front item that `accept`
+  // rejects ends the wait too, and stays in the queue.
+  template <typename GiveUp, typename Accept>
   bool PopUntil(T* value, std::chrono::steady_clock::time_point deadline,
-                Predicate give_up) {
+                GiveUp give_up, Accept accept) {
     absl::MutexLock lock(mutex_);
     const auto ready = [&] {
       mutex_.AssertReaderHeld();
@@ -76,7 +79,7 @@ class WorkQueue {
     mutex_.AwaitWithTimeout(
         absl::Condition(&ready),
         absl::FromChrono(deadline - std::chrono::steady_clock::now()));
-    return TakeFrontLocked(value);
+    return TakeFrontLocked(value, accept);
   }
   // Makes PopUntil() waiters re-check `give_up` after external state changed:
   // the mutex re-evaluates waiters' conditions when it is unlocked.
@@ -92,7 +95,12 @@ class WorkQueue {
     return closed_ || !queue_.empty();
   }
   bool TakeFrontLocked(T* value) ABSL_EXCLUSIVE_LOCKS_REQUIRED(mutex_) {
-    if (queue_.empty()) return false;
+    return TakeFrontLocked(value, [](const T&) { return true; });
+  }
+  template <typename Accept>
+  bool TakeFrontLocked(T* value, Accept accept)
+      ABSL_EXCLUSIVE_LOCKS_REQUIRED(mutex_) {
+    if (queue_.empty() || !accept(queue_.front())) return false;
     *value = std::move(queue_.front());
     queue_.pop_front();
     size_.store(queue_.size(), std::memory_order_relaxed);

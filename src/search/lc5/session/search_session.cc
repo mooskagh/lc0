@@ -997,25 +997,18 @@ void SearchSession::RunEvictionJob(Job& job) {
 }
 
 void SearchSession::EvaluatorThread() {
-  // A popped job that did not fit the previous batch. Retained jobs remain
-  // counted as collecting and in flight.
-  std::unique_ptr<Job> next;
-  for (;;) {
-    if (!next) {
-      if (!eval_jobs_.Pop(&next)) break;
-      collecting_jobs_.fetch_add(1);
-    }
+  std::unique_ptr<Job> job;
+  while (eval_jobs_.Pop(&job)) {
     if (IsStopping()) {
-      collecting_jobs_.fetch_sub(1);
-      ReturnJobToWorker(std::move(next));
+      ReturnJobToWorker(std::move(job));
       continue;
     }
-    EvaluateBatch(CollectBatch(std::move(next), &next));
+    collecting_jobs_.fetch_add(1);
+    EvaluateBatch(CollectBatch(std::move(job)));
   }
 }
 
-Batch SearchSession::CollectBatch(std::unique_ptr<Job> job,
-                                  std::unique_ptr<Job>* next) {
+Batch SearchSession::CollectBatch(std::unique_ptr<Job> job) {
   const size_t target = settings_.minibatch_size;
   const auto deadline =
       settings_.max_batch_delay_ms == 0
@@ -1028,28 +1021,27 @@ Batch SearchSession::CollectBatch(std::unique_ptr<Job> job,
     batch.jobs.push_back(std::move(job));
     const size_t used = batch.computation->UsedBatchSize();
     if (used >= target || IsStopping()) break;
+    // A whole job's size bounds its uncached inputs and must fit before
+    // AddInput. A job that doesn't fit stays queued and starts a later batch.
+    const auto fits = [&](const std::unique_ptr<Job>& next) {
+      return used + next->requests.size() <= target;
+    };
     // Consume already-ready jobs first, even past the deadline, rather than
     // fragmenting an accumulated backlog into single-job batches.
-    if (!eval_jobs_.TryPop(&job)) {
+    if (!eval_jobs_.TryPopIf(&job, fits)) {
       // Immediate-only batches return their jobs instead of waiting on
       // producers that need those cache results. The oldest job's deadline is
       // absolute; zero disables it, but dependency starvation still flushes.
       if (used == 0 || IsStopping()) break;
       eval_jobs_.NotifyPredicateChanged();
-      if (!eval_jobs_.PopUntil(&job, deadline, [&] {
-            return IsStopping() || IsEvaluationStarved();
-          })) {
+      if (!eval_jobs_.PopUntil(
+              &job, deadline,
+              [&] { return IsStopping() || IsEvaluationStarved(); }, fits)) {
         batch.timed_out = std::chrono::steady_clock::now() >= deadline;
         break;
       }
     }
     collecting_jobs_.fetch_add(1);
-    // A whole job's size bounds its uncached inputs and must fit before
-    // AddInput; otherwise retain it for the next batch.
-    if (used + job->requests.size() > target) {
-      *next = std::move(job);
-      break;
-    }
   }
   // Decreasing collecting_jobs_ only disables the starvation predicate; the
   // increment before PopUntil above is the enabling handshake.

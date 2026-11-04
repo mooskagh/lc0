@@ -182,7 +182,8 @@ class SearchSession {
   void RunEvictionJob(Job& job);
 
   // Batch.
-  Batch CollectBatch(std::unique_ptr<Job> first, std::unique_ptr<Job>* next);
+  // Takes `first` and more queued jobs while they fit the minibatch.
+  Batch CollectBatch(std::unique_ptr<Job> first);
   void AddJobToBatch(BackendComputation& computation, Job& job);
   void EvaluateBatch(Batch batch);
   bool IsEvaluationStarved() const;
@@ -235,9 +236,9 @@ class SearchSession {
   // Jobs and evictions in flight.
   // Includes queued, running, and returned-but-unfinished jobs.
   std::atomic<size_t> jobs_in_flight_{0};
-  // Jobs held by collectors (including retained whole jobs), not computing or
-  // returned. If these are all remaining jobs and producers are blocked,
-  // further collection depends on flushing at least one computation.
+  // Jobs held by collectors, not computing or returned. If these are all
+  // remaining jobs and producers are blocked, further collection depends on
+  // flushing at least one computation.
   std::atomic<size_t> collecting_jobs_{0};
   // Eviction jobs queued or running; the controller queues more only at zero.
   std::atomic<size_t> evictions_in_flight_{0};

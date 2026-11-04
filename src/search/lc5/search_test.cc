@@ -1621,7 +1621,7 @@ TEST(Lc5SearchTest, StopDuringAddInputKeepsOnlyImmediateResults) {
   ExpectDrained(session, graph);
 }
 
-TEST(Lc5SearchTest, RetainedNonfittingJobIsCancelledAfterAuthorizedBatch) {
+TEST(Lc5SearchTest, NonfittingJobStaysQueuedAndIsCancelledAfterStop) {
   PolicyEngine<PuctAveraging> engine(TestParams());
   auto& graph = engine.graph();
   ControlledBackend backend(ControlledBackend::Cache::kNone, true, 5);
@@ -1635,7 +1635,7 @@ TEST(Lc5SearchTest, RetainedNonfittingJobIsCancelledAfterAuthorizedBatch) {
   const auto origins = AdmitChildren(session, root, 6);
   session.Start();
   // Three whole jobs of two inputs: after adding four inputs, the collector
-  // has popped and retained the last job because 4 + 2 exceeds the target 5.
+  // leaves the last job queued because 4 + 2 exceeds the target 5.
   const bool computing = backend.WaitForCompute();
   session.Stop();
   const bool responding = responder.WaitForBestmove();
