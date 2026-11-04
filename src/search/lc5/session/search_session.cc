@@ -537,7 +537,7 @@ void SearchSession::RunVisitWorker(VisitWorker& worker) {
 
 void SearchSession::ProcessInbox(VisitWorker& worker) {
   std::vector<VisitWakeup> wakeups;
-  std::vector<std::unique_ptr<Job>> completions;
+  std::vector<std::unique_ptr<AsyncJob>> completions;
   bool admission_ready;
   {
     absl::MutexLock lock(worker.inbox.mutex);
@@ -870,7 +870,7 @@ void SearchSession::SendJobs(VisitWorker& worker) {
     worker.items_in_flight += job->items();
     RaiseHighWater(metrics_.io_jobs_high_water,
                    jobs_in_flight_.fetch_add(1) + 1);
-    if (job->kind == JobKind::kEval) {
+    if (job->kind == AsyncJob::Kind::kEval) {
       eval_jobs_.Push(std::move(job));
       RaiseHighWater(metrics_.ready_eval_high_water, eval_jobs_.Size());
     } else {
@@ -880,21 +880,21 @@ void SearchSession::SendJobs(VisitWorker& worker) {
   }
 }
 
-std::unique_ptr<Job> SearchSession::BuildJob(VisitWorker& worker) const {
+std::unique_ptr<AsyncJob> SearchSession::BuildJob(VisitWorker& worker) const {
   // Small whole jobs leave room to collect more cache misses without exceeding
   // the backend batch. The items-in-flight cap bounds loads and evaluations.
   const size_t batch_size = settings_.minibatch_size;
   const size_t limit =
       std::min((batch_size + kJobsPerBatch - 1) / kJobsPerBatch,
                kMaxItemsInFlightBatches * batch_size - worker.items_in_flight);
-  auto job = std::make_unique<Job>();
+  auto job = std::make_unique<AsyncJob>();
   job->worker = worker.index;
   job->queued_at = std::chrono::steady_clock::now();
   if (!worker.loads.empty()) {
-    job->kind = JobKind::kLoad;
+    job->kind = AsyncJob::Kind::kLoad;
     MoveFront(worker.loads, job->materializations, limit);
   } else if (!worker.evals.empty()) {
-    job->kind = JobKind::kEval;
+    job->kind = AsyncJob::Kind::kEval;
     MoveFront(worker.evals, job->materializations, limit);
   } else {
     return nullptr;
@@ -902,7 +902,7 @@ std::unique_ptr<Job> SearchSession::BuildJob(VisitWorker& worker) const {
   return job;
 }
 
-void SearchSession::ReturnJobToWorker(std::unique_ptr<Job> job) {
+void SearchSession::ReturnJobToWorker(std::unique_ptr<AsyncJob> job) {
   {
     auto& inbox = workers_[job->worker]->inbox;
     absl::MutexLock lock(inbox.mutex);
@@ -911,7 +911,8 @@ void SearchSession::ReturnJobToWorker(std::unique_ptr<Job> job) {
   metrics_.inbox_notifications.fetch_add(1);
 }
 
-void SearchSession::FinishJob(VisitWorker& worker, std::unique_ptr<Job> job) {
+void SearchSession::FinishJob(VisitWorker& worker,
+                              std::unique_ptr<AsyncJob> job) {
   assert(worker.jobs_in_flight > 0);
   for (auto& materialization : job->materializations) {
     switch (materialization.state) {
@@ -948,9 +949,9 @@ void SearchSession::FinishJob(VisitWorker& worker, std::unique_ptr<Job> job) {
 }
 
 void SearchSession::RunStoreWorker() {
-  std::unique_ptr<Job> job;
+  std::unique_ptr<AsyncJob> job;
   while (store_jobs_.Pop(&job)) {
-    if (job->kind == JobKind::kPersist) {
+    if (job->kind == AsyncJob::Kind::kPersist) {
       RunEvictionJob(*job);
       continue;
     }
@@ -959,7 +960,7 @@ void SearchSession::RunStoreWorker() {
   }
 }
 
-void SearchSession::RunLoadJob(Job& job) {
+void SearchSession::RunLoadJob(AsyncJob& job) {
   std::vector<NodeKey> keys;
   for (const auto& materialization : job.materializations)
     keys.push_back(materialization.key);
@@ -987,8 +988,8 @@ void SearchSession::SendEvictionJob() {
   if (size <= limit) return;
   // Evict down to a low-water mark, so the next round is not due right away.
   const size_t target = limit - limit / 10;
-  auto job = std::make_unique<Job>();
-  job->kind = JobKind::kPersist;
+  auto job = std::make_unique<AsyncJob>();
+  job->kind = AsyncJob::Kind::kPersist;
   job->queued_at = std::chrono::steady_clock::now();
   job->evict_count = size - target;
   evictions_in_flight_.fetch_add(1);
@@ -996,7 +997,7 @@ void SearchSession::SendEvictionJob() {
   store_jobs_.Push(std::move(job));
 }
 
-void SearchSession::RunEvictionJob(Job& job) {
+void SearchSession::RunEvictionJob(AsyncJob& job) {
   engine_->EvictToStore(job.evict_count, root_.key, metrics_);
   jobs_in_flight_.fetch_sub(1);
   // The controller may queue the next round, or finish draining.
@@ -1005,7 +1006,7 @@ void SearchSession::RunEvictionJob(Job& job) {
 }
 
 void SearchSession::RunEvaluatorWorker() {
-  std::unique_ptr<Job> job;
+  std::unique_ptr<AsyncJob> job;
   while (eval_jobs_.Pop(&job)) {
     if (IsStopping()) {
       ReturnJobToWorker(std::move(job));
@@ -1016,7 +1017,7 @@ void SearchSession::RunEvaluatorWorker() {
   }
 }
 
-Batch SearchSession::CollectBatch(std::unique_ptr<Job> job) {
+Batch SearchSession::CollectBatch(std::unique_ptr<AsyncJob> job) {
   const size_t target = settings_.minibatch_size;
   const auto deadline =
       settings_.max_batch_delay_ms == 0
@@ -1031,7 +1032,7 @@ Batch SearchSession::CollectBatch(std::unique_ptr<Job> job) {
     if (used >= target || IsStopping()) break;
     // A whole job's size bounds its uncached inputs and must fit before
     // AddInput. A job that doesn't fit stays queued and starts a later batch.
-    const auto fits = [&](const std::unique_ptr<Job>& next) {
+    const auto fits = [&](const std::unique_ptr<AsyncJob>& next) {
       return used + next->materializations.size() <= target;
     };
     // Consume already-ready jobs first, even past the deadline, rather than
@@ -1057,7 +1058,8 @@ Batch SearchSession::CollectBatch(std::unique_ptr<Job> job) {
   return batch;
 }
 
-void SearchSession::AddJobToBatch(BackendComputation& computation, Job& job) {
+void SearchSession::AddJobToBatch(BackendComputation& computation,
+                                  AsyncJob& job) {
   for (auto& materialization : job.materializations) {
     if (IsStopping()) break;
     auto& payload = materialization.payload;

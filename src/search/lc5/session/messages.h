@@ -92,17 +92,19 @@ struct Materialization {
   State state = State::kPending;
 };
 
-// The arrows show where a job travels; only kPersist does not come back.
-enum class JobKind {
-  kEval,     // Visit worker -> evaluator -> worker: NN-evaluate.
-  kLoad,     // Visit worker -> store thread -> worker: look up in the store.
-  kPersist,  // Controller -> store thread: evict `evict_count` nodes.
-};
-
-// Storage is fixed before AddInput; the whole job lives through compute
-// and completion consumption, including immediate-cache results.
-struct Job {
-  JobKind kind;
+// Slow work one kind of worker hands to another, which runs it while the
+// sender carries on: a store lookup, an NN evaluation or an eviction. Load and
+// eval jobs carry a visit worker's materializations and come back to it.
+// Storage is fixed before AddInput; the whole job lives through compute and
+// FinishJob, including immediate-cache results.
+struct AsyncJob {
+  // The arrows show where a job travels; only kPersist does not come back.
+  enum class Kind {
+    kEval,     // Visit worker -> evaluator -> worker: NN-evaluate.
+    kLoad,     // Visit worker -> store thread -> worker: look up in the store.
+    kPersist,  // Controller -> store thread: evict `evict_count` nodes.
+  };
+  Kind kind;
   size_t worker;  // The owner, whose inbox gets the job back; not kPersist.
   // When queued; a batch's deadline counts from its first job's.
   std::chrono::steady_clock::time_point queued_at;
@@ -113,7 +115,8 @@ struct Job {
 
 struct Batch {
   std::unique_ptr<BackendComputation> computation;
-  std::vector<std::unique_ptr<Job>> jobs{};  // Whose inputs `computation` has.
+  std::vector<std::unique_ptr<AsyncJob>>
+      jobs{};              // Whose inputs `computation` has.
   bool timed_out = false;  // Flushed at the deadline; only counted in metrics.
 };
 
@@ -128,7 +131,7 @@ struct WorkerInbox {
   // For this worker's visits.
   std::vector<VisitWakeup> wakeups ABSL_GUARDED_BY(mutex);
   // Jobs back from the store or the evaluator.
-  std::vector<std::unique_ptr<Job>> completions ABSL_GUARDED_BY(mutex);
+  std::vector<std::unique_ptr<AsyncJob>> completions ABSL_GUARDED_BY(mutex);
   // Capacity was freed; try to admit visits again.
   bool admission_ready ABSL_GUARDED_BY(mutex) = false;
 };

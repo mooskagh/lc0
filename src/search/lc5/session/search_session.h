@@ -165,7 +165,7 @@ class SearchSession {
   void CancelTicket(VisitWorker& worker, MaterializationTicketId ticket);
   void CancelQueuedMaterializations(VisitWorker& worker);
 
-  // Job.
+  // AsyncJob.
   // Per worker, at most this many jobs sent and not yet finished...
   static constexpr size_t kMaxJobsInFlight = 16;
   // ...holding at most this many minibatches of materializations.
@@ -178,19 +178,19 @@ class SearchSession {
   // them and returns them to the worker, which finishes them.
   void SendJobs(VisitWorker& worker);
   bool CanSendJob(const VisitWorker& worker) const;
-  std::unique_ptr<Job> BuildJob(VisitWorker& worker) const;
+  std::unique_ptr<AsyncJob> BuildJob(VisitWorker& worker) const;
   void SetWorkerProducing(VisitWorker& worker, bool producing);
-  void RunLoadJob(Job& job);
-  void ReturnJobToWorker(std::unique_ptr<Job> job);
-  void FinishJob(VisitWorker& worker, std::unique_ptr<Job> job);
+  void RunLoadJob(AsyncJob& job);
+  void ReturnJobToWorker(std::unique_ptr<AsyncJob> job);
+  void FinishJob(VisitWorker& worker, std::unique_ptr<AsyncJob> job);
   // The controller's job: evict when the graph is over its node limit.
   void SendEvictionJob();
-  void RunEvictionJob(Job& job);
+  void RunEvictionJob(AsyncJob& job);
 
   // Batch.
   // Takes `first` and more queued jobs while they fit the minibatch.
-  Batch CollectBatch(std::unique_ptr<Job> first);
-  void AddJobToBatch(BackendComputation& computation, Job& job);
+  Batch CollectBatch(std::unique_ptr<AsyncJob> first);
+  void AddJobToBatch(BackendComputation& computation, AsyncJob& job);
   void EvaluateBatch(Batch batch);
   bool IsEvaluationStarved() const;
 
@@ -215,8 +215,8 @@ class SearchSession {
 
   // Threads and the queues between them.
   std::vector<std::unique_ptr<VisitWorker>> workers_;
-  WorkQueue<std::unique_ptr<Job>> store_jobs_;
-  WorkQueue<std::unique_ptr<Job>> eval_jobs_;
+  WorkQueue<std::unique_ptr<AsyncJob>> store_jobs_;
+  WorkQueue<std::unique_ptr<AsyncJob>> eval_jobs_;
   std::vector<std::thread> visit_threads_;
   std::vector<std::thread> store_threads_;
   std::vector<std::thread> evaluator_threads_;
