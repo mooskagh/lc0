@@ -94,7 +94,6 @@ class SearchSession {
   void RespondBestMove();
   bool IsFullyDrained();
   void JoinThreads();
-  void WakeController();
   void WakeAllWorkers();
   ThinkingInfo BuildThinkingInfo(bool final) const;
   Move GetFallbackMove() const;
@@ -217,16 +216,13 @@ class SearchSession {
   std::atomic<size_t> collecting_jobs_{0};
   // Eviction jobs queued or running; the controller queues more only at zero.
   std::atomic<size_t> evictions_in_flight_{0};
-  // A worker saw the graph over its limit and woke the controller.
-  std::atomic<bool> eviction_requested_{false};
 
   // Lifecycle and the controller's wakeups.
   std::atomic<bool> started_{false};
   std::atomic<bool> shutdown_{false};
   std::atomic<bool> finished_{false};
   std::atomic<int64_t> unused_time_ms_{0};
-  absl::Mutex controller_mutex_;
-  uint64_t controller_generation_ ABSL_GUARDED_BY(controller_mutex_) = 0;
+  ControllerSignal controller_;
 };
 
 struct SearchSession::VisitWorker {

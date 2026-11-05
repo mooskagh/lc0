@@ -179,7 +179,7 @@ void SearchSession::Start() {
 
 void SearchSession::RequestStop(StopMode mode) {
   gate_.RequestStop(mode);
-  WakeController();
+  controller_.Notify();
 }
 
 void SearchSession::Stop() { RequestStop(StopMode::kRespondBestmove); }
@@ -190,11 +190,6 @@ void SearchSession::Wait() {
   if (controller_thread_.joinable()) controller_thread_.join();
 }
 
-void SearchSession::WakeController() {
-  absl::MutexLock lock(controller_mutex_);
-  ++controller_generation_;
-}
-
 void SearchSession::WakeAllWorkers() {
   for (auto& worker : workers_) worker->inbox.Wake();
 }
@@ -203,13 +198,9 @@ void SearchSession::RunControllerWorker() {
   auto next_info = steady_clock::now() + kInfoInterval;
   bool responded = false;
   for (;;) {
-    uint64_t generation;
-    {
-      // Snapshot before inspecting predicates: any enabling event during
-      // inspection changes the generation and prevents sleeping.
-      absl::MutexLock lock(controller_mutex_);
-      generation = controller_generation_;
-    }
+    // Before inspecting predicates: any enabling event during inspection
+    // changes the generation and prevents sleeping.
+    const uint64_t generation = controller_.generation();
     const auto now = steady_clock::now();
     std::optional<steady_clock::time_point> next_check;
     if (!IsStopping()) {
@@ -255,14 +246,7 @@ void SearchSession::RunControllerWorker() {
     if (!IsStopping()) {
       wake_at = std::min(next_info, next_check.value_or(wake_at));
     }
-    absl::MutexLock lock(controller_mutex_);
-    const auto notified = [&] {
-      controller_mutex_.AssertReaderHeld();
-      return controller_generation_ != generation;
-    };
-    controller_mutex_.AwaitWithTimeout(
-        absl::Condition(&notified),
-        absl::FromChrono(wake_at - steady_clock::now()));
+    controller_.WaitUntil(generation, wake_at);
   }
   JoinThreads();
 }
@@ -517,7 +501,7 @@ void SearchSession::PublishWorkerState(VisitWorker& worker) {
     worker.controller_event = true;
   }
   if (std::exchange(worker.released_capacity, false)) WakeAdmissionWaiters();
-  if (std::exchange(worker.controller_event, false)) WakeController();
+  if (std::exchange(worker.controller_event, false)) controller_.Notify();
   SetWorkerProducing(
       worker, CanSendJob(worker) &&
                   (!worker.runnable.empty() || !worker.local_wakeups.empty() ||
@@ -621,7 +605,7 @@ bool SearchSession::SuspendVisit(VisitWorker& worker, Visit& visit) {
   // up with fast searches between its periodic checks.
   if (owner && HasNodeLimit() &&
       engine_->GetGraphSize() > settings_.graph_node_limit &&
-      !eviction_requested_.exchange(true)) {
+      controller_.RequestEviction()) {
     worker.controller_event = true;
   }
   if (owner) {
@@ -875,7 +859,7 @@ void SearchSession::RunLoadJob(AsyncJob& job) {
 void SearchSession::SendEvictionJob() {
   if (!HasNodeLimit() || IsStopping() || evictions_in_flight_.load() > 0)
     return;
-  eviction_requested_.store(false);
+  controller_.TakeEvictionRequests();
   const size_t limit = settings_.graph_node_limit;
   const size_t size = engine_->GetGraphSize();
   if (size <= limit) return;
@@ -889,7 +873,7 @@ void SearchSession::RunEvictionJob(const EvictionJob& job) {
   engine_->EvictToStore(job.count, root_.key, metrics_);
   // The controller may queue the next round, or finish draining.
   evictions_in_flight_.fetch_sub(1);
-  WakeController();
+  controller_.Notify();
 }
 
 void SearchSession::RunEvaluatorWorker() {

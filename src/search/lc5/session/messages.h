@@ -28,7 +28,9 @@
 #pragma once
 
 #include <absl/synchronization/mutex.h>
+#include <absl/time/time.h>
 
+#include <atomic>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -135,6 +137,43 @@ struct WorkerInbox {
   std::vector<std::unique_ptr<AsyncJob>> completions ABSL_GUARDED_BY(mutex);
   // Capacity was freed; try to admit visits again.
   bool admission_ready ABSL_GUARDED_BY(mutex) = false;
+};
+
+// Wakes the controller. Any thread may Notify. The controller takes the
+// generation before checking its conditions, then waits for a later one, so a
+// notification during the check is never lost.
+class ControllerSignal {
+ public:
+  void Notify() {
+    absl::MutexLock lock(mutex_);
+    ++generation_;
+  }
+  uint64_t generation() {
+    absl::MutexLock lock(mutex_);
+    return generation_;
+  }
+  // Waits for a Notify after `generation` was taken, or until `deadline`.
+  void WaitUntil(uint64_t generation,
+                 std::chrono::steady_clock::time_point deadline) {
+    absl::MutexLock lock(mutex_);
+    const auto notified = [&] {
+      mutex_.AssertReaderHeld();
+      return generation_ != generation;
+    };
+    mutex_.AwaitWithTimeout(
+        absl::Condition(&notified),
+        absl::FromChrono(deadline - std::chrono::steady_clock::now()));
+  }
+
+  // The graph is over its node limit: true for the first request since the
+  // controller last took them, which is the one to Notify for.
+  bool RequestEviction() { return !eviction_requested_.exchange(true); }
+  void TakeEvictionRequests() { eviction_requested_.store(false); }
+
+ private:
+  absl::Mutex mutex_;
+  uint64_t generation_ ABSL_GUARDED_BY(mutex_) = 0;
+  std::atomic<bool> eviction_requested_{false};
 };
 
 }  // namespace lczero::lc5
