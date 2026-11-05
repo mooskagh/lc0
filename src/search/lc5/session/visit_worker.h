@@ -36,6 +36,7 @@
 #include <vector>
 
 #include "search/lc5/metrics.h"
+#include "search/lc5/session/evaluator.h"
 #include "search/lc5/session/messages.h"
 #include "search/lc5/session/session_gate.h"
 #include "search/lc5/session/ticket_table.h"
@@ -51,7 +52,7 @@ namespace lczero::lc5 {
 // those leaves to the store and the evaluators in jobs.
 //
 // Everything below is touched only by this worker's thread, except through
-// its inbox (other threads post to it) and IsDrained/IsProducing.
+// its inbox (other threads post to it) and IsDrained.
 class VisitWorker {
  public:
   // What a visit worker shares with the rest of the session.
@@ -65,7 +66,7 @@ class VisitWorker {
     TicketTable& tickets;
     // Every worker's inbox, by worker index.
     std::span<WorkerInbox> inboxes;
-    WorkQueue<std::unique_ptr<AsyncJob>>& eval_jobs;
+    Evaluator& evaluator;
     WorkQueue<StoreJob>& store_jobs;
     // All workers' AsyncJobs sent and not yet finished.
     std::atomic<size_t>& jobs_in_flight;
@@ -79,9 +80,6 @@ class VisitWorker {
   // After a stop: no visits, tickets or jobs are left, and nothing waits in
   // the inbox.
   bool IsDrained();
-  // Conservative: this worker may send a job without waiting for a collected
-  // job's completion. Read by the evaluators' starvation check.
-  bool IsProducing() const { return producing_.load(); }
 
  private:
   friend class SearchSessionTestPeer;
@@ -156,7 +154,7 @@ class VisitWorker {
   TicketTable& tickets_;
   const std::span<WorkerInbox> inboxes_;
   WorkerInbox& inbox_;  // This worker's own.
-  WorkQueue<std::unique_ptr<AsyncJob>>& eval_jobs_;
+  Evaluator& evaluator_;
   WorkQueue<StoreJob>& store_jobs_;
   std::atomic<size_t>& session_jobs_in_flight_;
   ControllerSignal& controller_;
@@ -179,8 +177,10 @@ class VisitWorker {
   bool released_capacity_ = false;
   bool controller_event_ = false;
   std::atomic<bool> drained_{false};
-  // Initially true until the first work chunk is inspected.
-  std::atomic<bool> producing_{true};
+  // Conservative: this worker may send a job without waiting for a collected
+  // job's completion. Tells the evaluator of each change. Initially true until
+  // the first work chunk is inspected.
+  bool producing_ = true;
 };
 
 }  // namespace lczero::lc5

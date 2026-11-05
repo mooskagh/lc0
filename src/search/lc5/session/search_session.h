@@ -37,6 +37,7 @@
 #include "chess/uciloop.h"
 #include "neural/backend.h"
 #include "search/lc5/metrics.h"
+#include "search/lc5/session/evaluator.h"
 #include "search/lc5/session/messages.h"
 #include "search/lc5/session/session_gate.h"
 #include "search/lc5/session/ticket_table.h"
@@ -77,7 +78,6 @@ class SearchSession {
 
   // Thread bodies; each runs until its thread exits. Start() spawns them.
   void RunControllerWorker();
-  void RunEvaluatorWorker();
   void RunStoreWorker();
 
   // Search: stop, output and shutdown.
@@ -94,20 +94,13 @@ class SearchSession {
     return has_store_ && settings_.graph_node_limit > 0;
   }
 
-  // Jobs. A visit worker sends them; a store thread or an evaluator runs
-  // them and returns them to the worker.
+  // Load jobs. A visit worker sends them; a store thread runs them and
+  // returns them to the worker.
   void RunLoadJob(AsyncJob& job);
   void ReturnJobToWorker(std::unique_ptr<AsyncJob> job);
   // The controller's job: evict when the graph is over its node limit.
   void SendEvictionJob();
   void RunEvictionJob(const EvictionJob& job);
-
-  // Batch.
-  // Takes `first` and more queued jobs while they fit the minibatch.
-  Batch CollectBatch(std::unique_ptr<AsyncJob> first);
-  void AddJobToBatch(BackendComputation& computation, AsyncJob& job);
-  void EvaluateBatch(Batch batch);
-  bool IsEvaluationStarved() const;
 
   // Configuration, fixed for the session (constructor only).
   VisitEngine* const engine_;
@@ -130,25 +123,21 @@ class SearchSession {
   Metrics metrics_;
   SessionGate gate_;
 
+  TicketTable tickets_;
+  // AsyncJobs in flight, from all workers: queued, running, or returned but
+  // not finished. Evictions are not counted; no visit waits on them.
+  std::atomic<size_t> jobs_in_flight_{0};
+
   // Threads and the queues between them.
   std::vector<WorkerInbox> inboxes_;  // By visit worker index.
+  Evaluator evaluator_;
   std::vector<std::unique_ptr<VisitWorker>> workers_;
   WorkQueue<StoreJob> store_jobs_;
-  WorkQueue<std::unique_ptr<AsyncJob>> eval_jobs_;
   std::vector<std::thread> visit_threads_;
   std::vector<std::thread> store_threads_;
   std::vector<std::thread> evaluator_threads_;
   std::thread controller_thread_;
 
-  TicketTable tickets_;
-
-  // AsyncJobs in flight, from all workers: queued, running, or returned but
-  // not finished. Evictions are not counted; no visit waits on them.
-  std::atomic<size_t> jobs_in_flight_{0};
-  // Jobs held by collectors, not computing or returned. If these are all
-  // remaining jobs and producers are blocked, further collection depends on
-  // flushing at least one computation.
-  std::atomic<size_t> collecting_jobs_{0};
   // Eviction jobs queued or running; the controller queues more only at zero.
   std::atomic<size_t> evictions_in_flight_{0};
 

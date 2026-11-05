@@ -103,7 +103,7 @@ VisitWorker::VisitWorker(size_t index, const Context& context)
       tickets_(context.tickets),
       inboxes_(context.inboxes),
       inbox_(context.inboxes[index]),
-      eval_jobs_(context.eval_jobs),
+      evaluator_(context.evaluator),
       store_jobs_(context.store_jobs),
       session_jobs_in_flight_(context.jobs_in_flight),
       controller_(context.controller),
@@ -504,10 +504,9 @@ bool VisitWorker::CanSendJob() const {
 }
 
 void VisitWorker::SetProducing(bool producing) {
-  // Only true -> false enables the collectors' starvation predicate, so only
-  // that edge needs the queue-mutex handshake.
-  if (producing_.exchange(producing) && !producing)
-    eval_jobs_.NotifyPredicateChanged();
+  if (producing_ == producing) return;
+  producing_ = producing;
+  evaluator_.SetProducing(producing);
 }
 
 void VisitWorker::SendJobs() {
@@ -521,8 +520,7 @@ void VisitWorker::SendJobs() {
     RaiseHighWater(metrics_.io_jobs_high_water,
                    session_jobs_in_flight_.fetch_add(1) + 1);
     if (job->kind == AsyncJob::Kind::kEval) {
-      eval_jobs_.Push(std::move(job));
-      RaiseHighWater(metrics_.ready_eval_high_water, eval_jobs_.Size());
+      evaluator_.Push(std::move(job));
     } else {
       assert(has_store_);
       store_jobs_.Push(std::move(job));

@@ -39,7 +39,6 @@
 #include <vector>
 
 #include "chess/position.h"
-#include "neural/backend.h"
 #include "search/lc5/graph/expansion.h"
 #include "search/lc5/graph/key.h"
 #include "search/lc5/graph/node.h"
@@ -116,19 +115,17 @@ struct EvictionJob {
 // What store threads run.
 using StoreJob = std::variant<std::unique_ptr<AsyncJob>, EvictionJob>;
 
-struct Batch {
-  std::unique_ptr<BackendComputation> computation;
-  std::vector<std::unique_ptr<AsyncJob>>
-      jobs{};              // Whose inputs `computation` has.
-  bool timed_out = false;  // Flushed at the deadline; only counted in metrics.
-};
-
 // A visit worker's inbox. Senders lock `mutex` and add to it; unlocking wakes
 // the owner if its wait condition now holds.
 struct WorkerInbox {
   // Makes the owner re-evaluate its wait condition after external state
   // (stop) changed.
   void Wake() { absl::MutexLock lock(mutex); }
+  // Returns a job the store or an evaluator ran.
+  void AddCompletion(std::unique_ptr<AsyncJob> job) {
+    absl::MutexLock lock(mutex);
+    completions.push_back(std::move(job));
+  }
   // Makes the owner exit; only once the session is drained.
   void Shutdown() {
     absl::MutexLock lock(mutex);

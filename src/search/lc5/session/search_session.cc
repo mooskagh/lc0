@@ -27,8 +27,6 @@
 
 #include "search/lc5/session/search_session.h"
 
-#include <absl/synchronization/mutex.h>
-
 #include <algorithm>
 #include <cassert>
 #include <chrono>
@@ -99,7 +97,13 @@ SearchSession::SearchSession(VisitEngine* engine, Backend* backend,
              .root_visits_at_start = root_visits_at_start_,
              .active_visits_ratio = settings_.active_visits_ratio},
             visits_, metrics_),
-      inboxes_(settings_.threads) {
+      inboxes_(settings_.threads),
+      evaluator_({.backend = *backend_,
+                  .settings = settings_,
+                  .gate = gate_,
+                  .metrics = metrics_,
+                  .inboxes = inboxes_,
+                  .jobs_in_flight = jobs_in_flight_}) {
   const VisitWorker::Context context{.engine = *engine_,
                                      .settings = settings_,
                                      .root = root_,
@@ -108,7 +112,7 @@ SearchSession::SearchSession(VisitEngine* engine, Backend* backend,
                                      .gate = gate_,
                                      .tickets = tickets_,
                                      .inboxes = inboxes_,
-                                     .eval_jobs = eval_jobs_,
+                                     .evaluator = evaluator_,
                                      .store_jobs = store_jobs_,
                                      .jobs_in_flight = jobs_in_flight_,
                                      .controller = controller_};
@@ -127,7 +131,7 @@ void SearchSession::Start() {
   for (int i = 0; i < settings_.eval_threads; ++i) {
     if (has_store_)
       store_threads_.emplace_back(&SearchSession::RunStoreWorker, this);
-    evaluator_threads_.emplace_back(&SearchSession::RunEvaluatorWorker, this);
+    evaluator_threads_.emplace_back(&Evaluator::Run, &evaluator_);
   }
   for (auto& worker : workers_) {
     visit_threads_.emplace_back(&VisitWorker::Run, worker.get());
@@ -227,7 +231,7 @@ void SearchSession::RespondBestMove() {
   }
   // Synchronize the stop transition with sleepers only after the response.
   WakeAllWorkers();
-  eval_jobs_.NotifyPredicateChanged();
+  evaluator_.NotifyStop();
 }
 
 bool SearchSession::IsFullyDrained() {
@@ -247,7 +251,7 @@ void SearchSession::JoinThreads() {
   for (auto& inbox : inboxes_) inbox.Shutdown();
   for (auto& thread : visit_threads_) thread.join();
   store_jobs_.Close();
-  eval_jobs_.Close();
+  evaluator_.Close();
   for (auto& thread : store_threads_) thread.join();
   for (auto& thread : evaluator_threads_) thread.join();
   finished_.store(true, std::memory_order_release);
@@ -277,21 +281,17 @@ ThinkingInfo SearchSession::BuildThinkingInfo(bool final) const {
   info.seldepth = static_cast<int>(metrics_.max_selected_depth.load());
   engine_->FillThinkingInfo(root_, info);
   info.comment = metrics_.Format(engine_->GetGraphSize(), visits_.active(),
-                                 eval_jobs_.Size());
+                                 evaluator_.queued());
   if (final) info.comment += " final";
   return info;
 }
 
 //////////////////////////////////////////////////////////////////////////////
-// Store threads and evaluators: they run jobs and return them.
+// Store threads: they run load jobs and return them, and evictions.
 //////////////////////////////////////////////////////////////////////////////
 
 void SearchSession::ReturnJobToWorker(std::unique_ptr<AsyncJob> job) {
-  {
-    auto& inbox = inboxes_[job->worker];
-    absl::MutexLock lock(inbox.mutex);
-    inbox.completions.push_back(std::move(job));
-  }
+  inboxes_[job->worker].AddCompletion(std::move(job));
   metrics_.inbox_notifications.fetch_add(1);
 }
 
@@ -345,118 +345,6 @@ void SearchSession::RunEvictionJob(const EvictionJob& job) {
   // The controller may queue the next round, or finish draining.
   evictions_in_flight_.fetch_sub(1);
   controller_.Notify();
-}
-
-void SearchSession::RunEvaluatorWorker() {
-  std::unique_ptr<AsyncJob> job;
-  while (eval_jobs_.Pop(&job)) {
-    if (IsStopping()) {
-      ReturnJobToWorker(std::move(job));
-      continue;
-    }
-    collecting_jobs_.fetch_add(1);
-    EvaluateBatch(CollectBatch(std::move(job)));
-  }
-}
-
-Batch SearchSession::CollectBatch(std::unique_ptr<AsyncJob> job) {
-  const size_t target = settings_.minibatch_size;
-  const auto deadline =
-      settings_.max_batch_delay_ms == 0
-          ? std::chrono::steady_clock::time_point::max()
-          : job->queued_at +
-                std::chrono::milliseconds(settings_.max_batch_delay_ms);
-  Batch batch{.computation = backend_->CreateComputation()};
-  for (;;) {
-    AddJobToBatch(*batch.computation, *job);
-    batch.jobs.push_back(std::move(job));
-    const size_t used = batch.computation->UsedBatchSize();
-    if (used >= target || IsStopping()) break;
-    // A whole job's size bounds its uncached inputs and must fit before
-    // AddInput. A job that doesn't fit stays queued and starts a later batch.
-    const auto fits = [&](const std::unique_ptr<AsyncJob>& next) {
-      return used + next->materializations.size() <= target;
-    };
-    // Consume already-ready jobs first, even past the deadline, rather than
-    // fragmenting an accumulated backlog into single-job batches.
-    if (!eval_jobs_.TryPopIf(&job, fits)) {
-      // Immediate-only batches return their jobs instead of waiting on
-      // producers that need those cache results. The oldest job's deadline is
-      // absolute; zero disables it, but dependency starvation still flushes.
-      if (used == 0 || IsStopping()) break;
-      eval_jobs_.NotifyPredicateChanged();
-      if (!eval_jobs_.PopUntil(
-              &job, deadline,
-              [&] { return IsStopping() || IsEvaluationStarved(); }, fits)) {
-        batch.timed_out = std::chrono::steady_clock::now() >= deadline;
-        break;
-      }
-    }
-    collecting_jobs_.fetch_add(1);
-  }
-  // Decreasing collecting_jobs_ only disables the starvation predicate; the
-  // increment before PopUntil above is the enabling handshake.
-  collecting_jobs_.fetch_sub(batch.jobs.size());
-  return batch;
-}
-
-void SearchSession::AddJobToBatch(BackendComputation& computation,
-                                  AsyncJob& job) {
-  for (auto& materialization : job.materializations) {
-    if (IsStopping()) break;
-    auto& payload = materialization.payload;
-    const auto result = computation.AddInput(
-        EvalPosition{.pos = materialization.history.GetPositions(),
-                     .legal_moves = payload.moves},
-        EvalResultPtr{.q = &payload.leaf.q,
-                      .d = &payload.leaf.d,
-                      .m = &payload.leaf.m,
-                      .p = payload.priors});
-    if (result == BackendComputation::FETCHED_IMMEDIATELY) {
-      materialization.state = Materialization::State::kEvaluated;
-      metrics_.cache_hits.fetch_add(1);
-    } else {
-      materialization.state = Materialization::State::kQueued;
-    }
-  }
-}
-
-void SearchSession::EvaluateBatch(Batch batch) {
-  const size_t used = batch.computation->UsedBatchSize();
-  if (used > 0 && gate_.AuthorizeEval()) {
-    if (used < static_cast<size_t>(settings_.minibatch_size)) {
-      (batch.timed_out ? metrics_.partial_timeout_flushes
-                       : metrics_.partial_starvation_flushes)
-          .fetch_add(1);
-    }
-    metrics_.evaluation_batches.fetch_add(1);
-    metrics_.nn_evaluations.fetch_add(used);
-    batch.computation->ComputeBlocking();
-    for (auto& job : batch.jobs) {
-      for (auto& materialization : job->materializations) {
-        if (materialization.state == Materialization::State::kQueued) {
-          materialization.state = Materialization::State::kEvaluated;
-        }
-      }
-    }
-  }
-  // Destroy the computation while the jobs it references are still alive.
-  batch.computation.reset();
-  for (auto& job : batch.jobs) ReturnJobToWorker(std::move(job));
-}
-
-bool SearchSession::IsEvaluationStarved() const {
-  // Executing, store or returned jobs can still unblock a producer. Only
-  // predict starvation when every outstanding job is held by a collector and
-  // no worker can send a job independently; the deadline bounds the
-  // uncertainty.
-  for (const auto& worker : workers_) {
-    if (worker->IsProducing()) return false;
-  }
-  // Zero disables the timeout, not dependency flushing: with no deadline,
-  // currently blocked producers cannot justify an unbounded wait.
-  return settings_.max_batch_delay_ms == 0 ||
-         jobs_in_flight_.load() <= collecting_jobs_.load();
 }
 
 }  // namespace lczero::lc5

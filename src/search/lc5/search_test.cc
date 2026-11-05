@@ -83,8 +83,8 @@ class SearchSessionTestPeer {
     EXPECT_TRUE(session.tickets_.empty());
     EXPECT_EQ(session.jobs_in_flight_.load(), 0u);
     EXPECT_EQ(session.evictions_in_flight_.load(), 0u);
-    EXPECT_EQ(session.collecting_jobs_.load(), 0u);
-    EXPECT_EQ(session.eval_jobs_.Size(), 0u);
+    EXPECT_EQ(session.evaluator_.collecting_jobs_.load(), 0u);
+    EXPECT_EQ(session.evaluator_.queued(), 0u);
     EXPECT_EQ(session.store_jobs_.Size(), 0u);
     for (const auto& worker : session.workers_) {
       EXPECT_TRUE(worker->drained_.load());
