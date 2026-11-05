@@ -67,12 +67,6 @@ struct VisitWakeup {
   bool terminal = false;    // The leaf is terminal; only counted in metrics.
 };
 
-struct Ticket {
-  NodeKey key;        // The node being materialized.
-  VisitWakeup owner;  // The visit that opened the ticket; it does the I/O.
-  std::vector<VisitWakeup> waiters;  // Later visits that reached the node.
-};
-
 // One node being materialized: what its ticket owner sends, in jobs, to the
 // store and evaluator workers to get the node's content (its stored record,
 // or else an NN evaluation).

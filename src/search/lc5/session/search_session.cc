@@ -297,11 +297,7 @@ void SearchSession::RespondBestMove() {
 }
 
 bool SearchSession::IsFullyDrained() {
-  if (visits_.active() != 0) return false;
-  {
-    absl::MutexLock lock(tickets_mutex_);
-    if (!tickets_.empty()) return false;
-  }
+  if (visits_.active() != 0 || !tickets_.empty()) return false;
   if (jobs_in_flight_.load() != 0 || evictions_in_flight_.load() != 0) {
     return false;
   }
@@ -661,35 +657,26 @@ void SearchSession::FinishVisit(VisitWorker& worker, Visit& visit,
 //////////////////////////////////////////////////////////////////////////////
 
 bool SearchSession::SuspendVisit(VisitWorker& worker, Visit& visit) {
-  bool owner;
-  MaterializationTicketId ticket_id;
-  {
-    // Lock order: tickets -> one graph shard. No inbox transfer here.
-    absl::MutexLock lock(tickets_mutex_);
-    const auto existing = ticket_by_key_.find(visit.current_key);
-    owner = existing == ticket_by_key_.end();
-    ticket_id = owner ? next_ticket_++ : existing->second;
-    const auto node =
-        engine_->FindOrCreateMaterialization(visit.current_key, ticket_id);
-    if (node.created) metrics_.graph_nodes_created.fetch_add(1);
-    if (node.lifecycle == NodeLifecycle::kExpanded) return false;
-    assert(node.ticket == ticket_id);
-    const VisitWakeup wakeup{
-        .id = visit.id, .worker = worker.index, .ticket = ticket_id};
-    if (owner) {
-      tickets_.emplace(ticket_id, Ticket{visit.current_key, wakeup, {}});
-      ticket_by_key_.emplace(visit.current_key, ticket_id);
-      metrics_.tickets_created.fetch_add(1);
-    } else {
-      auto& waiters = tickets_.at(ticket_id).waiters;
-      waiters.push_back(wakeup);
-      metrics_.ticket_waiters.fetch_add(1);
-      RaiseHighWater(metrics_.maximum_waiters_per_ticket, waiters.size());
-    }
-    visit.path.back().generation = node.generation;
-    visit.waiting_ticket = ticket_id;
-    visit.state = VisitState::kWaitingMaterialization;
+  FindOrCreateResult node{};
+  const auto joined = tickets_.Join(
+      visit.current_key, {.id = visit.id, .worker = worker.index},
+      [&](MaterializationTicketId id) {
+        node = engine_->FindOrCreateMaterialization(visit.current_key, id);
+        assert(node.lifecycle == NodeLifecycle::kExpanded || node.ticket == id);
+        return node.lifecycle != NodeLifecycle::kExpanded;
+      });
+  if (node.created) metrics_.graph_nodes_created.fetch_add(1);
+  if (!joined) return false;
+  const bool owner = joined->owner;
+  if (owner) {
+    metrics_.tickets_created.fetch_add(1);
+  } else {
+    metrics_.ticket_waiters.fetch_add(1);
+    RaiseHighWater(metrics_.maximum_waiters_per_ticket, joined->waiters);
   }
+  visit.path.back().generation = node.generation;
+  visit.waiting_ticket = joined->id;
+  visit.state = VisitState::kWaitingMaterialization;
   metrics_.visits_suspended.fetch_add(1);
   // Wakes the controller once the graph outgrows its limit, so eviction keeps
   // up with fast searches between its periodic checks.
@@ -699,7 +686,7 @@ bool SearchSession::SuspendVisit(VisitWorker& worker, Visit& visit) {
     worker.controller_event = true;
   }
   if (owner) {
-    Materialization materialization{.ticket = ticket_id,
+    Materialization materialization{.ticket = joined->id,
                                     .key = visit.current_key,
                                     .history = visit.history};
     // A stored node may hold statistics, even if terminal: look it up first.
@@ -733,19 +720,12 @@ void SearchSession::PrepareMaterialization(VisitWorker& worker,
 void SearchSession::CompleteTicket(VisitWorker& worker,
                                    MaterializationTicketId ticket_id,
                                    ExpansionPayload payload) {
-  Ticket ticket;
   MaterializationResult installed;
-  {
-    absl::MutexLock lock(tickets_mutex_);
-    const auto it = tickets_.find(ticket_id);
-    assert(it != tickets_.end());
-    assert(it->second.owner.worker == worker.index);
-    installed =
-        engine_->CompleteMaterialization(it->second.key, ticket_id, payload);
-    ticket = std::move(it->second);
-    tickets_.erase(it);
-    ticket_by_key_.erase(ticket.key);
-  }
+  const auto ticket = tickets_.Close(ticket_id, [&](NodeKey key) {
+    installed = engine_->CompleteMaterialization(key, ticket_id, payload);
+    return true;
+  });
+  assert(ticket->owner.worker == worker.index);
   RaiseHighWater(metrics_.graph_size_high_water, engine_->GetGraphSize());
   if (!installed.accepted) metrics_.publications_rejected.fetch_add(1);
   // The install already counted the leaf value on the node, so the owner
@@ -765,26 +745,20 @@ void SearchSession::CompleteTicket(VisitWorker& worker,
     wakeup.exact = installed.accepted && IsExact(payload.terminal);
     DeliverWakeup(worker, wakeup);
   };
-  wake(ticket.owner, true);
-  for (const auto& wakeup : ticket.waiters) wake(wakeup, false);
+  wake(ticket->owner, true);
+  for (const auto& wakeup : ticket->waiters) wake(wakeup, false);
 }
 
 bool SearchSession::RestoreTicket(VisitWorker& worker,
                                   MaterializationTicketId ticket_id,
                                   std::span<const uint8_t> record) {
-  Ticket ticket;
   MaterializationResult restored;
-  {
-    absl::MutexLock lock(tickets_mutex_);
-    const auto it = tickets_.find(ticket_id);
-    assert(it != tickets_.end());
-    assert(it->second.owner.worker == worker.index);
-    restored = engine_->RestoreFromRecord(it->second.key, ticket_id, record);
-    if (!restored.accepted) return false;
-    ticket = std::move(it->second);
-    tickets_.erase(it);
-    ticket_by_key_.erase(ticket.key);
-  }
+  const auto ticket = tickets_.Close(ticket_id, [&](NodeKey key) {
+    restored = engine_->RestoreFromRecord(key, ticket_id, record);
+    return restored.accepted;
+  });
+  if (!ticket) return false;
+  assert(ticket->owner.worker == worker.index);
   metrics_.nodes_restored.fetch_add(1);
   RaiseHighWater(metrics_.graph_size_high_water, engine_->GetGraphSize());
   // The node has its statistics back and nothing new to back up, so the owner
@@ -794,8 +768,8 @@ bool SearchSession::RestoreTicket(VisitWorker& worker,
     wakeup.generation = restored.generation;
     DeliverWakeup(worker, wakeup);
   };
-  wake(ticket.owner);
-  for (const auto& wakeup : ticket.waiters) wake(wakeup);
+  wake(ticket->owner);
+  for (const auto& wakeup : ticket->waiters) wake(wakeup);
   return true;
 }
 
@@ -803,23 +777,17 @@ void SearchSession::CancelTicket(VisitWorker& worker,
                                  MaterializationTicketId ticket_id) {
   // Only called on stop, for evaluations that will never be computed. The
   // owner and waiters are still alive and must be woken to cancel.
-  Ticket ticket;
-  {
-    absl::MutexLock lock(tickets_mutex_);
-    const auto it = tickets_.find(ticket_id);
-    assert(it != tickets_.end());
-    assert(it->second.owner.worker == worker.index);
-    engine_->CancelMaterialization(it->second.key, ticket_id);
-    ticket = std::move(it->second);
-    tickets_.erase(it);
-    ticket_by_key_.erase(ticket.key);
-  }
+  const auto ticket = tickets_.Close(ticket_id, [&](NodeKey key) {
+    engine_->CancelMaterialization(key, ticket_id);
+    return true;
+  });
+  assert(ticket->owner.worker == worker.index);
   const auto wake = [&](VisitWakeup wakeup) {
     wakeup.kind = VisitWakeup::Kind::kCancel;
     DeliverWakeup(worker, wakeup);
   };
-  wake(ticket.owner);
-  for (const auto& wakeup : ticket.waiters) wake(wakeup);
+  wake(ticket->owner);
+  for (const auto& wakeup : ticket->waiters) wake(wakeup);
 }
 
 void SearchSession::CancelQueuedMaterializations(VisitWorker& worker) {

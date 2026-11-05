@@ -90,7 +90,6 @@ class SearchSessionTestPeer {
       ABSL_NO_THREAD_SAFETY_ANALYSIS {
     EXPECT_EQ(session.visits_.active(), 0u);
     EXPECT_TRUE(session.tickets_.empty());
-    EXPECT_TRUE(session.ticket_by_key_.empty());
     EXPECT_EQ(session.jobs_in_flight_.load(), 0u);
     EXPECT_EQ(session.evictions_in_flight_.load(), 0u);
     EXPECT_EQ(session.collecting_jobs_.load(), 0u);

@@ -27,7 +27,6 @@
 
 #pragma once
 
-#include <absl/container/flat_hash_map.h>
 #include <absl/synchronization/mutex.h>
 
 #include <atomic>
@@ -37,7 +36,6 @@
 #include <optional>
 #include <span>
 #include <thread>
-#include <unordered_map>
 #include <vector>
 
 #include "chess/callbacks.h"
@@ -45,6 +43,7 @@
 #include "neural/backend.h"
 #include "search/lc5/metrics.h"
 #include "search/lc5/session/messages.h"
+#include "search/lc5/session/ticket_table.h"
 #include "search/lc5/session/visit_pool.h"
 #include "search/lc5/session/work_queue.h"
 #include "search/lc5/settings.h"
@@ -226,13 +225,7 @@ class SearchSession {
   std::atomic<StopMode> stop_mode_{StopMode::kRunning};
   std::atomic<bool> output_committed_{false};
 
-  // Tickets.
-  absl::Mutex tickets_mutex_;
-  absl::flat_hash_map<NodeKey, MaterializationTicketId> ticket_by_key_
-      ABSL_GUARDED_BY(tickets_mutex_);
-  std::unordered_map<MaterializationTicketId, Ticket> tickets_
-      ABSL_GUARDED_BY(tickets_mutex_);
-  MaterializationTicketId next_ticket_ ABSL_GUARDED_BY(tickets_mutex_) = 1;
+  TicketTable tickets_;
 
   // AsyncJobs in flight, from all workers: queued, running, or returned but
   // not finished. Evictions are not counted; no visit waits on them.
