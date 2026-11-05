@@ -59,6 +59,15 @@ uint64_t GetNodeLimit(const GoParams& go_params, uint64_t root_visits) {
   return limit;
 }
 
+VisitLimiter::Config MakeLimiterConfig(const Settings::Resolved& settings,
+                                       const GoParams& go_params,
+                                       uint64_t root_visits) {
+  return {.workers = static_cast<size_t>(settings.threads),
+          .node_limit = GetNodeLimit(go_params, root_visits),
+          .root_visits_at_start = root_visits,
+          .active_visits_ratio = settings.active_visits_ratio};
+}
+
 // Moves in the graph are from the side to move's perspective; UCI is not.
 Move ToUci(Move move, const Position& position) {
   if (position.IsBlackToMove()) move.Flip();
@@ -79,23 +88,18 @@ SearchSession::SearchSession(VisitEngine* engine, Backend* backend,
                              steady_clock::time_point start_time,
                              int64_t saved_ms)
     : engine_(engine),
-      has_store_(engine->HasStore()),
       backend_(backend),
       responder_(responder),
       settings_(settings),
       root_(std::move(root)),
-      root_visits_at_start_(engine_->GetRootStats(root_.key).visits),
       start_time_(start_time),
       time_manager_(time_management, go_params,
                     root_.history.Last().IsBlackToMove(), start_time_,
                     saved_ms),
-      node_limit_(GetNodeLimit(go_params, root_visits_at_start_)),
       may_stop_early_(!go_params.infinite && !go_params.ponder),
       visits_(settings_.max_active_visits),
-      limiter_({.workers = static_cast<size_t>(settings_.threads),
-                .node_limit = node_limit_,
-                .root_visits_at_start = root_visits_at_start_,
-                .active_visits_ratio = settings_.active_visits_ratio},
+      limiter_(MakeLimiterConfig(settings_, go_params,
+                                 engine_->GetRootStats(root_.key).visits),
                visits_, metrics_),
       inboxes_(settings_.threads),
       evaluator_({.backend = *backend_,
@@ -129,14 +133,14 @@ SearchSession::~SearchSession() {
 void SearchSession::Start() {
   if (started_.exchange(true)) return;
   for (int i = 0; i < settings_.eval_threads; ++i) {
-    if (has_store_)
+    if (engine_->HasStore())
       store_threads_.emplace_back(&SearchSession::RunStoreWorker, this);
     evaluator_threads_.emplace_back(&Evaluator::Run, &evaluator_);
   }
   for (auto& worker : workers_) {
     visit_threads_.emplace_back(&VisitWorker::Run, worker.get());
   }
-  if (node_limit_ == 0) Stop();
+  if (limiter_.node_limit() == 0) Stop();
   controller_thread_ = std::thread(&SearchSession::RunControllerWorker, this);
 }
 
@@ -171,7 +175,7 @@ void SearchSession::RunControllerWorker() {
       next_check = time_manager_.deadline();
       const RootStats root = engine_->GetRootStats(root_.key);
       if (time_manager_.ShouldStop(now) ||
-          metrics_.visits_completed.load() >= node_limit_) {
+          metrics_.visits_completed.load() >= limiter_.node_limit()) {
         Stop();
       } else if (may_stop_early_ &&
                  (root.decided || (root.expanded && root.edges == 1))) {

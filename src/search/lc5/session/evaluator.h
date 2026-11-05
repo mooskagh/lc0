@@ -83,7 +83,7 @@ class Evaluator {
     bool timed_out = false;  // Flushed at the deadline; only counted.
   };
 
-  bool IsStopping() const { return limiter_.IsStopping(); }
+  bool IsStopping() const { return context_.limiter.IsStopping(); }
   // Takes `first` and more queued jobs while they fit the minibatch.
   Batch CollectBatch(std::unique_ptr<AsyncJob> first);
   void AddJobToBatch(BackendComputation& computation, AsyncJob& job);
@@ -91,12 +91,7 @@ class Evaluator {
   bool IsStarved() const;
   void ReturnJob(std::unique_ptr<AsyncJob> job);
 
-  Backend& backend_;
-  const Settings::Resolved& settings_;
-  VisitLimiter& limiter_;
-  Metrics& metrics_;
-  const std::span<WorkerInbox> inboxes_;
-  const std::atomic<size_t>& jobs_in_flight_;
+  const Context context_;
 
   WorkQueue<std::unique_ptr<AsyncJob>> jobs_;
   // Jobs held by collectors, not computing or returned. If these are all

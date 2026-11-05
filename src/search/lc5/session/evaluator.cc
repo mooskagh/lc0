@@ -35,17 +35,11 @@
 namespace lczero::lc5 {
 
 Evaluator::Evaluator(const Context& context)
-    : backend_(context.backend),
-      settings_(context.settings),
-      limiter_(context.limiter),
-      metrics_(context.metrics),
-      inboxes_(context.inboxes),
-      jobs_in_flight_(context.jobs_in_flight),
-      producers_(context.inboxes.size()) {}
+    : context_(context), producers_(context.inboxes.size()) {}
 
 void Evaluator::Push(std::unique_ptr<AsyncJob> job) {
   jobs_.Push(std::move(job));
-  RaiseHighWater(metrics_.ready_eval_high_water, jobs_.Size());
+  RaiseHighWater(context_.metrics.ready_eval_high_water, jobs_.Size());
 }
 
 void Evaluator::SetProducing(bool producing) {
@@ -71,13 +65,13 @@ void Evaluator::Run() {
 }
 
 Evaluator::Batch Evaluator::CollectBatch(std::unique_ptr<AsyncJob> job) {
-  const size_t target = settings_.minibatch_size;
+  const size_t target = context_.settings.minibatch_size;
   const auto deadline =
-      settings_.max_batch_delay_ms == 0
+      context_.settings.max_batch_delay_ms == 0
           ? std::chrono::steady_clock::time_point::max()
-          : job->queued_at +
-                std::chrono::milliseconds(settings_.max_batch_delay_ms);
-  Batch batch{.computation = backend_.CreateComputation()};
+          : job->queued_at + std::chrono::milliseconds(
+                                 context_.settings.max_batch_delay_ms);
+  Batch batch{.computation = context_.backend.CreateComputation()};
   for (;;) {
     AddJobToBatch(*batch.computation, *job);
     batch.jobs.push_back(std::move(job));
@@ -124,7 +118,7 @@ void Evaluator::AddJobToBatch(BackendComputation& computation, AsyncJob& job) {
                       .p = payload.priors});
     if (result == BackendComputation::FETCHED_IMMEDIATELY) {
       materialization.state = Materialization::State::kEvaluated;
-      metrics_.cache_hits.fetch_add(1);
+      context_.metrics.cache_hits.fetch_add(1);
     } else {
       materialization.state = Materialization::State::kQueued;
     }
@@ -134,13 +128,13 @@ void Evaluator::AddJobToBatch(BackendComputation& computation, AsyncJob& job) {
 void Evaluator::EvaluateBatch(Batch batch) {
   const size_t used = batch.computation->UsedBatchSize();
   if (used > 0 && !IsStopping()) {
-    if (used < static_cast<size_t>(settings_.minibatch_size)) {
-      (batch.timed_out ? metrics_.partial_timeout_flushes
-                       : metrics_.partial_starvation_flushes)
+    if (used < static_cast<size_t>(context_.settings.minibatch_size)) {
+      (batch.timed_out ? context_.metrics.partial_timeout_flushes
+                       : context_.metrics.partial_starvation_flushes)
           .fetch_add(1);
     }
-    metrics_.evaluation_batches.fetch_add(1);
-    metrics_.nn_evaluations.fetch_add(used);
+    context_.metrics.evaluation_batches.fetch_add(1);
+    context_.metrics.nn_evaluations.fetch_add(used);
     batch.computation->ComputeBlocking();
     for (auto& job : batch.jobs) {
       for (auto& materialization : job->materializations) {
@@ -163,13 +157,13 @@ bool Evaluator::IsStarved() const {
   if (producers_.load() != 0) return false;
   // Zero disables the timeout, not dependency flushing: with no deadline,
   // currently blocked producers cannot justify an unbounded wait.
-  return settings_.max_batch_delay_ms == 0 ||
-         jobs_in_flight_.load() <= collecting_jobs_.load();
+  return context_.settings.max_batch_delay_ms == 0 ||
+         context_.jobs_in_flight.load() <= collecting_jobs_.load();
 }
 
 void Evaluator::ReturnJob(std::unique_ptr<AsyncJob> job) {
-  inboxes_[job->worker].AddCompletion(std::move(job));
-  metrics_.inbox_notifications.fetch_add(1);
+  context_.inboxes[job->worker].AddCompletion(std::move(job));
+  context_.metrics.inbox_notifications.fetch_add(1);
 }
 
 }  // namespace lczero::lc5

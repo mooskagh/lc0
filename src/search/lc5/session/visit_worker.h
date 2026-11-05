@@ -95,7 +95,7 @@ class VisitWorker {
   // mix several jobs into one batch.
   static constexpr size_t kJobsPerBatch = 4;
 
-  bool IsStopping() const { return limiter_.IsStopping(); }
+  bool IsStopping() const { return context_.limiter.IsStopping(); }
 
   // The loop.
   void ProcessInbox();
@@ -106,27 +106,27 @@ class VisitWorker {
   bool HasLocalWork() const;
   bool HasQueuedIo() const { return !loads_.empty() || !evals_.empty(); }
 
-  // Admission.
+  // Admission and wakeups.
   // Admits new visits from the root, up to kVisitsPerPass and this worker's
   // share of the pool.
   void AdmitNewRootVisits();
   void WakeAdmissionWaiters();
+  void DeliverWakeup(const VisitWakeup& wakeup);
+  void SendWakeups(size_t to, std::vector<VisitWakeup>& batch);
 
-  // Visit.
+  // Visit steps.
   void AdvanceVisit(VisitId id);
   void ResumeVisit(const VisitWakeup& wakeup);
-  bool SuspendVisit(Visit& visit);
   void BackupVisit(Visit& visit);
   void CancelVisit(Visit& visit);
   // Releases the visit's reservations and returns it to its origin.
   void RestartVisit(Visit& visit);
   void FinishVisit(Visit& visit, bool completed);
 
-  // VisitWakeup.
-  void DeliverWakeup(const VisitWakeup& wakeup);
-  void SendWakeups(size_t to, std::vector<VisitWakeup>& batch);
-
-  // Materialization. SuspendVisit opens a Ticket and its Materialization.
+  // Materialization and tickets.
+  // Joins or opens a ticket for `visit.current_key` and suspends `visit`.
+  // Returns false if the node is already expanded, so the caller can descend.
+  bool SuspendVisit(Visit& visit);
   void PrepareMaterialization(Materialization materialization);
   void CompleteTicket(MaterializationTicketId ticket, ExpansionPayload payload);
   // Publishes a node restored from the store; returns false, with the ticket
@@ -136,7 +136,7 @@ class VisitWorker {
   void CancelTicket(MaterializationTicketId ticket);
   void CancelQueuedMaterializations();
 
-  // AsyncJob. A store thread or an evaluator runs a job and returns it to
+  // AsyncJobs. A store thread or an evaluator runs a job and returns it to
   // the inbox; FinishJob finishes it.
   void SendJobs();
   bool CanSendJob() const;
@@ -144,43 +144,39 @@ class VisitWorker {
   void SetProducing(bool producing);
   void FinishJob(std::unique_ptr<AsyncJob> job);
 
+  // Session context and configuration, fixed for the worker's lifetime.
   const size_t index_;
-  VisitEngine& engine_;
-  const Settings::Resolved& settings_;
-  const VisitOrigin& root_;
-  VisitPool& visits_;
-  Metrics& metrics_;
-  VisitLimiter& limiter_;
-  TicketTable& tickets_;
-  const std::span<WorkerInbox> inboxes_;
-  WorkerInbox& inbox_;  // This worker's own.
-  Evaluator& evaluator_;
-  WorkQueue<StoreJob>& store_jobs_;
-  std::atomic<size_t>& session_jobs_in_flight_;
-  ControllerSignal& controller_;
-  const bool has_store_;
-  // The graph has a node limit to keep, by evicting to the store.
-  const bool has_node_limit_;
+  const Context context_;
+  WorkerInbox& inbox_;  // This worker's own (`context_.inboxes[index_]`).
 
+  // Visits and wakeups.
   std::deque<VisitId> runnable_;
   size_t active_visits_ = 0;  // Owned visits: runnable or waiting on a ticket.
-  std::deque<Materialization> loads_;
-  std::deque<Materialization> evals_;
-  // Wakeups for this worker's own visits, resumed in ProcessInbox: never
-  // while AdvanceVisit may be stepping the visit.
+  // Wakeups for this worker's own visits (e.g. from a terminal leaf closed
+  // during AdvanceVisit), buffered to resume in ResumeLocalVisits.
   std::vector<VisitWakeup> local_wakeups_;
   std::vector<std::vector<VisitWakeup>> outgoing_;  // Indexed by worker.
+
+  // Materializations and in-flight jobs.
+  std::deque<Materialization> loads_;
+  std::deque<Materialization> evals_;
   size_t jobs_in_flight_ = 0;   // Sent and not yet finished.
   size_t items_in_flight_ = 0;  // The materializations in those jobs.
-  bool cancelled_ = false;
-  bool shutdown_ = false;  // Seen in the inbox; exit after this pass.
+  // Whether this worker has local work that can send more eval jobs without
+  // first receiving an inbox completion. Mirrored to `evaluator_` (which starts
+  // with all workers counted as producing) so it knows when to flush a partial
+  // batch.
+  bool producing_ = true;
+
+  // Per-pass notifications and shutdown/drain state.
+  // Set during a pass and flushed once in PublishState.
   bool released_capacity_ = false;
   bool controller_event_ = false;
+  // Set once CancelVisits has run after stop; prevents re-waking on stop and
+  // gates `drained_`.
+  bool cancelled_ = false;
+  bool shutdown_ = false;  // Seen in the inbox; exit after this pass.
   std::atomic<bool> drained_{false};
-  // Conservative: this worker may send a job without waiting for a collected
-  // job's completion. Tells the evaluator of each change. Initially true until
-  // the first work chunk is inspected.
-  bool producing_ = true;
 };
 
 }  // namespace lczero::lc5

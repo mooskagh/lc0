@@ -94,21 +94,8 @@ void MoveFront(std::deque<T>& from, std::vector<T>& to, size_t limit) {
 
 VisitWorker::VisitWorker(size_t index, const Context& context)
     : index_(index),
-      engine_(context.engine),
-      settings_(context.settings),
-      root_(context.root),
-      visits_(context.visits),
-      metrics_(context.metrics),
-      limiter_(context.limiter),
-      tickets_(context.tickets),
-      inboxes_(context.inboxes),
+      context_(context),
       inbox_(context.inboxes[index]),
-      evaluator_(context.evaluator),
-      store_jobs_(context.store_jobs),
-      session_jobs_in_flight_(context.jobs_in_flight),
-      controller_(context.controller),
-      has_store_(context.engine.HasStore()),
-      has_node_limit_(has_store_ && settings_.graph_node_limit > 0),
       outgoing_(context.inboxes.size()) {}
 
 bool VisitWorker::IsDrained() {
@@ -124,18 +111,20 @@ bool VisitWorker::IsDrained() {
 void VisitWorker::AdmitNewRootVisits() {
   // A modest per-worker share prevents one worker from monopolizing the pool.
   const size_t share =
-      (visits_.capacity() + inboxes_.size() - 1) / inboxes_.size();
+      (context_.visits.capacity() + context_.inboxes.size() - 1) /
+      context_.inboxes.size();
   const size_t count =
       std::min(kVisitsPerPass, share - std::min(share, active_visits_));
-  const auto admitted = limiter_.AdmitVisits(index_, root_, count);
+  const auto admitted =
+      context_.limiter.AdmitVisits(index_, context_.root, count);
   active_visits_ += admitted.size();
   runnable_.insert(runnable_.end(), admitted.begin(), admitted.end());
-  RaiseHighWater(metrics_.visits_ready_high_water, runnable_.size());
+  RaiseHighWater(context_.metrics.visits_ready_high_water, runnable_.size());
 }
 
 void VisitWorker::WakeAdmissionWaiters() {
-  for (size_t index : limiter_.TakeWorkersToWake()) {
-    auto& inbox = inboxes_[index];
+  for (size_t index : context_.limiter.TakeWorkersToWake()) {
+    auto& inbox = context_.inboxes[index];
     absl::MutexLock lock(inbox.mutex);
     inbox.admission_ready = true;
   }
@@ -144,12 +133,12 @@ void VisitWorker::WakeAdmissionWaiters() {
 void VisitWorker::SendWakeups(size_t to, std::vector<VisitWakeup>& batch) {
   if (batch.empty()) return;
   {
-    auto& inbox = inboxes_[to];
+    auto& inbox = context_.inboxes[to];
     absl::MutexLock lock(inbox.mutex);
     inbox.wakeups.insert(inbox.wakeups.end(), batch.begin(), batch.end());
   }
   batch.clear();
-  metrics_.inbox_notifications.fetch_add(1);
+  context_.metrics.inbox_notifications.fetch_add(1);
 }
 
 void VisitWorker::DeliverWakeup(const VisitWakeup& wakeup) {
@@ -160,7 +149,7 @@ void VisitWorker::DeliverWakeup(const VisitWakeup& wakeup) {
 void VisitWorker::ResumeVisit(const VisitWakeup& wakeup) {
   // A waiting visit is on exactly one ticket, which wakes it exactly once,
   // and only that wakeup can make it ready or release it.
-  Visit& visit = visits_.Get(wakeup.id);
+  Visit& visit = context_.visits.Get(wakeup.id);
   assert(visit.state == VisitState::kWaitingMaterialization);
   assert(visit.waiting_ticket == wakeup.ticket);
   visit.waiting_ticket = 0;
@@ -181,9 +170,9 @@ void VisitWorker::ResumeVisit(const VisitWakeup& wakeup) {
     visit.state = VisitState::kReadyBackup;
   } else if (wakeup.kind == VisitWakeup::Kind::kRestored) {
     visit.state = VisitState::kReadySelect;
-    metrics_.visits_resumed.fetch_add(1);
+    context_.metrics.visits_resumed.fetch_add(1);
   } else {
-    switch (engine_.ResumeVisit(visit, metrics_)) {
+    switch (context_.engine.ResumeVisit(visit, context_.metrics)) {
       case VisitEngine::ResumeAction::kRestart:
         RestartVisit(visit);
         break;
@@ -193,11 +182,11 @@ void VisitWorker::ResumeVisit(const VisitWakeup& wakeup) {
         break;
       case VisitEngine::ResumeAction::kSelect:
         visit.state = VisitState::kReadySelect;
-        metrics_.visits_resumed.fetch_add(1);
+        context_.metrics.visits_resumed.fetch_add(1);
         break;
     }
   }
-  if (wakeup.terminal) metrics_.terminal_visits.fetch_add(1);
+  if (wakeup.terminal) context_.metrics.terminal_visits.fetch_add(1);
   runnable_.push_back(wakeup.id);
 }
 
@@ -211,7 +200,7 @@ void VisitWorker::Run() {
       AdmitNewRootVisits();
     }
     SendJobs();
-    for (size_t i = 0; i < inboxes_.size(); ++i) {
+    for (size_t i = 0; i < context_.inboxes.size(); ++i) {
       SendWakeups(i, outgoing_[i]);
     }
     PublishState();
@@ -284,7 +273,7 @@ void VisitWorker::PublishState() {
     controller_event_ = true;
   }
   if (std::exchange(released_capacity_, false)) WakeAdmissionWaiters();
-  if (std::exchange(controller_event_, false)) controller_.Notify();
+  if (std::exchange(controller_event_, false)) context_.controller.Notify();
   SetProducing(CanSendJob() && (!runnable_.empty() || !local_wakeups_.empty() ||
                                 HasQueuedIo()));
 }
@@ -296,7 +285,7 @@ bool VisitWorker::HasLocalWork() const {
 
 void VisitWorker::AdvanceVisit(VisitId id) {
   // Only this worker releases its visits, and never one that is runnable.
-  Visit& visit = visits_.Get(id);
+  Visit& visit = context_.visits.Get(id);
   if (visit.state == VisitState::kReadyBackup) {
     BackupVisit(visit);
     return;
@@ -311,7 +300,7 @@ void VisitWorker::AdvanceVisit(VisitId id) {
       CancelVisit(visit);
       return;
     }
-    if (engine_.DescendVisit(visit, metrics_) ==
+    if (context_.engine.DescendVisit(visit, context_.metrics) ==
         VisitEngine::DescendResult::kValuedLeaf) {
       BackupVisit(visit);
       return;
@@ -321,35 +310,35 @@ void VisitWorker::AdvanceVisit(VisitId id) {
 }
 
 void VisitWorker::BackupVisit(Visit& visit) {
-  engine_.BackupVisit(visit, metrics_);
-  RaiseHighWater(metrics_.max_depth, visit.path.size());
+  context_.engine.BackupVisit(visit, context_.metrics);
+  RaiseHighWater(context_.metrics.max_depth, visit.path.size());
   FinishVisit(visit, true);
 }
 
 void VisitWorker::CancelVisit(Visit& visit) {
-  engine_.CancelVisit(visit, metrics_);
+  context_.engine.CancelVisit(visit, context_.metrics);
   FinishVisit(visit, false);
 }
 
 void VisitWorker::RestartVisit(Visit& visit) {
-  engine_.CancelVisit(visit, metrics_);
+  context_.engine.CancelVisit(visit, context_.metrics);
   visit.history = visit.origin.history;
   visit.current_key = visit.origin.key;
   visit.path = visit.origin.backup_prefix;
   visit.two_fold_origin.reset();
   visit.state = VisitState::kReadySelect;
-  metrics_.visits_restarted.fetch_add(1);
+  context_.metrics.visits_restarted.fetch_add(1);
 }
 
 void VisitWorker::FinishVisit(Visit& visit, bool completed) {
   if (completed) {
-    const uint64_t count = metrics_.visits_completed.fetch_add(1) + 1;
-    if (limiter_.node_limit() == count) controller_event_ = true;
+    const uint64_t count = context_.metrics.visits_completed.fetch_add(1) + 1;
+    if (context_.limiter.node_limit() == count) controller_event_ = true;
   } else {
-    metrics_.visits_cancelled.fetch_add(1);
+    context_.metrics.visits_cancelled.fetch_add(1);
   }
   --active_visits_;
-  visits_.Release(visit.id);
+  context_.visits.Release(visit.id);
   // Admission and the controller are signalled once per pass, not per visit.
   released_capacity_ = true;
 }
@@ -360,39 +349,41 @@ void VisitWorker::FinishVisit(Visit& visit, bool completed) {
 
 bool VisitWorker::SuspendVisit(Visit& visit) {
   FindOrCreateResult node{};
-  const auto joined = tickets_.Join(
+  const auto joined = context_.tickets.Join(
       visit.current_key, {.id = visit.id, .worker = index_},
       [&](MaterializationTicketId id) {
-        node = engine_.FindOrCreateMaterialization(visit.current_key, id);
+        node = context_.engine.FindOrCreateMaterialization(visit.current_key, id);
         assert(node.lifecycle == NodeLifecycle::kExpanded || node.ticket == id);
         return node.lifecycle != NodeLifecycle::kExpanded;
       });
-  if (node.created) metrics_.graph_nodes_created.fetch_add(1);
+  if (node.created) context_.metrics.graph_nodes_created.fetch_add(1);
   if (!joined) return false;
   const bool owner = joined->owner;
   if (owner) {
-    metrics_.tickets_created.fetch_add(1);
+    context_.metrics.tickets_created.fetch_add(1);
   } else {
-    metrics_.ticket_waiters.fetch_add(1);
-    RaiseHighWater(metrics_.maximum_waiters_per_ticket, joined->waiters);
+    context_.metrics.ticket_waiters.fetch_add(1);
+    RaiseHighWater(context_.metrics.maximum_waiters_per_ticket,
+                   joined->waiters);
   }
   visit.path.back().generation = node.generation;
   visit.waiting_ticket = joined->id;
   visit.state = VisitState::kWaitingMaterialization;
-  metrics_.visits_suspended.fetch_add(1);
-  // Wakes the controller once the graph outgrows its limit, so eviction keeps
-  // up with fast searches between its periodic checks.
-  if (owner && has_node_limit_ &&
-      engine_.GetGraphSize() > settings_.graph_node_limit &&
-      controller_.RequestEviction()) {
-    controller_event_ = true;
-  }
+  context_.metrics.visits_suspended.fetch_add(1);
   if (owner) {
+    const bool has_store = context_.engine.HasStore();
+    // Wakes the controller once the graph outgrows its limit, so eviction keeps
+    // up with fast searches between its periodic checks.
+    if (has_store && context_.settings.graph_node_limit > 0 &&
+        context_.engine.GetGraphSize() > context_.settings.graph_node_limit &&
+        context_.controller.RequestEviction()) {
+      controller_event_ = true;
+    }
     Materialization materialization{.ticket = joined->id,
                                     .key = visit.current_key,
                                     .history = visit.history};
     // A stored node may hold statistics, even if terminal: look it up first.
-    if (has_store_) {
+    if (has_store) {
       loads_.push_back(std::move(materialization));
     } else {
       PrepareMaterialization(std::move(materialization));
@@ -413,20 +404,21 @@ void VisitWorker::PrepareMaterialization(Materialization materialization) {
   }
   materialization.payload.priors.resize(materialization.payload.moves.size());
   materialization.state = Materialization::State::kPending;
-  metrics_.eval_requests.fetch_add(1);
+  context_.metrics.eval_requests.fetch_add(1);
   evals_.push_back(std::move(materialization));
 }
 
 void VisitWorker::CompleteTicket(MaterializationTicketId ticket_id,
                                  ExpansionPayload payload) {
   MaterializationResult installed;
-  const auto ticket = tickets_.Close(ticket_id, [&](NodeKey key) {
-    installed = engine_.CompleteMaterialization(key, ticket_id, payload);
+  const auto ticket = context_.tickets.Close(ticket_id, [&](NodeKey key) {
+    installed = context_.engine.CompleteMaterialization(key, ticket_id, payload);
     return true;
   });
   assert(ticket->owner.worker == index_);
-  RaiseHighWater(metrics_.graph_size_high_water, engine_.GetGraphSize());
-  if (!installed.accepted) metrics_.publications_rejected.fetch_add(1);
+  RaiseHighWater(context_.metrics.graph_size_high_water,
+                 context_.engine.GetGraphSize());
+  if (!installed.accepted) context_.metrics.publications_rejected.fetch_add(1);
   // The install already counted the leaf value on the node, so the owner
   // backs it up only through the steps above. Waiters select below the node
   // unless it is terminal, in which case they back up the whole path like a
@@ -451,14 +443,15 @@ void VisitWorker::CompleteTicket(MaterializationTicketId ticket_id,
 bool VisitWorker::RestoreTicket(MaterializationTicketId ticket_id,
                                 std::span<const uint8_t> record) {
   MaterializationResult restored;
-  const auto ticket = tickets_.Close(ticket_id, [&](NodeKey key) {
-    restored = engine_.RestoreFromRecord(key, ticket_id, record);
+  const auto ticket = context_.tickets.Close(ticket_id, [&](NodeKey key) {
+    restored = context_.engine.RestoreFromRecord(key, ticket_id, record);
     return restored.accepted;
   });
   if (!ticket) return false;
   assert(ticket->owner.worker == index_);
-  metrics_.nodes_restored.fetch_add(1);
-  RaiseHighWater(metrics_.graph_size_high_water, engine_.GetGraphSize());
+  context_.metrics.nodes_restored.fetch_add(1);
+  RaiseHighWater(context_.metrics.graph_size_high_water,
+                 context_.engine.GetGraphSize());
   // The node has its statistics back and nothing new to back up, so the owner
   // and the waiters all select below it.
   const auto wake = [&](VisitWakeup wakeup) {
@@ -474,8 +467,8 @@ bool VisitWorker::RestoreTicket(MaterializationTicketId ticket_id,
 void VisitWorker::CancelTicket(MaterializationTicketId ticket_id) {
   // Only called on stop, for evaluations that will never be computed. The
   // owner and waiters are still alive and must be woken to cancel.
-  const auto ticket = tickets_.Close(ticket_id, [&](NodeKey key) {
-    engine_.CancelMaterialization(key, ticket_id);
+  const auto ticket = context_.tickets.Close(ticket_id, [&](NodeKey key) {
+    context_.engine.CancelMaterialization(key, ticket_id);
     return true;
   });
   assert(ticket->owner.worker == index_);
@@ -498,14 +491,15 @@ void VisitWorker::CancelQueuedMaterializations() {
 
 bool VisitWorker::CanSendJob() const {
   return jobs_in_flight_ < kMaxJobsInFlight &&
-         items_in_flight_ < kMaxItemsInFlightBatches *
-                                static_cast<size_t>(settings_.minibatch_size);
+         items_in_flight_ <
+             kMaxItemsInFlightBatches *
+                 static_cast<size_t>(context_.settings.minibatch_size);
 }
 
 void VisitWorker::SetProducing(bool producing) {
   if (producing_ == producing) return;
   producing_ = producing;
-  evaluator_.SetProducing(producing);
+  context_.evaluator.SetProducing(producing);
 }
 
 void VisitWorker::SendJobs() {
@@ -516,13 +510,13 @@ void VisitWorker::SendJobs() {
     if (!job) break;
     ++jobs_in_flight_;
     items_in_flight_ += job->items();
-    RaiseHighWater(metrics_.io_jobs_high_water,
-                   session_jobs_in_flight_.fetch_add(1) + 1);
+    RaiseHighWater(context_.metrics.io_jobs_high_water,
+                   context_.jobs_in_flight.fetch_add(1) + 1);
     if (job->kind == AsyncJob::Kind::kEval) {
-      evaluator_.Push(std::move(job));
+      context_.evaluator.Push(std::move(job));
     } else {
-      assert(has_store_);
-      store_jobs_.Push(std::move(job));
+      assert(context_.engine.HasStore());
+      context_.store_jobs.Push(std::move(job));
     }
   }
 }
@@ -530,7 +524,7 @@ void VisitWorker::SendJobs() {
 std::unique_ptr<AsyncJob> VisitWorker::BuildJob() {
   // Small whole jobs leave room to collect more cache misses without exceeding
   // the backend batch. The items-in-flight cap bounds loads and evaluations.
-  const size_t batch_size = settings_.minibatch_size;
+  const size_t batch_size = context_.settings.minibatch_size;
   const size_t limit =
       std::min((batch_size + kJobsPerBatch - 1) / kJobsPerBatch,
                kMaxItemsInFlightBatches * batch_size - items_in_flight_);
@@ -559,16 +553,16 @@ void VisitWorker::FinishJob(std::unique_ptr<AsyncJob> job) {
                        std::move(materialization.payload));
         break;
       case Materialization::State::kStoreHit:
-        metrics_.node_store_hits.fetch_add(1);
+        context_.metrics.node_store_hits.fetch_add(1);
         if (!RestoreTicket(materialization.ticket, materialization.record)) {
           // Not a record for this policy or format: evaluate the node.
-          metrics_.restores_rejected.fetch_add(1);
+          context_.metrics.restores_rejected.fetch_add(1);
           materialization.record.clear();
           PrepareMaterialization(std::move(materialization));
         }
         break;
       case Materialization::State::kStoreMiss:
-        metrics_.node_store_misses.fetch_add(1);
+        context_.metrics.node_store_misses.fetch_add(1);
         PrepareMaterialization(std::move(materialization));
         break;
       case Materialization::State::kPending:
@@ -581,7 +575,7 @@ void VisitWorker::FinishJob(std::unique_ptr<AsyncJob> job) {
   assert(items_in_flight_ >= job->items());
   items_in_flight_ -= job->items();
   // Decrement last: publication is part of the job.
-  session_jobs_in_flight_.fetch_sub(1);
+  context_.jobs_in_flight.fetch_sub(1);
 }
 
 }  // namespace lczero::lc5

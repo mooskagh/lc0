@@ -89,7 +89,7 @@ class SearchSession {
   Move GetFallbackMove() const;
   // Whether the graph has a node limit to keep, by evicting to the store.
   bool HasNodeLimit() const {
-    return has_store_ && settings_.graph_node_limit > 0;
+    return engine_->HasStore() && settings_.graph_node_limit > 0;
   }
 
   // Load jobs. A visit worker sends them; a store thread runs them and
@@ -102,42 +102,15 @@ class SearchSession {
 
   // Configuration, fixed for the session (constructor only).
   VisitEngine* const engine_;
-  const bool has_store_;
   Backend* const backend_;
   UciResponder* const responder_;
   const Settings::Resolved settings_;
   const VisitOrigin root_;
-  const uint64_t root_visits_at_start_;
   const std::chrono::steady_clock::time_point start_time_;
   const TimeManager time_manager_;
-  // Visits to complete: `go nodes`, capped so root visits fit in uint32_t.
-  const uint64_t node_limit_;
   // Not in infinite or ponder searches: a decided root or smart pruning may
   // stop the search before its limits.
   const bool may_stop_early_;
-
-  // Visits and counters.
-  VisitPool visits_;
-  Metrics metrics_;
-  VisitLimiter limiter_;
-
-  TicketTable tickets_;
-  // AsyncJobs in flight, from all workers: queued, running, or returned but
-  // not finished. Evictions are not counted; no visit waits on them.
-  std::atomic<size_t> jobs_in_flight_{0};
-
-  // Threads and the queues between them.
-  std::vector<WorkerInbox> inboxes_;  // By visit worker index.
-  Evaluator evaluator_;
-  std::vector<std::unique_ptr<VisitWorker>> workers_;
-  WorkQueue<StoreJob> store_jobs_;
-  std::vector<std::thread> visit_threads_;
-  std::vector<std::thread> store_threads_;
-  std::vector<std::thread> evaluator_threads_;
-  std::thread controller_thread_;
-
-  // Eviction jobs queued or running; the controller queues more only at zero.
-  std::atomic<size_t> evictions_in_flight_{0};
 
   // Lifecycle and the controller's wakeups.
   std::atomic<bool> started_{false};
@@ -145,6 +118,27 @@ class SearchSession {
   std::atomic<bool> finished_{false};
   std::atomic<int64_t> unused_time_ms_{0};
   ControllerSignal controller_;
+
+  // Visits, tickets and counters.
+  VisitPool visits_;
+  Metrics metrics_;
+  VisitLimiter limiter_;
+  TicketTable tickets_;
+  // AsyncJobs in flight, from all workers: queued, running, or returned but
+  // not finished. Evictions are not counted; no visit waits on them.
+  std::atomic<size_t> jobs_in_flight_{0};
+  // Eviction jobs queued or running; the controller queues more only at zero.
+  std::atomic<size_t> evictions_in_flight_{0};
+
+  // Queues, workers and threads.
+  std::vector<WorkerInbox> inboxes_;  // By visit worker index.
+  WorkQueue<StoreJob> store_jobs_;
+  Evaluator evaluator_;
+  std::vector<std::unique_ptr<VisitWorker>> workers_;
+  std::vector<std::thread> visit_threads_;
+  std::vector<std::thread> store_threads_;
+  std::vector<std::thread> evaluator_threads_;
+  std::thread controller_thread_;
 };
 
 }  // namespace lczero::lc5
