@@ -38,6 +38,7 @@
 #include <memory>
 #include <optional>
 #include <utility>
+#include <variant>
 #include <vector>
 
 #include "search/lc5/graph/prior.h"
@@ -301,7 +302,9 @@ bool SearchSession::IsFullyDrained() {
     absl::MutexLock lock(tickets_mutex_);
     if (!tickets_.empty()) return false;
   }
-  if (jobs_in_flight_.load() != 0) return false;
+  if (jobs_in_flight_.load() != 0 || evictions_in_flight_.load() != 0) {
+    return false;
+  }
   // Workers may hold unpublished local materializations. Require their
   // explicit idle acknowledgement, not merely empty executor queues.
   for (auto& worker : workers_) {
@@ -931,14 +934,15 @@ void SearchSession::FinishJob(VisitWorker& worker,
 }
 
 void SearchSession::RunStoreWorker() {
-  std::unique_ptr<AsyncJob> job;
+  StoreJob job;
   while (store_jobs_.Pop(&job)) {
-    if (job->kind == AsyncJob::Kind::kPersist) {
-      RunEvictionJob(*job);
+    if (const auto* eviction = std::get_if<EvictionJob>(&job)) {
+      RunEvictionJob(*eviction);
       continue;
     }
-    if (!IsStopping()) RunLoadJob(*job);
-    ReturnJobToWorker(std::move(job));
+    auto& load = std::get<std::unique_ptr<AsyncJob>>(job);
+    if (!IsStopping()) RunLoadJob(*load);
+    ReturnJobToWorker(std::move(load));
   }
 }
 
@@ -970,18 +974,12 @@ void SearchSession::SendEvictionJob() {
   if (size <= limit) return;
   // Evict down to a low-water mark, so the next round is not due right away.
   const size_t target = limit - limit / 10;
-  auto job = std::make_unique<AsyncJob>();
-  job->kind = AsyncJob::Kind::kPersist;
-  job->queued_at = std::chrono::steady_clock::now();
-  job->evict_count = size - target;
   evictions_in_flight_.fetch_add(1);
-  RaiseHighWater(metrics_.io_jobs_high_water, jobs_in_flight_.fetch_add(1) + 1);
-  store_jobs_.Push(std::move(job));
+  store_jobs_.Push(EvictionJob{.count = size - target});
 }
 
-void SearchSession::RunEvictionJob(AsyncJob& job) {
-  engine_->EvictToStore(job.evict_count, root_.key, metrics_);
-  jobs_in_flight_.fetch_sub(1);
+void SearchSession::RunEvictionJob(const EvictionJob& job) {
+  engine_->EvictToStore(job.count, root_.key, metrics_);
   // The controller may queue the next round, or finish draining.
   evictions_in_flight_.fetch_sub(1);
   WakeController();

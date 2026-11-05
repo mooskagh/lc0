@@ -92,6 +92,7 @@ class SearchSessionTestPeer {
     EXPECT_TRUE(session.tickets_.empty());
     EXPECT_TRUE(session.ticket_by_key_.empty());
     EXPECT_EQ(session.jobs_in_flight_.load(), 0u);
+    EXPECT_EQ(session.evictions_in_flight_.load(), 0u);
     EXPECT_EQ(session.collecting_jobs_.load(), 0u);
     EXPECT_EQ(session.eval_jobs_.Size(), 0u);
     EXPECT_EQ(session.store_jobs_.Size(), 0u);
@@ -1683,6 +1684,45 @@ TEST(Lc5SearchTest, AbortOverridesRepeatedStopBeforeCommitment) {
   EXPECT_EQ(backend.inputs.load(), 0u);
   EXPECT_EQ(backend.computes.load(), 0u);
   EXPECT_EQ(graph.Size(), 0u);
+}
+
+TEST(Lc5SearchTest, BlockedEvictionDoesNotDelayPartialBatch) {
+  PolicyEngine<PuctAveraging> engine(TestParams());
+  auto& graph = engine.graph();
+  auto& store = InstallStore<BlockingStore>(engine, 0);
+  ControlledBackend backend;
+  RecordingResponder responder;
+  const auto root = Origin();
+  const auto legal = root.history.Last().GetBoard().GenerateLegalMoves();
+  // As in RespondsBeforeBlockedEvictionDrains: the sibling is evicted while
+  // the one visit evaluates the first edge's child.
+  graph.CompleteMaterialization(
+      root.key, 1, {.moves = {legal[0], legal[1]}, .priors = {0.9f, 0.1f}});
+  auto sibling = root;
+  sibling.history.Append(legal[1]);
+  sibling.key = MakeNodeKey(sibling.history, 7);
+  graph.CompleteMaterialization(
+      sibling.key, 2, {.leaf = {0.5f, 0.0f, 0.0f}, .moves = {}, .priors = {}});
+  auto settings = TestSettings(1, 1);
+  settings.graph_node_limit = 1;
+  settings.eval_threads = 2;
+  // The one-item batch can only flush on starvation, not at the deadline.
+  settings.max_batch_delay_ms = 60'000;
+  SearchSession session(&engine, &backend, &responder, settings,
+                        TestTimeManagement(), root, GoParams{.nodes = 1},
+                        std::chrono::steady_clock::now());
+  session.Start();
+  const bool persisting = store.persist.WaitForArrival();
+  const bool computing = backend.WaitForCompute();
+  // Stop flushes the batch even if starvation was missed.
+  session.Stop();
+  store.Release();
+  session.Wait();
+  ASSERT_TRUE(persisting);
+  EXPECT_TRUE(computing);
+  ExpectDrained(session, graph);
+  EXPECT_EQ(session.metrics().partial_starvation_flushes.load(), 1u);
+  EXPECT_EQ(session.metrics().partial_timeout_flushes.load(), 0u);
 }
 
 TEST(Lc5SearchTest, RespondsBeforeBlockedEvictionDrains) {

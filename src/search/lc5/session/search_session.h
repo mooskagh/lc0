@@ -180,7 +180,7 @@ class SearchSession {
   void FinishJob(VisitWorker& worker, std::unique_ptr<AsyncJob> job);
   // The controller's job: evict when the graph is over its node limit.
   void SendEvictionJob();
-  void RunEvictionJob(AsyncJob& job);
+  void RunEvictionJob(const EvictionJob& job);
 
   // Batch.
   // Takes `first` and more queued jobs while they fit the minibatch.
@@ -211,7 +211,7 @@ class SearchSession {
 
   // Threads and the queues between them.
   std::vector<std::unique_ptr<VisitWorker>> workers_;
-  WorkQueue<std::unique_ptr<AsyncJob>> store_jobs_;
+  WorkQueue<StoreJob> store_jobs_;
   WorkQueue<std::unique_ptr<AsyncJob>> eval_jobs_;
   std::vector<std::thread> visit_threads_;
   std::vector<std::thread> store_threads_;
@@ -234,8 +234,8 @@ class SearchSession {
       ABSL_GUARDED_BY(tickets_mutex_);
   MaterializationTicketId next_ticket_ ABSL_GUARDED_BY(tickets_mutex_) = 1;
 
-  // Jobs and evictions in flight.
-  // Includes queued, running, and returned-but-unfinished jobs.
+  // AsyncJobs in flight, from all workers: queued, running, or returned but
+  // not finished. Evictions are not counted; no visit waits on them.
   std::atomic<size_t> jobs_in_flight_{0};
   // Jobs held by collectors, not computing or returned. If these are all
   // remaining jobs and producers are blocked, further collection depends on

@@ -33,6 +33,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <variant>
 #include <vector>
 
 #include "chess/position.h"
@@ -91,26 +92,33 @@ struct Materialization {
   State state = State::kPending;
 };
 
-// Slow work one kind of worker hands to another, which runs it while the
-// sender carries on: a store lookup, an NN evaluation or an eviction. Load and
-// eval jobs carry a visit worker's materializations and come back to it.
+// Slow work a visit worker hands to another thread, which runs it while the
+// worker carries on: a store lookup or an NN evaluation of some of its
+// materializations. The job comes back to the worker, which finishes it.
 // Storage is fixed before AddInput; the whole job lives through compute and
 // FinishJob, including immediate-cache results.
 struct AsyncJob {
-  // The arrows show where a job travels; only kPersist does not come back.
+  // The arrows show where a job travels.
   enum class Kind {
-    kEval,     // Visit worker -> evaluator -> worker: NN-evaluate.
-    kLoad,     // Visit worker -> store thread -> worker: look up in the store.
-    kPersist,  // Controller -> store thread: evict `evict_count` nodes.
+    kEval,  // Visit worker -> evaluator -> worker: NN-evaluate.
+    kLoad,  // Visit worker -> store thread -> worker: look up in the store.
   };
   Kind kind;
-  size_t worker;  // The owner, whose inbox gets the job back; not kPersist.
+  size_t worker;  // The owner, whose inbox gets the job back.
   // When queued; a batch's deadline counts from its first job's.
   std::chrono::steady_clock::time_point queued_at;
-  std::vector<Materialization> materializations;  // kEval and kLoad.
-  size_t evict_count = 0;                         // kPersist.
+  std::vector<Materialization> materializations;
   size_t items() const { return materializations.size(); }
 };
+
+// The controller's request to a store thread: move `count` nodes from the
+// graph to the store. Nothing comes back.
+struct EvictionJob {
+  size_t count;
+};
+
+// What store threads run.
+using StoreJob = std::variant<std::unique_ptr<AsyncJob>, EvictionJob>;
 
 struct Batch {
   std::unique_ptr<BackendComputation> computation;
