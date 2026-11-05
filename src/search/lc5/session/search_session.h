@@ -39,8 +39,8 @@
 #include "search/lc5/metrics.h"
 #include "search/lc5/session/evaluator.h"
 #include "search/lc5/session/messages.h"
-#include "search/lc5/session/session_gate.h"
 #include "search/lc5/session/ticket_table.h"
+#include "search/lc5/session/visit_limiter.h"
 #include "search/lc5/session/visit_pool.h"
 #include "search/lc5/session/visit_worker.h"
 #include "search/lc5/session/work_queue.h"
@@ -74,15 +74,13 @@ class SearchSession {
 
  private:
   friend class SearchSessionTestPeer;
-  using StopMode = SessionGate::StopMode;
 
   // Thread bodies; each runs until its thread exits. Start() spawns them.
   void RunControllerWorker();
   void RunStoreWorker();
 
   // Search: stop, output and shutdown.
-  bool IsStopping() const { return gate_.IsStopping(); }
-  void RequestStop(StopMode mode);
+  bool IsStopping() const { return limiter_.IsStopping(); }
   void RespondBestMove();
   bool IsFullyDrained();
   void JoinThreads();
@@ -121,7 +119,7 @@ class SearchSession {
   // Visits and counters.
   VisitPool visits_;
   Metrics metrics_;
-  SessionGate gate_;
+  VisitLimiter limiter_;
 
   TicketTable tickets_;
   // AsyncJobs in flight, from all workers: queued, running, or returned but
@@ -143,6 +141,7 @@ class SearchSession {
 
   // Lifecycle and the controller's wakeups.
   std::atomic<bool> started_{false};
+  std::atomic<bool> aborted_{false};
   std::atomic<bool> finished_{false};
   std::atomic<int64_t> unused_time_ms_{0};
   ControllerSignal controller_;

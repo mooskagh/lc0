@@ -37,7 +37,7 @@ namespace lczero::lc5 {
 Evaluator::Evaluator(const Context& context)
     : backend_(context.backend),
       settings_(context.settings),
-      gate_(context.gate),
+      limiter_(context.limiter),
       metrics_(context.metrics),
       inboxes_(context.inboxes),
       jobs_in_flight_(context.jobs_in_flight),
@@ -133,7 +133,7 @@ void Evaluator::AddJobToBatch(BackendComputation& computation, AsyncJob& job) {
 
 void Evaluator::EvaluateBatch(Batch batch) {
   const size_t used = batch.computation->UsedBatchSize();
-  if (used > 0 && gate_.AuthorizeEval()) {
+  if (used > 0 && limiter_.CanStartEval()) {
     if (used < static_cast<size_t>(settings_.minibatch_size)) {
       (batch.timed_out ? metrics_.partial_timeout_flushes
                        : metrics_.partial_starvation_flushes)

@@ -57,7 +57,7 @@ class SearchSessionTestPeer {
   // the pool is full.
   static bool AdmitVisit(SearchSession& session, const VisitOrigin& origin)
       ABSL_NO_THREAD_SAFETY_ANALYSIS {
-    const auto id = session.gate_.Admit(origin);
+    const auto id = session.limiter_.AdmitVisit(origin);
     if (!id) return false;
     // Starting the worker threads orders this before they run.
     assert(!session.started_.load());

@@ -92,15 +92,15 @@ SearchSession::SearchSession(VisitEngine* engine, Backend* backend,
       node_limit_(GetNodeLimit(go_params, root_visits_at_start_)),
       may_stop_early_(!go_params.infinite && !go_params.ponder),
       visits_(settings_.max_active_visits),
-      gate_({.workers = static_cast<size_t>(settings_.threads),
-             .node_limit = node_limit_,
-             .root_visits_at_start = root_visits_at_start_,
-             .active_visits_ratio = settings_.active_visits_ratio},
-            visits_, metrics_),
+      limiter_({.workers = static_cast<size_t>(settings_.threads),
+                .node_limit = node_limit_,
+                .root_visits_at_start = root_visits_at_start_,
+                .active_visits_ratio = settings_.active_visits_ratio},
+               visits_, metrics_),
       inboxes_(settings_.threads),
       evaluator_({.backend = *backend_,
                   .settings = settings_,
-                  .gate = gate_,
+                  .limiter = limiter_,
                   .metrics = metrics_,
                   .inboxes = inboxes_,
                   .jobs_in_flight = jobs_in_flight_}) {
@@ -109,7 +109,7 @@ SearchSession::SearchSession(VisitEngine* engine, Backend* backend,
                                      .root = root_,
                                      .visits = visits_,
                                      .metrics = metrics_,
-                                     .gate = gate_,
+                                     .limiter = limiter_,
                                      .tickets = tickets_,
                                      .inboxes = inboxes_,
                                      .evaluator = evaluator_,
@@ -140,14 +140,15 @@ void SearchSession::Start() {
   controller_thread_ = std::thread(&SearchSession::RunControllerWorker, this);
 }
 
-void SearchSession::RequestStop(StopMode mode) {
-  gate_.RequestStop(mode);
+void SearchSession::Stop() {
+  limiter_.Stop();
   controller_.Notify();
 }
 
-void SearchSession::Stop() { RequestStop(StopMode::kRespondBestmove); }
-
-void SearchSession::Abort() { RequestStop(StopMode::kAbort); }
+void SearchSession::Abort() {
+  aborted_.store(true);
+  Stop();
+}
 
 void SearchSession::Wait() {
   if (controller_thread_.joinable()) controller_thread_.join();
@@ -218,13 +219,13 @@ void SearchSession::RespondBestMove() {
   // The search ends here as far as the clock is concerned.
   unused_time_ms_.store(time_manager_.UnusedMs(steady_clock::now()));
   // Capture once, without waiting for any executor or eviction. Abort can
-  // suppress this response until commitment, but cannot retract it.
-  if (gate_.stop_mode() == StopMode::kRespondBestmove) {
+  // suppress this response before it is sent.
+  if (!aborted_.load()) {
     std::vector<ThinkingInfo> infos{BuildThinkingInfo(true)};
     const auto& pv = infos.front().pv;
     BestMoveInfo best(pv.empty() ? GetFallbackMove() : pv.front(),
                       pv.size() > 1 ? pv[1] : Move{});
-    if (gate_.TryCommitOutput()) {
+    if (!aborted_.load()) {
       responder_->OutputThinkingInfo(&infos);
       responder_->OutputBestMove(&best);
     }

@@ -36,7 +36,7 @@
 #include "neural/backend.h"
 #include "search/lc5/metrics.h"
 #include "search/lc5/session/messages.h"
-#include "search/lc5/session/session_gate.h"
+#include "search/lc5/session/visit_limiter.h"
 #include "search/lc5/session/work_queue.h"
 #include "search/lc5/settings.h"
 
@@ -53,7 +53,7 @@ class Evaluator {
   struct Context {
     Backend& backend;
     const Settings::Resolved& settings;
-    SessionGate& gate;
+    VisitLimiter& limiter;
     Metrics& metrics;
     // Every visit worker's inbox, by worker index; jobs go back there.
     std::span<WorkerInbox> inboxes;
@@ -83,7 +83,7 @@ class Evaluator {
     bool timed_out = false;  // Flushed at the deadline; only counted.
   };
 
-  bool IsStopping() const { return gate_.IsStopping(); }
+  bool IsStopping() const { return limiter_.IsStopping(); }
   // Takes `first` and more queued jobs while they fit the minibatch.
   Batch CollectBatch(std::unique_ptr<AsyncJob> first);
   void AddJobToBatch(BackendComputation& computation, AsyncJob& job);
@@ -93,7 +93,7 @@ class Evaluator {
 
   Backend& backend_;
   const Settings::Resolved& settings_;
-  SessionGate& gate_;
+  VisitLimiter& limiter_;
   Metrics& metrics_;
   const std::span<WorkerInbox> inboxes_;
   const std::atomic<size_t>& jobs_in_flight_;

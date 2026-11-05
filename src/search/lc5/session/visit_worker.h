@@ -38,8 +38,8 @@
 #include "search/lc5/metrics.h"
 #include "search/lc5/session/evaluator.h"
 #include "search/lc5/session/messages.h"
-#include "search/lc5/session/session_gate.h"
 #include "search/lc5/session/ticket_table.h"
+#include "search/lc5/session/visit_limiter.h"
 #include "search/lc5/session/visit_pool.h"
 #include "search/lc5/session/work_queue.h"
 #include "search/lc5/settings.h"
@@ -62,7 +62,7 @@ class VisitWorker {
     const VisitOrigin& root;
     VisitPool& visits;
     Metrics& metrics;
-    SessionGate& gate;
+    VisitLimiter& limiter;
     TicketTable& tickets;
     // Every worker's inbox, by worker index.
     std::span<WorkerInbox> inboxes;
@@ -95,7 +95,7 @@ class VisitWorker {
   // mix several jobs into one batch.
   static constexpr size_t kJobsPerBatch = 4;
 
-  bool IsStopping() const { return gate_.IsStopping(); }
+  bool IsStopping() const { return limiter_.IsStopping(); }
 
   // The loop.
   void ProcessInbox();
@@ -150,7 +150,7 @@ class VisitWorker {
   const VisitOrigin& root_;
   VisitPool& visits_;
   Metrics& metrics_;
-  SessionGate& gate_;
+  VisitLimiter& limiter_;
   TicketTable& tickets_;
   const std::span<WorkerInbox> inboxes_;
   WorkerInbox& inbox_;  // This worker's own.

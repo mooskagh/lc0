@@ -99,7 +99,7 @@ VisitWorker::VisitWorker(size_t index, const Context& context)
       root_(context.root),
       visits_(context.visits),
       metrics_(context.metrics),
-      gate_(context.gate),
+      limiter_(context.limiter),
       tickets_(context.tickets),
       inboxes_(context.inboxes),
       inbox_(context.inboxes[index]),
@@ -127,7 +127,7 @@ void VisitWorker::AdmitNewRootVisits() {
       (visits_.capacity() + inboxes_.size() - 1) / inboxes_.size();
   const size_t count =
       std::min(kVisitsPerPass, share - std::min(share, active_visits_));
-  gate_.AdmitFor(index_, root_, count, [&](VisitId id) {
+  limiter_.AdmitVisits(index_, root_, count, [&](VisitId id) {
     ++active_visits_;
     runnable_.push_back(id);
   });
@@ -135,7 +135,7 @@ void VisitWorker::AdmitNewRootVisits() {
 }
 
 void VisitWorker::WakeAdmissionWaiters() {
-  for (size_t index : gate_.TakeWaitersToWake()) {
+  for (size_t index : limiter_.PopWorkersToWake()) {
     auto& inbox = inboxes_[index];
     absl::MutexLock lock(inbox.mutex);
     inbox.admission_ready = true;
@@ -345,7 +345,7 @@ void VisitWorker::RestartVisit(Visit& visit) {
 void VisitWorker::FinishVisit(Visit& visit, bool completed) {
   if (completed) {
     const uint64_t count = metrics_.visits_completed.fetch_add(1) + 1;
-    if (gate_.node_limit() == count) controller_event_ = true;
+    if (limiter_.node_limit() == count) controller_event_ = true;
   } else {
     metrics_.visits_cancelled.fetch_add(1);
   }

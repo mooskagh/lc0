@@ -25,7 +25,7 @@
   Program grant you additional permission to convey the resulting work.
 */
 
-#include "search/lc5/session/session_gate.h"
+#include "search/lc5/session/visit_limiter.h"
 
 #include <gtest/gtest.h>
 
@@ -34,74 +34,61 @@
 namespace lczero::lc5 {
 namespace {
 
-using StopMode = SessionGate::StopMode;
-
-SessionGate::Config TestConfig(size_t workers = 2, uint64_t node_limit = 100) {
+VisitLimiter::Config TestConfig(size_t workers = 2, uint64_t node_limit = 100) {
   return {.workers = workers,
           .node_limit = node_limit,
           .root_visits_at_start = 0,
           .active_visits_ratio = 0.0f};
 }
 
-TEST(Lc5SessionGateTest, BestmoveIsCommittedUnlessAbortedFirst) {
+TEST(Lc5VisitLimiterTest, StopClosesEvalAndAdmission) {
   VisitPool pool(1);
   Metrics metrics;
-  SessionGate gate(TestConfig(), pool, metrics);
-  EXPECT_FALSE(gate.IsStopping());
-  EXPECT_TRUE(gate.AuthorizeEval());
-  gate.RequestStop(StopMode::kRespondBestmove);
-  EXPECT_TRUE(gate.IsStopping());
-  EXPECT_FALSE(gate.AuthorizeEval());
-  // An abort overrides an uncommitted bestmove; a later stop changes nothing.
-  gate.RequestStop(StopMode::kAbort);
-  gate.RequestStop(StopMode::kRespondBestmove);
-  EXPECT_EQ(gate.stop_mode(), StopMode::kAbort);
-  EXPECT_FALSE(gate.TryCommitOutput());
-
-  SessionGate committed(TestConfig(), pool, metrics);
-  committed.RequestStop(StopMode::kRespondBestmove);
-  EXPECT_TRUE(committed.TryCommitOutput());
-  committed.RequestStop(StopMode::kAbort);
-  EXPECT_EQ(committed.stop_mode(), StopMode::kRespondBestmove);
+  VisitLimiter limiter(TestConfig(), pool, metrics);
+  EXPECT_FALSE(limiter.IsStopping());
+  EXPECT_TRUE(limiter.CanStartEval());
+  limiter.Stop();
+  EXPECT_TRUE(limiter.IsStopping());
+  EXPECT_FALSE(limiter.CanStartEval());
 }
 
-TEST(Lc5SessionGateTest, AdmissionClosesOnBudgetAndOnStop) {
+TEST(Lc5VisitLimiterTest, AdmissionClosesOnBudgetAndOnStop) {
   VisitPool pool(4);
   Metrics metrics;
-  SessionGate gate(TestConfig(1, 2), pool, metrics);
-  EXPECT_TRUE(gate.Admit({}));
+  VisitLimiter limiter(TestConfig(1, 2), pool, metrics);
+  EXPECT_TRUE(limiter.AdmitVisit({}));
   std::vector<VisitId> admitted;
-  gate.AdmitFor(0, {}, 3, [&](VisitId id) { admitted.push_back(id); });
+  limiter.AdmitVisits(0, {}, 3, [&](VisitId id) { admitted.push_back(id); });
   EXPECT_EQ(admitted.size(), 1u);
   EXPECT_EQ(metrics.visits_admitted.load(), 2u);
   // The budget is spent, so the worker does not wait for capacity.
   for (const auto id : admitted) pool.Release(id);
-  EXPECT_TRUE(gate.TakeWaitersToWake().empty());
+  EXPECT_TRUE(limiter.PopWorkersToWake().empty());
 
-  SessionGate stopped(TestConfig(1), pool, metrics);
-  stopped.RequestStop(StopMode::kAbort);
-  EXPECT_FALSE(stopped.Admit({}));
+  VisitLimiter stopped(TestConfig(1), pool, metrics);
+  stopped.Stop();
+  EXPECT_FALSE(stopped.AdmitVisit({}));
 }
 
-TEST(Lc5SessionGateTest, FullPoolWakesWaitersInTurn) {
+TEST(Lc5VisitLimiterTest, FullPoolWakesWaitingWorkersInTurn) {
   VisitPool pool(2);
   Metrics metrics;
-  SessionGate gate(TestConfig(3), pool, metrics);
+  VisitLimiter limiter(TestConfig(3), pool, metrics);
   std::vector<VisitId> admitted;
   const auto add = [&](VisitId id) { admitted.push_back(id); };
-  gate.AdmitFor(0, {}, 3, add);
+  limiter.AdmitVisits(0, {}, 3, add);
   ASSERT_EQ(admitted.size(), 2u);
-  gate.AdmitFor(1, {}, 1, add);
-  gate.AdmitFor(2, {}, 1, add);
+  limiter.AdmitVisits(1, {}, 1, add);
+  limiter.AdmitVisits(2, {}, 1, add);
   EXPECT_EQ(admitted.size(), 2u);
-  EXPECT_TRUE(gate.TakeWaitersToWake().empty());
+  EXPECT_TRUE(limiter.PopWorkersToWake().empty());
   // One free slot wakes one waiter, then the next one in turn.
   pool.Release(admitted[0]);
-  EXPECT_EQ(gate.TakeWaitersToWake(), std::vector<size_t>({0}));
-  EXPECT_EQ(gate.TakeWaitersToWake(), std::vector<size_t>({1}));
+  EXPECT_EQ(limiter.PopWorkersToWake(), std::vector<size_t>({0}));
+  EXPECT_EQ(limiter.PopWorkersToWake(), std::vector<size_t>({1}));
   pool.Release(admitted[1]);
-  EXPECT_EQ(gate.TakeWaitersToWake(), std::vector<size_t>({2}));
-  EXPECT_TRUE(gate.TakeWaitersToWake().empty());
+  EXPECT_EQ(limiter.PopWorkersToWake(), std::vector<size_t>({2}));
+  EXPECT_TRUE(limiter.PopWorkersToWake().empty());
 }
 
 }  // namespace
