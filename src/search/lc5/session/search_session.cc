@@ -53,6 +53,16 @@ constexpr auto kEvictionInterval = std::chrono::milliseconds(10);
 // Root visits are counted in uint32_t; classic caps a search the same way.
 constexpr uint64_t kMaxRootVisits = 4'000'000'000;
 
+// Visits a search may complete: `go nodes`, if given and not pondering, but
+// never so many that the root's visit count would overflow.
+uint64_t GetNodeLimit(const GoParams& go_params, uint64_t root_visits) {
+  uint64_t limit = kMaxRootVisits - std::min(root_visits, kMaxRootVisits);
+  if (!go_params.ponder && go_params.nodes && *go_params.nodes >= 0) {
+    limit = std::min(limit, static_cast<uint64_t>(*go_params.nodes));
+  }
+  return limit;
+}
+
 // Moves in the graph are from the side to move's perspective; UCI is not.
 Move ToUci(Move move, const Position& position) {
   if (position.IsBlackToMove()) move.Flip();
@@ -128,22 +138,16 @@ SearchSession::SearchSession(VisitEngine* engine, Backend* backend,
       responder_(responder),
       settings_(settings),
       root_(std::move(root)),
+      root_visits_at_start_(engine_->GetRootStats(root_.key).visits),
       start_time_(start_time),
       time_manager_(time_management, go_params,
                     root_.history.Last().IsBlackToMove(), start_time_,
                     saved_ms),
+      node_limit_(GetNodeLimit(go_params, root_visits_at_start_)),
+      may_stop_early_(!go_params.infinite && !go_params.ponder),
       visits_(settings_.max_active_visits) {
   for (int i = 0; i < settings_.threads; ++i) {
     workers_.push_back(std::make_unique<VisitWorker>(i));
-  }
-  root_visits_at_start_ = engine_->GetRootStats(root_.key).visits;
-  // Kept unless the search stops early with a clock budget.
-  may_stop_early_ = !go_params.infinite && !go_params.ponder;
-  node_limit_ =
-      kMaxRootVisits - std::min(root_visits_at_start_, kMaxRootVisits);
-  if (!go_params.ponder && go_params.nodes && *go_params.nodes >= 0) {
-    node_limit_ =
-        std::min(*node_limit_, static_cast<uint64_t>(*go_params.nodes));
   }
 }
 
@@ -214,7 +218,7 @@ void SearchSession::RunControllerWorker() {
       next_check = time_manager_.deadline();
       const RootStats root = engine_->GetRootStats(root_.key);
       if (time_manager_.ShouldStop(now) ||
-          (node_limit_ && metrics_.visits_completed.load() >= *node_limit_)) {
+          metrics_.visits_completed.load() >= node_limit_) {
         Stop();
       } else if (may_stop_early_ &&
                  (root.decided || (root.expanded && root.edges == 1))) {
@@ -355,7 +359,7 @@ ThinkingInfo SearchSession::BuildThinkingInfo(bool final) const {
 //////////////////////////////////////////////////////////////////////////////
 
 bool SearchSession::IsAdmissionClosed() const {
-  return IsStopping() || (node_limit_ && admitted_ >= *node_limit_);
+  return IsStopping() || admitted_ >= node_limit_;
 }
 
 std::optional<VisitId> SearchSession::AllocateVisit(const VisitOrigin& origin) {

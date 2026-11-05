@@ -201,13 +201,14 @@ class SearchSession {
   UciResponder* const responder_;
   const Settings::Resolved settings_;
   const VisitOrigin root_;
-  uint64_t root_visits_at_start_ = 0;
+  const uint64_t root_visits_at_start_;
   const std::chrono::steady_clock::time_point start_time_;
   const TimeManager time_manager_;
-  std::optional<uint64_t> node_limit_;
+  // Visits to complete: `go nodes`, capped so root visits fit in uint32_t.
+  const uint64_t node_limit_;
   // Not in infinite or ponder searches: a decided root or smart pruning may
   // stop the search before its limits.
-  bool may_stop_early_ = true;
+  const bool may_stop_early_;
 
   // Visits and counters.
   VisitPool visits_;
