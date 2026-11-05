@@ -28,8 +28,10 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <cassert>
 #include <condition_variable>
 #include <mutex>
+#include <optional>
 #include <thread>
 #include <unordered_map>
 #include <unordered_set>
@@ -49,32 +51,32 @@ namespace lczero::lc5 {
 class SearchSessionTestPeer {
  public:
   // Admits a visit from an arbitrary origin, sharing the node budget with
-  // root visits. May be called before Start(). Returns false if admission is
-  // closed, the budget is exhausted or the pool is full.
-  static bool AdmitVisit(SearchSession& session, const VisitOrigin& origin) {
-    size_t owner;
-    std::vector<VisitWakeup> admitted;
+  // root visits, and gives it to the workers in turn. Succeeds only before
+  // Start(): returns false if admission is closed, the budget is exhausted or
+  // the pool is full.
+  static bool AdmitVisit(SearchSession& session, const VisitOrigin& origin)
+      ABSL_NO_THREAD_SAFETY_ANALYSIS {
+    std::optional<VisitId> id;
     {
       absl::MutexLock lock(session.admission_mutex_);
-      owner = session.next_owner_++ % session.workers_.size();
-      const auto id = session.AllocateVisit(origin);
-      if (!id) return false;
-      admitted.push_back({.id = *id, .worker = owner});
+      id = session.AllocateVisit(origin);
     }
-    // The allocated visit keeps active() nonzero until this is consumed, so
-    // stop cannot declare a drain before the inbox publication.
-    session.SendWakeups(owner, admitted);
+    if (!id) return false;
+    // Starting the worker threads orders this before they run.
+    assert(!session.started_.load());
+    auto& worker =
+        *session.workers_[(session.visits_.active() - 1) %
+                          session.workers_.size()];
+    worker.active.insert(id->value);
+    worker.runnable.push_back(*id);
     return true;
   }
-  // Before Start only: make the entire backlog ready before collectors session.
+  // Before Start only: make the entire backlog ready before collectors start.
   static void PrepareAdmissions(SearchSession& session)
       ABSL_NO_THREAD_SAFETY_ANALYSIS {
     for (auto& ptr : session.workers_) {
       auto& worker = *ptr;
       worker.outgoing.resize(session.workers_.size());
-      for (const auto& wakeup : worker.inbox.wakeups)
-        session.ResumeVisit(worker, wakeup);
-      worker.inbox.wakeups.clear();
       while (!worker.runnable.empty()) {
         auto id = worker.runnable.front();
         worker.runnable.pop_front();

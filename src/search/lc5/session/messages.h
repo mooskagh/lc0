@@ -50,7 +50,6 @@ namespace lczero::lc5 {
 // Tells a visit's owner how to continue it.
 struct VisitWakeup {
   enum class Kind : uint8_t {
-    kAdmit,        // New visit; start descending from its origin.
     kSelect,       // Materialization finished; select below the node.
     kRestored,     // Restored from the store; select, skipping ResumeVisit.
     kBackup,       // Materialization finished; back up `value`.
@@ -59,8 +58,8 @@ struct VisitWakeup {
   };
   VisitId id;     // The visit to continue.
   size_t worker;  // The visit's owner, the only worker that may change it.
-  Kind kind = Kind::kAdmit;
-  MaterializationTicketId ticket = 0;  // The ticket waited on; 0 for kAdmit.
+  Kind kind = Kind::kSelect;
+  MaterializationTicketId ticket = 0;  // The ticket waited on.
   uint64_t generation = 0;  // The leaf node's generation once published.
   SearchValue value{};      // The leaf value; unset for kRestored and kCancel.
   bool exact = false;       // `value` is an exact terminal value.

@@ -456,49 +456,45 @@ void SearchSession::ResumeVisit(VisitWorker& worker,
   absl::MutexLock lock(slot->mutex);
   if (!visits_.IsLiveLocked(*slot, wakeup.id)) return;
   Visit& visit = slot->visit;
-  if (wakeup.kind == VisitWakeup::Kind::kAdmit) {
-    worker.active.insert(wakeup.id.value);
-  } else {
-    if (visit.state != VisitState::kWaitingMaterialization ||
-        visit.waiting_ticket != wakeup.ticket) {
-      return;
-    }
-    visit.waiting_ticket = 0;
-    // On stop, visits finish only when their evaluation already exists.
-    if (wakeup.kind == VisitWakeup::Kind::kCancel ||
-        (IsStopping() && (wakeup.kind == VisitWakeup::Kind::kSelect ||
-                          wakeup.kind == VisitWakeup::Kind::kRestored))) {
-      CancelVisit(worker, *slot);
-      return;
-    }
-    visit.path.back().generation = wakeup.generation;
-    visit.path.back().selected_move.reset();
-    visit.result = wakeup.value;
-    visit.result_exact = wakeup.exact;
-    if (wakeup.kind == VisitWakeup::Kind::kBackup ||
-        wakeup.kind == VisitWakeup::Kind::kBackupAbove) {
-      visit.leaf_counted = wakeup.kind == VisitWakeup::Kind::kBackupAbove;
-      visit.state = VisitState::kReadyBackup;
-    } else if (wakeup.kind == VisitWakeup::Kind::kRestored) {
-      visit.state = VisitState::kReadySelect;
-      metrics_.visits_resumed.fetch_add(1);
-    } else {
-      switch (engine_->ResumeVisit(visit, metrics_)) {
-        case VisitEngine::ResumeAction::kRestart:
-          RestartVisit(*slot);
-          break;
-        case VisitEngine::ResumeAction::kBackup:
-          visit.leaf_counted = false;
-          visit.state = VisitState::kReadyBackup;
-          break;
-        case VisitEngine::ResumeAction::kSelect:
-          visit.state = VisitState::kReadySelect;
-          metrics_.visits_resumed.fetch_add(1);
-          break;
-      }
-    }
-    if (wakeup.terminal) metrics_.terminal_visits.fetch_add(1);
+  if (visit.state != VisitState::kWaitingMaterialization ||
+      visit.waiting_ticket != wakeup.ticket) {
+    return;
   }
+  visit.waiting_ticket = 0;
+  // On stop, visits finish only when their evaluation already exists.
+  if (wakeup.kind == VisitWakeup::Kind::kCancel ||
+      (IsStopping() && (wakeup.kind == VisitWakeup::Kind::kSelect ||
+                        wakeup.kind == VisitWakeup::Kind::kRestored))) {
+    CancelVisit(worker, *slot);
+    return;
+  }
+  visit.path.back().generation = wakeup.generation;
+  visit.path.back().selected_move.reset();
+  visit.result = wakeup.value;
+  visit.result_exact = wakeup.exact;
+  if (wakeup.kind == VisitWakeup::Kind::kBackup ||
+      wakeup.kind == VisitWakeup::Kind::kBackupAbove) {
+    visit.leaf_counted = wakeup.kind == VisitWakeup::Kind::kBackupAbove;
+    visit.state = VisitState::kReadyBackup;
+  } else if (wakeup.kind == VisitWakeup::Kind::kRestored) {
+    visit.state = VisitState::kReadySelect;
+    metrics_.visits_resumed.fetch_add(1);
+  } else {
+    switch (engine_->ResumeVisit(visit, metrics_)) {
+      case VisitEngine::ResumeAction::kRestart:
+        RestartVisit(*slot);
+        break;
+      case VisitEngine::ResumeAction::kBackup:
+        visit.leaf_counted = false;
+        visit.state = VisitState::kReadyBackup;
+        break;
+      case VisitEngine::ResumeAction::kSelect:
+        visit.state = VisitState::kReadySelect;
+        metrics_.visits_resumed.fetch_add(1);
+        break;
+    }
+  }
+  if (wakeup.terminal) metrics_.terminal_visits.fetch_add(1);
   worker.runnable.push_back(wakeup.id);
 }
 

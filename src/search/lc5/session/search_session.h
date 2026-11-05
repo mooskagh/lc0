@@ -226,7 +226,6 @@ class SearchSession {
   // and NN authorization. Also guards VisitWorker::admission_waiting.
   absl::Mutex admission_mutex_;
   uint64_t admitted_ ABSL_GUARDED_BY(admission_mutex_) = 0;
-  size_t next_owner_ ABSL_GUARDED_BY(admission_mutex_) = 0;
   size_t next_admission_waiter_ ABSL_GUARDED_BY(admission_mutex_) = 0;
   std::atomic<StopMode> stop_mode_{StopMode::kRunning};
   std::atomic<bool> output_committed_{false};
