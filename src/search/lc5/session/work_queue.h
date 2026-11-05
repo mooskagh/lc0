@@ -60,7 +60,7 @@ class WorkQueue {
     return TakeFrontLocked(value);
   }
   template <typename Accept>
-  bool TryPopIf(T* value, Accept accept) {
+  bool TryPopIf(T* value, Accept&& accept) {
     absl::MutexLock lock(mutex_);
     return TakeFrontLocked(value, accept);
   }
@@ -70,7 +70,7 @@ class WorkQueue {
   // rejects ends the wait too, and stays in the queue.
   template <typename GiveUp, typename Accept>
   bool PopUntil(T* value, std::chrono::steady_clock::time_point deadline,
-                GiveUp give_up, Accept accept) {
+                GiveUp&& give_up, Accept&& accept) {
     absl::MutexLock lock(mutex_);
     const auto ready = [&] {
       mutex_.AssertReaderHeld();
@@ -98,7 +98,7 @@ class WorkQueue {
     return TakeFrontLocked(value, [](const T&) { return true; });
   }
   template <typename Accept>
-  bool TakeFrontLocked(T* value, Accept accept)
+  bool TakeFrontLocked(T* value, Accept&& accept)
       ABSL_EXCLUSIVE_LOCKS_REQUIRED(mutex_) {
     if (queue_.empty() || !accept(queue_.front())) return false;
     *value = std::move(queue_.front());

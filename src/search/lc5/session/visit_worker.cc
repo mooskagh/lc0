@@ -127,15 +127,14 @@ void VisitWorker::AdmitNewRootVisits() {
       (visits_.capacity() + inboxes_.size() - 1) / inboxes_.size();
   const size_t count =
       std::min(kVisitsPerPass, share - std::min(share, active_visits_));
-  limiter_.AdmitVisits(index_, root_, count, [&](VisitId id) {
-    ++active_visits_;
-    runnable_.push_back(id);
-  });
+  const auto admitted = limiter_.AdmitVisits(index_, root_, count);
+  active_visits_ += admitted.size();
+  runnable_.insert(runnable_.end(), admitted.begin(), admitted.end());
   RaiseHighWater(metrics_.visits_ready_high_water, runnable_.size());
 }
 
 void VisitWorker::WakeAdmissionWaiters() {
-  for (size_t index : limiter_.PopWorkersToWake()) {
+  for (size_t index : limiter_.TakeWorkersToWake()) {
     auto& inbox = inboxes_[index];
     absl::MutexLock lock(inbox.mutex);
     inbox.admission_ready = true;

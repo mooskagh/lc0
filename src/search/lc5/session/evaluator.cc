@@ -133,7 +133,7 @@ void Evaluator::AddJobToBatch(BackendComputation& computation, AsyncJob& job) {
 
 void Evaluator::EvaluateBatch(Batch batch) {
   const size_t used = batch.computation->UsedBatchSize();
-  if (used > 0 && limiter_.CanStartEval()) {
+  if (used > 0 && !IsStopping()) {
     if (used < static_cast<size_t>(settings_.minibatch_size)) {
       (batch.timed_out ? metrics_.partial_timeout_flushes
                        : metrics_.partial_starvation_flushes)

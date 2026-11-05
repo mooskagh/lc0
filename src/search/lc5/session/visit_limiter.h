@@ -32,7 +32,6 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
-#include <optional>
 #include <vector>
 
 #include "search/lc5/metrics.h"
@@ -61,46 +60,23 @@ class VisitLimiter {
 
   // Lock-free; for the hot path.
   bool IsStopping() const { return stopping_.load(); }
-  // Closes admission of new visits and evaluations.
+  // Closes admission of new visits.
   void Stop();
-  // Returns whether an NN batch may start computing (i.e. not stopping).
-  bool CanStartEval();
 
   // Returns the max number of in-flight visits allowed now. Grows with the
   // tree size (as classic grows its collision limit), so small trees are not
   // flooded.
   size_t GetActiveVisitLimit() const;
-  // Starts a new visit at `origin`. Returns nullopt if unsuccessful (stopping,
-  // node budget spent, at the in-flight limit, etc.).
-  std::optional<VisitId> AdmitVisit(const VisitOrigin& origin);
-  // Starts up to `count` visits for `worker`, passing each to `on_admit`. If
-  // it hits the in-flight limit, marks `worker` as waiting, so that
-  // PopWorkersToWake returns it once a slot frees up.
-  template <typename OnAdmit>
-  void AdmitVisits(size_t worker, const VisitOrigin& origin, size_t count,
-                   OnAdmit on_admit) {
-    absl::MutexLock lock(mutex_);
-    worker_waiting_[worker] = false;
-    for (size_t i = 0; i < count; ++i) {
-      const auto id = AdmitVisitLocked(origin);
-      if (!id) {
-        // Shares the mutex with the capacity check in PopWorkersToWake, so
-        // it cannot miss a release.
-        worker_waiting_[worker] = !IsAdmissionClosedLocked();
-        return;
-      }
-      on_admit(*id);
-    }
-  }
-  // Returns the waiting workers to wake now, at most one per free in-flight
-  // slot, round-robin, and clears their waiting flag. If another worker takes
-  // the slot first, the woken one just waits again.
-  std::vector<size_t> PopWorkersToWake();
+  // Starts up to `count` visits at `origin`; if blocked by the in-flight limit,
+  // marks `worker` as waiting for TakeWorkersToWake.
+  std::vector<VisitId> AdmitVisits(size_t worker, const VisitOrigin& origin,
+                                   size_t count);
+  // Returns waiting workers to wake (up to one per free in-flight slot,
+  // round-robin) and clears their waiting flag.
+  std::vector<size_t> TakeWorkersToWake();
 
  private:
   bool IsAdmissionClosedLocked() const ABSL_EXCLUSIVE_LOCKS_REQUIRED(mutex_);
-  std::optional<VisitId> AdmitVisitLocked(const VisitOrigin& origin)
-      ABSL_EXCLUSIVE_LOCKS_REQUIRED(mutex_);
 
   const Config config_;
   VisitPool& visits_;
@@ -112,7 +88,7 @@ class VisitLimiter {
   uint64_t total_admitted_count_ ABSL_GUARDED_BY(mutex_) = 0;
   // Per worker: whether it is waiting for an in-flight slot.
   std::vector<bool> worker_waiting_ ABSL_GUARDED_BY(mutex_);
-  // Where PopWorkersToWake starts its round-robin scan.
+  // Where TakeWorkersToWake starts its round-robin scan.
   size_t next_worker_to_wake_ ABSL_GUARDED_BY(mutex_) = 0;
   // Written under mutex_, read anywhere.
   std::atomic<bool> stopping_{false};

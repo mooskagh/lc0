@@ -43,12 +43,6 @@ void VisitLimiter::Stop() {
   stopping_.store(true);
 }
 
-bool VisitLimiter::CanStartEval() {
-  // A serial evaluator cannot check again until its computation returns.
-  absl::MutexLock lock(mutex_);
-  return !IsStopping();
-}
-
 size_t VisitLimiter::GetActiveVisitLimit() const {
   if (config_.active_visits_ratio <= 0.0f) return visits_.capacity();
   const double tree = static_cast<double>(config_.root_visits_at_start +
@@ -58,45 +52,57 @@ size_t VisitLimiter::GetActiveVisitLimit() const {
                       static_cast<size_t>(tree * config_.active_visits_ratio));
 }
 
-std::optional<VisitId> VisitLimiter::AdmitVisit(const VisitOrigin& origin) {
+std::vector<VisitId> VisitLimiter::AdmitVisits(size_t worker,
+                                               const VisitOrigin& origin,
+                                               size_t count) {
+  std::vector<VisitId> admitted;
+  admitted.reserve(count);
   absl::MutexLock lock(mutex_);
-  return AdmitVisitLocked(origin);
+  worker_waiting_[worker] = false;
+  for (size_t i = 0; i < count; ++i) {
+    if (IsAdmissionClosedLocked() ||
+        visits_.active() >= GetActiveVisitLimit()) {
+      // Shares the mutex with the capacity check in TakeWorkersToWake, so
+      // it cannot miss a release.
+      worker_waiting_[worker] = !IsAdmissionClosedLocked();
+      break;
+    }
+    const auto id = visits_.Allocate(origin);
+    if (!id) {
+      worker_waiting_[worker] = true;
+      break;
+    }
+    admitted.push_back(*id);
+    ++total_admitted_count_;
+  }
+  if (!admitted.empty()) {
+    metrics_.visits_admitted.fetch_add(admitted.size());
+    RaiseHighWater(metrics_.active_visits_high_water, visits_.active());
+  }
+  return admitted;
 }
 
-std::vector<size_t> VisitLimiter::PopWorkersToWake() {
-  std::vector<size_t> wake;
+std::vector<size_t> VisitLimiter::TakeWorkersToWake() {
   absl::MutexLock lock(mutex_);
-  if (IsAdmissionClosedLocked()) return wake;
   const size_t limit = GetActiveVisitLimit();
   const size_t active = visits_.active();
-  size_t available = limit > active ? limit - active : 0;
-  const size_t workers = worker_waiting_.size();
-  for (size_t n = 0; n < workers && available > 0; ++n) {
-    const size_t index = (next_worker_to_wake_ + n) % workers;
-    if (!worker_waiting_[index]) continue;
-    worker_waiting_[index] = false;
-    wake.push_back(index);
-    --available;
+  if (IsAdmissionClosedLocked() || active >= limit) return {};
+
+  std::vector<size_t> wake;
+  for (size_t i = 0, w = next_worker_to_wake_;
+       i < config_.workers && wake.size() < limit - active;
+       ++i, w = (w + 1) % config_.workers) {
+    if (worker_waiting_[w]) {
+      worker_waiting_[w] = false;
+      wake.push_back(w);
+      next_worker_to_wake_ = (w + 1) % config_.workers;
+    }
   }
-  if (!wake.empty()) next_worker_to_wake_ = (wake.back() + 1) % workers;
   return wake;
 }
 
 bool VisitLimiter::IsAdmissionClosedLocked() const {
   return IsStopping() || total_admitted_count_ >= config_.node_limit;
-}
-
-std::optional<VisitId> VisitLimiter::AdmitVisitLocked(
-    const VisitOrigin& origin) {
-  if (IsAdmissionClosedLocked() || visits_.active() >= GetActiveVisitLimit()) {
-    return std::nullopt;
-  }
-  const auto id = visits_.Allocate(origin);
-  if (!id) return std::nullopt;
-  ++total_admitted_count_;
-  metrics_.visits_admitted.fetch_add(1);
-  RaiseHighWater(metrics_.active_visits_high_water, visits_.active());
-  return id;
 }
 
 }  // namespace lczero::lc5

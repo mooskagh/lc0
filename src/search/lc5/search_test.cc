@@ -57,14 +57,15 @@ class SearchSessionTestPeer {
   // the pool is full.
   static bool AdmitVisit(SearchSession& session, const VisitOrigin& origin)
       ABSL_NO_THREAD_SAFETY_ANALYSIS {
-    const auto id = session.limiter_.AdmitVisit(origin);
-    if (!id) return false;
+    const size_t worker_idx =
+        session.visits_.active() % session.workers_.size();
+    const auto admitted = session.limiter_.AdmitVisits(worker_idx, origin, 1);
+    if (admitted.empty()) return false;
     // Starting the worker threads orders this before they run.
     assert(!session.started_.load());
-    auto& worker = *session.workers_[(session.visits_.active() - 1) %
-                                     session.workers_.size()];
+    auto& worker = *session.workers_[worker_idx];
     ++worker.active_visits_;
-    worker.runnable_.push_back(*id);
+    worker.runnable_.push_back(admitted[0]);
     return true;
   }
   // Before Start only: make the entire backlog ready before collectors start.
@@ -1681,8 +1682,8 @@ TEST(Lc5SearchTest, AbortOverridesRepeatedStopBeforeCommitment) {
 TEST(Lc5SearchTest, BlockedEvictionDoesNotDelayPartialBatch) {
   PolicyEngine<PuctAveraging> engine(TestParams());
   auto& graph = engine.graph();
-  auto& store = InstallStore<BlockingStore>(engine, 0);
-  ControlledBackend backend;
+  auto& store = InstallStore<BlockingStore>(engine);
+  ControlledBackend backend(ControlledBackend::Cache::kNone, true);
   RecordingResponder responder;
   const auto root = Origin();
   const auto legal = root.history.Last().GetBoard().GenerateLegalMoves();
@@ -1705,10 +1706,12 @@ TEST(Lc5SearchTest, BlockedEvictionDoesNotDelayPartialBatch) {
                         std::chrono::steady_clock::now());
   session.Start();
   const bool persisting = store.persist.WaitForArrival();
+  store.load.Release();
   const bool computing = backend.WaitForCompute();
   // Stop flushes the batch even if starvation was missed.
   session.Stop();
   store.Release();
+  backend.Release();
   session.Wait();
   ASSERT_TRUE(persisting);
   EXPECT_TRUE(computing);

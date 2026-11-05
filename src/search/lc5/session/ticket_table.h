@@ -67,7 +67,7 @@ class TicketTable {
   // is open for it, and returns whether to wait for it. If so, `wakeup` joins
   // the ticket, as its owner if it is new.
   template <typename Attach>
-  std::optional<Joined> Join(NodeKey key, VisitWakeup wakeup, Attach attach) {
+  std::optional<Joined> Join(NodeKey key, VisitWakeup wakeup, Attach&& attach) {
     absl::MutexLock lock(mutex_);
     const auto existing = id_by_key_.find(key);
     const bool owner = existing == id_by_key_.end();
@@ -88,7 +88,7 @@ class TicketTable {
   // `close(key)` gets open ticket `id`'s node `key` its content and returns
   // whether it did. If so, closes the ticket and returns it.
   template <typename Op>
-  std::optional<Ticket> Close(MaterializationTicketId id, Op close) {
+  std::optional<Ticket> Close(MaterializationTicketId id, Op&& close) {
     absl::MutexLock lock(mutex_);
     const auto it = tickets_.find(id);
     assert(it != tickets_.end());
