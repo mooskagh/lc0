@@ -363,7 +363,6 @@ bool SearchSession::IsAdmissionClosed() const {
 }
 
 std::optional<VisitId> SearchSession::AllocateVisit(const VisitOrigin& origin) {
-  // Allocate never holds pool -> slot.
   if (IsAdmissionClosed() || visits_.active() >= GetActiveVisitLimit()) {
     return std::nullopt;
   }
@@ -457,11 +456,7 @@ void SearchSession::ResumeVisit(VisitWorker& worker,
                                 const VisitWakeup& wakeup) {
   // A waiting visit is on exactly one ticket, which wakes it exactly once,
   // and only that wakeup can make it ready or release it.
-  VisitPool::Slot* slot = visits_.Lookup(wakeup.id);
-  assert(slot);
-  absl::MutexLock lock(slot->mutex);
-  assert(visits_.IsLiveLocked(*slot, wakeup.id));
-  Visit& visit = slot->visit;
+  Visit& visit = visits_.Get(wakeup.id);
   assert(visit.state == VisitState::kWaitingMaterialization);
   assert(visit.waiting_ticket == wakeup.ticket);
   visit.waiting_ticket = 0;
@@ -469,7 +464,7 @@ void SearchSession::ResumeVisit(VisitWorker& worker,
   if (wakeup.kind == VisitWakeup::Kind::kCancel ||
       (IsStopping() && (wakeup.kind == VisitWakeup::Kind::kSelect ||
                         wakeup.kind == VisitWakeup::Kind::kRestored))) {
-    CancelVisit(worker, *slot);
+    CancelVisit(worker, visit);
     return;
   }
   visit.path.back().generation = wakeup.generation;
@@ -486,7 +481,7 @@ void SearchSession::ResumeVisit(VisitWorker& worker,
   } else {
     switch (engine_->ResumeVisit(visit, metrics_)) {
       case VisitEngine::ResumeAction::kRestart:
-        RestartVisit(*slot);
+        RestartVisit(visit);
         break;
       case VisitEngine::ResumeAction::kBackup:
         visit.leaf_counted = false;
@@ -590,48 +585,42 @@ bool SearchSession::HasLocalWork(const VisitWorker& worker) const {
 
 void SearchSession::AdvanceVisit(VisitWorker& worker, VisitId id) {
   // Only this worker releases its visits, and never one that is runnable.
-  VisitPool::Slot* slot = visits_.Lookup(id);
-  assert(slot);
-  absl::MutexLock lock(slot->mutex);
-  assert(visits_.IsLiveLocked(*slot, id));
-  Visit& visit = slot->visit;
+  Visit& visit = visits_.Get(id);
   if (visit.state == VisitState::kReadyBackup) {
-    BackupVisit(worker, *slot);
+    BackupVisit(worker, visit);
     return;
   }
   if (IsStopping()) {
-    CancelVisit(worker, *slot);
+    CancelVisit(worker, visit);
     return;
   }
   assert(visit.state == VisitState::kReadySelect);
   for (;;) {
     if (IsStopping()) {
-      CancelVisit(worker, *slot);
+      CancelVisit(worker, visit);
       return;
     }
     if (engine_->DescendVisit(visit, metrics_) ==
         VisitEngine::DescendResult::kValuedLeaf) {
-      BackupVisit(worker, *slot);
+      BackupVisit(worker, visit);
       return;
     }
-    if (SuspendVisit(worker, *slot)) return;
+    if (SuspendVisit(worker, visit)) return;
   }
 }
 
-void SearchSession::BackupVisit(VisitWorker& worker, VisitPool::Slot& slot) {
-  Visit& visit = slot.visit;
+void SearchSession::BackupVisit(VisitWorker& worker, Visit& visit) {
   engine_->BackupVisit(visit, metrics_);
   RaiseHighWater(metrics_.max_depth, visit.path.size());
-  FinishVisit(worker, slot, true);
+  FinishVisit(worker, visit, true);
 }
 
-void SearchSession::CancelVisit(VisitWorker& worker, VisitPool::Slot& slot) {
-  engine_->CancelVisit(slot.visit, metrics_);
-  FinishVisit(worker, slot, false);
+void SearchSession::CancelVisit(VisitWorker& worker, Visit& visit) {
+  engine_->CancelVisit(visit, metrics_);
+  FinishVisit(worker, visit, false);
 }
 
-void SearchSession::RestartVisit(VisitPool::Slot& slot) {
-  Visit& visit = slot.visit;
+void SearchSession::RestartVisit(Visit& visit) {
   engine_->CancelVisit(visit, metrics_);
   visit.history = visit.origin.history;
   visit.current_key = visit.origin.key;
@@ -641,9 +630,8 @@ void SearchSession::RestartVisit(VisitPool::Slot& slot) {
   metrics_.visits_restarted.fetch_add(1);
 }
 
-void SearchSession::FinishVisit(VisitWorker& worker, VisitPool::Slot& slot,
+void SearchSession::FinishVisit(VisitWorker& worker, Visit& visit,
                                 bool completed) {
-  const VisitId id = slot.visit.id;
   if (completed) {
     const uint64_t count = metrics_.visits_completed.fetch_add(1) + 1;
     if (node_limit_ == count) worker.controller_event = true;
@@ -651,9 +639,8 @@ void SearchSession::FinishVisit(VisitWorker& worker, VisitPool::Slot& slot,
     metrics_.visits_cancelled.fetch_add(1);
   }
   --worker.active_visits;
-  [[maybe_unused]] const bool released = visits_.ReleaseLocked(slot, id);
-  assert(released);
-  // Admission and the controller are signalled later, outside the slot lock.
+  visits_.Release(visit.id);
+  // Admission and the controller are signalled once per pass, not per visit.
   worker.released_capacity = true;
 }
 
@@ -661,12 +648,11 @@ void SearchSession::FinishVisit(VisitWorker& worker, VisitPool::Slot& slot,
 // Materialization: tickets, materializations, jobs and batches.
 //////////////////////////////////////////////////////////////////////////////
 
-bool SearchSession::SuspendVisit(VisitWorker& worker, VisitPool::Slot& slot) {
-  Visit& visit = slot.visit;
+bool SearchSession::SuspendVisit(VisitWorker& worker, Visit& visit) {
   bool owner;
   MaterializationTicketId ticket_id;
   {
-    // Lock order: slot -> tickets -> one graph shard. No inbox transfer here.
+    // Lock order: tickets -> one graph shard. No inbox transfer here.
     absl::MutexLock lock(tickets_mutex_);
     const auto existing = ticket_by_key_.find(visit.current_key);
     owner = existing == ticket_by_key_.end();
@@ -701,7 +687,8 @@ bool SearchSession::SuspendVisit(VisitWorker& worker, VisitPool::Slot& slot) {
     worker.controller_event = true;
   }
   if (owner) {
-    // Preparation and publication happen later, outside this slot's lock.
+    // Prepared later, in SendJobs: a terminal would complete the ticket and
+    // resume this visit while AdvanceVisit is still stepping it.
     Materialization materialization{.ticket = ticket_id,
                                     .key = visit.current_key,
                                     .history = visit.history};
@@ -847,9 +834,8 @@ void SearchSession::SetWorkerProducing(VisitWorker& worker, bool producing) {
 
 void SearchSession::SendJobs(VisitWorker& worker) {
   if (IsStopping()) CancelQueuedMaterializations(worker);
-  // Detect terminals and generate legal moves for fresh materializations
-  // outside any slot lock. Terminal ones publish right away; the rest join
-  // `evals`.
+  // Detect terminals and generate legal moves for fresh materializations.
+  // Terminal ones publish right away; the rest join `evals`.
   while (!worker.unprepared.empty()) {
     Materialization materialization = std::move(worker.unprepared.front());
     worker.unprepared.pop_front();

@@ -33,7 +33,6 @@
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
-#include <memory>
 #include <optional>
 #include <vector>
 
@@ -41,16 +40,14 @@
 
 namespace lczero::lc5 {
 
-// Fixed-capacity pool of visit slots. A VisitId packs the slot index with a
+// Fixed-capacity pool of visits. A VisitId packs the slot index with a
 // per-slot epoch, so a stale id never resolves to a reused slot.
+//
+// A visit has a single owner from Allocate() to Release(): only the thread
+// that owns it reads or changes it, so slots need no lock. The pool's mutex
+// publishes a released slot to its next owner.
 class VisitPool {
  public:
-  struct Slot {
-    absl::Mutex mutex;
-    std::atomic<uint32_t> epoch{0};
-    Visit visit ABSL_GUARDED_BY(mutex);
-  };
-
   explicit VisitPool(size_t capacity);
   size_t capacity() const { return slots_.size(); }
 
@@ -58,33 +55,38 @@ class VisitPool {
   // Returns nullopt when the pool is full.
   std::optional<VisitId> Allocate(const VisitOrigin& origin);
 
-  // Returns the slot if `id` is still its current visit, else nullptr.
-  Slot* Lookup(VisitId id) {
-    assert(id && id.slot() < slots_.size());
-    Slot* slot = slots_[id.slot()].get();
-    return slot->epoch.load(std::memory_order_acquire) == id.epoch() ? slot
-                                                                     : nullptr;
+  // Whether `id` is a live visit, not a released or reused one.
+  bool IsLive(VisitId id) const {
+    if (!id || id.slot() >= slots_.size()) return false;
+    const Slot& slot = slots_[id.slot()];
+    return slot.epoch == id.epoch() && slot.visit.state != VisitState::kFree;
   }
-
-  // Whether `slot`, found by Lookup(id), still holds live visit `id`: it may
-  // have finished or been reused before its mutex was taken.
-  static bool IsLiveLocked(const Slot& slot, VisitId id)
-      ABSL_SHARED_LOCKS_REQUIRED(slot.mutex) {
-    return slot.epoch.load(std::memory_order_relaxed) == id.epoch() &&
-           slot.visit.state != VisitState::kFree;
+  // The live visit `id`.
+  Visit& Get(VisitId id) {
+    assert(IsLive(id));
+    return slots_[id.slot()].visit;
   }
+  // Resets the live visit `id` and frees its slot.
+  void Release(VisitId id);
 
-  bool ReleaseLocked(Slot& slot, VisitId id)
-      ABSL_EXCLUSIVE_LOCKS_REQUIRED(slot.mutex);
-
+  // Live visits, including ones allocated but not yet initialized.
   size_t active() const { return active_.load(std::memory_order_relaxed); }
-  std::vector<VisitId> ActiveIds() const;
+
+  void SetEpochForTesting(uint32_t slot, uint32_t epoch) {
+    slots_[slot].epoch = epoch;
+  }
 
  private:
-  absl::Mutex pool_mutex_;
-  std::vector<std::unique_ptr<Slot>> slots_;
-  // Every index is either free or reserved/active.
-  std::vector<uint32_t> free_indices_ ABSL_GUARDED_BY(pool_mutex_);
+  // Its own cache lines: neighbouring slots usually have different owners.
+  struct alignas(64) Slot {
+    uint32_t epoch = 0;
+    Visit visit;
+  };
+
+  absl::Mutex mutex_;
+  std::vector<Slot> slots_;
+  // A min-heap: Allocate reuses the lowest free index.
+  std::vector<uint32_t> free_indices_ ABSL_GUARDED_BY(mutex_);
   std::atomic<size_t> active_{0};
 };
 

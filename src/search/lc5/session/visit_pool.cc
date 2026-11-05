@@ -32,20 +32,16 @@
 
 namespace lczero::lc5 {
 
-VisitPool::VisitPool(size_t capacity) {
-  slots_.reserve(capacity);
+VisitPool::VisitPool(size_t capacity) : slots_(capacity) {
   free_indices_.reserve(capacity);
-  for (size_t i = 0; i < capacity; ++i) {
-    slots_.push_back(std::make_unique<Slot>());
-    free_indices_.push_back(i);
-  }
   // Ascending indices already form a min-heap.
+  for (size_t i = 0; i < capacity; ++i) free_indices_.push_back(i);
 }
 
 std::optional<VisitId> VisitPool::Allocate(const VisitOrigin& origin) {
   uint32_t i;
   {
-    absl::MutexLock pool_lock(pool_mutex_);
+    absl::MutexLock lock(mutex_);
     if (free_indices_.empty()) return std::nullopt;
     std::pop_heap(free_indices_.begin(), free_indices_.end(),
                   std::greater<uint32_t>{});
@@ -54,14 +50,10 @@ std::optional<VisitId> VisitPool::Allocate(const VisitOrigin& origin) {
     // Count reservations too, so admission cannot overfill the pool.
     ++active_;
   }
-  // Never hold pool_mutex_ while waiting for a slot: release locks
-  // slot -> pool.
-  Slot& slot = *slots_[i];
-  absl::MutexLock slot_lock(slot.mutex);
-  uint32_t epoch = slot.epoch.load(std::memory_order_relaxed) + 1;
-  if (epoch == 0) ++epoch;
-  slot.epoch.store(epoch, std::memory_order_release);
-  VisitId id{(static_cast<uint64_t>(epoch) << 32) | i};
+  // The slot is ours now; initialize it outside the lock.
+  Slot& slot = slots_[i];
+  if (++slot.epoch == 0) ++slot.epoch;
+  const VisitId id{(static_cast<uint64_t>(slot.epoch) << 32) | i};
   slot.visit = Visit{.id = id,
                      .state = VisitState::kReadySelect,
                      .origin = origin,
@@ -72,27 +64,15 @@ std::optional<VisitId> VisitPool::Allocate(const VisitOrigin& origin) {
   return id;
 }
 
-bool VisitPool::ReleaseLocked(Slot& slot, VisitId id) {
-  if (slot.epoch.load(std::memory_order_relaxed) != id.epoch() ||
-      slot.visit.id != id || slot.visit.state == VisitState::kFree)
-    return false;
-  slot.visit = Visit{};
+void VisitPool::Release(VisitId id) {
+  assert(IsLive(id));
+  slots_[id.slot()].visit = Visit{};
   // Publish only after resetting the visit.
-  absl::MutexLock pool_lock(pool_mutex_);
+  absl::MutexLock lock(mutex_);
   free_indices_.push_back(id.slot());
   std::push_heap(free_indices_.begin(), free_indices_.end(),
                  std::greater<uint32_t>{});
   active_.fetch_sub(1, std::memory_order_relaxed);
-  return true;
-}
-
-std::vector<VisitId> VisitPool::ActiveIds() const {
-  std::vector<VisitId> ids;
-  for (const auto& ptr : slots_) {
-    absl::MutexLock lock(ptr->mutex);
-    if (ptr->visit.state != VisitState::kFree) ids.push_back(ptr->visit.id);
-  }
-  return ids;
 }
 
 }  // namespace lczero::lc5

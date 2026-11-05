@@ -136,17 +136,12 @@ class SearchSession {
   // Visit.
   void AdvanceVisit(VisitWorker& worker, VisitId id);
   void ResumeVisit(VisitWorker& worker, const VisitWakeup& wakeup);
-  bool SuspendVisit(VisitWorker& worker, VisitPool::Slot& slot)
-      ABSL_EXCLUSIVE_LOCKS_REQUIRED(slot.mutex);
-  void BackupVisit(VisitWorker& worker, VisitPool::Slot& slot)
-      ABSL_EXCLUSIVE_LOCKS_REQUIRED(slot.mutex);
-  void CancelVisit(VisitWorker& worker, VisitPool::Slot& slot)
-      ABSL_EXCLUSIVE_LOCKS_REQUIRED(slot.mutex);
+  bool SuspendVisit(VisitWorker& worker, Visit& visit);
+  void BackupVisit(VisitWorker& worker, Visit& visit);
+  void CancelVisit(VisitWorker& worker, Visit& visit);
   // Releases the visit's reservations and returns it to its origin.
-  void RestartVisit(VisitPool::Slot& slot)
-      ABSL_EXCLUSIVE_LOCKS_REQUIRED(slot.mutex);
-  void FinishVisit(VisitWorker& worker, VisitPool::Slot& slot, bool completed)
-      ABSL_EXCLUSIVE_LOCKS_REQUIRED(slot.mutex);
+  void RestartVisit(Visit& visit);
+  void FinishVisit(VisitWorker& worker, Visit& visit, bool completed);
 
   // VisitWakeup.
   void DeliverWakeup(VisitWorker& worker, const VisitWakeup& wakeup);
