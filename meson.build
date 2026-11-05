@@ -242,6 +242,7 @@ if get_option('lc5')
     'src/search/lc5/session/search_session.cc',
     'src/search/lc5/session/session_gate.cc',
     'src/search/lc5/session/visit_pool.cc',
+    'src/search/lc5/session/visit_worker.cc',
     'src/search/lc5/settings.cc',
     'src/search/lc5/time_manager.cc',
   ]
@@ -1247,6 +1248,7 @@ if get_option('gtest')
         'src/search/lc5/session/search_session.cc',
         'src/search/lc5/session/session_gate.cc',
         'src/search/lc5/session/visit_pool.cc',
+        'src/search/lc5/session/visit_worker.cc',
         'src/search/lc5/engine.cc',
         'src/search/lc5/store/memory_node_store.cc',
         'src/search/lc5/metrics.cc',

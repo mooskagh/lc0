@@ -27,14 +27,9 @@
 
 #pragma once
 
-#include <absl/synchronization/mutex.h>
-
 #include <atomic>
 #include <chrono>
-#include <deque>
 #include <memory>
-#include <optional>
-#include <span>
 #include <thread>
 #include <vector>
 
@@ -46,6 +41,7 @@
 #include "search/lc5/session/session_gate.h"
 #include "search/lc5/session/ticket_table.h"
 #include "search/lc5/session/visit_pool.h"
+#include "search/lc5/session/visit_worker.h"
 #include "search/lc5/session/work_queue.h"
 #include "search/lc5/settings.h"
 #include "search/lc5/store/node_store.h"
@@ -79,12 +75,8 @@ class SearchSession {
   friend class SearchSessionTestPeer;
   using StopMode = SessionGate::StopMode;
 
-  // A visit thread's state; defined below the class.
-  struct VisitWorker;
-
   // Thread bodies; each runs until its thread exits. Start() spawns them.
   void RunControllerWorker();
-  void RunVisitWorker(VisitWorker& worker);
   void RunEvaluatorWorker();
   void RunStoreWorker();
 
@@ -102,68 +94,10 @@ class SearchSession {
     return has_store_ && settings_.graph_node_limit > 0;
   }
 
-  // Admission.
-  // Admits new visits from the root for `worker`, up to kVisitsPerPass and
-  // its share of the pool.
-  void AdmitNewRootVisits(VisitWorker& worker);
-  void WakeAdmissionWaiters();
-
-  // Visit worker loop.
-  // In one pass of its loop, a worker advances at most this many visits and
-  // admits at most this many new ones, then checks its inbox again.
-  static constexpr size_t kVisitsPerPass = 32;
-
-  void ProcessInbox(VisitWorker& worker);
-  void ResumeLocalVisits(VisitWorker& worker);
-  void AdvanceRunnableVisits(VisitWorker& worker, size_t limit);
-  void CancelWorkerVisits(VisitWorker& worker);
-  void PublishWorkerState(VisitWorker& worker);
-  bool HasLocalWork(const VisitWorker& worker) const;
-
-  // Visit.
-  void AdvanceVisit(VisitWorker& worker, VisitId id);
-  void ResumeVisit(VisitWorker& worker, const VisitWakeup& wakeup);
-  bool SuspendVisit(VisitWorker& worker, Visit& visit);
-  void BackupVisit(VisitWorker& worker, Visit& visit);
-  void CancelVisit(VisitWorker& worker, Visit& visit);
-  // Releases the visit's reservations and returns it to its origin.
-  void RestartVisit(Visit& visit);
-  void FinishVisit(VisitWorker& worker, Visit& visit, bool completed);
-
-  // VisitWakeup.
-  void DeliverWakeup(VisitWorker& worker, const VisitWakeup& wakeup);
-  void SendWakeups(size_t worker, std::vector<VisitWakeup>& batch);
-
-  // Materialization. SuspendVisit opens a Ticket and its Materialization.
-  void PrepareMaterialization(VisitWorker& worker,
-                              Materialization materialization);
-  void CompleteTicket(VisitWorker& worker, MaterializationTicketId ticket,
-                      ExpansionPayload payload);
-  // Publishes a node restored from the store; returns false, with the ticket
-  // still open, if the record was rejected.
-  bool RestoreTicket(VisitWorker& worker, MaterializationTicketId ticket,
-                     std::span<const uint8_t> record);
-  void CancelTicket(VisitWorker& worker, MaterializationTicketId ticket);
-  void CancelQueuedMaterializations(VisitWorker& worker);
-
-  // AsyncJob.
-  // Per worker, at most this many jobs sent and not yet finished...
-  static constexpr size_t kMaxJobsInFlight = 16;
-  // ...holding at most this many minibatches of materializations.
-  static constexpr size_t kMaxItemsInFlightBatches = 2;
-  // A job holds at most 1/kJobsPerBatch of a minibatch, so an evaluator can
-  // mix several jobs into one batch.
-  static constexpr size_t kJobsPerBatch = 4;
-
-  // A visit thread builds and sends jobs; a store thread or an evaluator runs
-  // them and returns them to the worker, which finishes them.
-  void SendJobs(VisitWorker& worker);
-  bool CanSendJob(const VisitWorker& worker) const;
-  std::unique_ptr<AsyncJob> BuildJob(VisitWorker& worker) const;
-  void SetWorkerProducing(VisitWorker& worker, bool producing);
+  // Jobs. A visit worker sends them; a store thread or an evaluator runs
+  // them and returns them to the worker.
   void RunLoadJob(AsyncJob& job);
   void ReturnJobToWorker(std::unique_ptr<AsyncJob> job);
-  void FinishJob(VisitWorker& worker, std::unique_ptr<AsyncJob> job);
   // The controller's job: evict when the graph is over its node limit.
   void SendEvictionJob();
   void RunEvictionJob(const EvictionJob& job);
@@ -197,6 +131,7 @@ class SearchSession {
   SessionGate gate_;
 
   // Threads and the queues between them.
+  std::vector<WorkerInbox> inboxes_;  // By visit worker index.
   std::vector<std::unique_ptr<VisitWorker>> workers_;
   WorkQueue<StoreJob> store_jobs_;
   WorkQueue<std::unique_ptr<AsyncJob>> eval_jobs_;
@@ -219,36 +154,9 @@ class SearchSession {
 
   // Lifecycle and the controller's wakeups.
   std::atomic<bool> started_{false};
-  std::atomic<bool> shutdown_{false};
   std::atomic<bool> finished_{false};
   std::atomic<int64_t> unused_time_ms_{0};
   ControllerSignal controller_;
-};
-
-struct SearchSession::VisitWorker {
-  explicit VisitWorker(size_t index) : index(index) {}
-  bool HasQueuedIo() const { return !loads.empty() || !evals.empty(); }
-
-  const size_t index;
-  WorkerInbox inbox;
-  // All fields below are touched only by this worker.
-  std::deque<VisitId> runnable;
-  size_t active_visits = 0;  // Owned visits: runnable or waiting on a ticket.
-  std::deque<Materialization> loads;
-  std::deque<Materialization> evals;
-  // Wakeups for this worker's own visits, resumed in ProcessInbox: never
-  // while AdvanceVisit may be stepping the visit.
-  std::vector<VisitWakeup> local_wakeups;
-  std::vector<std::vector<VisitWakeup>> outgoing;  // Indexed by worker.
-  size_t jobs_in_flight = 0;                       // Sent and not yet finished.
-  size_t items_in_flight = 0;  // The materializations in those jobs.
-  bool cancelled = false;
-  bool released_capacity = false;
-  bool controller_event = false;
-  std::atomic<bool> drained{false};
-  // Conservative signal: this worker can send a job without a collected job's
-  // completion. Initially true until the first work chunk is inspected.
-  std::atomic<bool> producing{true};
 };
 
 }  // namespace lczero::lc5

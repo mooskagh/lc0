@@ -63,6 +63,7 @@ class SessionGate {
   static constexpr size_t kMinActiveVisits = 16;
 
   SessionGate(const Config& config, VisitPool& visits, Metrics& metrics);
+  uint64_t node_limit() const { return config_.node_limit; }
 
   // Lock-free; for the hot path.
   bool IsStopping() const { return stop_mode() != StopMode::kRunning; }

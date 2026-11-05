@@ -123,12 +123,17 @@ struct Batch {
   bool timed_out = false;  // Flushed at the deadline; only counted in metrics.
 };
 
-// A worker's inbox. Senders lock `mutex` and add to it; unlocking wakes the
-// owner if its wait condition now holds.
+// A visit worker's inbox. Senders lock `mutex` and add to it; unlocking wakes
+// the owner if its wait condition now holds.
 struct WorkerInbox {
   // Makes the owner re-evaluate its wait condition after external state
-  // (stop, shutdown) changed.
+  // (stop) changed.
   void Wake() { absl::MutexLock lock(mutex); }
+  // Makes the owner exit; only once the session is drained.
+  void Shutdown() {
+    absl::MutexLock lock(mutex);
+    shutdown = true;
+  }
 
   absl::Mutex mutex;
   // For this worker's visits.
@@ -137,6 +142,7 @@ struct WorkerInbox {
   std::vector<std::unique_ptr<AsyncJob>> completions ABSL_GUARDED_BY(mutex);
   // Capacity was freed; try to admit visits again.
   bool admission_ready ABSL_GUARDED_BY(mutex) = false;
+  bool shutdown ABSL_GUARDED_BY(mutex) = false;
 };
 
 // Wakes the controller. Any thread may Notify. The controller takes the

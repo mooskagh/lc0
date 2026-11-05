@@ -30,6 +30,7 @@
 #include <algorithm>
 #include <cassert>
 #include <condition_variable>
+#include <limits>
 #include <mutex>
 #include <optional>
 #include <thread>
@@ -62,23 +63,17 @@ class SearchSessionTestPeer {
     assert(!session.started_.load());
     auto& worker = *session.workers_[(session.visits_.active() - 1) %
                                      session.workers_.size()];
-    ++worker.active_visits;
-    worker.runnable.push_back(*id);
+    ++worker.active_visits_;
+    worker.runnable_.push_back(*id);
     return true;
   }
   // Before Start only: make the entire backlog ready before collectors start.
   static void PrepareAdmissions(SearchSession& session)
       ABSL_NO_THREAD_SAFETY_ANALYSIS {
-    for (auto& ptr : session.workers_) {
-      auto& worker = *ptr;
-      worker.outgoing.resize(session.workers_.size());
-      while (!worker.runnable.empty()) {
-        auto id = worker.runnable.front();
-        worker.runnable.pop_front();
-        session.AdvanceVisit(worker, id);
-      }
-      session.SendJobs(worker);
-      session.SetWorkerProducing(worker, false);
+    for (auto& worker : session.workers_) {
+      worker->AdvanceRunnableVisits(std::numeric_limits<size_t>::max());
+      worker->SendJobs();
+      worker->SetProducing(false);
     }
   }
   // Inspect owner-local state only after Wait's full join barrier.
@@ -92,16 +87,18 @@ class SearchSessionTestPeer {
     EXPECT_EQ(session.eval_jobs_.Size(), 0u);
     EXPECT_EQ(session.store_jobs_.Size(), 0u);
     for (const auto& worker : session.workers_) {
-      EXPECT_TRUE(worker->drained.load());
-      EXPECT_EQ(worker->active_visits, 0u);
-      EXPECT_TRUE(worker->runnable.empty());
-      EXPECT_TRUE(worker->local_wakeups.empty());
-      EXPECT_TRUE(worker->loads.empty());
-      EXPECT_TRUE(worker->evals.empty());
-      EXPECT_EQ(worker->jobs_in_flight, 0u);
-      EXPECT_EQ(worker->items_in_flight, 0u);
-      EXPECT_TRUE(worker->inbox.wakeups.empty());
-      EXPECT_TRUE(worker->inbox.completions.empty());
+      EXPECT_TRUE(worker->drained_.load());
+      EXPECT_EQ(worker->active_visits_, 0u);
+      EXPECT_TRUE(worker->runnable_.empty());
+      EXPECT_TRUE(worker->local_wakeups_.empty());
+      EXPECT_TRUE(worker->loads_.empty());
+      EXPECT_TRUE(worker->evals_.empty());
+      EXPECT_EQ(worker->jobs_in_flight_, 0u);
+      EXPECT_EQ(worker->items_in_flight_, 0u);
+    }
+    for (const auto& inbox : session.inboxes_) {
+      EXPECT_TRUE(inbox.wakeups.empty());
+      EXPECT_TRUE(inbox.completions.empty());
     }
   }
   static void ExpectDrained(const Lc5Engine& engine) {

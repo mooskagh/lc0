@@ -27,21 +27,18 @@
 
 #include "search/lc5/session/search_session.h"
 
-#include <absl/time/time.h>
+#include <absl/synchronization/mutex.h>
 
 #include <algorithm>
 #include <cassert>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
-#include <limits>
 #include <memory>
 #include <optional>
 #include <utility>
 #include <variant>
 #include <vector>
-
-#include "search/lc5/graph/prior.h"
 
 namespace lczero::lc5 {
 namespace {
@@ -68,56 +65,6 @@ uint64_t GetNodeLimit(const GoParams& go_params, uint64_t root_visits) {
 Move ToUci(Move move, const Position& position) {
   if (position.IsBlackToMove()) move.Flip();
   return move;
-}
-
-// Returns a terminal payload, or a nonterminal one with the legal moves.
-ExpansionPayload DetectTerminal(const PositionHistory& history) {
-  ExpansionPayload payload;
-  const Position& position = history.Last();
-  const ChessBoard& board = position.GetBoard();
-  const auto legal = board.GenerateLegalMoves();
-  if (legal.empty()) {
-    payload.terminal = board.IsUnderCheck() ? TerminalKind::kCheckmate
-                                            : TerminalKind::kStalemate;
-  } else if (!board.HasMatingMaterial()) {
-    payload.terminal = TerminalKind::kInsufficientMaterial;
-  } else if (position.GetRule50Ply() >= 100) {
-    payload.terminal = TerminalKind::kRule50;
-  } else if (position.GetRepetitions() >= 2) {
-    payload.terminal = TerminalKind::kRepetition;
-  } else {
-    payload.moves.assign(legal.begin(), legal.end());
-    return payload;
-  }
-  payload.leaf = TerminalValue(payload.terminal);
-  return payload;
-}
-
-// Rounds priors to the precision the graph stores them in, then orders edges
-// by descending prior, ties by move encoding. Sorting the rounded values keeps
-// the order the graph relies on even when rounding makes two priors equal.
-void SortByPrior(ExpansionPayload& payload) {
-  std::vector<std::pair<float, Move>> edges;
-  edges.reserve(payload.moves.size());
-  for (size_t i = 0; i < payload.moves.size(); ++i) {
-    edges.emplace_back(PackedPrior(payload.priors[i]), payload.moves[i]);
-  }
-  std::ranges::sort(edges, [](const auto& a, const auto& b) {
-    if (a.first != b.first) return a.first > b.first;
-    return a.second.raw_data() < b.second.raw_data();
-  });
-  for (size_t i = 0; i < edges.size(); ++i) {
-    std::tie(payload.priors[i], payload.moves[i]) = edges[i];
-  }
-}
-
-// Moves up to `limit` items from the front of `from` to the back of `to`.
-template <typename T>
-void MoveFront(std::deque<T>& from, std::vector<T>& to, size_t limit) {
-  while (!from.empty() && to.size() < limit) {
-    to.push_back(std::move(from.front()));
-    from.pop_front();
-  }
 }
 
 }  // namespace
@@ -151,9 +98,22 @@ SearchSession::SearchSession(VisitEngine* engine, Backend* backend,
              .node_limit = node_limit_,
              .root_visits_at_start = root_visits_at_start_,
              .active_visits_ratio = settings_.active_visits_ratio},
-            visits_, metrics_) {
-  for (int i = 0; i < settings_.threads; ++i) {
-    workers_.push_back(std::make_unique<VisitWorker>(i));
+            visits_, metrics_),
+      inboxes_(settings_.threads) {
+  const VisitWorker::Context context{.engine = *engine_,
+                                     .settings = settings_,
+                                     .root = root_,
+                                     .visits = visits_,
+                                     .metrics = metrics_,
+                                     .gate = gate_,
+                                     .tickets = tickets_,
+                                     .inboxes = inboxes_,
+                                     .eval_jobs = eval_jobs_,
+                                     .store_jobs = store_jobs_,
+                                     .jobs_in_flight = jobs_in_flight_,
+                                     .controller = controller_};
+  for (size_t i = 0; i < inboxes_.size(); ++i) {
+    workers_.push_back(std::make_unique<VisitWorker>(i, context));
   }
 }
 
@@ -170,8 +130,7 @@ void SearchSession::Start() {
     evaluator_threads_.emplace_back(&SearchSession::RunEvaluatorWorker, this);
   }
   for (auto& worker : workers_) {
-    visit_threads_.emplace_back(&SearchSession::RunVisitWorker, this,
-                                std::ref(*worker));
+    visit_threads_.emplace_back(&VisitWorker::Run, worker.get());
   }
   if (node_limit_ == 0) Stop();
   controller_thread_ = std::thread(&SearchSession::RunControllerWorker, this);
@@ -191,7 +150,7 @@ void SearchSession::Wait() {
 }
 
 void SearchSession::WakeAllWorkers() {
-  for (auto& worker : workers_) worker->inbox.Wake();
+  for (auto& inbox : inboxes_) inbox.Wake();
 }
 
 void SearchSession::RunControllerWorker() {
@@ -279,18 +238,13 @@ bool SearchSession::IsFullyDrained() {
   // Workers may hold unpublished local materializations. Require their
   // explicit idle acknowledgement, not merely empty executor queues.
   for (auto& worker : workers_) {
-    absl::MutexLock lock(worker->inbox.mutex);
-    if (!worker->inbox.wakeups.empty() || !worker->inbox.completions.empty() ||
-        !worker->drained.load()) {
-      return false;
-    }
+    if (!worker->IsDrained()) return false;
   }
   return true;
 }
 
 void SearchSession::JoinThreads() {
-  shutdown_.store(true);
-  WakeAllWorkers();
+  for (auto& inbox : inboxes_) inbox.Shutdown();
   for (auto& thread : visit_threads_) thread.join();
   store_jobs_.Close();
   eval_jobs_.Close();
@@ -329,499 +283,16 @@ ThinkingInfo SearchSession::BuildThinkingInfo(bool final) const {
 }
 
 //////////////////////////////////////////////////////////////////////////////
-// Visits: admission, the worker loop and each visit's steps.
+// Store threads and evaluators: they run jobs and return them.
 //////////////////////////////////////////////////////////////////////////////
-
-void SearchSession::AdmitNewRootVisits(VisitWorker& worker) {
-  // A modest per-worker share prevents one worker from monopolizing the pool.
-  const size_t share =
-      (visits_.capacity() + workers_.size() - 1) / workers_.size();
-  const size_t count =
-      std::min(kVisitsPerPass, share - std::min(share, worker.active_visits));
-  gate_.AdmitFor(worker.index, root_, count, [&](VisitId id) {
-    ++worker.active_visits;
-    worker.runnable.push_back(id);
-  });
-  RaiseHighWater(metrics_.visits_ready_high_water, worker.runnable.size());
-}
-
-void SearchSession::WakeAdmissionWaiters() {
-  for (size_t index : gate_.TakeWaitersToWake()) {
-    auto& inbox = workers_[index]->inbox;
-    absl::MutexLock lock(inbox.mutex);
-    inbox.admission_ready = true;
-  }
-}
-
-void SearchSession::SendWakeups(size_t worker,
-                                std::vector<VisitWakeup>& batch) {
-  if (batch.empty()) return;
-  {
-    auto& inbox = workers_[worker]->inbox;
-    absl::MutexLock lock(inbox.mutex);
-    inbox.wakeups.insert(inbox.wakeups.end(), batch.begin(), batch.end());
-  }
-  batch.clear();
-  metrics_.inbox_notifications.fetch_add(1);
-}
-
-void SearchSession::DeliverWakeup(VisitWorker& worker,
-                                  const VisitWakeup& wakeup) {
-  (wakeup.worker == worker.index ? worker.local_wakeups
-                                 : worker.outgoing[wakeup.worker])
-      .push_back(wakeup);
-}
-
-void SearchSession::ResumeVisit(VisitWorker& worker,
-                                const VisitWakeup& wakeup) {
-  // A waiting visit is on exactly one ticket, which wakes it exactly once,
-  // and only that wakeup can make it ready or release it.
-  Visit& visit = visits_.Get(wakeup.id);
-  assert(visit.state == VisitState::kWaitingMaterialization);
-  assert(visit.waiting_ticket == wakeup.ticket);
-  visit.waiting_ticket = 0;
-  // On stop, visits finish only when their evaluation already exists.
-  if (wakeup.kind == VisitWakeup::Kind::kCancel ||
-      (IsStopping() && (wakeup.kind == VisitWakeup::Kind::kSelect ||
-                        wakeup.kind == VisitWakeup::Kind::kRestored))) {
-    CancelVisit(worker, visit);
-    return;
-  }
-  visit.path.back().generation = wakeup.generation;
-  visit.path.back().selected_move.reset();
-  visit.result = wakeup.value;
-  visit.result_exact = wakeup.exact;
-  if (wakeup.kind == VisitWakeup::Kind::kBackup ||
-      wakeup.kind == VisitWakeup::Kind::kBackupAbove) {
-    visit.leaf_counted = wakeup.kind == VisitWakeup::Kind::kBackupAbove;
-    visit.state = VisitState::kReadyBackup;
-  } else if (wakeup.kind == VisitWakeup::Kind::kRestored) {
-    visit.state = VisitState::kReadySelect;
-    metrics_.visits_resumed.fetch_add(1);
-  } else {
-    switch (engine_->ResumeVisit(visit, metrics_)) {
-      case VisitEngine::ResumeAction::kRestart:
-        RestartVisit(visit);
-        break;
-      case VisitEngine::ResumeAction::kBackup:
-        visit.leaf_counted = false;
-        visit.state = VisitState::kReadyBackup;
-        break;
-      case VisitEngine::ResumeAction::kSelect:
-        visit.state = VisitState::kReadySelect;
-        metrics_.visits_resumed.fetch_add(1);
-        break;
-    }
-  }
-  if (wakeup.terminal) metrics_.terminal_visits.fetch_add(1);
-  worker.runnable.push_back(wakeup.id);
-}
-
-void SearchSession::RunVisitWorker(VisitWorker& worker) {
-  worker.outgoing.resize(workers_.size());
-  for (;;) {
-    ProcessInbox(worker);
-    if (IsStopping()) {
-      CancelWorkerVisits(worker);
-    } else {
-      AdvanceRunnableVisits(worker, kVisitsPerPass);
-      AdmitNewRootVisits(worker);
-    }
-    SendJobs(worker);
-    for (size_t i = 0; i < workers_.size(); ++i) {
-      SendWakeups(i, worker.outgoing[i]);
-    }
-    PublishWorkerState(worker);
-    if (shutdown_.load()) break;
-    // Keep going locally without a wake or controller handoff. Suspended
-    // visits and the in-flight limits wait for whole completions.
-    if (HasLocalWork(worker)) continue;
-    // Senders evaluate this on unlock; `cancelled` is written only by this
-    // worker, never while it waits here.
-    auto& inbox = worker.inbox;
-    absl::MutexLock lock(inbox.mutex);
-    const auto ready = [&] {
-      inbox.mutex.AssertReaderHeld();
-      return shutdown_.load() || inbox.admission_ready ||
-             !inbox.wakeups.empty() || !inbox.completions.empty() ||
-             (!worker.cancelled && IsStopping());
-    };
-    inbox.mutex.Await(absl::Condition(&ready));
-  }
-}
-
-void SearchSession::ProcessInbox(VisitWorker& worker) {
-  std::vector<VisitWakeup> wakeups;
-  std::vector<std::unique_ptr<AsyncJob>> completions;
-  bool admission_ready;
-  {
-    absl::MutexLock lock(worker.inbox.mutex);
-    wakeups.swap(worker.inbox.wakeups);
-    completions.swap(worker.inbox.completions);
-    admission_ready = std::exchange(worker.inbox.admission_ready, false);
-  }
-  if (admission_ready || !wakeups.empty() || !completions.empty()) {
-    // Actual incoming work can enable preparation or refill. This transition
-    // disables starvation and needs no broadcast.
-    SetWorkerProducing(worker, true);
-    if (worker.drained.exchange(false)) worker.controller_event = true;
-  }
-  for (const auto& wakeup : wakeups) ResumeVisit(worker, wakeup);
-  for (auto& job : completions) FinishJob(worker, std::move(job));
-  ResumeLocalVisits(worker);
-}
-
-void SearchSession::ResumeLocalVisits(VisitWorker& worker) {
-  // ResumeVisit wakes no visits, so this empties the queue.
-  for (const auto& wakeup : worker.local_wakeups) ResumeVisit(worker, wakeup);
-  worker.local_wakeups.clear();
-}
-
-void SearchSession::AdvanceRunnableVisits(VisitWorker& worker, size_t limit) {
-  for (size_t i = 0; i < limit && !worker.runnable.empty(); ++i) {
-    const VisitId id = worker.runnable.front();
-    worker.runnable.pop_front();
-    AdvanceVisit(worker, id);
-  }
-}
-
-void SearchSession::CancelWorkerVisits(VisitWorker& worker) {
-  // Every visit that is not waiting on a ticket is runnable: ready backups
-  // finish, the rest are cancelled. Waiting visits stay until their ticket
-  // completes or is cancelled, and come back through ResumeVisit.
-  worker.cancelled = true;
-  AdvanceRunnableVisits(worker, std::numeric_limits<size_t>::max());
-}
-
-void SearchSession::PublishWorkerState(VisitWorker& worker) {
-  const bool drained = worker.cancelled && worker.active_visits == 0 &&
-                       worker.jobs_in_flight == 0 && !worker.HasQueuedIo() &&
-                       worker.local_wakeups.empty();
-  if (worker.drained.exchange(drained) != drained) {
-    worker.controller_event = true;
-  }
-  if (std::exchange(worker.released_capacity, false)) WakeAdmissionWaiters();
-  if (std::exchange(worker.controller_event, false)) controller_.Notify();
-  SetWorkerProducing(
-      worker, CanSendJob(worker) &&
-                  (!worker.runnable.empty() || !worker.local_wakeups.empty() ||
-                   worker.HasQueuedIo()));
-}
-
-bool SearchSession::HasLocalWork(const VisitWorker& worker) const {
-  return !worker.local_wakeups.empty() ||
-         (!IsStopping() && !worker.runnable.empty()) ||
-         (CanSendJob(worker) && worker.HasQueuedIo());
-}
-
-void SearchSession::AdvanceVisit(VisitWorker& worker, VisitId id) {
-  // Only this worker releases its visits, and never one that is runnable.
-  Visit& visit = visits_.Get(id);
-  if (visit.state == VisitState::kReadyBackup) {
-    BackupVisit(worker, visit);
-    return;
-  }
-  if (IsStopping()) {
-    CancelVisit(worker, visit);
-    return;
-  }
-  assert(visit.state == VisitState::kReadySelect);
-  for (;;) {
-    if (IsStopping()) {
-      CancelVisit(worker, visit);
-      return;
-    }
-    if (engine_->DescendVisit(visit, metrics_) ==
-        VisitEngine::DescendResult::kValuedLeaf) {
-      BackupVisit(worker, visit);
-      return;
-    }
-    if (SuspendVisit(worker, visit)) return;
-  }
-}
-
-void SearchSession::BackupVisit(VisitWorker& worker, Visit& visit) {
-  engine_->BackupVisit(visit, metrics_);
-  RaiseHighWater(metrics_.max_depth, visit.path.size());
-  FinishVisit(worker, visit, true);
-}
-
-void SearchSession::CancelVisit(VisitWorker& worker, Visit& visit) {
-  engine_->CancelVisit(visit, metrics_);
-  FinishVisit(worker, visit, false);
-}
-
-void SearchSession::RestartVisit(Visit& visit) {
-  engine_->CancelVisit(visit, metrics_);
-  visit.history = visit.origin.history;
-  visit.current_key = visit.origin.key;
-  visit.path = visit.origin.backup_prefix;
-  visit.two_fold_origin.reset();
-  visit.state = VisitState::kReadySelect;
-  metrics_.visits_restarted.fetch_add(1);
-}
-
-void SearchSession::FinishVisit(VisitWorker& worker, Visit& visit,
-                                bool completed) {
-  if (completed) {
-    const uint64_t count = metrics_.visits_completed.fetch_add(1) + 1;
-    if (node_limit_ == count) worker.controller_event = true;
-  } else {
-    metrics_.visits_cancelled.fetch_add(1);
-  }
-  --worker.active_visits;
-  visits_.Release(visit.id);
-  // Admission and the controller are signalled once per pass, not per visit.
-  worker.released_capacity = true;
-}
-
-//////////////////////////////////////////////////////////////////////////////
-// Materialization: tickets, materializations, jobs and batches.
-//////////////////////////////////////////////////////////////////////////////
-
-bool SearchSession::SuspendVisit(VisitWorker& worker, Visit& visit) {
-  FindOrCreateResult node{};
-  const auto joined = tickets_.Join(
-      visit.current_key, {.id = visit.id, .worker = worker.index},
-      [&](MaterializationTicketId id) {
-        node = engine_->FindOrCreateMaterialization(visit.current_key, id);
-        assert(node.lifecycle == NodeLifecycle::kExpanded || node.ticket == id);
-        return node.lifecycle != NodeLifecycle::kExpanded;
-      });
-  if (node.created) metrics_.graph_nodes_created.fetch_add(1);
-  if (!joined) return false;
-  const bool owner = joined->owner;
-  if (owner) {
-    metrics_.tickets_created.fetch_add(1);
-  } else {
-    metrics_.ticket_waiters.fetch_add(1);
-    RaiseHighWater(metrics_.maximum_waiters_per_ticket, joined->waiters);
-  }
-  visit.path.back().generation = node.generation;
-  visit.waiting_ticket = joined->id;
-  visit.state = VisitState::kWaitingMaterialization;
-  metrics_.visits_suspended.fetch_add(1);
-  // Wakes the controller once the graph outgrows its limit, so eviction keeps
-  // up with fast searches between its periodic checks.
-  if (owner && HasNodeLimit() &&
-      engine_->GetGraphSize() > settings_.graph_node_limit &&
-      controller_.RequestEviction()) {
-    worker.controller_event = true;
-  }
-  if (owner) {
-    Materialization materialization{.ticket = joined->id,
-                                    .key = visit.current_key,
-                                    .history = visit.history};
-    // A stored node may hold statistics, even if terminal: look it up first.
-    if (has_store_) {
-      worker.loads.push_back(std::move(materialization));
-    } else {
-      PrepareMaterialization(worker, std::move(materialization));
-    }
-  }
-  return true;
-}
-
-void SearchSession::PrepareMaterialization(VisitWorker& worker,
-                                           Materialization materialization) {
-  if (IsStopping()) {
-    CancelTicket(worker, materialization.ticket);
-    return;
-  }
-  materialization.payload = DetectTerminal(materialization.history);
-  if (materialization.payload.terminal != TerminalKind::kNonTerminal) {
-    CompleteTicket(worker, materialization.ticket,
-                   std::move(materialization.payload));
-    return;
-  }
-  materialization.payload.priors.resize(materialization.payload.moves.size());
-  materialization.state = Materialization::State::kPending;
-  metrics_.eval_requests.fetch_add(1);
-  worker.evals.push_back(std::move(materialization));
-}
-
-void SearchSession::CompleteTicket(VisitWorker& worker,
-                                   MaterializationTicketId ticket_id,
-                                   ExpansionPayload payload) {
-  MaterializationResult installed;
-  const auto ticket = tickets_.Close(ticket_id, [&](NodeKey key) {
-    installed = engine_->CompleteMaterialization(key, ticket_id, payload);
-    return true;
-  });
-  assert(ticket->owner.worker == worker.index);
-  RaiseHighWater(metrics_.graph_size_high_water, engine_->GetGraphSize());
-  if (!installed.accepted) metrics_.publications_rejected.fetch_add(1);
-  // The install already counted the leaf value on the node, so the owner
-  // backs it up only through the steps above. Waiters select below the node
-  // unless it is terminal, in which case they back up the whole path like a
-  // later visit to a terminal. A rejected publication resumes selection only.
-  const bool terminal =
-      installed.accepted && payload.terminal != TerminalKind::kNonTerminal;
-  const auto wake = [&](VisitWakeup wakeup, bool owner) {
-    wakeup.kind = !installed.accepted ? VisitWakeup::Kind::kSelect
-                  : owner             ? VisitWakeup::Kind::kBackupAbove
-                  : terminal          ? VisitWakeup::Kind::kBackup
-                                      : VisitWakeup::Kind::kSelect;
-    wakeup.generation = installed.generation;
-    wakeup.value = payload.leaf;
-    wakeup.terminal = terminal;
-    wakeup.exact = installed.accepted && IsExact(payload.terminal);
-    DeliverWakeup(worker, wakeup);
-  };
-  wake(ticket->owner, true);
-  for (const auto& wakeup : ticket->waiters) wake(wakeup, false);
-}
-
-bool SearchSession::RestoreTicket(VisitWorker& worker,
-                                  MaterializationTicketId ticket_id,
-                                  std::span<const uint8_t> record) {
-  MaterializationResult restored;
-  const auto ticket = tickets_.Close(ticket_id, [&](NodeKey key) {
-    restored = engine_->RestoreFromRecord(key, ticket_id, record);
-    return restored.accepted;
-  });
-  if (!ticket) return false;
-  assert(ticket->owner.worker == worker.index);
-  metrics_.nodes_restored.fetch_add(1);
-  RaiseHighWater(metrics_.graph_size_high_water, engine_->GetGraphSize());
-  // The node has its statistics back and nothing new to back up, so the owner
-  // and the waiters all select below it.
-  const auto wake = [&](VisitWakeup wakeup) {
-    wakeup.kind = VisitWakeup::Kind::kRestored;
-    wakeup.generation = restored.generation;
-    DeliverWakeup(worker, wakeup);
-  };
-  wake(ticket->owner);
-  for (const auto& wakeup : ticket->waiters) wake(wakeup);
-  return true;
-}
-
-void SearchSession::CancelTicket(VisitWorker& worker,
-                                 MaterializationTicketId ticket_id) {
-  // Only called on stop, for evaluations that will never be computed. The
-  // owner and waiters are still alive and must be woken to cancel.
-  const auto ticket = tickets_.Close(ticket_id, [&](NodeKey key) {
-    engine_->CancelMaterialization(key, ticket_id);
-    return true;
-  });
-  assert(ticket->owner.worker == worker.index);
-  const auto wake = [&](VisitWakeup wakeup) {
-    wakeup.kind = VisitWakeup::Kind::kCancel;
-    DeliverWakeup(worker, wakeup);
-  };
-  wake(ticket->owner);
-  for (const auto& wakeup : ticket->waiters) wake(wakeup);
-}
-
-void SearchSession::CancelQueuedMaterializations(VisitWorker& worker) {
-  for (auto* materializations : {&worker.loads, &worker.evals}) {
-    for (const auto& materialization : *materializations) {
-      CancelTicket(worker, materialization.ticket);
-    }
-    materializations->clear();
-  }
-}
-
-bool SearchSession::CanSendJob(const VisitWorker& worker) const {
-  return worker.jobs_in_flight < kMaxJobsInFlight &&
-         worker.items_in_flight <
-             kMaxItemsInFlightBatches *
-                 static_cast<size_t>(settings_.minibatch_size);
-}
-
-void SearchSession::SetWorkerProducing(VisitWorker& worker, bool producing) {
-  // Only true -> false enables the collectors' starvation predicate, so only
-  // that edge needs the queue-mutex handshake.
-  if (worker.producing.exchange(producing) && !producing)
-    eval_jobs_.NotifyPredicateChanged();
-}
-
-void SearchSession::SendJobs(VisitWorker& worker) {
-  if (IsStopping()) CancelQueuedMaterializations(worker);
-  while (CanSendJob(worker)) {
-    if (IsStopping()) CancelQueuedMaterializations(worker);
-    auto job = BuildJob(worker);
-    if (!job) break;
-    ++worker.jobs_in_flight;
-    worker.items_in_flight += job->items();
-    RaiseHighWater(metrics_.io_jobs_high_water,
-                   jobs_in_flight_.fetch_add(1) + 1);
-    if (job->kind == AsyncJob::Kind::kEval) {
-      eval_jobs_.Push(std::move(job));
-      RaiseHighWater(metrics_.ready_eval_high_water, eval_jobs_.Size());
-    } else {
-      assert(has_store_);
-      store_jobs_.Push(std::move(job));
-    }
-  }
-}
-
-std::unique_ptr<AsyncJob> SearchSession::BuildJob(VisitWorker& worker) const {
-  // Small whole jobs leave room to collect more cache misses without exceeding
-  // the backend batch. The items-in-flight cap bounds loads and evaluations.
-  const size_t batch_size = settings_.minibatch_size;
-  const size_t limit =
-      std::min((batch_size + kJobsPerBatch - 1) / kJobsPerBatch,
-               kMaxItemsInFlightBatches * batch_size - worker.items_in_flight);
-  auto job = std::make_unique<AsyncJob>();
-  job->worker = worker.index;
-  job->queued_at = std::chrono::steady_clock::now();
-  if (!worker.loads.empty()) {
-    job->kind = AsyncJob::Kind::kLoad;
-    MoveFront(worker.loads, job->materializations, limit);
-  } else if (!worker.evals.empty()) {
-    job->kind = AsyncJob::Kind::kEval;
-    MoveFront(worker.evals, job->materializations, limit);
-  } else {
-    return nullptr;
-  }
-  return job;
-}
 
 void SearchSession::ReturnJobToWorker(std::unique_ptr<AsyncJob> job) {
   {
-    auto& inbox = workers_[job->worker]->inbox;
+    auto& inbox = inboxes_[job->worker];
     absl::MutexLock lock(inbox.mutex);
     inbox.completions.push_back(std::move(job));
   }
   metrics_.inbox_notifications.fetch_add(1);
-}
-
-void SearchSession::FinishJob(VisitWorker& worker,
-                              std::unique_ptr<AsyncJob> job) {
-  assert(worker.jobs_in_flight > 0);
-  for (auto& materialization : job->materializations) {
-    switch (materialization.state) {
-      case Materialization::State::kEvaluated:
-        SortByPrior(materialization.payload);
-        CompleteTicket(worker, materialization.ticket,
-                       std::move(materialization.payload));
-        break;
-      case Materialization::State::kStoreHit:
-        metrics_.node_store_hits.fetch_add(1);
-        if (!RestoreTicket(worker, materialization.ticket,
-                           materialization.record)) {
-          // Not a record for this policy or format: evaluate the node.
-          metrics_.restores_rejected.fetch_add(1);
-          materialization.record.clear();
-          PrepareMaterialization(worker, std::move(materialization));
-        }
-        break;
-      case Materialization::State::kStoreMiss:
-        metrics_.node_store_misses.fetch_add(1);
-        PrepareMaterialization(worker, std::move(materialization));
-        break;
-      case Materialization::State::kPending:
-      case Materialization::State::kQueued:
-        CancelTicket(worker, materialization.ticket);
-        break;
-    }
-  }
-  --worker.jobs_in_flight;
-  assert(worker.items_in_flight >= job->items());
-  worker.items_in_flight -= job->items();
-  // Decrement last: publication is part of the job.
-  jobs_in_flight_.fetch_sub(1);
 }
 
 void SearchSession::RunStoreWorker() {
@@ -980,7 +451,7 @@ bool SearchSession::IsEvaluationStarved() const {
   // no worker can send a job independently; the deadline bounds the
   // uncertainty.
   for (const auto& worker : workers_) {
-    if (worker->producing.load()) return false;
+    if (worker->IsProducing()) return false;
   }
   // Zero disables the timeout, not dependency flushing: with no deadline,
   // currently blocked producers cannot justify an unbounded wait.
