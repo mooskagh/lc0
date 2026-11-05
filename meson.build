@@ -212,8 +212,13 @@ includes += include_directories('src')
 # releases deprecate the older spellings. All abseil deps share this floor so
 # they come from the same installation.
 absl_min_version = '>=20250814'
+# Under TSan, use the vendored abseil: absl::Mutex reports its locks to TSan
+# only if abseil itself is built with -fsanitize=thread, and system packages
+# are not. An empty name makes dependency() go straight to the fallback.
+absl_vendored = get_option('b_sanitize').contains('thread')
 absl_flat_hash_map_dep = dependency(
-  'absl_flat_hash_map', 'absl', modules:['absl::flat_hash_map'],
+  absl_vendored ? '' : ['absl_flat_hash_map', 'absl'],
+  modules:['absl::flat_hash_map'],
   version: absl_min_version,
   include_type: 'system',
   fallback: ['abseil-cpp', 'absl_container_dep'],
@@ -226,7 +231,8 @@ deps += dependency('threads')
 
 if get_option('lc5')
   absl_synchronization_dep = dependency(
-    'absl_synchronization', 'absl', modules:['absl::synchronization'],
+    absl_vendored ? '' : ['absl_synchronization', 'absl'],
+    modules:['absl::synchronization'],
     version: absl_min_version,
     include_type: 'system',
     fallback: ['abseil-cpp', 'absl_synchronization_dep'],
