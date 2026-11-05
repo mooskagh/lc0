@@ -56,11 +56,7 @@ class SearchSessionTestPeer {
   // the pool is full.
   static bool AdmitVisit(SearchSession& session, const VisitOrigin& origin)
       ABSL_NO_THREAD_SAFETY_ANALYSIS {
-    std::optional<VisitId> id;
-    {
-      absl::MutexLock lock(session.admission_mutex_);
-      id = session.AllocateVisit(origin);
-    }
+    const auto id = session.gate_.Admit(origin);
     if (!id) return false;
     // Starting the worker threads orders this before they run.
     assert(!session.started_.load());

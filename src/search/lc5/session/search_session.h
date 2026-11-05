@@ -43,6 +43,7 @@
 #include "neural/backend.h"
 #include "search/lc5/metrics.h"
 #include "search/lc5/session/messages.h"
+#include "search/lc5/session/session_gate.h"
 #include "search/lc5/session/ticket_table.h"
 #include "search/lc5/session/visit_pool.h"
 #include "search/lc5/session/work_queue.h"
@@ -76,7 +77,7 @@ class SearchSession {
 
  private:
   friend class SearchSessionTestPeer;
-  enum class StopMode : uint8_t { kRunning, kRespondBestmove, kAbort };
+  using StopMode = SessionGate::StopMode;
 
   // A visit thread's state; defined below the class.
   struct VisitWorker;
@@ -88,7 +89,7 @@ class SearchSession {
   void RunStoreWorker();
 
   // Search: stop, output and shutdown.
-  bool IsStopping() const { return stop_mode_.load() != StopMode::kRunning; }
+  bool IsStopping() const { return gate_.IsStopping(); }
   void RequestStop(StopMode mode);
   void RespondBestMove();
   bool IsFullyDrained();
@@ -103,20 +104,7 @@ class SearchSession {
   }
 
   // Admission.
-  // Live visits allowed while the tree is still empty; see GetActiveVisitLimit.
-  static constexpr size_t kMinActiveVisits = 16;
-
-  bool IsAdmissionClosed() const
-      ABSL_EXCLUSIVE_LOCKS_REQUIRED(admission_mutex_);
-  // Live visits allowed now: grows with the root's visits, as classic search
-  // grows its collision limit, so small trees are not flooded.
-  size_t GetActiveVisitLimit() const;
-  // A new visit from `origin`; nullopt if admission is closed (stopping, or the
-  // node budget is spent), GetActiveVisitLimit() visits are alive, or the pool
-  // has no free slot.
-  std::optional<VisitId> AllocateVisit(const VisitOrigin& origin)
-      ABSL_EXCLUSIVE_LOCKS_REQUIRED(admission_mutex_);
-  // Allocates new visits from the root for `worker`, up to kVisitsPerPass and
+  // Admits new visits from the root for `worker`, up to kVisitsPerPass and
   // its share of the pool.
   void AdmitNewRootVisits(VisitWorker& worker);
   void WakeAdmissionWaiters();
@@ -207,6 +195,7 @@ class SearchSession {
   // Visits and counters.
   VisitPool visits_;
   Metrics metrics_;
+  SessionGate gate_;
 
   // Threads and the queues between them.
   std::vector<std::unique_ptr<VisitWorker>> workers_;
@@ -216,14 +205,6 @@ class SearchSession {
   std::vector<std::thread> store_threads_;
   std::vector<std::thread> evaluator_threads_;
   std::thread controller_thread_;
-
-  // Admission and stop. admission_mutex_ serializes admission, stop requests
-  // and NN authorization. Also guards VisitWorker::admission_waiting.
-  absl::Mutex admission_mutex_;
-  uint64_t admitted_ ABSL_GUARDED_BY(admission_mutex_) = 0;
-  size_t next_admission_waiter_ ABSL_GUARDED_BY(admission_mutex_) = 0;
-  std::atomic<StopMode> stop_mode_{StopMode::kRunning};
-  std::atomic<bool> output_committed_{false};
 
   TicketTable tickets_;
 
@@ -272,8 +253,6 @@ struct SearchSession::VisitWorker {
   // Conservative signal: this worker can send a job without a collected job's
   // completion. Initially true until the first work chunk is inspected.
   std::atomic<bool> producing{true};
-  // Guarded by SearchSession::admission_mutex_, not worker-owned.
-  bool admission_waiting = false;
 };
 
 }  // namespace lczero::lc5

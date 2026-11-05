@@ -146,7 +146,12 @@ SearchSession::SearchSession(VisitEngine* engine, Backend* backend,
                     saved_ms),
       node_limit_(GetNodeLimit(go_params, root_visits_at_start_)),
       may_stop_early_(!go_params.infinite && !go_params.ponder),
-      visits_(settings_.max_active_visits) {
+      visits_(settings_.max_active_visits),
+      gate_({.workers = static_cast<size_t>(settings_.threads),
+             .node_limit = node_limit_,
+             .root_visits_at_start = root_visits_at_start_,
+             .active_visits_ratio = settings_.active_visits_ratio},
+            visits_, metrics_) {
   for (int i = 0; i < settings_.threads; ++i) {
     workers_.push_back(std::make_unique<VisitWorker>(i));
   }
@@ -172,16 +177,8 @@ void SearchSession::Start() {
   controller_thread_ = std::thread(&SearchSession::RunControllerWorker, this);
 }
 
-void SearchSession::RequestStop(StopMode requested) {
-  {
-    // Admission and stop have one linearization point. Abort may override a
-    // bestmove response until its output is committed.
-    absl::MutexLock lock(admission_mutex_);
-    if (requested == StopMode::kAbort ? !output_committed_.load()
-                                      : !IsStopping()) {
-      stop_mode_.store(requested);
-    }
-  }
+void SearchSession::RequestStop(StopMode mode) {
+  gate_.RequestStop(mode);
   WakeController();
 }
 
@@ -275,18 +272,12 @@ void SearchSession::RespondBestMove() {
   unused_time_ms_.store(time_manager_.UnusedMs(steady_clock::now()));
   // Capture once, without waiting for any executor or eviction. Abort can
   // suppress this response until commitment, but cannot retract it.
-  if (stop_mode_.load() == StopMode::kRespondBestmove) {
+  if (gate_.stop_mode() == StopMode::kRespondBestmove) {
     std::vector<ThinkingInfo> infos{BuildThinkingInfo(true)};
     const auto& pv = infos.front().pv;
     BestMoveInfo best(pv.empty() ? GetFallbackMove() : pv.front(),
                       pv.size() > 1 ? pv[1] : Move{});
-    bool respond;
-    {
-      absl::MutexLock lock(admission_mutex_);
-      respond = stop_mode_.load() == StopMode::kRespondBestmove;
-      if (respond) output_committed_.store(true);
-    }
-    if (respond) {
+    if (gate_.TryCommitOutput()) {
       responder_->OutputThinkingInfo(&infos);
       responder_->OutputBestMove(&best);
     }
@@ -357,73 +348,21 @@ ThinkingInfo SearchSession::BuildThinkingInfo(bool final) const {
 // Visits: admission, the worker loop and each visit's steps.
 //////////////////////////////////////////////////////////////////////////////
 
-bool SearchSession::IsAdmissionClosed() const {
-  return IsStopping() || admitted_ >= node_limit_;
-}
-
-std::optional<VisitId> SearchSession::AllocateVisit(const VisitOrigin& origin) {
-  if (IsAdmissionClosed() || visits_.active() >= GetActiveVisitLimit()) {
-    return std::nullopt;
-  }
-  const auto id = visits_.Allocate(origin);
-  if (!id) return std::nullopt;
-  ++admitted_;
-  metrics_.visits_admitted.fetch_add(1);
-  RaiseHighWater(metrics_.active_visits_high_water, visits_.active());
-  return id;
-}
-
-size_t SearchSession::GetActiveVisitLimit() const {
-  if (settings_.active_visits_ratio <= 0.0f) return visits_.capacity();
-  const double tree = static_cast<double>(root_visits_at_start_ +
-                                          metrics_.visits_completed.load());
-  return std::min(visits_.capacity(),
-                  kMinActiveVisits + static_cast<size_t>(
-                                         tree * settings_.active_visits_ratio));
-}
-
 void SearchSession::AdmitNewRootVisits(VisitWorker& worker) {
-  absl::MutexLock lock(admission_mutex_);
-  worker.admission_waiting = false;
   // A modest per-worker share prevents one worker from monopolizing the pool.
   const size_t share =
       (visits_.capacity() + workers_.size() - 1) / workers_.size();
-  for (size_t i = 0; i < kVisitsPerPass && worker.active_visits < share; ++i) {
-    const auto id = AllocateVisit(root_);
-    if (!id) {
-      // The pool is full. Registration shares admission_mutex_ with the
-      // capacity check in WakeAdmissionWaiters, so it cannot miss a release.
-      worker.admission_waiting = !IsAdmissionClosed();
-      break;
-    }
+  const size_t count =
+      std::min(kVisitsPerPass, share - std::min(share, worker.active_visits));
+  gate_.AdmitFor(worker.index, root_, count, [&](VisitId id) {
     ++worker.active_visits;
-    worker.runnable.push_back(*id);
-  }
+    worker.runnable.push_back(id);
+  });
   RaiseHighWater(metrics_.visits_ready_high_water, worker.runnable.size());
 }
 
 void SearchSession::WakeAdmissionWaiters() {
-  std::vector<size_t> wake;
-  {
-    absl::MutexLock lock(admission_mutex_);
-    if (IsAdmissionClosed()) return;
-    const size_t limit = GetActiveVisitLimit();
-    const size_t active = visits_.active();
-    size_t available = limit > active ? limit - active : 0;
-    for (size_t n = 0; n < workers_.size() && available > 0; ++n) {
-      const size_t index = (next_admission_waiter_ + n) % workers_.size();
-      if (!workers_[index]->admission_waiting) continue;
-      workers_[index]->admission_waiting = false;
-      wake.push_back(index);
-      --available;
-    }
-    if (!wake.empty()) {
-      next_admission_waiter_ = (wake.back() + 1) % workers_.size();
-    }
-  }
-  // A competing allocator may win the capacity; the woken worker then simply
-  // re-registers on its next attempt.
-  for (size_t index : wake) {
+  for (size_t index : gate_.TakeWaitersToWake()) {
     auto& inbox = workers_[index]->inbox;
     absl::MutexLock lock(inbox.mutex);
     inbox.admission_ready = true;
@@ -1029,14 +968,7 @@ void SearchSession::AddJobToBatch(BackendComputation& computation,
 
 void SearchSession::EvaluateBatch(Batch batch) {
   const size_t used = batch.computation->UsedBatchSize();
-  bool authorized = false;
-  if (used > 0) {
-    // The final gate shares stop's linearization point. A serial evaluator
-    // cannot authorize again until this computation has returned.
-    absl::MutexLock lock(admission_mutex_);
-    authorized = !IsStopping();
-  }
-  if (authorized) {
+  if (used > 0 && gate_.AuthorizeEval()) {
     if (used < static_cast<size_t>(settings_.minibatch_size)) {
       (batch.timed_out ? metrics_.partial_timeout_flushes
                        : metrics_.partial_starvation_flushes)

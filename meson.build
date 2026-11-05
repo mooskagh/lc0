@@ -240,6 +240,7 @@ if get_option('lc5')
     'src/search/lc5/policies/puct_dag.cc',
     'src/search/lc5/policies/registry.cc',
     'src/search/lc5/session/search_session.cc',
+    'src/search/lc5/session/session_gate.cc',
     'src/search/lc5/session/visit_pool.cc',
     'src/search/lc5/settings.cc',
     'src/search/lc5/time_manager.cc',
@@ -1219,6 +1220,16 @@ if get_option('gtest')
         dependencies: [gtest, absl_flat_hash_map_dep, absl_synchronization_dep]),
       args: '--gtest_output=xml:lc5_ticket_table_test.xml', timeout: 90)
 
+    test('Lc5SessionGate',
+      executable('lc5_session_gate_test',
+        'src/search/lc5/session/session_gate_test.cc',
+        'src/search/lc5/session/session_gate.cc',
+        'src/search/lc5/session/visit_pool.cc',
+        pb_files,
+        include_directories: includes, link_with: lc0_lib,
+        dependencies: [gtest, absl_flat_hash_map_dep, absl_synchronization_dep]),
+      args: '--gtest_output=xml:lc5_session_gate_test.xml', timeout: 90)
+
     test('Lc5Graph',
       executable('lc5_graph_test',
         'src/search/lc5/graph/graph_test.cc',
@@ -1234,6 +1245,7 @@ if get_option('gtest')
       executable('lc5_search_test',
         'src/search/lc5/search_test.cc',
         'src/search/lc5/session/search_session.cc',
+        'src/search/lc5/session/session_gate.cc',
         'src/search/lc5/session/visit_pool.cc',
         'src/search/lc5/engine.cc',
         'src/search/lc5/store/memory_node_store.cc',
