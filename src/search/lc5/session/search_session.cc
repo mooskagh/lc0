@@ -455,15 +455,15 @@ void SearchSession::DeliverWakeup(VisitWorker& worker,
 
 void SearchSession::ResumeVisit(VisitWorker& worker,
                                 const VisitWakeup& wakeup) {
+  // A waiting visit is on exactly one ticket, which wakes it exactly once,
+  // and only that wakeup can make it ready or release it.
   VisitPool::Slot* slot = visits_.Lookup(wakeup.id);
-  if (!slot) return;
+  assert(slot);
   absl::MutexLock lock(slot->mutex);
-  if (!visits_.IsLiveLocked(*slot, wakeup.id)) return;
+  assert(visits_.IsLiveLocked(*slot, wakeup.id));
   Visit& visit = slot->visit;
-  if (visit.state != VisitState::kWaitingMaterialization ||
-      visit.waiting_ticket != wakeup.ticket) {
-    return;
-  }
+  assert(visit.state == VisitState::kWaitingMaterialization);
+  assert(visit.waiting_ticket == wakeup.ticket);
   visit.waiting_ticket = 0;
   // On stop, visits finish only when their evaluation already exists.
   if (wakeup.kind == VisitWakeup::Kind::kCancel ||
@@ -597,10 +597,11 @@ bool SearchSession::HasLocalWork(const VisitWorker& worker) const {
 }
 
 void SearchSession::AdvanceVisit(VisitWorker& worker, VisitId id) {
+  // Only this worker releases its visits, and never one that is runnable.
   VisitPool::Slot* slot = visits_.Lookup(id);
-  if (!slot) return;
+  assert(slot);
   absl::MutexLock lock(slot->mutex);
-  if (!visits_.IsLiveLocked(*slot, id)) return;
+  assert(visits_.IsLiveLocked(*slot, id));
   Visit& visit = slot->visit;
   if (visit.state == VisitState::kReadyBackup) {
     BackupVisit(worker, *slot);
@@ -611,7 +612,7 @@ void SearchSession::AdvanceVisit(VisitWorker& worker, VisitId id) {
     CancelVisit(worker, *slot);
     return;
   }
-  if (visit.state != VisitState::kReadySelect) return;
+  assert(visit.state == VisitState::kReadySelect);
   for (;;) {
     if (IsStopping()) {
       CancelVisit(worker, *slot);
@@ -659,7 +660,8 @@ void SearchSession::FinishVisit(VisitWorker& worker, VisitPool::Slot& slot,
     metrics_.visits_cancelled.fetch_add(1);
   }
   worker.active.erase(id.value);
-  visits_.ReleaseLocked(slot, id);
+  [[maybe_unused]] const bool released = visits_.ReleaseLocked(slot, id);
+  assert(released);
   // Admission and the controller are signalled later, outside the slot lock.
   worker.released_capacity = true;
 }
@@ -744,7 +746,7 @@ void SearchSession::CompleteTicket(VisitWorker& worker,
   {
     absl::MutexLock lock(tickets_mutex_);
     const auto it = tickets_.find(ticket_id);
-    if (it == tickets_.end()) return;
+    assert(it != tickets_.end());
     assert(it->second.owner.worker == worker.index);
     installed =
         engine_->CompleteMaterialization(it->second.key, ticket_id, payload);
@@ -783,7 +785,7 @@ bool SearchSession::RestoreTicket(VisitWorker& worker,
   {
     absl::MutexLock lock(tickets_mutex_);
     const auto it = tickets_.find(ticket_id);
-    if (it == tickets_.end()) return true;
+    assert(it != tickets_.end());
     assert(it->second.owner.worker == worker.index);
     restored = engine_->RestoreFromRecord(it->second.key, ticket_id, record);
     if (!restored.accepted) return false;
@@ -813,7 +815,8 @@ void SearchSession::CancelTicket(VisitWorker& worker,
   {
     absl::MutexLock lock(tickets_mutex_);
     const auto it = tickets_.find(ticket_id);
-    if (it == tickets_.end()) return;
+    assert(it != tickets_.end());
+    assert(it->second.owner.worker == worker.index);
     engine_->CancelMaterialization(it->second.key, ticket_id);
     ticket = std::move(it->second);
     tickets_.erase(it);
