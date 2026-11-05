@@ -624,7 +624,6 @@ void SearchSession::AdvanceVisit(VisitWorker& worker, VisitId id) {
 
 void SearchSession::BackupVisit(VisitWorker& worker, VisitPool::Slot& slot) {
   Visit& visit = slot.visit;
-  visit.state = VisitState::kBackingUp;
   engine_->BackupVisit(visit, metrics_);
   RaiseHighWater(metrics_.max_depth, visit.path.size());
   FinishVisit(worker, slot, true);
