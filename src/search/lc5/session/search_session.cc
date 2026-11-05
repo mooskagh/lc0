@@ -390,7 +390,7 @@ void SearchSession::AdmitNewRootVisits(VisitWorker& worker) {
   // A modest per-worker share prevents one worker from monopolizing the pool.
   const size_t share =
       (visits_.capacity() + workers_.size() - 1) / workers_.size();
-  for (size_t i = 0; i < kVisitsPerPass && worker.active.size() < share; ++i) {
+  for (size_t i = 0; i < kVisitsPerPass && worker.active_visits < share; ++i) {
     const auto id = AllocateVisit(root_);
     if (!id) {
       // The pool is full. Registration shares admission_mutex_ with the
@@ -398,7 +398,7 @@ void SearchSession::AdmitNewRootVisits(VisitWorker& worker) {
       worker.admission_waiting = !IsAdmissionClosed();
       break;
     }
-    worker.active.insert(id->value);
+    ++worker.active_visits;
     worker.runnable.push_back(*id);
   }
   RaiseHighWater(metrics_.visits_ready_high_water, worker.runnable.size());
@@ -564,23 +564,15 @@ void SearchSession::AdvanceRunnableVisits(VisitWorker& worker, size_t limit) {
 }
 
 void SearchSession::CancelWorkerVisits(VisitWorker& worker) {
-  // Only the owner ever cancels or mutates a visit. Epochs make later ticket
-  // completions harmless even after the slot has been reused. Ready backups
-  // finish; waiting visits stay until their ticket completes or is cancelled,
-  // and come back through ResumeVisit.
-  if (!worker.cancelled) {
-    const std::vector<uint64_t> active(worker.active.begin(),
-                                       worker.active.end());
-    for (uint64_t value : active) AdvanceVisit(worker, VisitId{value});
-    worker.runnable.clear();
-    worker.cancelled = true;
-  }
-  // External admissions published just before stop still need cancellation.
+  // Every visit that is not waiting on a ticket is runnable: ready backups
+  // finish, the rest are cancelled. Waiting visits stay until their ticket
+  // completes or is cancelled, and come back through ResumeVisit.
+  worker.cancelled = true;
   AdvanceRunnableVisits(worker, std::numeric_limits<size_t>::max());
 }
 
 void SearchSession::PublishWorkerState(VisitWorker& worker) {
-  const bool drained = worker.cancelled && worker.active.empty() &&
+  const bool drained = worker.cancelled && worker.active_visits == 0 &&
                        worker.jobs_in_flight == 0 && !worker.HasQueuedIo();
   if (worker.drained.exchange(drained) != drained) {
     worker.controller_event = true;
@@ -607,7 +599,6 @@ void SearchSession::AdvanceVisit(VisitWorker& worker, VisitId id) {
     BackupVisit(worker, *slot);
     return;
   }
-  if (visit.state == VisitState::kWaitingMaterialization) return;
   if (IsStopping()) {
     CancelVisit(worker, *slot);
     return;
@@ -659,7 +650,7 @@ void SearchSession::FinishVisit(VisitWorker& worker, VisitPool::Slot& slot,
   } else {
     metrics_.visits_cancelled.fetch_add(1);
   }
-  worker.active.erase(id.value);
+  --worker.active_visits;
   [[maybe_unused]] const bool released = visits_.ReleaseLocked(slot, id);
   assert(released);
   // Admission and the controller are signalled later, outside the slot lock.

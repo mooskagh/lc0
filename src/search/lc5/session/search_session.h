@@ -38,7 +38,6 @@
 #include <span>
 #include <thread>
 #include <unordered_map>
-#include <unordered_set>
 #include <vector>
 
 #include "chess/callbacks.h"
@@ -270,7 +269,7 @@ struct SearchSession::VisitWorker {
   WorkerInbox inbox;
   // All fields below are touched only by this worker.
   std::deque<VisitId> runnable;
-  std::unordered_set<uint64_t> active;
+  size_t active_visits = 0;  // Owned visits: runnable or waiting on a ticket.
   std::deque<Materialization> unprepared;  // Await terminal detection.
   std::deque<Materialization> loads;
   std::deque<Materialization> evals;

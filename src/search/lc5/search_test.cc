@@ -64,10 +64,9 @@ class SearchSessionTestPeer {
     if (!id) return false;
     // Starting the worker threads orders this before they run.
     assert(!session.started_.load());
-    auto& worker =
-        *session.workers_[(session.visits_.active() - 1) %
-                          session.workers_.size()];
-    worker.active.insert(id->value);
+    auto& worker = *session.workers_[(session.visits_.active() - 1) %
+                                     session.workers_.size()];
+    ++worker.active_visits;
     worker.runnable.push_back(*id);
     return true;
   }
@@ -98,7 +97,7 @@ class SearchSessionTestPeer {
     EXPECT_EQ(session.store_jobs_.Size(), 0u);
     for (const auto& worker : session.workers_) {
       EXPECT_TRUE(worker->drained.load());
-      EXPECT_TRUE(worker->active.empty());
+      EXPECT_EQ(worker->active_visits, 0u);
       EXPECT_TRUE(worker->runnable.empty());
       EXPECT_TRUE(worker->unprepared.empty());
       EXPECT_TRUE(worker->loads.empty());
