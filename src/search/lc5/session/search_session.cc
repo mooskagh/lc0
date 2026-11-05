@@ -445,11 +445,9 @@ void SearchSession::SendWakeups(size_t worker,
 
 void SearchSession::DeliverWakeup(VisitWorker& worker,
                                   const VisitWakeup& wakeup) {
-  if (wakeup.worker == worker.index) {
-    ResumeVisit(worker, wakeup);
-  } else {
-    worker.outgoing[wakeup.worker].push_back(wakeup);
-  }
+  (wakeup.worker == worker.index ? worker.local_wakeups
+                                 : worker.outgoing[wakeup.worker])
+      .push_back(wakeup);
 }
 
 void SearchSession::ResumeVisit(VisitWorker& worker,
@@ -548,6 +546,13 @@ void SearchSession::ProcessInbox(VisitWorker& worker) {
   }
   for (const auto& wakeup : wakeups) ResumeVisit(worker, wakeup);
   for (auto& job : completions) FinishJob(worker, std::move(job));
+  ResumeLocalVisits(worker);
+}
+
+void SearchSession::ResumeLocalVisits(VisitWorker& worker) {
+  // ResumeVisit wakes no visits, so this empties the queue.
+  for (const auto& wakeup : worker.local_wakeups) ResumeVisit(worker, wakeup);
+  worker.local_wakeups.clear();
 }
 
 void SearchSession::AdvanceRunnableVisits(VisitWorker& worker, size_t limit) {
@@ -568,18 +573,22 @@ void SearchSession::CancelWorkerVisits(VisitWorker& worker) {
 
 void SearchSession::PublishWorkerState(VisitWorker& worker) {
   const bool drained = worker.cancelled && worker.active_visits == 0 &&
-                       worker.jobs_in_flight == 0 && !worker.HasQueuedIo();
+                       worker.jobs_in_flight == 0 && !worker.HasQueuedIo() &&
+                       worker.local_wakeups.empty();
   if (worker.drained.exchange(drained) != drained) {
     worker.controller_event = true;
   }
   if (std::exchange(worker.released_capacity, false)) WakeAdmissionWaiters();
   if (std::exchange(worker.controller_event, false)) WakeController();
-  SetWorkerProducing(worker, CanSendJob(worker) && (!worker.runnable.empty() ||
-                                                    worker.HasQueuedIo()));
+  SetWorkerProducing(
+      worker, CanSendJob(worker) &&
+                  (!worker.runnable.empty() || !worker.local_wakeups.empty() ||
+                   worker.HasQueuedIo()));
 }
 
 bool SearchSession::HasLocalWork(const VisitWorker& worker) const {
-  return (!IsStopping() && !worker.runnable.empty()) ||
+  return !worker.local_wakeups.empty() ||
+         (!IsStopping() && !worker.runnable.empty()) ||
          (CanSendJob(worker) && worker.HasQueuedIo());
 }
 
@@ -687,13 +696,15 @@ bool SearchSession::SuspendVisit(VisitWorker& worker, Visit& visit) {
     worker.controller_event = true;
   }
   if (owner) {
-    // Prepared later, in SendJobs: a terminal would complete the ticket and
-    // resume this visit while AdvanceVisit is still stepping it.
     Materialization materialization{.ticket = ticket_id,
                                     .key = visit.current_key,
                                     .history = visit.history};
-    (has_store_ ? worker.loads : worker.unprepared)
-        .push_back(std::move(materialization));
+    // A stored node may hold statistics, even if terminal: look it up first.
+    if (has_store_) {
+      worker.loads.push_back(std::move(materialization));
+    } else {
+      PrepareMaterialization(worker, std::move(materialization));
+    }
   }
   return true;
 }
@@ -809,8 +820,7 @@ void SearchSession::CancelTicket(VisitWorker& worker,
 }
 
 void SearchSession::CancelQueuedMaterializations(VisitWorker& worker) {
-  for (auto* materializations :
-       {&worker.unprepared, &worker.loads, &worker.evals}) {
+  for (auto* materializations : {&worker.loads, &worker.evals}) {
     for (const auto& materialization : *materializations) {
       CancelTicket(worker, materialization.ticket);
     }
@@ -834,13 +844,6 @@ void SearchSession::SetWorkerProducing(VisitWorker& worker, bool producing) {
 
 void SearchSession::SendJobs(VisitWorker& worker) {
   if (IsStopping()) CancelQueuedMaterializations(worker);
-  // Detect terminals and generate legal moves for fresh materializations.
-  // Terminal ones publish right away; the rest join `evals`.
-  while (!worker.unprepared.empty()) {
-    Materialization materialization = std::move(worker.unprepared.front());
-    worker.unprepared.pop_front();
-    PrepareMaterialization(worker, std::move(materialization));
-  }
   while (CanSendJob(worker)) {
     if (IsStopping()) CancelQueuedMaterializations(worker);
     auto job = BuildJob(worker);

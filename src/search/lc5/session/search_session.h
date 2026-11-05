@@ -128,6 +128,7 @@ class SearchSession {
   static constexpr size_t kVisitsPerPass = 32;
 
   void ProcessInbox(VisitWorker& worker);
+  void ResumeLocalVisits(VisitWorker& worker);
   void AdvanceRunnableVisits(VisitWorker& worker, size_t limit);
   void CancelWorkerVisits(VisitWorker& worker);
   void PublishWorkerState(VisitWorker& worker);
@@ -256,18 +257,18 @@ class SearchSession {
 
 struct SearchSession::VisitWorker {
   explicit VisitWorker(size_t index) : index(index) {}
-  bool HasQueuedIo() const {
-    return !unprepared.empty() || !loads.empty() || !evals.empty();
-  }
+  bool HasQueuedIo() const { return !loads.empty() || !evals.empty(); }
 
   const size_t index;
   WorkerInbox inbox;
   // All fields below are touched only by this worker.
   std::deque<VisitId> runnable;
   size_t active_visits = 0;  // Owned visits: runnable or waiting on a ticket.
-  std::deque<Materialization> unprepared;  // Await terminal detection.
   std::deque<Materialization> loads;
   std::deque<Materialization> evals;
+  // Wakeups for this worker's own visits, resumed in ProcessInbox: never
+  // while AdvanceVisit may be stepping the visit.
+  std::vector<VisitWakeup> local_wakeups;
   std::vector<std::vector<VisitWakeup>> outgoing;  // Indexed by worker.
   size_t jobs_in_flight = 0;                       // Sent and not yet finished.
   size_t items_in_flight = 0;  // The materializations in those jobs.

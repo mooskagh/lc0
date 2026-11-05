@@ -99,7 +99,7 @@ class SearchSessionTestPeer {
       EXPECT_TRUE(worker->drained.load());
       EXPECT_EQ(worker->active_visits, 0u);
       EXPECT_TRUE(worker->runnable.empty());
-      EXPECT_TRUE(worker->unprepared.empty());
+      EXPECT_TRUE(worker->local_wakeups.empty());
       EXPECT_TRUE(worker->loads.empty());
       EXPECT_TRUE(worker->evals.empty());
       EXPECT_EQ(worker->jobs_in_flight, 0u);
@@ -922,41 +922,48 @@ TEST(Lc5SearchTest, TerminalOwnerAndWaitersNeverEvaluate) {
                                 TerminalKind::kCheckmate, -1.0f, 0.0f},
                            Case{"8/8/8/8/8/6q1/5k2/7K w - - 0 1",
                                 TerminalKind::kStalemate, 0.0f, 1.0f}}) {
-    SCOPED_TRACE(test.fen);
-    PolicyEngine<PuctAveraging> engine(TestParams());
-    auto& graph = engine.graph();
-    ControlledBackend backend;
-    RecordingResponder responder;
-    const auto root = Origin(test.fen);
-    SearchSession session(&engine, &backend, &responder, TestSettings(),
-                          TestTimeManagement(), root, GoParams{.nodes = 4},
-                          std::chrono::steady_clock::now());
-    for (int i = 0; i < 4; ++i)
-      ASSERT_TRUE(SearchSessionTestPeer::AdmitVisit(session, root));
-    session.Start();
-    session.Wait();
-    ExpectDrained(session, graph);
-    ExpectFinalOutput(responder, 4);
-    EXPECT_EQ(responder.bestmoves[0].bestmove, Move{});
-    EXPECT_EQ(backend.inputs.load(), 0u);
-    EXPECT_EQ(backend.computes.load(), 0u);
-    EXPECT_EQ(session.metrics().tickets_created.load(), 1u);
-    EXPECT_EQ(session.metrics().ticket_waiters.load(), 3u);
-    EXPECT_EQ(session.metrics().terminal_visits.load(), 4u);
-    EXPECT_EQ(session.metrics().visits_resumed.load(), 0u);
-    auto node = graph.SnapshotNode(root.key);
-    ASSERT_TRUE(node);
-    EXPECT_EQ(node->terminal, test.kind);
-    EXPECT_EQ(node->stats.visits, 4u);
-    EXPECT_FLOAT_EQ(node->stats.Q(), test.q);
-    EXPECT_FLOAT_EQ(node->stats.D(), test.d);
-    const auto& final = responder.thinking.back();
-    ASSERT_TRUE(final.score.has_value());
-    EXPECT_EQ(*final.score, test.kind == TerminalKind::kCheckmate ? -12780 : 0);
-    ASSERT_TRUE(final.wdl.has_value());
-    EXPECT_EQ(final.wdl->w, 0);
-    EXPECT_EQ(final.wdl->d, test.kind == TerminalKind::kStalemate ? 1000 : 0);
-    EXPECT_EQ(final.wdl->l, test.kind == TerminalKind::kCheckmate ? 1000 : 0);
+    // Without a store the owner finds the terminal right away, so later visits
+    // see it expanded. A store lookup comes first, so they wait on the ticket.
+    for (const bool with_store : {false, true}) {
+      SCOPED_TRACE(test.fen);
+      SCOPED_TRACE(with_store);
+      PolicyEngine<PuctAveraging> engine(TestParams());
+      auto& graph = engine.graph();
+      if (with_store) InstallStore<MemoryNodeStore>(engine);
+      ControlledBackend backend;
+      RecordingResponder responder;
+      const auto root = Origin(test.fen);
+      SearchSession session(&engine, &backend, &responder, TestSettings(),
+                            TestTimeManagement(), root, GoParams{.nodes = 4},
+                            std::chrono::steady_clock::now());
+      for (int i = 0; i < 4; ++i)
+        ASSERT_TRUE(SearchSessionTestPeer::AdmitVisit(session, root));
+      session.Start();
+      session.Wait();
+      ExpectDrained(session, graph);
+      ExpectFinalOutput(responder, 4);
+      EXPECT_EQ(responder.bestmoves[0].bestmove, Move{});
+      EXPECT_EQ(backend.inputs.load(), 0u);
+      EXPECT_EQ(backend.computes.load(), 0u);
+      EXPECT_EQ(session.metrics().tickets_created.load(), 1u);
+      EXPECT_EQ(session.metrics().ticket_waiters.load(), with_store ? 3u : 0u);
+      EXPECT_EQ(session.metrics().terminal_visits.load(), 4u);
+      EXPECT_EQ(session.metrics().visits_resumed.load(), 0u);
+      auto node = graph.SnapshotNode(root.key);
+      ASSERT_TRUE(node);
+      EXPECT_EQ(node->terminal, test.kind);
+      EXPECT_EQ(node->stats.visits, 4u);
+      EXPECT_FLOAT_EQ(node->stats.Q(), test.q);
+      EXPECT_FLOAT_EQ(node->stats.D(), test.d);
+      const auto& final = responder.thinking.back();
+      ASSERT_TRUE(final.score.has_value());
+      EXPECT_EQ(*final.score,
+                test.kind == TerminalKind::kCheckmate ? -12780 : 0);
+      ASSERT_TRUE(final.wdl.has_value());
+      EXPECT_EQ(final.wdl->w, 0);
+      EXPECT_EQ(final.wdl->d, test.kind == TerminalKind::kStalemate ? 1000 : 0);
+      EXPECT_EQ(final.wdl->l, test.kind == TerminalKind::kCheckmate ? 1000 : 0);
+    }
   }
 }
 
