@@ -81,6 +81,10 @@ class SearchSession {
 
   // Search: stop, output and shutdown.
   bool IsStopping() const { return limiter_.IsStopping(); }
+  bool ShouldStop(std::chrono::steady_clock::time_point now) const;
+  std::chrono::steady_clock::time_point NextWakeup(
+      std::chrono::steady_clock::time_point now,
+      std::chrono::steady_clock::time_point next_info) const;
   void RespondBestMove();
   bool IsFullyDrained();
   void JoinThreads();
@@ -114,13 +118,14 @@ class SearchSession {
 
   // Lifecycle and the controller's wakeups.
   std::atomic<bool> started_{false};
+  std::atomic<bool> stop_requested_{false};
   std::atomic<bool> aborted_{false};
   std::atomic<bool> finished_{false};
   std::atomic<int64_t> unused_time_ms_{0};
-  ControllerSignal controller_;
+  ControllerSignal controller_signal_;
 
   // Visits, materializations and counters.
-  VisitPool visits_;
+  VisitPool visit_pool_;
   Metrics metrics_;
   VisitLimiter limiter_;
   MaterializationTable materializations_;

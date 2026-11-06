@@ -56,7 +56,10 @@ class VisitLimiter {
   static constexpr size_t kMinActiveVisits = 16;
 
   VisitLimiter(const Config& config, VisitPool& visits, Metrics& metrics);
-  uint64_t node_limit() const { return config_.node_limit; }
+  uint64_t node_limit() const { return node_limit_.load(); }
+  // Lowers node_limit() to at most `limit` (e.g. 1 when stopping before the
+  // root is expanded).
+  void CapNodeLimit(uint64_t limit);
 
   // Lock-free; for the hot path.
   bool IsStopping() const { return stopping_.load(); }
@@ -84,6 +87,8 @@ class VisitLimiter {
 
   // Guards admission and stop together: no visit is admitted after a stop.
   absl::Mutex mutex_;
+  // Written under mutex_, read anywhere.
+  std::atomic<uint64_t> node_limit_;
   // All visits admitted in this session (not just in flight).
   uint64_t total_admitted_count_ ABSL_GUARDED_BY(mutex_) = 0;
   // Per worker: whether it is waiting for an in-flight slot.

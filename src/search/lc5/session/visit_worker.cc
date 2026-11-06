@@ -276,7 +276,9 @@ void VisitWorker::PublishState() {
     notify_controller_ = true;
   }
   if (std::exchange(notify_admission_waiters_, false)) WakeAdmissionWaiters();
-  if (std::exchange(notify_controller_, false)) context_.controller.Notify();
+  if (std::exchange(notify_controller_, false)) {
+    context_.controller_signal.Notify();
+  }
   SetProducing(CanSendJob() && HasLocalWork());
 }
 
@@ -335,7 +337,12 @@ void VisitWorker::RestartVisit(Visit& visit) {
 void VisitWorker::FinishVisit(Visit& visit, bool completed) {
   if (completed) {
     const uint64_t count = context_.metrics.visits_completed.fetch_add(1) + 1;
-    if (context_.limiter.node_limit() == count) notify_controller_ = true;
+    if (count >= context_.limiter.node_limit()) {
+      context_.limiter.Stop();
+      notify_controller_ = true;
+    } else if (count == 1) {
+      notify_controller_ = true;
+    }
   } else {
     context_.metrics.visits_cancelled.fetch_add(1);
   }
@@ -380,7 +387,7 @@ bool VisitWorker::SuspendVisit(Visit& visit) {
     // up with fast searches between its periodic checks.
     if (has_store && context_.settings.graph_node_limit > 0 &&
         context_.engine.GetGraphSize() > context_.settings.graph_node_limit &&
-        context_.controller.RequestEviction()) {
+        context_.controller_signal.RequestEviction()) {
       notify_controller_ = true;
     }
     Materialization materialization{
@@ -449,13 +456,16 @@ void VisitWorker::CompleteMaterialization(MaterializationId materialization_id,
 bool VisitWorker::RestoreMaterialization(MaterializationId materialization_id,
                                          std::span<const uint8_t> record) {
   MaterializationResult restored;
+  bool is_root = false;
   const auto waiters = context_.materializations.Close(
       materialization_id, [&](NodeKey key) {
+        is_root = key == context_.root.key;
         restored =
             context_.engine.RestoreFromRecord(key, materialization_id, record);
         return restored.accepted;
       });
   if (!waiters) return false;
+  if (is_root) notify_controller_ = true;
   assert(waiters->owner.worker == worker_id_);
   context_.metrics.nodes_restored.fetch_add(1);
   RaiseHighWater(context_.metrics.graph_size_high_water,

@@ -58,7 +58,7 @@ class SearchSessionTestPeer {
   static bool AdmitVisit(SearchSession& session, const VisitOrigin& origin)
       ABSL_NO_THREAD_SAFETY_ANALYSIS {
     const size_t worker_idx =
-        session.visits_.active() % session.visit_workers_.size();
+        session.visit_pool_.active() % session.visit_workers_.size();
     const auto admitted = session.limiter_.AdmitVisits(worker_idx, origin, 1);
     if (admitted.empty()) return false;
     // Starting the worker threads orders this before they run.
@@ -80,7 +80,7 @@ class SearchSessionTestPeer {
   // Inspect owner-local state only after Wait's full join barrier.
   static void ExpectDrained(const SearchSession& session)
       ABSL_NO_THREAD_SAFETY_ANALYSIS {
-    EXPECT_EQ(session.visits_.active(), 0u);
+    EXPECT_EQ(session.visit_pool_.active(), 0u);
     EXPECT_TRUE(session.materializations_.empty());
     EXPECT_EQ(session.jobs_in_flight_.load(), 0u);
     EXPECT_EQ(session.evictions_in_flight_.load(), 0u);
@@ -589,16 +589,15 @@ TEST(Lc5SearchTest, ExactNodeBudgetWithMoreWorkersThanCapacity) {
     session.Start();
     session.Wait();
     ExpectDrained(session, graph);
-    EXPECT_EQ(session.metrics().visits_admitted.load(), nodes);
-    EXPECT_EQ(session.metrics().visits_completed.load(), nodes);
+    const uint64_t expected = std::max<int64_t>(1, nodes);
+    EXPECT_EQ(session.metrics().visits_admitted.load(), expected);
+    EXPECT_EQ(session.metrics().visits_completed.load(), expected);
     EXPECT_EQ(session.metrics().visits_cancelled.load(), 0u);
     EXPECT_LE(session.metrics().active_visits_high_water.load(), 2u);
     EXPECT_FALSE(SearchSessionTestPeer::AdmitVisit(session, root));
-    ExpectFinalOutput(responder, nodes);
-    if (nodes == 0) {
-      EXPECT_FALSE(responder.thinking.back().score.has_value());
-      EXPECT_FALSE(responder.thinking.back().wdl.has_value());
-    }
+    ExpectFinalOutput(responder, expected);
+    EXPECT_TRUE(responder.thinking.back().score.has_value());
+    EXPECT_TRUE(responder.thinking.back().wdl.has_value());
     const auto legal = root.history.Last().GetBoard().GenerateLegalMoves();
     EXPECT_NE(
         std::find(legal.begin(), legal.end(), responder.bestmoves[0].bestmove),
@@ -606,7 +605,8 @@ TEST(Lc5SearchTest, ExactNodeBudgetWithMoreWorkersThanCapacity) {
     // Each completed visit counts once at the root, including the one that
     // expanded it.
     const auto node = graph.SnapshotNode(root.key);
-    EXPECT_EQ(node ? node->stats.visits : 0u, static_cast<uint64_t>(nodes));
+    ASSERT_TRUE(node);
+    EXPECT_EQ(node->stats.visits, expected);
   }
 }
 
@@ -1210,17 +1210,22 @@ TEST(Lc5SearchTest, CollectionFlushesWhileAnotherWorkerIsBlockedInStore) {
     ControlledBackend backend(ControlledBackend::Cache::kNone, true);
     RecordingResponder responder;
     const auto root = Origin();
-    auto other = root;
-    other.history.Append(
-        root.history.Last().GetBoard().GenerateLegalMoves()[0]);
-    other.key = MakeNodeKey(other.history, 7);
+    const auto moves = root.history.Last().GetBoard().GenerateLegalMoves();
+    graph.CompleteMaterialization(
+        root.key, 1, {.moves = {moves[0], moves[1]}, .priors = {0.5f, 0.5f}});
+    auto first = root;
+    first.history.Append(moves[0]);
+    first.key = MakeNodeKey(first.history, 7);
+    auto second = root;
+    second.history.Append(moves[1]);
+    second.key = MakeNodeKey(second.history, 7);
     auto settings = TestSettings(2, 2);
     settings.max_batch_delay_ms = delay;
     SearchSession session(&engine, &backend, &responder, settings,
                           TestTimeManagement(), root, GoParams{.nodes = 2},
                           std::chrono::steady_clock::now());
-    ASSERT_TRUE(SearchSessionTestPeer::AdmitVisit(session, root));
-    ASSERT_TRUE(SearchSessionTestPeer::AdmitVisit(session, other));
+    ASSERT_TRUE(SearchSessionTestPeer::AdmitVisit(session, first));
+    ASSERT_TRUE(SearchSessionTestPeer::AdmitVisit(session, second));
     session.Start();
     const bool loading = store.load.WaitForArrival();
     const bool computing = backend.WaitForCompute();
@@ -1511,6 +1516,9 @@ TEST(Lc5SearchTest, QueuedBacklogCannotComputeAgainAfterStop) {
                               evaluators);
     RecordingResponder responder;
     const auto root = Origin();
+    const auto moves = root.history.Last().GetBoard().GenerateLegalMoves();
+    graph.CompleteMaterialization(root.key, 1,
+                                  {.moves = {moves[0]}, .priors = {1.0f}});
     auto settings = TestSettings(4, 20);
     settings.eval_threads = evaluators;
     SearchSession session(&engine, &backend, &responder, settings,
@@ -1534,7 +1542,7 @@ TEST(Lc5SearchTest, QueuedBacklogCannotComputeAgainAfterStop) {
     for (const auto& [id, calls] : backend.calls_by_evaluator)
       EXPECT_EQ(calls, 1u);
     EXPECT_EQ(backend.inputs.load(), 4u * evaluators);
-    EXPECT_EQ(graph.Size(), 4u * evaluators);
+    EXPECT_EQ(graph.Size(), 1u + 4u * evaluators);
     // Authorized batches back up their visits; the queued backlog cancels.
     EXPECT_EQ(session.metrics().visits_completed.load(), 4u * evaluators);
     ExpectDrained(session, graph);
@@ -1592,6 +1600,9 @@ TEST(Lc5SearchTest, StopDuringAddInputKeepsOnlyImmediateResults) {
   backend.blocked_input = 2;
   RecordingResponder responder;
   const auto root = Origin();
+  const auto moves = root.history.Last().GetBoard().GenerateLegalMoves();
+  graph.CompleteMaterialization(root.key, 1,
+                                {.moves = {moves[0]}, .priors = {1.0f}});
   auto settings = TestSettings(1, 4);
   settings.minibatch_size = 8;
   SearchSession session(&engine, &backend, &responder, settings,
@@ -1611,7 +1622,7 @@ TEST(Lc5SearchTest, StopDuringAddInputKeepsOnlyImmediateResults) {
   ASSERT_TRUE(responding);
   EXPECT_EQ(backend.inputs.load(), 2u);
   EXPECT_EQ(backend.computes.load(), 0u);
-  EXPECT_EQ(graph.Size(), 1u);
+  EXPECT_EQ(graph.Size(), 2u);
   auto hit = graph.SnapshotNode(origins[0].key);
   ASSERT_TRUE(hit);
   // The install counted the leaf; its owner completes with nothing above it.
@@ -1632,6 +1643,9 @@ TEST(Lc5SearchTest, NonfittingJobStaysQueuedAndIsCancelledAfterStop) {
   ControlledBackend backend(ControlledBackend::Cache::kNone, true, 5);
   RecordingResponder responder;
   const auto root = Origin();
+  const auto moves = root.history.Last().GetBoard().GenerateLegalMoves();
+  graph.CompleteMaterialization(root.key, 1,
+                                {.moves = {moves[0]}, .priors = {1.0f}});
   auto settings = TestSettings(1, 6);
   settings.minibatch_size = 5;
   SearchSession session(&engine, &backend, &responder, settings,
@@ -1651,7 +1665,7 @@ TEST(Lc5SearchTest, NonfittingJobStaysQueuedAndIsCancelledAfterStop) {
   EXPECT_EQ(backend.batch_sizes, (std::vector<size_t>{4}));
   EXPECT_EQ(backend.inputs.load(), 4u);
   EXPECT_EQ(backend.computes.load(), 1u);
-  EXPECT_EQ(graph.Size(), 4u);
+  EXPECT_EQ(graph.Size(), 5u);
   for (size_t i = 4; i < origins.size(); ++i)
     EXPECT_FALSE(graph.SnapshotNode(origins[i].key));
   ExpectDrained(session, graph);
@@ -1832,8 +1846,7 @@ TEST(Lc5SearchTest, SingleNodeSearchPlaysTopPriorMove) {
   EXPECT_EQ(responder.bestmoves[0].bestmove, expected);
 }
 
-TEST(Lc5SearchTest,
-     FreshRootStoppedBeforeStartUsesLegalFallbackWithoutEvaluation) {
+TEST(Lc5SearchTest, FreshRootStoppedBeforeStartStillEvaluatesRootOnce) {
   PolicyEngine<PuctAveraging> engine(TestParams());
   auto& graph = engine.graph();
   ControlledBackend backend;
@@ -1847,10 +1860,15 @@ TEST(Lc5SearchTest,
   session.Start();
   session.Wait();
   ExpectDrained(session, graph);
+  ExpectFinalOutput(responder, 1);
   ExpectLegalBestmove(responder, root);
-  EXPECT_EQ(backend.inputs.load(), 0u);
-  EXPECT_EQ(backend.computes.load(), 0u);
-  EXPECT_EQ(graph.Size(), 0u);
+  EXPECT_EQ(backend.inputs.load(), 1u);
+  EXPECT_EQ(backend.computes.load(), 1u);
+  EXPECT_EQ(graph.Size(), 1u);
+  const auto node = graph.SnapshotNode(root.key);
+  ASSERT_TRUE(node);
+  ASSERT_FALSE(node->edges.empty());
+  EXPECT_EQ(responder.bestmoves[0].bestmove, node->edges[0].move);
 }
 
 TEST(Lc5SearchTest, EnginePreservesExplicitMovetimeAndInfinitePrecedence) {

@@ -71,7 +71,7 @@ class VisitWorker {
     WorkQueue<StoreJob>& store_jobs;
     // All workers' AsyncJobs sent and not yet finished.
     std::atomic<size_t>& jobs_in_flight;
-    ControllerSignal& controller;
+    ControllerSignal& controller_signal;
   };
 
   VisitWorker(size_t worker_id, const Context& context);

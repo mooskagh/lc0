@@ -50,21 +50,23 @@ constexpr auto kEvictionInterval = std::chrono::milliseconds(10);
 constexpr uint64_t kMaxRootVisits = 4'000'000'000;
 
 // Visits a search may complete: `go nodes`, if given and not pondering, but
-// never so many that the root's visit count would overflow.
-uint64_t GetNodeLimit(const GoParams& go_params, uint64_t root_visits) {
-  uint64_t limit = kMaxRootVisits - std::min(root_visits, kMaxRootVisits);
+// never so many that the root's visit count would overflow, and at least one if
+// the root is not yet expanded.
+uint64_t GetNodeLimit(const GoParams& go_params, const RootStats& root) {
+  uint64_t limit = kMaxRootVisits - std::min(root.visits, kMaxRootVisits);
   if (!go_params.ponder && go_params.nodes && *go_params.nodes >= 0) {
     limit = std::min(limit, static_cast<uint64_t>(*go_params.nodes));
   }
+  if (!root.expanded) limit = std::max<uint64_t>(limit, 1);
   return limit;
 }
 
 VisitLimiter::Config MakeLimiterConfig(const Settings::Resolved& settings,
                                        const GoParams& go_params,
-                                       uint64_t root_visits) {
+                                       const RootStats& root) {
   return {.workers = static_cast<size_t>(settings.threads),
-          .node_limit = GetNodeLimit(go_params, root_visits),
-          .root_visits_at_start = root_visits,
+          .node_limit = GetNodeLimit(go_params, root),
+          .root_visits_at_start = root.visits,
           .active_visits_ratio = settings.active_visits_ratio};
 }
 
@@ -97,10 +99,10 @@ SearchSession::SearchSession(VisitEngine* engine, Backend* backend,
                     root_.history.Last().IsBlackToMove(), start_time_,
                     saved_ms),
       may_stop_early_(!go_params.infinite && !go_params.ponder),
-      visits_(settings_.max_active_visits),
+      visit_pool_(settings_.max_active_visits),
       limiter_(MakeLimiterConfig(settings_, go_params,
-                                 engine_->GetRootStats(root_.key).visits),
-               visits_, metrics_),
+                                 engine_->GetRootStats(root_.key)),
+               visit_pool_, metrics_),
       inboxes_(settings_.threads),
       evaluator_({.backend = *backend_,
                   .settings = settings_,
@@ -111,7 +113,7 @@ SearchSession::SearchSession(VisitEngine* engine, Backend* backend,
   const VisitWorker::Context context{.engine = *engine_,
                                      .settings = settings_,
                                      .root = root_,
-                                     .visits = visits_,
+                                     .visits = visit_pool_,
                                      .metrics = metrics_,
                                      .limiter = limiter_,
                                      .materializations = materializations_,
@@ -119,7 +121,7 @@ SearchSession::SearchSession(VisitEngine* engine, Backend* backend,
                                      .evaluator = evaluator_,
                                      .store_jobs = store_jobs_,
                                      .jobs_in_flight = jobs_in_flight_,
-                                     .controller = controller_};
+                                     .controller_signal = controller_signal_};
   for (size_t i = 0; i < inboxes_.size(); ++i) {
     visit_workers_.push_back(std::make_unique<VisitWorker>(i, context));
   }
@@ -132,27 +134,34 @@ SearchSession::~SearchSession() {
 
 void SearchSession::Start() {
   if (started_.exchange(true)) return;
+  if (limiter_.node_limit() == 0 || time_manager_.ShouldStop(start_time_)) {
+    Stop();
+  }
   if (engine_->HasStore()) {
     for (int i = 0; i < settings_.eval_threads; ++i) {
       store_threads_.emplace_back(&SearchSession::RunStoreWorker, this);
     }
   }
   evaluator_.Start();
-  for (auto& worker : visit_workers_) {
-    worker->Start();
-  }
-  if (limiter_.node_limit() == 0) Stop();
+  for (auto& worker : visit_workers_) worker->Start();
   controller_thread_ = std::thread(&SearchSession::RunControllerWorker, this);
 }
 
 void SearchSession::Stop() {
-  limiter_.Stop();
-  controller_.Notify();
+  stop_requested_.store(true);
+  if (metrics_.visits_completed.load() > 0 ||
+      engine_->GetRootStats(root_.key).expanded) {
+    limiter_.Stop();            // Close visit admission and set IsStopping().
+  } else {
+    limiter_.CapNodeLimit(1);   // Admit only the root visit before stopping.
+  }
+  controller_signal_.Notify();  // Wake controller to emit bestmove and drain.
 }
 
 void SearchSession::Abort() {
   aborted_.store(true);
-  Stop();
+  limiter_.Stop();
+  controller_signal_.Notify();
 }
 
 void SearchSession::Wait() {
@@ -169,36 +178,15 @@ void SearchSession::RunControllerWorker() {
   for (;;) {
     // Before inspecting predicates: any enabling event during inspection
     // changes the generation and prevents sleeping.
-    const uint64_t generation = controller_.generation();
+    const uint64_t generation = controller_signal_.generation();
     const auto now = steady_clock::now();
-    std::optional<steady_clock::time_point> next_check;
-    if (!IsStopping()) {
-      next_check = time_manager_.deadline();
-      const RootStats root = engine_->GetRootStats(root_.key);
-      if (time_manager_.ShouldStop(now) ||
-          metrics_.visits_completed.load() >= limiter_.node_limit()) {
-        Stop();
-      } else if (may_stop_early_ &&
-                 (root.decided || (root.expanded && root.edges == 1))) {
-        // The root's result is proven, or there is only one move to play.
-        Stop();
-      } else if (root.expanded &&
-                 !time_manager_.CanAffordVisits(
-                     root.best_edge_visits - root.second_edge_visits,
-                     metrics_.visits_completed.load(), now)) {
-        // The runner-up can't catch up within the remaining budget.
-        Stop();
-      } else if (may_stop_early_) {
-        // Polls for a decided root, and for smart pruning.
-        next_check = std::min(next_check.value_or(now + kSmartPruningInterval),
-                              now + kSmartPruningInterval);
-      }
-      if (HasNodeLimit()) {
-        SendEvictionJob();
-        next_check = std::min(next_check.value_or(now + kEvictionInterval),
-                              now + kEvictionInterval);
-      }
+
+    if (!IsStopping() &&
+        (stop_requested_.load() || time_manager_.ShouldStop(now))) {
+      limiter_.CapNodeLimit(1);
     }
+    if (!IsStopping() && ShouldStop(now)) limiter_.Stop();
+    SendEvictionJob();
     if (!IsStopping() && now >= next_info) {
       std::vector<ThinkingInfo> infos{BuildThinkingInfo(false)};
       responder_->OutputThinkingInfo(&infos);
@@ -211,13 +199,40 @@ void SearchSession::RunControllerWorker() {
     // Stop may arrive after the check above. Never finish draining before
     // output has been committed or suppressed and sleepers were woken.
     if (responded && IsFullyDrained()) break;
-    auto wake_at = steady_clock::time_point::max();
-    if (!IsStopping()) {
-      wake_at = std::min(next_info, next_check.value_or(wake_at));
-    }
-    controller_.WaitUntil(generation, wake_at);
+
+    controller_signal_.WaitUntil(generation, NextWakeup(now, next_info));
   }
   JoinThreads();
+}
+
+bool SearchSession::ShouldStop(steady_clock::time_point now) const {
+  const RootStats root = engine_->GetRootStats(root_.key);
+  if (!root.expanded && metrics_.visits_completed.load() == 0) return false;
+  if (stop_requested_.load() || time_manager_.ShouldStop(now) ||
+      metrics_.visits_completed.load() >= limiter_.node_limit()) {
+    return true;
+  }
+  // The root's result is proven, or there is only one move to play.
+  if (may_stop_early_ && (root.decided || root.edges == 1)) {
+    return true;
+  }
+  // The runner-up can't catch up within the remaining budget.
+  return !time_manager_.CanAffordVisits(
+      root.best_edge_visits - root.second_edge_visits,
+      metrics_.visits_completed.load(), now);
+}
+
+steady_clock::time_point SearchSession::NextWakeup(
+    steady_clock::time_point now, steady_clock::time_point next_info) const {
+  if (IsStopping()) return steady_clock::time_point::max();
+  auto wake_at = next_info;
+  if (const auto deadline = time_manager_.deadline();
+      deadline && *deadline > now) {
+    wake_at = std::min(wake_at, *deadline);
+  }
+  if (may_stop_early_) wake_at = std::min(wake_at, now + kSmartPruningInterval);
+  if (HasNodeLimit()) wake_at = std::min(wake_at, now + kEvictionInterval);
+  return wake_at;
 }
 
 void SearchSession::RespondBestMove() {
@@ -241,7 +256,7 @@ void SearchSession::RespondBestMove() {
 }
 
 bool SearchSession::IsFullyDrained() {
-  if (visits_.active() != 0 || !materializations_.empty()) return false;
+  if (visit_pool_.active() != 0 || !materializations_.empty()) return false;
   if (jobs_in_flight_.load() != 0 || evictions_in_flight_.load() != 0) {
     return false;
   }
@@ -285,7 +300,7 @@ ThinkingInfo SearchSession::BuildThinkingInfo(bool final) const {
   info.depth = static_cast<int>(metrics_.max_depth.load());
   info.seldepth = static_cast<int>(metrics_.max_selected_depth.load());
   engine_->FillThinkingInfo(root_, info);
-  info.comment = metrics_.Format(engine_->GetGraphSize(), visits_.active(),
+  info.comment = metrics_.Format(engine_->GetGraphSize(), visit_pool_.active(),
                                  evaluator_.queue_size());
   if (final) info.comment += " final";
   return info;
@@ -335,7 +350,7 @@ void SearchSession::RunLoadJob(AsyncJob& job) {
 void SearchSession::SendEvictionJob() {
   if (!HasNodeLimit() || IsStopping() || evictions_in_flight_.load() > 0)
     return;
-  controller_.TakeEvictionRequests();
+  controller_signal_.TakeEvictionRequests();
   const size_t limit = settings_.graph_node_limit;
   const size_t size = engine_->GetGraphSize();
   if (size <= limit) return;
@@ -349,7 +364,7 @@ void SearchSession::RunEvictionJob(const EvictionJob& job) {
   engine_->EvictToStore(job.count, root_.key, metrics_);
   // The controller may queue the next round, or finish draining.
   evictions_in_flight_.fetch_sub(1);
-  controller_.Notify();
+  controller_signal_.Notify();
 }
 
 }  // namespace lczero::lc5

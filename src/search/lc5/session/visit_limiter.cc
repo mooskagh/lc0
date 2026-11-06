@@ -36,7 +36,13 @@ VisitLimiter::VisitLimiter(const Config& config, VisitPool& visits,
     : config_(config),
       visits_(visits),
       metrics_(metrics),
+      node_limit_(config.node_limit),
       worker_waiting_(config.workers, false) {}
+
+void VisitLimiter::CapNodeLimit(uint64_t limit) {
+  absl::MutexLock lock(mutex_);
+  node_limit_.store(std::min(node_limit_.load(), limit));
+}
 
 void VisitLimiter::Stop() {
   absl::MutexLock lock(mutex_);
@@ -102,7 +108,7 @@ std::vector<size_t> VisitLimiter::TakeWorkersToWake() {
 }
 
 bool VisitLimiter::IsAdmissionClosedLocked() const {
-  return IsStopping() || total_admitted_count_ >= config_.node_limit;
+  return IsStopping() || total_admitted_count_ >= node_limit_.load();
 }
 
 }  // namespace lczero::lc5
