@@ -1220,13 +1220,13 @@ if get_option('gtest')
         dependencies: [gtest, absl_flat_hash_map_dep, absl_synchronization_dep]),
       args: '--gtest_output=xml:lc5_visit_test.xml', timeout: 90)
 
-    test('Lc5TicketTable',
-      executable('lc5_ticket_table_test',
-        'src/search/lc5/session/ticket_table_test.cc',
+    test('Lc5MaterializationTable',
+      executable('lc5_materialization_table_test',
+        'src/search/lc5/session/materialization_table_test.cc',
         pb_files,
         include_directories: includes, link_with: lc0_lib,
         dependencies: [gtest, absl_flat_hash_map_dep, absl_synchronization_dep]),
-      args: '--gtest_output=xml:lc5_ticket_table_test.xml', timeout: 90)
+      args: '--gtest_output=xml:lc5_materialization_table_test.xml', timeout: 90)
 
     test('Lc5VisitLimiter',
       executable('lc5_visit_limiter_test',

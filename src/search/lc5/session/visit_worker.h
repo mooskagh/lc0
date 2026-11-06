@@ -37,8 +37,8 @@
 
 #include "search/lc5/metrics.h"
 #include "search/lc5/session/evaluator.h"
+#include "search/lc5/session/materialization_table.h"
 #include "search/lc5/session/messages.h"
-#include "search/lc5/session/ticket_table.h"
 #include "search/lc5/session/visit_limiter.h"
 #include "search/lc5/session/visit_pool.h"
 #include "search/lc5/session/work_queue.h"
@@ -48,8 +48,8 @@
 namespace lczero::lc5 {
 
 // One visit thread: admits visits from the root, steps them through the
-// graph, opens and closes the tickets of the leaves they reach, and sends
-// those leaves to the store and the evaluators in jobs.
+// graph, opens and closes the materializations of the leaves they reach, and
+// sends those leaves to the store and the evaluators in jobs.
 //
 // Everything below is touched only by this worker's thread, except through
 // its inbox (other threads post to it) and IsDrained.
@@ -63,7 +63,7 @@ class VisitWorker {
     VisitPool& visits;
     Metrics& metrics;
     VisitLimiter& limiter;
-    TicketTable& tickets;
+    MaterializationTable& materializations;
     // Every worker's inbox, by worker index.
     std::span<WorkerInbox> inboxes;
     Evaluator& evaluator;
@@ -77,8 +77,8 @@ class VisitWorker {
 
   // The thread body: runs until the inbox gets shut down.
   void Run();
-  // After a stop: no visits, tickets or jobs are left, and nothing waits in
-  // the inbox.
+  // After a stop: no visits, materializations or jobs are left, and nothing
+  // waits in the inbox.
   bool IsDrained();
 
  private:
@@ -123,17 +123,19 @@ class VisitWorker {
   void RestartVisit(Visit& visit);
   void FinishVisit(Visit& visit, bool completed);
 
-  // Materialization and tickets.
-  // Joins or opens a ticket for `visit.current_key` and suspends `visit`.
-  // Returns false if the node is already expanded, so the caller can descend.
+  // Materializations.
+  // Joins or opens a materialization for `visit.current_key` and suspends
+  // `visit`. Returns false if the node is already expanded, so the caller can
+  // descend.
   bool SuspendVisit(Visit& visit);
   void PrepareMaterialization(Materialization materialization);
-  void CompleteTicket(MaterializationTicketId ticket, ExpansionPayload payload);
-  // Publishes a node restored from the store; returns false, with the ticket
-  // still open, if the record was rejected.
-  bool RestoreTicket(MaterializationTicketId ticket,
-                     std::span<const uint8_t> record);
-  void CancelTicket(MaterializationTicketId ticket);
+  void CompleteMaterialization(MaterializationId materialization_id,
+                               ExpansionPayload payload);
+  // Publishes a node restored from the store; returns false, with the
+  // materialization still open, if the record was rejected.
+  bool RestoreMaterialization(MaterializationId materialization_id,
+                              std::span<const uint8_t> record);
+  void CancelMaterialization(MaterializationId materialization_id);
   void CancelQueuedMaterializations();
 
   // AsyncJobs. A store thread or an evaluator runs a job and returns it to
@@ -151,7 +153,8 @@ class VisitWorker {
 
   // Visits and wakeups.
   std::deque<VisitId> runnable_;
-  size_t active_visits_ = 0;  // Owned visits: runnable or waiting on a ticket.
+  // Owned visits: runnable or waiting on a materialization.
+  size_t active_visits_ = 0;
   // Wakeups for this worker's own visits (e.g. from a terminal leaf closed
   // during AdvanceVisit), buffered to resume in ResumeLocalVisits.
   std::vector<VisitWakeup> local_wakeups_;

@@ -122,12 +122,12 @@ TEST(Lc5VisitPoolTest, InitializesAndResetsVisit) {
     EXPECT_EQ(visit.path[0].key, NodeKey{7});
     EXPECT_EQ(visit.path[0].generation, 9u);
     EXPECT_FALSE(visit.path[0].selected_move);
-    EXPECT_EQ(visit.waiting_ticket, 0u);
+    EXPECT_EQ(visit.waiting_materialization_id, 0u);
     EXPECT_FLOAT_EQ(visit.result.q, 0.0f);
     EXPECT_FLOAT_EQ(visit.result.d, 0.0f);
     EXPECT_FLOAT_EQ(visit.result.m, 0.0f);
     EXPECT_FALSE(visit.two_fold_origin);
-    visit.waiting_ticket = 17;
+    visit.waiting_materialization_id = 17;
     visit.result = {1.0f, 0.5f, 3.0f};
     visit.two_fold_origin = 3;
     pool.Release(*id);
@@ -138,7 +138,7 @@ TEST(Lc5VisitPoolTest, InitializesAndResetsVisit) {
     EXPECT_TRUE(visit.origin.backup_prefix.empty());
     EXPECT_EQ(visit.history.GetLength(), 0);
     EXPECT_TRUE(visit.path.empty());
-    EXPECT_EQ(visit.waiting_ticket, 0u);
+    EXPECT_EQ(visit.waiting_materialization_id, 0u);
     EXPECT_EQ(pool.active(), 0u);
   }
 }

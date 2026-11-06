@@ -147,12 +147,12 @@ void VisitWorker::DeliverWakeup(const VisitWakeup& wakeup) {
 }
 
 void VisitWorker::ResumeVisit(const VisitWakeup& wakeup) {
-  // A waiting visit is on exactly one ticket, which wakes it exactly once,
-  // and only that wakeup can make it ready or release it.
+  // A waiting visit is on at most one open materialization, which wakes it
+  // exactly once, and only that wakeup can make it ready or release it.
   Visit& visit = context_.visits.Get(wakeup.id);
   assert(visit.state == VisitState::kWaitingMaterialization);
-  assert(visit.waiting_ticket == wakeup.ticket);
-  visit.waiting_ticket = 0;
+  assert(visit.waiting_materialization_id == wakeup.materialization_id);
+  visit.waiting_materialization_id = 0;
   // On stop, visits finish only when their evaluation already exists.
   if (wakeup.kind == VisitWakeup::Kind::kCancel ||
       (IsStopping() && (wakeup.kind == VisitWakeup::Kind::kSelect ||
@@ -258,9 +258,10 @@ void VisitWorker::AdvanceRunnableVisits(size_t limit) {
 }
 
 void VisitWorker::CancelVisits() {
-  // Every visit that is not waiting on a ticket is runnable: ready backups
-  // finish, the rest are cancelled. Waiting visits stay until their ticket
-  // completes or is cancelled, and come back through ResumeVisit.
+  // Every visit that is not waiting on a materialization is runnable: ready
+  // backups finish, the rest are cancelled. Waiting visits stay until their
+  // materialization completes or is cancelled, and come back through
+  // ResumeVisit.
   cancelled_ = true;
   AdvanceRunnableVisits(std::numeric_limits<size_t>::max());
 }
@@ -344,30 +345,32 @@ void VisitWorker::FinishVisit(Visit& visit, bool completed) {
 }
 
 //////////////////////////////////////////////////////////////////////////////
-// Materialization: tickets, materializations and jobs.
+// Materialization: waiters, materializations and jobs.
 //////////////////////////////////////////////////////////////////////////////
 
 bool VisitWorker::SuspendVisit(Visit& visit) {
   FindOrCreateResult node{};
-  const auto joined = context_.tickets.Join(
+  const auto joined = context_.materializations.Join(
       visit.current_key, {.id = visit.id, .worker = index_},
-      [&](MaterializationTicketId id) {
-        node = context_.engine.FindOrCreateMaterialization(visit.current_key, id);
-        assert(node.lifecycle == NodeLifecycle::kExpanded || node.ticket == id);
+      [&](MaterializationId materialization_id) {
+        node = context_.engine.FindOrCreateMaterialization(visit.current_key,
+                                                           materialization_id);
+        assert(node.lifecycle == NodeLifecycle::kExpanded ||
+               node.materialization_id == materialization_id);
         return node.lifecycle != NodeLifecycle::kExpanded;
       });
   if (node.created) context_.metrics.graph_nodes_created.fetch_add(1);
   if (!joined) return false;
   const bool owner = joined->owner;
   if (owner) {
-    context_.metrics.tickets_created.fetch_add(1);
+    context_.metrics.materializations_started.fetch_add(1);
   } else {
-    context_.metrics.ticket_waiters.fetch_add(1);
-    RaiseHighWater(context_.metrics.maximum_waiters_per_ticket,
+    context_.metrics.materialization_waiters.fetch_add(1);
+    RaiseHighWater(context_.metrics.maximum_waiters_per_materialization,
                    joined->waiters);
   }
   visit.path.back().generation = node.generation;
-  visit.waiting_ticket = joined->id;
+  visit.waiting_materialization_id = joined->id;
   visit.state = VisitState::kWaitingMaterialization;
   context_.metrics.visits_suspended.fetch_add(1);
   if (owner) {
@@ -379,9 +382,8 @@ bool VisitWorker::SuspendVisit(Visit& visit) {
         context_.controller.RequestEviction()) {
       controller_event_ = true;
     }
-    Materialization materialization{.ticket = joined->id,
-                                    .key = visit.current_key,
-                                    .history = visit.history};
+    Materialization materialization{
+        .id = joined->id, .key = visit.current_key, .history = visit.history};
     // A stored node may hold statistics, even if terminal: look it up first.
     if (has_store) {
       loads_.push_back(std::move(materialization));
@@ -394,12 +396,13 @@ bool VisitWorker::SuspendVisit(Visit& visit) {
 
 void VisitWorker::PrepareMaterialization(Materialization materialization) {
   if (IsStopping()) {
-    CancelTicket(materialization.ticket);
+    CancelMaterialization(materialization.id);
     return;
   }
   materialization.payload = DetectTerminal(materialization.history);
   if (materialization.payload.terminal != TerminalKind::kNonTerminal) {
-    CompleteTicket(materialization.ticket, std::move(materialization.payload));
+    CompleteMaterialization(materialization.id,
+                            std::move(materialization.payload));
     return;
   }
   materialization.payload.priors.resize(materialization.payload.moves.size());
@@ -408,14 +411,16 @@ void VisitWorker::PrepareMaterialization(Materialization materialization) {
   evals_.push_back(std::move(materialization));
 }
 
-void VisitWorker::CompleteTicket(MaterializationTicketId ticket_id,
-                                 ExpansionPayload payload) {
+void VisitWorker::CompleteMaterialization(MaterializationId materialization_id,
+                                          ExpansionPayload payload) {
   MaterializationResult installed;
-  const auto ticket = context_.tickets.Close(ticket_id, [&](NodeKey key) {
-    installed = context_.engine.CompleteMaterialization(key, ticket_id, payload);
-    return true;
-  });
-  assert(ticket->owner.worker == index_);
+  const auto waiters = context_.materializations.Close(
+      materialization_id, [&](NodeKey key) {
+        installed = context_.engine.CompleteMaterialization(
+            key, materialization_id, payload);
+        return true;
+      });
+  assert(waiters->owner.worker == index_);
   RaiseHighWater(context_.metrics.graph_size_high_water,
                  context_.engine.GetGraphSize());
   if (!installed.accepted) context_.metrics.publications_rejected.fetch_add(1);
@@ -436,19 +441,21 @@ void VisitWorker::CompleteTicket(MaterializationTicketId ticket_id,
     wakeup.exact = installed.accepted && IsExact(payload.terminal);
     DeliverWakeup(wakeup);
   };
-  wake(ticket->owner, true);
-  for (const auto& wakeup : ticket->waiters) wake(wakeup, false);
+  wake(waiters->owner, true);
+  for (const auto& wakeup : waiters->waiters) wake(wakeup, false);
 }
 
-bool VisitWorker::RestoreTicket(MaterializationTicketId ticket_id,
-                                std::span<const uint8_t> record) {
+bool VisitWorker::RestoreMaterialization(MaterializationId materialization_id,
+                                         std::span<const uint8_t> record) {
   MaterializationResult restored;
-  const auto ticket = context_.tickets.Close(ticket_id, [&](NodeKey key) {
-    restored = context_.engine.RestoreFromRecord(key, ticket_id, record);
-    return restored.accepted;
-  });
-  if (!ticket) return false;
-  assert(ticket->owner.worker == index_);
+  const auto waiters = context_.materializations.Close(
+      materialization_id, [&](NodeKey key) {
+        restored =
+            context_.engine.RestoreFromRecord(key, materialization_id, record);
+        return restored.accepted;
+      });
+  if (!waiters) return false;
+  assert(waiters->owner.worker == index_);
   context_.metrics.nodes_restored.fetch_add(1);
   RaiseHighWater(context_.metrics.graph_size_high_water,
                  context_.engine.GetGraphSize());
@@ -459,31 +466,32 @@ bool VisitWorker::RestoreTicket(MaterializationTicketId ticket_id,
     wakeup.generation = restored.generation;
     DeliverWakeup(wakeup);
   };
-  wake(ticket->owner);
-  for (const auto& wakeup : ticket->waiters) wake(wakeup);
+  wake(waiters->owner);
+  for (const auto& wakeup : waiters->waiters) wake(wakeup);
   return true;
 }
 
-void VisitWorker::CancelTicket(MaterializationTicketId ticket_id) {
+void VisitWorker::CancelMaterialization(MaterializationId materialization_id) {
   // Only called on stop, for evaluations that will never be computed. The
   // owner and waiters are still alive and must be woken to cancel.
-  const auto ticket = context_.tickets.Close(ticket_id, [&](NodeKey key) {
-    context_.engine.CancelMaterialization(key, ticket_id);
-    return true;
-  });
-  assert(ticket->owner.worker == index_);
+  const auto waiters = context_.materializations.Close(
+      materialization_id, [&](NodeKey key) {
+        context_.engine.CancelMaterialization(key, materialization_id);
+        return true;
+      });
+  assert(waiters->owner.worker == index_);
   const auto wake = [&](VisitWakeup wakeup) {
     wakeup.kind = VisitWakeup::Kind::kCancel;
     DeliverWakeup(wakeup);
   };
-  wake(ticket->owner);
-  for (const auto& wakeup : ticket->waiters) wake(wakeup);
+  wake(waiters->owner);
+  for (const auto& wakeup : waiters->waiters) wake(wakeup);
 }
 
 void VisitWorker::CancelQueuedMaterializations() {
   for (auto* materializations : {&loads_, &evals_}) {
     for (const auto& materialization : *materializations) {
-      CancelTicket(materialization.ticket);
+      CancelMaterialization(materialization.id);
     }
     materializations->clear();
   }
@@ -549,12 +557,13 @@ void VisitWorker::FinishJob(std::unique_ptr<AsyncJob> job) {
     switch (materialization.state) {
       case Materialization::State::kEvaluated:
         SortByPrior(materialization.payload);
-        CompleteTicket(materialization.ticket,
-                       std::move(materialization.payload));
+        CompleteMaterialization(materialization.id,
+                                std::move(materialization.payload));
         break;
       case Materialization::State::kStoreHit:
         context_.metrics.node_store_hits.fetch_add(1);
-        if (!RestoreTicket(materialization.ticket, materialization.record)) {
+        if (!RestoreMaterialization(materialization.id,
+                                    materialization.record)) {
           // Not a record for this policy or format: evaluate the node.
           context_.metrics.restores_rejected.fetch_add(1);
           materialization.record.clear();
@@ -567,7 +576,7 @@ void VisitWorker::FinishJob(std::unique_ptr<AsyncJob> job) {
         break;
       case Materialization::State::kPending:
       case Materialization::State::kQueued:
-        CancelTicket(materialization.ticket);
+        CancelMaterialization(materialization.id);
         break;
     }
   }

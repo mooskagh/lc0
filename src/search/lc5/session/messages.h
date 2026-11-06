@@ -62,7 +62,8 @@ struct VisitWakeup {
   VisitId id;     // The visit to continue.
   size_t worker;  // Owning visit worker (the only thread that may mutate it).
   Kind kind = Kind::kSelect;
-  MaterializationTicketId ticket = 0;  // The ticket the visit waited on.
+  // The materialization the visit waited on.
+  MaterializationId materialization_id = 0;
   uint64_t generation = 0;  // The leaf node's generation once published.
   SearchValue value{};      // The leaf value; unset for kRestored and kCancel.
   bool exact = false;       // `value` is an exact terminal value.
@@ -79,9 +80,9 @@ struct Materialization {
     kQueued,     // Added to an NN computation that has not run yet.
     kEvaluated,  // `payload` holds the NN evaluation.
   };
-  MaterializationTicketId ticket;  // The ticket this materialization completes.
-  NodeKey key;                     // The node to materialize.
-  PositionHistory history;     // Position at the node (for terminals and NN).
+  MaterializationId id;     // The open materialization this completes.
+  NodeKey key;              // The node to materialize.
+  PositionHistory history;  // Position at the node (for terminals and NN).
   ExpansionPayload payload{};  // Legal moves, filled with priors and value.
   std::vector<uint8_t> record{};  // Serialized node data on kStoreHit.
   State state = State::kPending;

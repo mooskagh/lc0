@@ -143,7 +143,7 @@ TEST(Lc5GraphTest, PublicationAcceptanceIsIndependentOfReturnedGeneration) {
   auto node = graph.SnapshotNode(key);
   ASSERT_TRUE(node);
   EXPECT_EQ(node->lifecycle, NodeLifecycle::kMaterializing);
-  EXPECT_EQ(node->ticket, 7u);
+  EXPECT_EQ(node->materialization_id, 7u);
   EXPECT_TRUE(node->edges.empty());
 
   installed = graph.CompleteMaterialization(key, 7, payload);
@@ -156,17 +156,18 @@ TEST(Lc5GraphTest, PublicationAcceptanceIsIndependentOfReturnedGeneration) {
       UpdateResult::kApplied);
   ASSERT_EQ(graph.SelectAndReserve(key, TestParams()).status,
             SelectStatus::kSelected);
-  // Both duplicate and wrong-ticket publications return the same generation
+  // Both duplicate and wrong-id publications return the same generation
   // as success; only `accepted` distinguishes them. Rejection must not
   // disturb statistics or live reservations.
-  for (const auto ticket : {7u, 8u}) {
-    installed = graph.CompleteMaterialization(key, ticket, replacement);
+  for (const auto materialization_id : {7u, 8u}) {
+    installed =
+        graph.CompleteMaterialization(key, materialization_id, replacement);
     EXPECT_EQ(installed.generation, created.generation);
     EXPECT_FALSE(installed.accepted);
     node = graph.SnapshotNode(key);
     ASSERT_TRUE(node);
     EXPECT_EQ(node->lifecycle, NodeLifecycle::kExpanded);
-    EXPECT_EQ(node->ticket, 0u);
+    EXPECT_EQ(node->materialization_id, 0u);
     ASSERT_EQ(node->edges.size(), 1u);
     EXPECT_EQ(node->edges[0].move, move);
     EXPECT_FLOAT_EQ(node->edges[0].prior, 1.0f);
@@ -184,12 +185,12 @@ TEST(Lc5GraphTest, PublicationAcceptanceIsIndependentOfReturnedGeneration) {
   installed = graph.CompleteMaterialization(key, 7, payload);
   EXPECT_EQ(installed.generation, recreated.generation);
   EXPECT_FALSE(installed.accepted);
-  EXPECT_EQ(graph.SnapshotNode(key)->ticket, 9u);
+  EXPECT_EQ(graph.SnapshotNode(key)->materialization_id, 9u);
   installed = graph.CompleteMaterialization(key, 9, replacement);
   EXPECT_EQ(installed.generation, recreated.generation);
   EXPECT_TRUE(installed.accepted);
 
-  // The insertion path also reports acceptance, not just existing tickets.
+  // The insertion path also reports acceptance, not just existing placeholders.
   EXPECT_TRUE(
       graph.CompleteMaterialization(NodeKey{456}, 10, payload).accepted);
   EXPECT_EQ(graph.Size(), 2u);
@@ -421,13 +422,14 @@ TEST(Lc5GraphTest, LateMaterializationPreservesPublishedEdges) {
   const auto late = graph.FindOrCreateMaterialization(key, 8);
   EXPECT_FALSE(late.created);
   EXPECT_EQ(late.lifecycle, NodeLifecycle::kExpanded);
-  EXPECT_EQ(late.ticket, 0u);
+  EXPECT_EQ(late.materialization_id, 0u);
   EXPECT_EQ(late.generation, created.generation);
   const ExpansionPayload replacement{.moves = {M(kFileB, kFileB)},
                                      .priors = {1.0f}};
-  for (const auto ticket : {7u, 8u}) {
+  for (const auto materialization_id : {7u, 8u}) {
     EXPECT_EQ(
-        graph.CompleteMaterialization(key, ticket, replacement).generation,
+        graph.CompleteMaterialization(key, materialization_id, replacement)
+            .generation,
         created.generation);
     const auto node = graph.SnapshotNode(key);
     ASSERT_TRUE(node);
@@ -463,9 +465,11 @@ TEST(Lc5GraphTest, AcceptedInstallCountsLeafValueOnce) {
   EXPECT_FLOAT_EQ(node->stats.D(), 0.25f);
   EXPECT_FLOAT_EQ(node->stats.M(), 6.0f);
 
-  // Duplicate and wrong-ticket publications do not count the leaf again.
-  for (const auto ticket : {7u, 8u}) {
-    EXPECT_FALSE(graph.CompleteMaterialization(key, ticket, payload).accepted);
+  // Duplicate and wrong-id publications do not count the leaf again.
+  for (const auto materialization_id : {7u, 8u}) {
+    EXPECT_FALSE(
+        graph.CompleteMaterialization(key, materialization_id, payload)
+            .accepted);
     node = graph.SnapshotNode(key);
     ASSERT_TRUE(node);
     EXPECT_EQ(node->stats.visits, 1u);
@@ -884,18 +888,18 @@ TEST(Lc5GraphTest, RestoreKeepsStatisticsUnderANewGeneration) {
   EXPECT_NE(placeholder.generation, original.generation);
   auto decoded = DecodeNode<PuctAveraging>(record);
   ASSERT_TRUE(decoded);
-  // Another ticket's restore is rejected.
+  // Another materialization's restore is rejected.
   EXPECT_FALSE(graph.RestoreNode(key, 8, *decoded).accepted);
   const auto restored = graph.RestoreNode(key, 9, *decoded);
   ASSERT_TRUE(restored.accepted);
   EXPECT_EQ(restored.generation, placeholder.generation);
-  // One-shot per ticket.
+  // One-shot per materialization.
   EXPECT_FALSE(graph.RestoreNode(key, 9, *decoded).accepted);
 
   const auto node = graph.SnapshotNode(key);
   ASSERT_TRUE(node);
   EXPECT_EQ(node->lifecycle, NodeLifecycle::kExpanded);
-  EXPECT_EQ(node->ticket, 0u);
+  EXPECT_EQ(node->materialization_id, 0u);
   EXPECT_EQ(node->stats.visits, original.stats.visits);
   EXPECT_EQ(node->stats.Q(), original.stats.Q());
   ASSERT_EQ(node->tried.size(), original.tried.size());

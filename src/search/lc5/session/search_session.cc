@@ -114,7 +114,7 @@ SearchSession::SearchSession(VisitEngine* engine, Backend* backend,
                                      .visits = visits_,
                                      .metrics = metrics_,
                                      .limiter = limiter_,
-                                     .tickets = tickets_,
+                                     .materializations = materializations_,
                                      .inboxes = inboxes_,
                                      .evaluator = evaluator_,
                                      .store_jobs = store_jobs_,
@@ -158,7 +158,7 @@ void SearchSession::Wait() {
   if (controller_thread_.joinable()) controller_thread_.join();
 }
 
-void SearchSession::WakeAllWorkers() {
+void SearchSession::WakeAllVisitWorkers() {
   for (auto& inbox : inboxes_) inbox.Wake();
 }
 
@@ -235,12 +235,12 @@ void SearchSession::RespondBestMove() {
     }
   }
   // Synchronize the stop transition with sleepers only after the response.
-  WakeAllWorkers();
+  WakeAllVisitWorkers();
   evaluator_.NotifyStop();
 }
 
 bool SearchSession::IsFullyDrained() {
-  if (visits_.active() != 0 || !tickets_.empty()) return false;
+  if (visits_.active() != 0 || !materializations_.empty()) return false;
   if (jobs_in_flight_.load() != 0 || evictions_in_flight_.load() != 0) {
     return false;
   }

@@ -81,7 +81,7 @@ class SearchSessionTestPeer {
   static void ExpectDrained(const SearchSession& session)
       ABSL_NO_THREAD_SAFETY_ANALYSIS {
     EXPECT_EQ(session.visits_.active(), 0u);
-    EXPECT_TRUE(session.tickets_.empty());
+    EXPECT_TRUE(session.materializations_.empty());
     EXPECT_EQ(session.jobs_in_flight_.load(), 0u);
     EXPECT_EQ(session.evictions_in_flight_.load(), 0u);
     EXPECT_EQ(session.evaluator_.collecting_jobs_.load(), 0u);
@@ -112,7 +112,7 @@ class SearchSessionTestPeer {
              .graph()
              .SnapshotAllForTesting()) {
       EXPECT_EQ(node.lifecycle, NodeLifecycle::kExpanded);
-      EXPECT_EQ(node.ticket, 0u);
+      EXPECT_EQ(node.materialization_id, 0u);
       for (const auto& tried : node.tried) EXPECT_EQ(tried.in_flight, 0u);
     }
   }
@@ -434,7 +434,7 @@ void ExpectDrained(const SearchSession& session, const GameGraph<P>& graph) {
   for (const auto& [key, node] : graph.SnapshotAllForTesting()) {
     SCOPED_TRACE(key.hash);
     EXPECT_EQ(node.lifecycle, NodeLifecycle::kExpanded);
-    EXPECT_EQ(node.ticket, 0u);
+    EXPECT_EQ(node.materialization_id, 0u);
     for (const auto& tried : node.tried) EXPECT_EQ(tried.in_flight, 0u);
   }
 }
@@ -666,7 +666,7 @@ TEST(Lc5SearchTest, OwnerBacksUpLeafWhileWaitersResumeSelection) {
   ExpectDrained(session, graph);
   ExpectFinalOutput(responder, 4);
   EXPECT_EQ(session.metrics().visits_completed.load(), 4u);
-  EXPECT_GE(session.metrics().ticket_waiters.load(), 3u);
+  EXPECT_GE(session.metrics().materialization_waiters.load(), 3u);
   EXPECT_GE(session.metrics().visits_resumed.load(), 3u);
   const auto node = graph.SnapshotNode(root.key);
   ASSERT_TRUE(node);
@@ -917,7 +917,8 @@ TEST(Lc5SearchTest, TerminalOwnerAndWaitersNeverEvaluate) {
                            Case{"8/8/8/8/8/6q1/5k2/7K w - - 0 1",
                                 TerminalKind::kStalemate, 0.0f, 1.0f}}) {
     // Without a store the owner finds the terminal right away, so later visits
-    // see it expanded. A store lookup comes first, so they wait on the ticket.
+    // see it expanded. A store lookup comes first, so they wait on the
+    // materialization.
     for (const bool with_store : {false, true}) {
       SCOPED_TRACE(test.fen);
       SCOPED_TRACE(with_store);
@@ -939,8 +940,9 @@ TEST(Lc5SearchTest, TerminalOwnerAndWaitersNeverEvaluate) {
       EXPECT_EQ(responder.bestmoves[0].bestmove, Move{});
       EXPECT_EQ(backend.inputs.load(), 0u);
       EXPECT_EQ(backend.computes.load(), 0u);
-      EXPECT_EQ(session.metrics().tickets_created.load(), 1u);
-      EXPECT_EQ(session.metrics().ticket_waiters.load(), with_store ? 3u : 0u);
+      EXPECT_EQ(session.metrics().materializations_started.load(), 1u);
+      EXPECT_EQ(session.metrics().materialization_waiters.load(),
+                with_store ? 3u : 0u);
       EXPECT_EQ(session.metrics().terminal_visits.load(), 4u);
       EXPECT_EQ(session.metrics().visits_resumed.load(), 0u);
       auto node = graph.SnapshotNode(root.key);
@@ -1015,7 +1017,8 @@ TEST(Lc5SearchTest, BlockedBackendStopAndAbortDrainReservations) {
     RecordingResponder responder;
     const auto root = Origin();
     const auto moves = root.history.Last().GetBoard().GenerateLegalMoves();
-    // All visits reserve the same root edge and share the child ticket.
+    // All visits reserve the same root edge and share the child
+    // materialization.
     graph.CompleteMaterialization(root.key, 1,
                                   {.moves = {moves[0]}, .priors = {1.0f}});
     auto child = root;
@@ -1037,7 +1040,7 @@ TEST(Lc5SearchTest, BlockedBackendStopAndAbortDrainReservations) {
       FAIL() << "Backend computation was not reached";
     }
     EXPECT_EQ(TriedAt(*graph.SnapshotNode(root.key), 0).in_flight, 4u);
-    EXPECT_EQ(session.metrics().ticket_waiters.load(), 3u);
+    EXPECT_EQ(session.metrics().materialization_waiters.load(), 3u);
     if (abort)
       session.Abort();
     else {
@@ -1432,7 +1435,7 @@ TEST(Lc5SearchTest, BlockedStoreLoadsDrainAfterStopOrAbort) {
       const bool loading = store.load.WaitForArrival();
       if (loading) {
         EXPECT_EQ(TriedAt(*graph.SnapshotNode(root.key), 0).in_flight, 4u);
-        EXPECT_EQ(session.metrics().ticket_waiters.load(), 3u);
+        EXPECT_EQ(session.metrics().materialization_waiters.load(), 3u);
         EXPECT_EQ(backend.inputs.load(), 0u);
       }
       if (abort || !loading)
@@ -1559,7 +1562,7 @@ TEST(Lc5SearchTest, AuthorizedEvaluationsBackUpToRootAfterStop) {
     ASSERT_TRUE(SearchSessionTestPeer::AdmitVisit(session, root));
   session.Start();
   // One authorized batch of four children is computing; the other visits wait
-  // on tickets of any worker, or are still queued, and must cancel.
+  // on materializations of any worker, or are still queued, and must cancel.
   const bool computing = backend.WaitForCompute();
   session.Stop();
   const bool responding = responder.WaitForBestmove();
@@ -1571,7 +1574,7 @@ TEST(Lc5SearchTest, AuthorizedEvaluationsBackUpToRootAfterStop) {
   ExpectDrained(session, graph);
   EXPECT_EQ(backend.computes.load(), 1u);
   EXPECT_EQ(backend.inputs.load(), 4u);
-  // Each computed ticket's owner backs up through the root after stop.
+  // Each computed materialization's owner backs up through the root after stop.
   EXPECT_EQ(session.metrics().visits_completed.load(), 4u);
   const auto node = graph.SnapshotNode(root.key);
   ASSERT_TRUE(node);

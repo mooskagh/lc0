@@ -45,7 +45,7 @@ struct Metrics {
   // The longest a worker's queue of runnable visits got after admission.
   std::atomic<uint64_t> visits_ready_high_water{0};
   // Visits parked waiting for a node to be materialized (evaluated or loaded
-  // from the store), either as the ticket owner or as a waiter on it.
+  // from the store), either as the materialization owner or as a waiter on it.
   std::atomic<uint64_t> visits_suspended{0};
   // Suspended visits that continued selecting below the now-expanded node.
   std::atomic<uint64_t> visits_resumed{0};
@@ -68,11 +68,11 @@ struct Metrics {
   // Releases of an edge reservation that had none. Should stay 0; a non-zero
   // value means a bug in in-flight bookkeeping.
   std::atomic<uint64_t> invariant_underflow_prevented{0};
-  std::atomic<uint64_t> tickets_created{0};
+  std::atomic<uint64_t> materializations_started{0};
   // Visits that hit a node already being materialized by another visit and
-  // waited on its ticket instead of creating one.
-  std::atomic<uint64_t> ticket_waiters{0};
-  std::atomic<uint64_t> maximum_waiters_per_ticket{0};
+  // waited on its materialization instead of starting one.
+  std::atomic<uint64_t> materialization_waiters{0};
+  std::atomic<uint64_t> maximum_waiters_per_materialization{0};
   std::atomic<uint64_t> node_store_load_batches{0};
   std::atomic<uint64_t> node_store_load_keys{0};
   std::atomic<uint64_t> node_store_hits{0};
@@ -108,7 +108,7 @@ struct Metrics {
   // Load and eval jobs in flight across all workers.
   std::atomic<uint64_t> io_jobs_high_water{0};
   // Materialization results that were not installed because the node was no
-  // longer materializing under that ticket.
+  // longer materializing under that materialization_id.
   std::atomic<uint64_t> publications_rejected{0};
 
   std::string Format(size_t graph_size, size_t active, size_t ready_eval) const;

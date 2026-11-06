@@ -49,7 +49,7 @@ struct FindOrCreateResult {
   uint64_t generation;
   bool created;
   NodeLifecycle lifecycle;
-  MaterializationTicketId ticket;
+  MaterializationId materialization_id;
 };
 
 struct MaterializationResult {
@@ -104,26 +104,28 @@ class GameGraph {
 
   static constexpr size_t kShardCount = 1024;
 
-  // Finds an existing node or creates a kMaterializing one owned by `ticket`.
+  // Finds an existing node or creates a kMaterializing one owned by
+  // `materialization_id`.
   FindOrCreateResult FindOrCreateMaterialization(
-      NodeKey key, MaterializationTicketId ticket);
+      NodeKey key, MaterializationId materialization_id);
 
   // Erases only the matching materializing placeholder, never an expansion.
-  bool CancelMaterialization(NodeKey key, MaterializationTicketId ticket);
+  bool CancelMaterialization(NodeKey key, MaterializationId materialization_id);
 
   // Expands the node with `payload` if it is still materializing under
-  // `ticket`, creating it if absent. Publication is one-shot per generation.
-  // An accepted install also updates the node with `payload.leaf` as its
-  // first visit.
+  // `materialization_id`, creating it if absent. Publication is one-shot per
+  // generation. An accepted install also updates the node with `payload.leaf`
+  // as its first visit.
   MaterializationResult CompleteMaterialization(
-      NodeKey key, MaterializationTicketId ticket,
+      NodeKey key, MaterializationId materialization_id,
       const ExpansionPayload& payload);
 
   // Like CompleteMaterialization, but the node takes the statistics, edges and
   // terminal kind of `restored` (an evicted node) instead of counting a leaf.
   // The node keeps the generation of its materializing placeholder, which is
   // new, so updates for the evicted node stay rejected.
-  MaterializationResult RestoreNode(NodeKey key, MaterializationTicketId ticket,
+  MaterializationResult RestoreNode(NodeKey key,
+                                    MaterializationId materialization_id,
                                     Node restored);
 
   // Selects an edge by the policy and reserves it (in_flight += 1); otherwise
@@ -184,7 +186,8 @@ class GameGraph {
   Shard& ShardFor(NodeKey key) { return shards_[ShardIndex(key)]; }
   const Shard& ShardFor(NodeKey key) const { return shards_[ShardIndex(key)]; }
   // Inserts a fresh materializing node.
-  Node& InsertLocked(Shard& shard, NodeKey key, MaterializationTicketId ticket)
+  Node& InsertLocked(Shard& shard, NodeKey key,
+                     MaterializationId materialization_id)
       ABSL_EXCLUSIVE_LOCKS_REQUIRED(shard.mutex);
   // Reserves the edge at `index` (in_flight += 1), which is tried or the first
   // untried one, and returns its move; the shard must be locked.
@@ -236,36 +239,37 @@ class GameGraph {
 
 template <typename P>
 NodeState<P>& GameGraph<P>::InsertLocked(Shard& shard, NodeKey key,
-                                         MaterializationTicketId ticket) {
+                                         MaterializationId materialization_id) {
   const uint64_t generation =
       next_generation_.fetch_add(1, std::memory_order_relaxed);
   assert(generation != 0);
   size_.fetch_add(1, std::memory_order_relaxed);
   return shard.nodes
-      .emplace(key, Node{.generation = generation, .ticket = ticket})
+      .emplace(key, Node{.generation = generation,
+                         .materialization_id = materialization_id})
       .first->second;
 }
 
 template <typename P>
 FindOrCreateResult GameGraph<P>::FindOrCreateMaterialization(
-    NodeKey key, MaterializationTicketId ticket) {
+    NodeKey key, MaterializationId materialization_id) {
   auto& shard = ShardFor(key);
   absl::MutexLock lock(shard.mutex);
   if (const Node* node = FindNode(shard.nodes, key)) {
-    return {node->generation, false, node->lifecycle, node->ticket};
+    return {node->generation, false, node->lifecycle, node->materialization_id};
   }
-  const Node& node = InsertLocked(shard, key, ticket);
-  return {node.generation, true, node.lifecycle, ticket};
+  const Node& node = InsertLocked(shard, key, materialization_id);
+  return {node.generation, true, node.lifecycle, materialization_id};
 }
 
 template <typename P>
 bool GameGraph<P>::CancelMaterialization(NodeKey key,
-                                         MaterializationTicketId ticket) {
+                                         MaterializationId materialization_id) {
   auto& shard = ShardFor(key);
   absl::MutexLock lock(shard.mutex);
   const Node* node = FindNode(shard.nodes, key);
   if (!node || node->lifecycle != NodeLifecycle::kMaterializing ||
-      node->ticket != ticket) {
+      node->materialization_id != materialization_id) {
     return false;
   }
   shard.nodes.erase(key);
@@ -275,7 +279,7 @@ bool GameGraph<P>::CancelMaterialization(NodeKey key,
 
 template <typename P>
 MaterializationResult GameGraph<P>::CompleteMaterialization(
-    NodeKey key, MaterializationTicketId ticket,
+    NodeKey key, MaterializationId materialization_id,
     const ExpansionPayload& payload) {
   assert(payload.moves.size() == payload.priors.size());
   assert(payload.terminal == TerminalKind::kNonTerminal ||
@@ -283,14 +287,15 @@ MaterializationResult GameGraph<P>::CompleteMaterialization(
   auto& shard = ShardFor(key);
   absl::MutexLock lock(shard.mutex);
   Node* existing = FindNode(shard.nodes, key);
-  Node& node = existing ? *existing : InsertLocked(shard, key, ticket);
+  Node& node = existing ? *existing : InsertLocked(shard, key, materialization_id);
   // Late or duplicate completions must not reset expanded edges, including
   // their reservations and statistics.
-  if (node.lifecycle == NodeLifecycle::kExpanded || node.ticket != ticket) {
+  if (node.lifecycle == NodeLifecycle::kExpanded ||
+      node.materialization_id != materialization_id) {
     return {node.generation, false};
   }
   node.lifecycle = NodeLifecycle::kExpanded;
-  node.ticket = 0;
+  node.materialization_id = 0;
   ++node.version;
   node.terminal = payload.terminal;
   node.edges.clear();
@@ -308,14 +313,14 @@ MaterializationResult GameGraph<P>::CompleteMaterialization(
 }
 
 template <typename P>
-MaterializationResult GameGraph<P>::RestoreNode(NodeKey key,
-                                                MaterializationTicketId ticket,
-                                                Node restored) {
+MaterializationResult GameGraph<P>::RestoreNode(
+    NodeKey key, MaterializationId materialization_id, Node restored) {
   auto& shard = ShardFor(key);
   absl::MutexLock lock(shard.mutex);
   Node* existing = FindNode(shard.nodes, key);
-  Node& node = existing ? *existing : InsertLocked(shard, key, ticket);
-  if (node.lifecycle == NodeLifecycle::kExpanded || node.ticket != ticket) {
+  Node& node = existing ? *existing : InsertLocked(shard, key, materialization_id);
+  if (node.lifecycle == NodeLifecycle::kExpanded ||
+      node.materialization_id != materialization_id) {
     return {node.generation, false};
   }
   const uint64_t generation = node.generation;
@@ -324,7 +329,7 @@ MaterializationResult GameGraph<P>::RestoreNode(NodeKey key,
   node.generation = generation;
   node.version = version;
   node.lifecycle = NodeLifecycle::kExpanded;
-  node.ticket = 0;
+  node.materialization_id = 0;
   for (auto& tried : node.tried) tried.in_flight = 0;
   return {generation, true};
 }

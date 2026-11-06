@@ -38,8 +38,8 @@
 #include "neural/backend.h"
 #include "search/lc5/metrics.h"
 #include "search/lc5/session/evaluator.h"
+#include "search/lc5/session/materialization_table.h"
 #include "search/lc5/session/messages.h"
-#include "search/lc5/session/ticket_table.h"
 #include "search/lc5/session/visit_limiter.h"
 #include "search/lc5/session/visit_pool.h"
 #include "search/lc5/session/visit_worker.h"
@@ -84,7 +84,7 @@ class SearchSession {
   void RespondBestMove();
   bool IsFullyDrained();
   void JoinThreads();
-  void WakeAllWorkers();
+  void WakeAllVisitWorkers();
   ThinkingInfo BuildThinkingInfo(bool final) const;
   Move GetFallbackMove() const;
   // Whether the graph has a node limit to keep, by evicting to the store.
@@ -119,11 +119,11 @@ class SearchSession {
   std::atomic<int64_t> unused_time_ms_{0};
   ControllerSignal controller_;
 
-  // Visits, tickets and counters.
+  // Visits, materializations and counters.
   VisitPool visits_;
   Metrics metrics_;
   VisitLimiter limiter_;
-  TicketTable tickets_;
+  MaterializationTable materializations_;
   // AsyncJobs in flight, from all workers: queued, running, or returned but
   // not finished. Evictions are not counted; no visit waits on them.
   std::atomic<size_t> jobs_in_flight_{0};

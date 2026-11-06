@@ -25,7 +25,7 @@
   Program grant you additional permission to convey the resulting work.
 */
 
-#include "search/lc5/session/ticket_table.h"
+#include "search/lc5/session/materialization_table.h"
 
 #include <gtest/gtest.h>
 
@@ -36,10 +36,10 @@ VisitWakeup Wakeup(uint64_t id, size_t worker) {
   return {.id = VisitId{id}, .worker = worker};
 }
 
-TEST(Lc5TicketTableTest, OwnerOpensAndWaitersJoin) {
-  TicketTable table;
+TEST(Lc5MaterializationTableTest, OwnerOpensAndWaitersJoin) {
+  MaterializationTable table;
   EXPECT_TRUE(table.empty());
-  const auto attach = [](MaterializationTicketId) { return true; };
+  const auto attach = [](MaterializationId) { return true; };
   const auto owner = table.Join(NodeKey{1}, Wakeup(10, 0), attach);
   ASSERT_TRUE(owner);
   EXPECT_TRUE(owner->owner);
@@ -53,20 +53,20 @@ TEST(Lc5TicketTableTest, OwnerOpensAndWaitersJoin) {
   EXPECT_TRUE(other->owner);
   EXPECT_NE(other->id, owner->id);
 
-  const auto ticket = table.Close(owner->id, [](NodeKey key) {
+  const auto waiters = table.Close(owner->id, [](NodeKey key) {
     EXPECT_EQ(key, NodeKey{1});
     return true;
   });
-  ASSERT_TRUE(ticket);
-  EXPECT_EQ(ticket->key, NodeKey{1});
-  EXPECT_EQ(ticket->owner.id, VisitId{10});
-  EXPECT_EQ(ticket->owner.ticket, owner->id);
-  ASSERT_EQ(ticket->waiters.size(), 1u);
-  EXPECT_EQ(ticket->waiters[0].id, VisitId{11});
-  EXPECT_EQ(ticket->waiters[0].worker, 1u);
-  EXPECT_EQ(ticket->waiters[0].ticket, owner->id);
+  ASSERT_TRUE(waiters);
+  EXPECT_EQ(waiters->key, NodeKey{1});
+  EXPECT_EQ(waiters->owner.id, VisitId{10});
+  EXPECT_EQ(waiters->owner.materialization_id, owner->id);
+  ASSERT_EQ(waiters->waiters.size(), 1u);
+  EXPECT_EQ(waiters->waiters[0].id, VisitId{11});
+  EXPECT_EQ(waiters->waiters[0].worker, 1u);
+  EXPECT_EQ(waiters->waiters[0].materialization_id, owner->id);
   EXPECT_FALSE(table.empty());
-  // A closed node's next visit opens a new ticket.
+  // A closed node's next visit opens a new materialization.
   const auto reopened = table.Join(NodeKey{1}, Wakeup(13, 0), attach);
   ASSERT_TRUE(reopened);
   EXPECT_TRUE(reopened->owner);
@@ -77,33 +77,33 @@ TEST(Lc5TicketTableTest, OwnerOpensAndWaitersJoin) {
   EXPECT_TRUE(table.empty());
 }
 
-TEST(Lc5TicketTableTest, AttachCanDecline) {
-  TicketTable table;
-  MaterializationTicketId offered = 0;
-  EXPECT_FALSE(
-      table.Join(NodeKey{1}, Wakeup(10, 0), [&](MaterializationTicketId id) {
-        offered = id;
-        return false;
-      }));
+TEST(Lc5MaterializationTableTest, AttachCanDecline) {
+  MaterializationTable table;
+  MaterializationId offered = 0;
+  EXPECT_FALSE(table.Join(NodeKey{1}, Wakeup(10, 0),
+                          [&](MaterializationId materialization_id) {
+                            offered = materialization_id;
+                            return false;
+                          }));
   EXPECT_NE(offered, 0u);
   EXPECT_TRUE(table.empty());
   const auto owner = table.Join(NodeKey{1}, Wakeup(11, 0),
-                                [](MaterializationTicketId) { return true; });
+                                [](MaterializationId) { return true; });
   ASSERT_TRUE(owner);
   EXPECT_TRUE(owner->owner);
-  EXPECT_FALSE(
-      table.Join(NodeKey{1}, Wakeup(12, 0), [&](MaterializationTicketId id) {
-        EXPECT_EQ(id, owner->id);
-        return false;
-      }));
-  const auto ticket = table.Close(owner->id, [](NodeKey) { return true; });
-  ASSERT_TRUE(ticket);
-  EXPECT_TRUE(ticket->waiters.empty());
+  EXPECT_FALSE(table.Join(NodeKey{1}, Wakeup(12, 0),
+                          [&](MaterializationId materialization_id) {
+                            EXPECT_EQ(materialization_id, owner->id);
+                            return false;
+                          }));
+  const auto waiters = table.Close(owner->id, [](NodeKey) { return true; });
+  ASSERT_TRUE(waiters);
+  EXPECT_TRUE(waiters->waiters.empty());
 }
 
-TEST(Lc5TicketTableTest, DeclinedCloseKeepsTicketOpen) {
-  TicketTable table;
-  const auto attach = [](MaterializationTicketId) { return true; };
+TEST(Lc5MaterializationTableTest, DeclinedCloseKeepsMaterializationOpen) {
+  MaterializationTable table;
+  const auto attach = [](MaterializationId) { return true; };
   const auto owner = table.Join(NodeKey{1}, Wakeup(10, 0), attach);
   ASSERT_TRUE(owner);
   EXPECT_FALSE(table.Close(owner->id, [](NodeKey) { return false; }));
@@ -111,9 +111,9 @@ TEST(Lc5TicketTableTest, DeclinedCloseKeepsTicketOpen) {
   ASSERT_TRUE(waiter);
   EXPECT_FALSE(waiter->owner);
   EXPECT_EQ(waiter->id, owner->id);
-  const auto ticket = table.Close(owner->id, [](NodeKey) { return true; });
-  ASSERT_TRUE(ticket);
-  EXPECT_EQ(ticket->waiters.size(), 1u);
+  const auto waiters = table.Close(owner->id, [](NodeKey) { return true; });
+  ASSERT_TRUE(waiters);
+  EXPECT_EQ(waiters->waiters.size(), 1u);
   EXPECT_TRUE(table.empty());
 }
 

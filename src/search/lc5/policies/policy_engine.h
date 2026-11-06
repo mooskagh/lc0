@@ -82,17 +82,17 @@ class PolicyEngine final : public VisitEngine {
   RootStats GetRootStats(NodeKey root) const override;
 
   FindOrCreateResult FindOrCreateMaterialization(
-      NodeKey key, MaterializationTicketId ticket) override {
-    return graph_.FindOrCreateMaterialization(key, ticket);
+      NodeKey key, MaterializationId materialization_id) override {
+    return graph_.FindOrCreateMaterialization(key, materialization_id);
   }
   MaterializationResult CompleteMaterialization(
-      NodeKey key, MaterializationTicketId ticket,
+      NodeKey key, MaterializationId materialization_id,
       const ExpansionPayload& payload) override {
-    return graph_.CompleteMaterialization(key, ticket, payload);
+    return graph_.CompleteMaterialization(key, materialization_id, payload);
   }
   void CancelMaterialization(NodeKey key,
-                             MaterializationTicketId ticket) override {
-    graph_.CancelMaterialization(key, ticket);
+                             MaterializationId materialization_id) override {
+    graph_.CancelMaterialization(key, materialization_id);
   }
   size_t GetGraphSize() const override { return graph_.Size(); }
 
@@ -106,11 +106,11 @@ class PolicyEngine final : public VisitEngine {
     return store_->LoadBatch(keys);
   }
   MaterializationResult RestoreFromRecord(
-      NodeKey key, MaterializationTicketId ticket,
+      NodeKey key, MaterializationId materialization_id,
       std::span<const uint8_t> record) override {
     auto node = DecodeNode<P>(record);
     if (!node) return {0, false};
-    return graph_.RestoreNode(key, ticket, std::move(*node));
+    return graph_.RestoreNode(key, materialization_id, std::move(*node));
   }
   void EvictToStore(size_t max, NodeKey keep, Metrics& metrics) override {
     assert(store_);

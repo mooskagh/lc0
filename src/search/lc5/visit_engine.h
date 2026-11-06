@@ -57,9 +57,9 @@ struct RootStats {
 };
 
 // The search-algorithm side of a visit: everything that reads or writes node
-// and edge statistics, and owns the graph. SearchSession owns visits, tickets,
-// batching and threads, and calls only this. Implementations must be
-// thread-safe; each call locks at most one graph shard at a time.
+// and edge statistics, and owns the graph. SearchSession owns visits,
+// materializations, batching and threads, and calls only this. Implementations
+// must be thread-safe; each call locks at most one graph shard at a time.
 class VisitEngine {
  public:
   virtual ~VisitEngine() = default;
@@ -93,15 +93,16 @@ class VisitEngine {
 
   // Node lifecycle for the materialization machinery.
   virtual FindOrCreateResult FindOrCreateMaterialization(
-      NodeKey key, MaterializationTicketId ticket) = 0;
+      NodeKey key, MaterializationId materialization_id) = 0;
   // Expands the node from `payload`; if accepted, `payload.leaf` counts as
   // the node's first visit.
   virtual MaterializationResult CompleteMaterialization(
-      NodeKey key, MaterializationTicketId ticket,
+      NodeKey key, MaterializationId materialization_id,
       const ExpansionPayload& payload) = 0;
-  // Drops the node if it is still materializing under `ticket`; on stop.
+  // Drops the node if it is still materializing under `materialization_id`; on
+  // stop.
   virtual void CancelMaterialization(NodeKey key,
-                                     MaterializationTicketId ticket) = 0;
+                                     MaterializationId materialization_id) = 0;
   virtual size_t GetGraphSize() const = 0;
 
   // The NodeStore, the graph's cold tier: nodes evicted from the graph, kept
@@ -114,7 +115,7 @@ class VisitEngine {
   // Expands the node from a stored record with its old statistics; not
   // accepted if the record is not this policy's (then evaluate the node).
   virtual MaterializationResult RestoreFromRecord(
-      NodeKey key, MaterializationTicketId ticket,
+      NodeKey key, MaterializationId materialization_id,
       std::span<const uint8_t> record) = 0;
   // Moves up to `max` nodes from the graph to the store: fewest visits first,
   // never `keep` or a node with a reserved edge. Needs a store.
