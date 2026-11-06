@@ -31,6 +31,7 @@
 #include <cstddef>
 #include <memory>
 #include <span>
+#include <thread>
 #include <vector>
 
 #include "neural/backend.h"
@@ -62,17 +63,19 @@ class Evaluator {
   };
   explicit Evaluator(const Context& context);
 
-  // The body of each evaluator thread: runs until Close().
-  void Run();
+  // Lifecycle (called by SearchSession).
+  void Start();
+  // Makes waiting collectors check the stop again.
+  void NotifyStop() { queued_jobs_.NotifyPredicateChanged(); }
+  void Join();
+
   // For the visit workers.
   void Push(std::unique_ptr<AsyncJob> job);
   // A worker starts or stops producing: it can (or no longer can) send a
   // job without a collected job's completion. Workers start producing.
-  void SetProducing(bool producing);
-  // Makes waiting collectors check the stop again.
-  void NotifyStop() { jobs_.NotifyPredicateChanged(); }
-  void Close() { jobs_.Close(); }
-  size_t queued() const { return jobs_.Size(); }
+  void OnProducerActive();
+  void OnProducerBlocked();
+  size_t queue_size() const { return queued_jobs_.Size(); }
 
  private:
   friend class SearchSessionTestPeer;
@@ -83,23 +86,30 @@ class Evaluator {
     bool timed_out = false;  // Flushed at the deadline; only counted.
   };
 
-  bool IsStopping() const { return context_.limiter.IsStopping(); }
+  // Thread loop and batching.
+  void Run();
   // Takes `first` and more queued jobs while they fit the minibatch.
   Batch CollectBatch(std::unique_ptr<AsyncJob> first);
   void AddJobToBatch(BackendComputation& computation, AsyncJob& job);
   void EvaluateBatch(Batch batch);
+  void ReturnJobToWorker(std::unique_ptr<AsyncJob> job);
+
+  // Predicates.
+  bool IsStopping() const { return context_.limiter.IsStopping(); }
   bool IsStarved() const;
-  void ReturnJob(std::unique_ptr<AsyncJob> job);
 
   const Context context_;
 
-  WorkQueue<std::unique_ptr<AsyncJob>> jobs_;
+  // Queue and starvation state.
+  WorkQueue<std::unique_ptr<AsyncJob>> queued_jobs_;
   // Jobs held by collectors, not computing or returned. If these are all
   // remaining jobs and producers are blocked, further collection depends on
   // flushing at least one computation.
-  std::atomic<size_t> collecting_jobs_{0};
-  // Workers that are producing.
-  std::atomic<size_t> producers_;
+  std::atomic<size_t> jobs_in_collection_{0};
+  // Visit workers that are producing.
+  std::atomic<size_t> producing_workers_;
+
+  std::vector<std::thread> threads_;
 };
 
 }  // namespace lczero::lc5

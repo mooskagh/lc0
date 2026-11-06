@@ -134,10 +134,8 @@ class SearchSession {
   std::vector<WorkerInbox> inboxes_;  // By visit worker index.
   WorkQueue<StoreJob> store_jobs_;
   Evaluator evaluator_;
-  std::vector<std::unique_ptr<VisitWorker>> workers_;
-  std::vector<std::thread> visit_threads_;
+  std::vector<std::unique_ptr<VisitWorker>> visit_workers_;
   std::vector<std::thread> store_threads_;
-  std::vector<std::thread> evaluator_threads_;
   std::thread controller_thread_;
 };
 

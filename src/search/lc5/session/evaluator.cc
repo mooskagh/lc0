@@ -35,31 +35,45 @@
 namespace lczero::lc5 {
 
 Evaluator::Evaluator(const Context& context)
-    : context_(context), producers_(context.inboxes.size()) {}
+    : context_(context), producing_workers_(context.inboxes.size()) {}
 
-void Evaluator::Push(std::unique_ptr<AsyncJob> job) {
-  jobs_.Push(std::move(job));
-  RaiseHighWater(context_.metrics.ready_eval_high_water, jobs_.Size());
+void Evaluator::Start() {
+  for (int i = 0; i < context_.settings.eval_threads; ++i) {
+    threads_.emplace_back(&Evaluator::Run, this);
+  }
 }
 
-void Evaluator::SetProducing(bool producing) {
-  if (producing) {
-    // Only disables the starvation predicate, so it needs no handshake.
-    producers_.fetch_add(1);
-  } else {
-    producers_.fetch_sub(1);
-    jobs_.NotifyPredicateChanged();
+void Evaluator::Join() {
+  queued_jobs_.Close();
+  for (auto& thread : threads_) {
+    if (thread.joinable()) thread.join();
+  }
+}
+
+void Evaluator::Push(std::unique_ptr<AsyncJob> job) {
+  queued_jobs_.Push(std::move(job));
+  RaiseHighWater(context_.metrics.ready_eval_high_water, queued_jobs_.Size());
+}
+
+void Evaluator::OnProducerActive() {
+  // Only disables the starvation predicate, so it needs no handshake.
+  producing_workers_.fetch_add(1);
+}
+
+void Evaluator::OnProducerBlocked() {
+  if (producing_workers_.fetch_sub(1) == 1) {
+    queued_jobs_.NotifyPredicateChanged();
   }
 }
 
 void Evaluator::Run() {
   std::unique_ptr<AsyncJob> job;
-  while (jobs_.Pop(&job)) {
+  while (queued_jobs_.Pop(&job)) {
     if (IsStopping()) {
-      ReturnJob(std::move(job));
+      ReturnJobToWorker(std::move(job));
       continue;
     }
-    collecting_jobs_.fetch_add(1);
+    jobs_in_collection_.fetch_add(1);
     EvaluateBatch(CollectBatch(std::move(job)));
   }
 }
@@ -84,24 +98,24 @@ Evaluator::Batch Evaluator::CollectBatch(std::unique_ptr<AsyncJob> job) {
     };
     // Consume already-ready jobs first, even past the deadline, rather than
     // fragmenting an accumulated backlog into single-job batches.
-    if (!jobs_.TryPopIf(&job, fits)) {
+    if (!queued_jobs_.TryPopIf(&job, fits)) {
       // Immediate-only batches return their jobs instead of waiting on
       // producers that need those cache results. The oldest job's deadline is
       // absolute; zero disables it, but dependency starvation still flushes.
       if (used == 0 || IsStopping()) break;
-      jobs_.NotifyPredicateChanged();
-      if (!jobs_.PopUntil(
+      queued_jobs_.NotifyPredicateChanged();
+      if (!queued_jobs_.PopUntil(
               &job, deadline, [&] { return IsStopping() || IsStarved(); },
               fits)) {
         batch.timed_out = std::chrono::steady_clock::now() >= deadline;
         break;
       }
     }
-    collecting_jobs_.fetch_add(1);
+    jobs_in_collection_.fetch_add(1);
   }
-  // Decreasing collecting_jobs_ only disables the starvation predicate; the
+  // Decreasing jobs_in_collection_ only disables the starvation predicate; the
   // increment before PopUntil above is the enabling handshake.
-  collecting_jobs_.fetch_sub(batch.jobs.size());
+  jobs_in_collection_.fetch_sub(batch.jobs.size());
   return batch;
 }
 
@@ -146,7 +160,7 @@ void Evaluator::EvaluateBatch(Batch batch) {
   }
   // Destroy the computation while the jobs it references are still alive.
   batch.computation.reset();
-  for (auto& job : batch.jobs) ReturnJob(std::move(job));
+  for (auto& job : batch.jobs) ReturnJobToWorker(std::move(job));
 }
 
 bool Evaluator::IsStarved() const {
@@ -154,14 +168,14 @@ bool Evaluator::IsStarved() const {
   // predict starvation when every outstanding job is held by a collector and
   // no worker can send a job independently; the deadline bounds the
   // uncertainty.
-  if (producers_.load() != 0) return false;
+  if (producing_workers_.load() != 0) return false;
   // Zero disables the timeout, not dependency flushing: with no deadline,
   // currently blocked producers cannot justify an unbounded wait.
   return context_.settings.max_batch_delay_ms == 0 ||
-         context_.jobs_in_flight.load() <= collecting_jobs_.load();
+         context_.jobs_in_flight.load() <= jobs_in_collection_.load();
 }
 
-void Evaluator::ReturnJob(std::unique_ptr<AsyncJob> job) {
+void Evaluator::ReturnJobToWorker(std::unique_ptr<AsyncJob> job) {
   context_.inboxes[job->worker].AddCompletion(std::move(job));
   context_.metrics.inbox_notifications.fetch_add(1);
 }

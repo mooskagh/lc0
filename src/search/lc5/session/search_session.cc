@@ -121,7 +121,7 @@ SearchSession::SearchSession(VisitEngine* engine, Backend* backend,
                                      .jobs_in_flight = jobs_in_flight_,
                                      .controller = controller_};
   for (size_t i = 0; i < inboxes_.size(); ++i) {
-    workers_.push_back(std::make_unique<VisitWorker>(i, context));
+    visit_workers_.push_back(std::make_unique<VisitWorker>(i, context));
   }
 }
 
@@ -132,13 +132,14 @@ SearchSession::~SearchSession() {
 
 void SearchSession::Start() {
   if (started_.exchange(true)) return;
-  for (int i = 0; i < settings_.eval_threads; ++i) {
-    if (engine_->HasStore())
+  if (engine_->HasStore()) {
+    for (int i = 0; i < settings_.eval_threads; ++i) {
       store_threads_.emplace_back(&SearchSession::RunStoreWorker, this);
-    evaluator_threads_.emplace_back(&Evaluator::Run, &evaluator_);
+    }
   }
-  for (auto& worker : workers_) {
-    visit_threads_.emplace_back(&VisitWorker::Run, worker.get());
+  evaluator_.Start();
+  for (auto& worker : visit_workers_) {
+    worker->Start();
   }
   if (limiter_.node_limit() == 0) Stop();
   controller_thread_ = std::thread(&SearchSession::RunControllerWorker, this);
@@ -246,7 +247,7 @@ bool SearchSession::IsFullyDrained() {
   }
   // Workers may hold unpublished local materializations. Require their
   // explicit idle acknowledgement, not merely empty executor queues.
-  for (auto& worker : workers_) {
+  for (auto& worker : visit_workers_) {
     if (!worker->IsDrained()) return false;
   }
   return true;
@@ -254,11 +255,10 @@ bool SearchSession::IsFullyDrained() {
 
 void SearchSession::JoinThreads() {
   for (auto& inbox : inboxes_) inbox.Shutdown();
-  for (auto& thread : visit_threads_) thread.join();
+  for (auto& worker : visit_workers_) worker->Join();
   store_jobs_.Close();
-  evaluator_.Close();
   for (auto& thread : store_threads_) thread.join();
-  for (auto& thread : evaluator_threads_) thread.join();
+  evaluator_.Join();
   finished_.store(true, std::memory_order_release);
 }
 
@@ -286,7 +286,7 @@ ThinkingInfo SearchSession::BuildThinkingInfo(bool final) const {
   info.seldepth = static_cast<int>(metrics_.max_selected_depth.load());
   engine_->FillThinkingInfo(root_, info);
   info.comment = metrics_.Format(engine_->GetGraphSize(), visits_.active(),
-                                 evaluator_.queued());
+                                 evaluator_.queue_size());
   if (final) info.comment += " final";
   return info;
 }

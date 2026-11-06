@@ -33,6 +33,7 @@
 #include <deque>
 #include <memory>
 #include <span>
+#include <thread>
 #include <vector>
 
 #include "search/lc5/metrics.h"
@@ -73,10 +74,12 @@ class VisitWorker {
     ControllerSignal& controller;
   };
 
-  VisitWorker(size_t index, const Context& context);
+  VisitWorker(size_t worker_id, const Context& context);
 
-  // The thread body: runs until the inbox gets shut down.
-  void Run();
+  void Start() { thread_ = std::thread(&VisitWorker::Run, this); }
+  void Join() {
+    if (thread_.joinable()) thread_.join();
+  }
   // After a stop: no visits, materializations or jobs are left, and nothing
   // waits in the inbox.
   bool IsDrained();
@@ -97,14 +100,17 @@ class VisitWorker {
 
   bool IsStopping() const { return context_.limiter.IsStopping(); }
 
-  // The loop.
+  // The thread body: runs until the inbox gets shut down.
+  void Run();
   void ProcessInbox();
   void ResumeLocalVisits();
   void AdvanceRunnableVisits(size_t limit);
   void CancelVisits();
   void PublishState();
   bool HasLocalWork() const;
-  bool HasQueuedIo() const { return !loads_.empty() || !evals_.empty(); }
+  bool HasQueuedIo() const {
+    return !queued_loads_.empty() || !queued_evals_.empty();
+  }
 
   // Admission and wakeups.
   // Admits new visits from the root, up to kVisitsPerPass and this worker's
@@ -147,24 +153,25 @@ class VisitWorker {
   void FinishJob(std::unique_ptr<AsyncJob> job);
 
   // Session context and configuration, fixed for the worker's lifetime.
-  const size_t index_;
+  const size_t worker_id_;
   const Context context_;
-  WorkerInbox& inbox_;  // This worker's own (`context_.inboxes[index_]`).
+  WorkerInbox& inbox_;  // This worker's own (`context_.inboxes[worker_id_]`).
 
   // Visits and wakeups.
-  std::deque<VisitId> runnable_;
-  // Owned visits: runnable or waiting on a materialization.
+  std::deque<VisitId> ready_visits_;
+  // Owned visits: ready or waiting on a materialization.
   size_t active_visits_ = 0;
   // Wakeups for this worker's own visits (e.g. from a terminal leaf closed
   // during AdvanceVisit), buffered to resume in ResumeLocalVisits.
   std::vector<VisitWakeup> local_wakeups_;
-  std::vector<std::vector<VisitWakeup>> outgoing_;  // Indexed by worker.
+  // Indexed by target worker.
+  std::vector<std::vector<VisitWakeup>> outgoing_wakeups_;
 
   // Materializations and in-flight jobs.
-  std::deque<Materialization> loads_;
-  std::deque<Materialization> evals_;
-  size_t jobs_in_flight_ = 0;   // Sent and not yet finished.
-  size_t items_in_flight_ = 0;  // The materializations in those jobs.
+  std::deque<Materialization> queued_loads_;
+  std::deque<Materialization> queued_evals_;
+  size_t jobs_in_flight_ = 0;              // Sent and not yet finished.
+  size_t materializations_in_flight_ = 0;  // Materializations in those jobs.
   // Whether this worker has local work that can send more eval jobs without
   // first receiving an inbox completion. Mirrored to `evaluator_` (which starts
   // with all workers counted as producing) so it knows when to flush a partial
@@ -173,13 +180,14 @@ class VisitWorker {
 
   // Per-pass notifications and shutdown/drain state.
   // Set during a pass and flushed once in PublishState.
-  bool released_capacity_ = false;
-  bool controller_event_ = false;
+  bool notify_admission_waiters_ = false;
+  bool notify_controller_ = false;
   // Set once CancelVisits has run after stop; prevents re-waking on stop and
   // gates `drained_`.
-  bool cancelled_ = false;
+  bool visits_cancelled_ = false;
   bool shutdown_ = false;  // Seen in the inbox; exit after this pass.
   std::atomic<bool> drained_{false};
+  std::thread thread_;
 };
 
 }  // namespace lczero::lc5

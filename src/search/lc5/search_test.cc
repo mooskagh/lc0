@@ -58,20 +58,20 @@ class SearchSessionTestPeer {
   static bool AdmitVisit(SearchSession& session, const VisitOrigin& origin)
       ABSL_NO_THREAD_SAFETY_ANALYSIS {
     const size_t worker_idx =
-        session.visits_.active() % session.workers_.size();
+        session.visits_.active() % session.visit_workers_.size();
     const auto admitted = session.limiter_.AdmitVisits(worker_idx, origin, 1);
     if (admitted.empty()) return false;
     // Starting the worker threads orders this before they run.
     assert(!session.started_.load());
-    auto& worker = *session.workers_[worker_idx];
+    auto& worker = *session.visit_workers_[worker_idx];
     ++worker.active_visits_;
-    worker.runnable_.push_back(admitted[0]);
+    worker.ready_visits_.push_back(admitted[0]);
     return true;
   }
   // Before Start only: make the entire backlog ready before collectors start.
   static void PrepareAdmissions(SearchSession& session)
       ABSL_NO_THREAD_SAFETY_ANALYSIS {
-    for (auto& worker : session.workers_) {
+    for (auto& worker : session.visit_workers_) {
       worker->AdvanceRunnableVisits(std::numeric_limits<size_t>::max());
       worker->SendJobs();
       worker->SetProducing(false);
@@ -84,18 +84,18 @@ class SearchSessionTestPeer {
     EXPECT_TRUE(session.materializations_.empty());
     EXPECT_EQ(session.jobs_in_flight_.load(), 0u);
     EXPECT_EQ(session.evictions_in_flight_.load(), 0u);
-    EXPECT_EQ(session.evaluator_.collecting_jobs_.load(), 0u);
-    EXPECT_EQ(session.evaluator_.queued(), 0u);
+    EXPECT_EQ(session.evaluator_.jobs_in_collection_.load(), 0u);
+    EXPECT_EQ(session.evaluator_.queue_size(), 0u);
     EXPECT_EQ(session.store_jobs_.Size(), 0u);
-    for (const auto& worker : session.workers_) {
+    for (const auto& worker : session.visit_workers_) {
       EXPECT_TRUE(worker->drained_.load());
       EXPECT_EQ(worker->active_visits_, 0u);
-      EXPECT_TRUE(worker->runnable_.empty());
+      EXPECT_TRUE(worker->ready_visits_.empty());
       EXPECT_TRUE(worker->local_wakeups_.empty());
-      EXPECT_TRUE(worker->loads_.empty());
-      EXPECT_TRUE(worker->evals_.empty());
+      EXPECT_TRUE(worker->queued_loads_.empty());
+      EXPECT_TRUE(worker->queued_evals_.empty());
       EXPECT_EQ(worker->jobs_in_flight_, 0u);
-      EXPECT_EQ(worker->items_in_flight_, 0u);
+      EXPECT_EQ(worker->materializations_in_flight_, 0u);
     }
     for (const auto& inbox : session.inboxes_) {
       EXPECT_TRUE(inbox.wakeups.empty());
