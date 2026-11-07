@@ -53,11 +53,10 @@ namespace lczero::lc5 {
 // waiting on node materialization.
 struct VisitWakeup {
   enum class Kind : uint8_t {
-    kSelect,       // Materialization finished; select below the node.
-    kRestored,     // Node restored from the store; select without ResumeVisit.
-    kBackup,       // Materialization finished; back up `value`.
-    kBackupAbove,  // Node already holds `value`; back up the steps above it.
-    kCancel,       // Materialization cancelled on stop; cancel the visit.
+    kSelect,    // Materialization finished; select below the node.
+    kRestored,  // Node restored from the store; select without ResumeVisit.
+    kBackup,    // Materialization finished; back up `value`.
+    kCancel,    // Materialization cancelled on stop; cancel the visit.
   };
   VisitId id;     // The visit to continue.
   size_t worker;  // Owning visit worker (the only thread that may mutate it).

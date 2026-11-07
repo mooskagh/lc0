@@ -280,10 +280,9 @@ bool PolicyEngine<P>::BackupVisit(const Visit& visit, Metrics& metrics) {
   typename P::Message message = P::Leaf(visit.result, visit.result_exact);
   for (size_t i = visit.path.size(); i-- > 0;) {
     const PathStep& step = visit.path[i];
-    const bool leaf = i + 1 == visit.path.size();
-    // An in-search repetition leaf has no graph node, and a counted leaf took
-    // its value at install; the parent receives the skipped-node message.
-    if (step.generation == 0 || (leaf && visit.leaf_counted)) {
+    // An in-search repetition leaf has no graph node, and an installed leaf
+    // took its value at install; the parent receives the skipped-node message.
+    if (step.generation == 0) {
       message = P::Skip(message);
       continue;
     }

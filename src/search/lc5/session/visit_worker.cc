@@ -163,10 +163,6 @@ void VisitWorker::ResumeVisit(const VisitWakeup& wakeup) {
   visit.result_exact = wakeup.exact;
   switch (wakeup.kind) {
     case VisitWakeup::Kind::kBackup:
-    case VisitWakeup::Kind::kBackupAbove:
-      // Owner (`kBackupAbove`) already updated the leaf at install; waiters
-      // on a terminal (`kBackup`) still need to update the leaf node itself.
-      visit.leaf_counted = wakeup.kind == VisitWakeup::Kind::kBackupAbove;
       visit.state = VisitState::kReadyBackup;
       break;
     case VisitWakeup::Kind::kRestored:
@@ -182,8 +178,7 @@ void VisitWorker::ResumeVisit(const VisitWakeup& wakeup) {
           RestartVisit(visit);  // Cancel path reservations and reset to origin.
           break;
         case VisitEngine::ResumeAction::kBackup:
-          visit.leaf_counted = false;  // Reselected into a 2-fold repetition.
-          visit.state = VisitState::kReadyBackup;
+          visit.state = VisitState::kReadyBackup;  // Reselected into 2-fold.
           break;
         case VisitEngine::ResumeAction::kSelect:
           visit.state = VisitState::kReadySelect;
@@ -372,7 +367,9 @@ bool VisitWorker::SuspendVisit(Visit& visit) {
     RaiseHighWater(context_.metrics.maximum_waiters_per_materialization,
                    joined->waiters);
   }
-  visit.path.back().generation = node.generation;
+  // The owner's leaf is counted at install (generation 0 skips it on backup);
+  // waiters keep `node.generation` in case they back up a terminal leaf.
+  visit.path.back().generation = owner ? 0 : node.generation;
   visit.state = VisitState::kWaitingMaterialization;
   context_.metrics.visits_suspended.fetch_add(1);
   if (owner) {
@@ -429,17 +426,15 @@ void VisitWorker::CompleteMaterialization(MaterializationId materialization_id,
   RaiseHighWater(context_.metrics.graph_size_high_water,
                  context_.engine.GetGraphSize());
   if (!installed.accepted) context_.metrics.publications_rejected.fetch_add(1);
-  // The install already counted the leaf value on the node, so the owner
-  // backs it up only through the steps above. Waiters select below the node
-  // unless it is terminal, in which case they back up the whole path like a
-  // later visit to a terminal. A rejected publication resumes selection only.
+  // The owner backs up the new leaf value; waiters select below the node
+  // unless it is terminal, in which case they also back up. A rejected
+  // publication resumes selection only.
   const bool terminal =
       installed.accepted && payload.terminal != TerminalKind::kNonTerminal;
   const auto wake = [&](VisitWakeup wakeup, bool owner) {
-    wakeup.kind = !installed.accepted ? VisitWakeup::Kind::kSelect
-                  : owner             ? VisitWakeup::Kind::kBackupAbove
-                  : terminal          ? VisitWakeup::Kind::kBackup
-                                      : VisitWakeup::Kind::kSelect;
+    wakeup.kind = installed.accepted && (owner || terminal)
+                      ? VisitWakeup::Kind::kBackup
+                      : VisitWakeup::Kind::kSelect;
     wakeup.value = payload.leaf;
     wakeup.terminal = terminal;
     wakeup.exact = installed.accepted && IsExact(payload.terminal);
