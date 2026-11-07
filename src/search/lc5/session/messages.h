@@ -62,12 +62,9 @@ struct VisitWakeup {
   VisitId id;     // The visit to continue.
   size_t worker;  // Owning visit worker (the only thread that may mutate it).
   Kind kind = Kind::kSelect;
-  // The materialization the visit waited on.
-  MaterializationId materialization_id = 0;
-  uint64_t generation = 0;  // The leaf node's generation once published.
-  SearchValue value{};      // The leaf value; unset for kRestored and kCancel.
-  bool exact = false;       // `value` is an exact terminal value.
-  bool terminal = false;    // The leaf is terminal; only counted in metrics.
+  SearchValue value{};  // The leaf value; unset for kRestored and kCancel.
+  bool exact = false;   // `value` is an exact terminal value.
+  bool terminal = false;  // The leaf is terminal; only counted in metrics.
 };
 
 // Request and result data for populating a single graph node, either from the

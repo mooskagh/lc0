@@ -73,7 +73,6 @@ struct Visit {
   PositionHistory history;
   NodeKey current_key;
   std::vector<PathStep> path;
-  MaterializationId waiting_materialization_id = 0;
   SearchValue result;
   // `result` is exact: a terminal other than a repetition, or a proven node.
   bool result_exact = false;

@@ -76,7 +76,6 @@ class MaterializationTable {
     const MaterializationId materialization_id =
         owner ? next_id_ : existing->second;
     if (!attach(materialization_id)) return std::nullopt;
-    wakeup.materialization_id = materialization_id;
     if (owner) {
       ++next_id_;
       materializations_.emplace(materialization_id,

@@ -148,47 +148,55 @@ void VisitWorker::DeliverWakeup(const VisitWakeup& wakeup) {
 }
 
 void VisitWorker::ResumeVisit(const VisitWakeup& wakeup) {
-  // A waiting visit is on at most one open materialization, which wakes it
-  // exactly once, and only that wakeup can make it ready or release it.
+  // Each suspended visit waits on one materialization and is woken once.
   Visit& visit = context_.visits.Get(wakeup.id);
   assert(visit.state == VisitState::kWaitingMaterialization);
-  assert(visit.waiting_materialization_id == wakeup.materialization_id);
-  visit.waiting_materialization_id = 0;
-  // On stop, visits finish only when their evaluation already exists.
+  // On stop, only visits that already have a leaf value to back up may finish.
   if (wakeup.kind == VisitWakeup::Kind::kCancel ||
       (IsStopping() && (wakeup.kind == VisitWakeup::Kind::kSelect ||
                         wakeup.kind == VisitWakeup::Kind::kRestored))) {
     CancelVisit(visit);
     return;
   }
-  visit.path.back().generation = wakeup.generation;
   visit.path.back().selected_move.reset();
   visit.result = wakeup.value;
   visit.result_exact = wakeup.exact;
-  if (wakeup.kind == VisitWakeup::Kind::kBackup ||
-      wakeup.kind == VisitWakeup::Kind::kBackupAbove) {
-    visit.leaf_counted = wakeup.kind == VisitWakeup::Kind::kBackupAbove;
-    visit.state = VisitState::kReadyBackup;
-  } else if (wakeup.kind == VisitWakeup::Kind::kRestored) {
-    visit.state = VisitState::kReadySelect;
-    context_.metrics.visits_resumed.fetch_add(1);
-  } else {
-    switch (context_.engine.ResumeVisit(visit, context_.metrics)) {
-      case VisitEngine::ResumeAction::kRestart:
-        RestartVisit(visit);
-        break;
-      case VisitEngine::ResumeAction::kBackup:
-        visit.leaf_counted = false;
-        visit.state = VisitState::kReadyBackup;
-        break;
-      case VisitEngine::ResumeAction::kSelect:
-        visit.state = VisitState::kReadySelect;
-        context_.metrics.visits_resumed.fetch_add(1);
-        break;
-    }
+  switch (wakeup.kind) {
+    case VisitWakeup::Kind::kBackup:
+    case VisitWakeup::Kind::kBackupAbove:
+      // Owner (`kBackupAbove`) already updated the leaf at install; waiters
+      // on a terminal (`kBackup`) still need to update the leaf node itself.
+      visit.leaf_counted = wakeup.kind == VisitWakeup::Kind::kBackupAbove;
+      visit.state = VisitState::kReadyBackup;
+      break;
+    case VisitWakeup::Kind::kRestored:
+      // Node restored from store with its prior stats; descend below it.
+      visit.state = VisitState::kReadySelect;
+      context_.metrics.visits_resumed.fetch_add(1);
+      break;
+    case VisitWakeup::Kind::kSelect:
+      // Waiter on a newly-evaluated nonterminal leaf: reselect, restart, or
+      // descend below the newly expanded node according to policy.
+      switch (context_.engine.ResumeVisit(visit, context_.metrics)) {
+        case VisitEngine::ResumeAction::kRestart:
+          RestartVisit(visit);  // Cancel path reservations and reset to origin.
+          break;
+        case VisitEngine::ResumeAction::kBackup:
+          visit.leaf_counted = false;  // Reselected into a 2-fold repetition.
+          visit.state = VisitState::kReadyBackup;
+          break;
+        case VisitEngine::ResumeAction::kSelect:
+          visit.state = VisitState::kReadySelect;
+          context_.metrics.visits_resumed.fetch_add(1);
+          break;
+      }
+      break;
+    case VisitWakeup::Kind::kCancel:
+      assert(false);
+      break;
   }
   if (wakeup.terminal) context_.metrics.terminal_visits.fetch_add(1);
-  ready_visits_.push_back(wakeup.id);
+  ready_visits_.push_back(wakeup.id);  // Queue for next AdvanceVisit pass.
 }
 
 void VisitWorker::Run() {
@@ -365,7 +373,6 @@ bool VisitWorker::SuspendVisit(Visit& visit) {
                    joined->waiters);
   }
   visit.path.back().generation = node.generation;
-  visit.waiting_materialization_id = joined->id;
   visit.state = VisitState::kWaitingMaterialization;
   context_.metrics.visits_suspended.fetch_add(1);
   if (owner) {
@@ -433,7 +440,6 @@ void VisitWorker::CompleteMaterialization(MaterializationId materialization_id,
                   : owner             ? VisitWakeup::Kind::kBackupAbove
                   : terminal          ? VisitWakeup::Kind::kBackup
                                       : VisitWakeup::Kind::kSelect;
-    wakeup.generation = installed.generation;
     wakeup.value = payload.leaf;
     wakeup.terminal = terminal;
     wakeup.exact = installed.accepted && IsExact(payload.terminal);
@@ -445,14 +451,13 @@ void VisitWorker::CompleteMaterialization(MaterializationId materialization_id,
 
 bool VisitWorker::RestoreMaterialization(MaterializationId materialization_id,
                                          std::span<const uint8_t> record) {
-  MaterializationResult restored;
   bool is_root = false;
   const auto waiters = context_.materializations.Close(
       materialization_id, [&](NodeKey key) {
         is_root = key == context_.root.key;
-        restored =
-            context_.engine.RestoreFromRecord(key, materialization_id, record);
-        return restored.accepted;
+        return context_.engine
+            .RestoreFromRecord(key, materialization_id, record)
+            .accepted;
       });
   if (!waiters) return false;
   if (is_root) notify_controller_ = true;
@@ -464,7 +469,6 @@ bool VisitWorker::RestoreMaterialization(MaterializationId materialization_id,
   // and the waiters all select below it.
   const auto wake = [&](VisitWakeup wakeup) {
     wakeup.kind = VisitWakeup::Kind::kRestored;
-    wakeup.generation = restored.generation;
     DeliverWakeup(wakeup);
   };
   wake(waiters->owner);
