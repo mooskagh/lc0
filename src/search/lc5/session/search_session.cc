@@ -187,11 +187,7 @@ void SearchSession::RunControllerWorker() {
     }
     if (!IsStopping() && ShouldStop(now)) limiter_.Stop();
     SendEvictionJob();
-    if (!IsStopping() && now >= next_info) {
-      std::vector<ThinkingInfo> infos{BuildThinkingInfo(false)};
-      responder_->OutputThinkingInfo(&infos);
-      next_info = now + kInfoInterval;
-    }
+    if (!IsStopping()) MaybeOutputInfo(now, next_info);
     if (IsStopping() && !responded) {
       RespondBestMove();
       responded = true;
@@ -203,6 +199,25 @@ void SearchSession::RunControllerWorker() {
     controller_signal_.WaitUntil(generation, NextWakeup(now, next_info));
   }
   JoinThreads();
+}
+
+void SearchSession::MaybeOutputInfo(steady_clock::time_point now,
+                                    steady_clock::time_point& next_info) {
+  const RootStats root = engine_->GetRootStats(root_.key);
+  const int depth = static_cast<int>(metrics_.max_depth.load());
+  const int seldepth = static_cast<int>(metrics_.max_selected_depth.load());
+  const bool changed =
+      root.expanded && (depth > 0 || seldepth > 0) &&
+      (depth != last_depth_ || seldepth != last_seldepth_ ||
+       root.best_move != last_best_move_);
+  if (!changed && now < next_info) return;
+
+  std::vector<ThinkingInfo> infos{BuildThinkingInfo(false)};
+  last_depth_ = infos.front().depth;
+  last_seldepth_ = infos.front().seldepth;
+  last_best_move_ = root.best_move;
+  responder_->OutputThinkingInfo(&infos);
+  next_info = now + kInfoInterval;
 }
 
 bool SearchSession::ShouldStop(steady_clock::time_point now) const {
@@ -294,7 +309,7 @@ ThinkingInfo SearchSession::BuildThinkingInfo(bool final) const {
   const uint64_t evals = metrics_.nn_evaluations.load();
   ThinkingInfo info;
   info.time = ms;
-  info.nodes = nodes;
+  info.nodes = limiter_.root_visits_at_start() + nodes;
   info.nps = ms > 0 ? static_cast<int>(nodes * 1000 / ms) : 0;
   info.eps = ms > 0 ? static_cast<int>(evals * 1000 / ms) : 0;
   info.depth = static_cast<int>(metrics_.max_depth.load());

@@ -304,8 +304,15 @@ void VisitWorker::AdvanceVisit(VisitId id) {
       CancelVisit(visit);
       return;
     }
-    if (context_.engine.DescendVisit(visit, context_.metrics) ==
-        VisitEngine::DescendResult::kValuedLeaf) {
+    const uint64_t seldepth =
+        context_.metrics.max_selected_depth.load(std::memory_order_relaxed);
+    const auto descended =
+        context_.engine.DescendVisit(visit, context_.metrics);
+    if (context_.metrics.max_selected_depth.load(std::memory_order_relaxed) >
+        seldepth) {
+      notify_controller_ = true;
+    }
+    if (descended == VisitEngine::DescendResult::kValuedLeaf) {
       BackupVisit(visit);
       return;
     }
@@ -314,8 +321,12 @@ void VisitWorker::AdvanceVisit(VisitId id) {
 }
 
 void VisitWorker::BackupVisit(Visit& visit) {
-  context_.engine.BackupVisit(visit, context_.metrics);
-  RaiseHighWater(context_.metrics.max_depth, visit.path.size());
+  if (context_.engine.BackupVisit(visit, context_.metrics)) {
+    notify_controller_ = true;
+  }
+  if (RaiseHighWater(context_.metrics.max_depth, visit.path.size())) {
+    notify_controller_ = true;
+  }
   FinishVisit(visit, true);
 }
 
@@ -422,12 +433,15 @@ void VisitWorker::PrepareMaterialization(Materialization materialization) {
 void VisitWorker::CompleteMaterialization(MaterializationId materialization_id,
                                           ExpansionPayload payload) {
   MaterializationResult installed;
+  bool is_root = false;
   const auto waiters = context_.materializations.Close(
       materialization_id, [&](NodeKey key) {
+        is_root = key == context_.root.key;
         installed = context_.engine.CompleteMaterialization(
             key, materialization_id, payload);
         return true;
       });
+  if (is_root && installed.accepted) notify_controller_ = true;
   assert(waiters->owner.worker == worker_id_);
   RaiseHighWater(context_.metrics.graph_size_high_water,
                  context_.engine.GetGraphSize());

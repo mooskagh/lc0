@@ -74,7 +74,7 @@ class PolicyEngine final : public VisitEngine {
   }
 
   DescendResult DescendVisit(Visit& visit, Metrics& metrics) override;
-  void BackupVisit(const Visit& visit, Metrics& metrics) override;
+  bool BackupVisit(const Visit& visit, Metrics& metrics) override;
   void CancelVisit(const Visit& visit, Metrics& metrics) override;
   ResumeAction ResumeVisit(Visit& visit, Metrics& metrics) override;
   void FillThinkingInfo(const VisitOrigin& root,
@@ -228,6 +228,7 @@ bool PolicyEngine<P>::Advance(Visit& visit, PathStep& step, Move move,
     // backup_prefix is empty.
     if (P::ContainTwoFold(params_)) visit.two_fold_origin = ply - cycle;
     visit.path.push_back({.key = visit.current_key});
+    RaiseHighWater(metrics.max_selected_depth, visit.path.size());
     visit.result = TerminalValue(TerminalKind::kRepetition);
     visit.result_exact = false;
     metrics.terminal_visits.fetch_add(1);
@@ -274,7 +275,8 @@ VisitEngine::ResumeAction PolicyEngine<P>::ResumeVisit(Visit& visit,
 }
 
 template <typename P>
-void PolicyEngine<P>::BackupVisit(const Visit& visit, Metrics& metrics) {
+bool PolicyEngine<P>::BackupVisit(const Visit& visit, Metrics& metrics) {
+  bool best_move_changed = false;
   typename P::Message message = P::Leaf(visit.result, visit.result_exact);
   for (size_t i = visit.path.size(); i-- > 0;) {
     const PathStep& step = visit.path[i];
@@ -293,8 +295,10 @@ void PolicyEngine<P>::BackupVisit(const Visit& visit, Metrics& metrics) {
     // If that node is stale or missing, the draw goes on past it (rare).
     const bool two_fold_origin = visit.two_fold_origin == i;
     assert(!two_fold_origin || (step.generation != 0 && move));
-    const BackupResult<P> result = graph_.BackupNode(
-        step.key, step.generation, message, move, two_fold_origin);
+    const BackupResult<P> result =
+        graph_.BackupNode(step.key, step.generation, message, move,
+                          two_fold_origin, i == 0 ? &params_ : nullptr);
+    best_move_changed |= result.best_move_changed;
     metrics.backup_node_steps.fetch_add(1);
     if (result.node != UpdateResult::kApplied) {
       metrics.stale_generation_node_updates.fetch_add(1);
@@ -307,6 +311,7 @@ void PolicyEngine<P>::BackupVisit(const Visit& visit, Metrics& metrics) {
     // A stale or missing node is skipped.
     message = result.to_parent ? *result.to_parent : P::Stale(message);
   }
+  return best_move_changed;
 }
 
 template <typename P>
@@ -354,6 +359,11 @@ RootStats PolicyEngine<P>::GetRootStats(NodeKey root) const {
   stats.expanded = node->lifecycle == NodeLifecycle::kExpanded;
   stats.visits = P::Visits(node->stats);
   stats.edges = node->edges.size();
+  if (stats.expanded) {
+    if (const auto index = P::ChooseMove(*node, params_)) {
+      stats.best_move = node->edges[*index].move;
+    }
+  }
   stats.decided = P::Decided(*node, params_);
   for (const auto& tried : node->tried) {
     const uint64_t visits = P::Visits(tried.stats);

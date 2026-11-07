@@ -45,13 +45,14 @@
 
 namespace lczero::lc5 {
 
-// Root numbers the controller needs for limits and early stopping.
+// Root numbers the controller needs for limits, info output and early stopping.
 struct RootStats {
   bool expanded = false;
   uint64_t visits = 0;  // Node visits; 0 if the root is absent.
   size_t edges = 0;
   uint64_t best_edge_visits = 0;
   uint64_t second_edge_visits = 0;
+  Move best_move{};
   // The root's result is proven, so the search can stop.
   bool decided = false;
 };
@@ -77,8 +78,9 @@ class VisitEngine {
   // (kUnexpandedLeaf) or a leaf whose value is in visit.result (kValuedLeaf).
   enum class DescendResult { kUnexpandedLeaf, kValuedLeaf };
   virtual DescendResult DescendVisit(Visit& visit, Metrics& metrics) = 0;
-  // Backs visit.result up visit.path.
-  virtual void BackupVisit(const Visit& visit, Metrics& metrics) = 0;
+  // Backs visit.result up visit.path; returns true if the first node's
+  // bestmove changed.
+  virtual bool BackupVisit(const Visit& visit, Metrics& metrics) = 0;
   // Releases every edge reservation on visit.path without committing a visit.
   virtual void CancelVisit(const Visit& visit, Metrics& metrics) = 0;
   // A waiter's node finished materializing; visit.result holds its leaf value.

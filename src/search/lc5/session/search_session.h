@@ -82,6 +82,8 @@ class SearchSession {
   // Search: stop, output and shutdown.
   bool IsStopping() const { return limiter_.IsStopping(); }
   bool ShouldStop(std::chrono::steady_clock::time_point now) const;
+  void MaybeOutputInfo(std::chrono::steady_clock::time_point now,
+                       std::chrono::steady_clock::time_point& next_info);
   std::chrono::steady_clock::time_point NextWakeup(
       std::chrono::steady_clock::time_point now,
       std::chrono::steady_clock::time_point next_info) const;
@@ -123,6 +125,9 @@ class SearchSession {
   std::atomic<bool> finished_{false};
   std::atomic<int64_t> unused_time_ms_{0};
   ControllerSignal controller_signal_;
+  int last_depth_ = 0;
+  int last_seldepth_ = 0;
+  Move last_best_move_{};
 
   // Visits, materializations and counters.
   VisitPool visit_pool_;

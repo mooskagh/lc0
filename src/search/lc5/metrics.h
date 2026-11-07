@@ -115,12 +115,15 @@ struct Metrics {
 };
 
 template <typename T, typename U>
-void RaiseHighWater(std::atomic<T>& target, U value) {
+bool RaiseHighWater(std::atomic<T>& target, U value) {
   T old = target.load(std::memory_order_relaxed);
-  while (old < static_cast<T>(value) &&
-         !target.compare_exchange_weak(old, static_cast<T>(value),
-                                       std::memory_order_relaxed)) {
+  while (old < static_cast<T>(value)) {
+    if (target.compare_exchange_weak(old, static_cast<T>(value),
+                                     std::memory_order_relaxed)) {
+      return true;
+    }
   }
+  return false;
 }
 
 }  // namespace lczero::lc5

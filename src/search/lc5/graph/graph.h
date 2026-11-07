@@ -87,6 +87,8 @@ struct BackupResult {
   UpdateResult edge;
   // What the parent receives; set only when the node update was applied.
   std::optional<typename P::Message> to_parent;
+  // Whether the node's bestmove changed; checked only when `params` is given.
+  bool best_move_changed = false;
 };
 
 // Sharded map from NodeKey to node search state and outgoing edges. Edges do
@@ -147,10 +149,13 @@ class GameGraph {
   // Applies the policy's update to the node and, if `move` is given,
   // completes that edge's reservation. On success `to_parent` is the message
   // the parent receives: the update's, or with `send_current` the node's
-  // statistics after the update (P::Current).
+  // statistics after the update (P::Current). `params` is passed only for the
+  // root node to populate `best_move_changed`; if `params` is ever needed for
+  // all nodes, gate the `ChooseMove` check on a separate root-only flag.
   BackupResult<P> BackupNode(NodeKey key, uint64_t expected_generation,
                              Message message, std::optional<Move> move,
-                             bool send_current = false);
+                             bool send_current = false,
+                             const typename P::Params* params = nullptr);
 
   // Releases an edge reservation without committing a visit.
   UpdateResult CancelEdge(NodeKey key, uint64_t expected_generation, Move move);
@@ -402,7 +407,8 @@ BackupResult<P> GameGraph<P>::BackupNode(NodeKey key,
                                          uint64_t expected_generation,
                                          Message message,
                                          std::optional<Move> move,
-                                         bool send_current) {
+                                         bool send_current,
+                                         const typename P::Params* params) {
   auto& shard = ShardFor(key);
   absl::MutexLock lock(shard.mutex);
   Node* node = FindNode(shard.nodes, key);
@@ -410,6 +416,8 @@ BackupResult<P> GameGraph<P>::BackupNode(NodeKey key,
       check != UpdateResult::kApplied) {
     return {check, move ? check : UpdateResult::kApplied, std::nullopt};
   }
+  const auto best_before =
+      params ? P::ChooseMove(*node, *params) : std::nullopt;
   Tried* edge = nullptr;
   UpdateResult edge_result = UpdateResult::kApplied;
   if (move) {
@@ -421,7 +429,9 @@ BackupResult<P> GameGraph<P>::BackupNode(NodeKey key,
   ++node->version;
   Message to_parent = P::Update(*node, edge, message);
   if (send_current) to_parent = P::Current(*node);
-  return {UpdateResult::kApplied, edge_result, to_parent};
+  const bool best_changed =
+      params && P::ChooseMove(*node, *params) != best_before;
+  return {UpdateResult::kApplied, edge_result, to_parent, best_changed};
 }
 
 template <typename P>

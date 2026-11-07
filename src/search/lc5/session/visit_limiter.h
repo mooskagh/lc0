@@ -57,6 +57,9 @@ class VisitLimiter {
 
   VisitLimiter(const Config& config, VisitPool& visits, Metrics& metrics);
   uint64_t node_limit() const { return node_limit_.load(); }
+  uint64_t root_visits_at_start() const {
+    return config_.root_visits_at_start;
+  }
   // Lowers node_limit() to at most `limit` (e.g. 1 when stopping before the
   // root is expanded).
   void CapNodeLimit(uint64_t limit);
