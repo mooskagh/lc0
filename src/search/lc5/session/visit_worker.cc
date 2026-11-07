@@ -36,6 +36,7 @@
 #include <utility>
 
 #include "search/lc5/graph/prior.h"
+#include "utils/math.h"
 
 namespace lczero::lc5 {
 namespace {
@@ -111,11 +112,10 @@ bool VisitWorker::IsDrained() {
 void VisitWorker::AdmitNewRootVisits() {
   // A modest per-worker share prevents one worker from monopolizing the pool.
   const size_t share =
-      (context_.visits.capacity() + context_.inboxes.size() - 1) /
-      context_.inboxes.size();
+      CeilDiv(context_.visits.capacity(), context_.inboxes.size());
   const size_t count =
       std::min(kVisitsPerPass, share - std::min(share, active_visits_));
-  const auto admitted =
+  const std::vector<VisitId> admitted =
       context_.limiter.AdmitVisits(worker_id_, context_.root, count);
   active_visits_ += admitted.size();
   ready_visits_.insert(ready_visits_.end(), admitted.begin(), admitted.end());
@@ -564,7 +564,7 @@ std::unique_ptr<AsyncJob> VisitWorker::BuildJob() {
   // evaluations.
   const size_t batch_size = context_.settings.minibatch_size;
   const size_t limit = std::min(
-      (batch_size + kJobsPerBatch - 1) / kJobsPerBatch,
+      CeilDiv(batch_size, kJobsPerBatch),
       kMaxItemsInFlightBatches * batch_size - materializations_in_flight_);
   auto job = std::make_unique<AsyncJob>();
   job->worker = worker_id_;
