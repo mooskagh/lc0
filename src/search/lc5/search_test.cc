@@ -72,9 +72,13 @@ class SearchSessionTestPeer {
   static void PrepareAdmissions(SearchSession& session)
       ABSL_NO_THREAD_SAFETY_ANALYSIS {
     for (auto& worker : session.visit_workers_) {
-      worker->AdvanceRunnableVisits(std::numeric_limits<size_t>::max());
+      while (!worker->ready_visits_.empty()) {
+        const VisitId id = worker->ready_visits_.front();
+        worker->ready_visits_.pop_front();
+        worker->AdvanceVisit(id);
+      }
       worker->SendJobs();
-      worker->SetProducing(false);
+      worker->ReportProducingStatus(false);
     }
   }
   // Inspect owner-local state only after Wait's full join barrier.

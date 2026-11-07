@@ -32,7 +32,6 @@
 #include <algorithm>
 #include <cassert>
 #include <chrono>
-#include <limits>
 #include <utility>
 
 #include "search/lc5/graph/prior.h"
@@ -131,7 +130,7 @@ void VisitWorker::WakeAdmissionWaiters() {
   }
 }
 
-void VisitWorker::SendWakeups(size_t to, std::vector<VisitWakeup>& batch) {
+void VisitWorker::SendVisitWakeups(size_t to, std::vector<VisitWakeup>& batch) {
   if (batch.empty()) return;
   {
     auto& inbox = context_.inboxes[to];
@@ -194,24 +193,25 @@ void VisitWorker::ResumeVisit(const VisitWakeup& wakeup) {
 
 void VisitWorker::Run() {
   for (;;) {
-    ProcessInbox();
-    if (IsStopping()) {
-      CancelVisits();
-    } else {
-      AdvanceRunnableVisits(kVisitsPerPass);
-      AdmitNewRootVisits();
+    ProcessInbox();  // Ingest finished store/eval jobs and visit wakeups.
+    const bool stopping = IsStopping();
+    if (stopping) visits_cancelled_ = true;
+    // Step ready visits (up to kVisitsPerPass, or drain all when stopping).
+    for (size_t i = 0;
+         (stopping || i < kVisitsPerPass) && !ready_visits_.empty(); ++i) {
+      const VisitId id = ready_visits_.front();
+      ready_visits_.pop_front();
+      AdvanceVisit(id);
     }
-    SendJobs();
+    if (!stopping) AdmitNewRootVisits();  // Refill with new root visits.
+    SendJobs();  // Dispatch queued store loads and NN evals as AsyncJobs.
     for (size_t i = 0; i < context_.inboxes.size(); ++i) {
-      SendWakeups(i, outgoing_wakeups_[i]);
+      SendVisitWakeups(i, outgoing_wakeups_[i]);  // Wake peers' waiting visits.
     }
-    PublishState();
+    FlushNotifications();  // Signal controller, admission waiters, evaluator.
     if (shutdown_) break;
-    // Keep going locally without a wake or controller handoff. Suspended
-    // visits and the in-flight limits wait for whole completions.
-    if (HasLocalWork()) continue;
-    // Senders evaluate this on unlock; `visits_cancelled_` is written only by
-    // this worker, never while it waits here.
+    if (HasReadyWork()) continue;  // Start next pass without locking inbox_.
+    // Sleep until new inbox work, admission capacity, or stop/shutdown arrives.
     absl::MutexLock lock(inbox_.mutex);
     const auto ready = [&] {
       inbox_.mutex.AssertReaderHeld();
@@ -235,54 +235,30 @@ void VisitWorker::ProcessInbox() {
     shutdown_ = inbox_.shutdown;
   }
   if (admission_ready || !wakeups.empty() || !completions.empty()) {
-    // Actual incoming work can enable preparation or refill. This transition
-    // disables starvation and needs no broadcast.
-    SetProducing(true);
+    // Evaluator needs to know when workers are stuck to flush partial batch.
+    ReportProducingStatus(true);
+    // Mark not drained while processing swapped-out inbox items.
     if (drained_.exchange(false)) notify_controller_ = true;
   }
   for (const auto& wakeup : wakeups) ResumeVisit(wakeup);
   for (auto& job : completions) FinishJob(std::move(job));
-  ResumeLocalVisits();
-}
-
-void VisitWorker::ResumeLocalVisits() {
-  // ResumeVisit wakes no visits, so this empties the queue.
   for (const auto& wakeup : local_wakeups_) ResumeVisit(wakeup);
   local_wakeups_.clear();
 }
 
-void VisitWorker::AdvanceRunnableVisits(size_t limit) {
-  for (size_t i = 0; i < limit && !ready_visits_.empty(); ++i) {
-    const VisitId id = ready_visits_.front();
-    ready_visits_.pop_front();
-    AdvanceVisit(id);
-  }
-}
-
-void VisitWorker::CancelVisits() {
-  // Every visit that is not waiting on a materialization is ready: ready
-  // backups finish, the rest are cancelled. Waiting visits stay until their
-  // materialization completes or is cancelled, and come back through
-  // ResumeVisit.
-  visits_cancelled_ = true;
-  AdvanceRunnableVisits(std::numeric_limits<size_t>::max());
-}
-
-void VisitWorker::PublishState() {
+void VisitWorker::FlushNotifications() {
   const bool drained = visits_cancelled_ && active_visits_ == 0 &&
                        jobs_in_flight_ == 0 && !HasQueuedIo() &&
                        local_wakeups_.empty();
-  if (drained_.exchange(drained) != drained) {
-    notify_controller_ = true;
-  }
+  if (drained_.exchange(drained) != drained) notify_controller_ = true;
   if (std::exchange(notify_admission_waiters_, false)) WakeAdmissionWaiters();
   if (std::exchange(notify_controller_, false)) {
     context_.controller_signal.Notify();
   }
-  SetProducing(CanSendJob() && HasLocalWork());
+  ReportProducingStatus(CanSendJob() && HasReadyWork());
 }
 
-bool VisitWorker::HasLocalWork() const {
+bool VisitWorker::HasReadyWork() const {
   return !local_wakeups_.empty() || (!IsStopping() && !ready_visits_.empty()) ||
          (CanSendJob() && HasQueuedIo());
 }
@@ -529,7 +505,7 @@ bool VisitWorker::CanSendJob() const {
                  static_cast<size_t>(context_.settings.minibatch_size);
 }
 
-void VisitWorker::SetProducing(bool producing) {
+void VisitWorker::ReportProducingStatus(bool producing) {
   if (producing_ == producing) return;
   producing_ = producing;
   if (producing) {

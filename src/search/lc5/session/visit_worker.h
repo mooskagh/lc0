@@ -103,11 +103,8 @@ class VisitWorker {
   // The thread body: runs until the inbox gets shut down.
   void Run();
   void ProcessInbox();
-  void ResumeLocalVisits();
-  void AdvanceRunnableVisits(size_t limit);
-  void CancelVisits();
-  void PublishState();
-  bool HasLocalWork() const;
+  void FlushNotifications();
+  bool HasReadyWork() const;
   bool HasQueuedIo() const {
     return !queued_loads_.empty() || !queued_evals_.empty();
   }
@@ -118,7 +115,7 @@ class VisitWorker {
   void AdmitNewRootVisits();
   void WakeAdmissionWaiters();
   void DeliverWakeup(const VisitWakeup& wakeup);
-  void SendWakeups(size_t to, std::vector<VisitWakeup>& batch);
+  void SendVisitWakeups(size_t to, std::vector<VisitWakeup>& batch);
 
   // Visit steps.
   void AdvanceVisit(VisitId id);
@@ -149,7 +146,7 @@ class VisitWorker {
   void SendJobs();
   bool CanSendJob() const;
   std::unique_ptr<AsyncJob> BuildJob();
-  void SetProducing(bool producing);
+  void ReportProducingStatus(bool producing);
   void FinishJob(std::unique_ptr<AsyncJob> job);
 
   // Session context and configuration, fixed for the worker's lifetime.
@@ -162,7 +159,7 @@ class VisitWorker {
   // Owned visits: ready or waiting on a materialization.
   size_t active_visits_ = 0;
   // Wakeups for this worker's own visits (e.g. from a terminal leaf closed
-  // during AdvanceVisit), buffered to resume in ResumeLocalVisits.
+  // during AdvanceVisit), buffered to resume in ProcessInbox.
   std::vector<VisitWakeup> local_wakeups_;
   // Indexed by target worker.
   std::vector<std::vector<VisitWakeup>> outgoing_wakeups_;
@@ -179,10 +176,10 @@ class VisitWorker {
   bool producing_ = true;
 
   // Per-pass notifications and shutdown/drain state.
-  // Set during a pass and flushed once in PublishState.
+  // Set during a pass and flushed once in FlushNotifications.
   bool notify_admission_waiters_ = false;
   bool notify_controller_ = false;
-  // Set once CancelVisits has run after stop; prevents re-waking on stop and
+  // Set once ready visits are drained on stop; prevents re-waking on stop and
   // gates `drained_`.
   bool visits_cancelled_ = false;
   bool shutdown_ = false;  // Seen in the inbox; exit after this pass.
