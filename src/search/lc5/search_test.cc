@@ -952,7 +952,8 @@ TEST(Lc5SearchTest, TerminalOwnerAndWaitersNeverEvaluate) {
       session.Wait();
       ExpectDrained(session, graph);
       ExpectFinalOutput(responder, 4);
-      EXPECT_EQ(responder.bestmoves[0].bestmove, Move{});
+      EXPECT_EQ(responder.bestmoves[0].bestmove,
+                Move::WhitePromotion(kSquareH1, kSquareH1, kQueen));
       EXPECT_EQ(backend.inputs.load(), 0u);
       EXPECT_EQ(backend.computes.load(), 0u);
       EXPECT_EQ(session.metrics().materializations_started.load(), 1u);

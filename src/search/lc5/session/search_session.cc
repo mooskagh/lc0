@@ -70,11 +70,10 @@ VisitLimiter::Config MakeLimiterConfig(const Settings::Resolved& settings,
           .active_visits_ratio = settings.active_visits_ratio};
 }
 
-// Moves in the graph are from the side to move's perspective; UCI is not.
-Move ToUci(Move move, const Position& position) {
-  if (position.IsBlackToMove()) move.Flip();
-  return move;
-}
+// Always-illegal move ("h1h1q", distinct from Move{} "a1a1") emitted when the
+// root has no PV so any missing-move bug is caught immediately.
+constexpr Move kInvalidMove =
+    Move::WhitePromotion(kSquareH1, kSquareH1, kQueen);
 
 }  // namespace
 
@@ -257,7 +256,7 @@ void SearchSession::RespondBestMove() {
   if (!aborted_.load()) {
     std::vector<ThinkingInfo> infos{BuildThinkingInfo(true)};
     const auto& pv = infos.front().pv;
-    BestMoveInfo best(pv.empty() ? GetFallbackMove() : pv.front(),
+    BestMoveInfo best(pv.empty() ? kInvalidMove : pv.front(),
                       pv.size() > 1 ? pv[1] : Move{});
     if (!aborted_.load()) {
       responder_->OutputThinkingInfo(&infos);
@@ -289,15 +288,6 @@ void SearchSession::JoinThreads() {
   for (auto& thread : store_threads_) thread.join();
   evaluator_.Join();
   finished_.store(true, std::memory_order_release);
-}
-
-// Deterministic legal move for when the root has no PV: it was never
-// expanded, or it is terminal.
-Move SearchSession::GetFallbackMove() const {
-  const Position& position = root_.history.Last();
-  const auto legal = position.GetBoard().GenerateLegalMoves();
-  if (legal.empty()) return Move{};
-  return ToUci(std::ranges::min(legal, {}, &Move::raw_data), position);
 }
 
 ThinkingInfo SearchSession::BuildThinkingInfo(bool final) const {

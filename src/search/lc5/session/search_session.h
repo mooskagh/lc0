@@ -92,7 +92,6 @@ class SearchSession {
   void JoinThreads();
   void WakeAllVisitWorkers();
   ThinkingInfo BuildThinkingInfo(bool final) const;
-  Move GetFallbackMove() const;
   // Whether the graph has a node limit to keep, by evicting to the store.
   bool HasNodeLimit() const {
     return engine_->HasStore() && settings_.graph_node_limit > 0;
