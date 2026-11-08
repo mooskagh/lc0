@@ -133,7 +133,7 @@ TEST(Lc5PuctTest, OptionsReachParams) {
 }
 
 TEST(Lc5PuctTest, UnstartedNodePicksTopPrior) {
-  const Node node{.lifecycle = NodeLifecycle::kExpanded,
+  const Node node{.lifecycle = NodeLifecycle::kMaterialized,
                   .stats = {.visits = 1},
                   .edges = {MakeEdge(kFileA, 0.5f), MakeEdge(kFileB, 0.3f),
                             MakeEdge(kFileC, 0.2f)}};
@@ -143,7 +143,7 @@ TEST(Lc5PuctTest, UnstartedNodePicksTopPrior) {
 TEST(Lc5PuctTest, FirstUntriedEdgeCompetesWithTriedOnes) {
   for (const float q : {0.5f, -0.5f}) {
     SCOPED_TRACE(q);
-    const Node node{.lifecycle = NodeLifecycle::kExpanded,
+    const Node node{.lifecycle = NodeLifecycle::kMaterialized,
                     .stats = {.visits = 2},
                     .edges = {MakeEdge(kFileA, 0.5f), MakeEdge(kFileB, 0.3f),
                               MakeEdge(kFileC, 0.2f)},
@@ -154,7 +154,7 @@ TEST(Lc5PuctTest, FirstUntriedEdgeCompetesWithTriedOnes) {
 }
 
 TEST(Lc5PuctTest, InFlightEdgeLosesUrgency) {
-  Node node{.lifecycle = NodeLifecycle::kExpanded,
+  Node node{.lifecycle = NodeLifecycle::kMaterialized,
             .stats = {.visits = 1},
             .edges = {MakeEdge(kFileA, 0.5f), MakeEdge(kFileB, 0.3f)},
             .tried = {Tried{.in_flight = 1}}};
@@ -165,7 +165,7 @@ TEST(Lc5PuctTest, InFlightEdgeLosesUrgency) {
 TEST(Lc5PuctTest, InFlightCountsInTotals) {
   Tried tried = MakeTried(1, 0.25f);
   tried.in_flight = 3;
-  const Node node{.lifecycle = NodeLifecycle::kExpanded,
+  const Node node{.lifecycle = NodeLifecycle::kMaterialized,
                   .stats = {.visits = 2},
                   .edges = {MakeEdge(kFileA, 0.5f), MakeEdge(kFileB, 0.3f)},
                   .tried = {tried}};
@@ -178,7 +178,7 @@ TEST(Lc5PuctTest, InFlightCountsInTotals) {
 TEST(Lc5PuctTest, ReselectCountsWaiterAsCompleted) {
   // The owner's visit is still in flight on edge A; the waiter's reservation
   // has been released and counts as completed with the child's value.
-  const Node node{.lifecycle = NodeLifecycle::kExpanded,
+  const Node node{.lifecycle = NodeLifecycle::kMaterialized,
                   .stats = {.visits = 1},
                   .edges = {MakeEdge(kFileA, 0.5f), MakeEdge(kFileB, 0.3f)},
                   .tried = {Tried{.in_flight = 1}}};
@@ -202,7 +202,7 @@ TEST(Lc5PuctTest, MovesLeftPrefersShorterWinsAndLongerLosses) {
     // The node has M 20; edge A's child has M 30 (10 plies longer) and edge
     // B's child M 10 (10 plies shorter).
     const Node node{
-        .lifecycle = NodeLifecycle::kExpanded,
+        .lifecycle = NodeLifecycle::kMaterialized,
         .stats = {.visits = 3, .q = node_q, .m = 20.0f},
         .edges = {MakeEdge(kFileA, 0.5f), MakeEdge(kFileB, 0.5f)},
         .tried = {MakeTried(1, edge_q, 31.0f), MakeTried(1, edge_q, 11.0f)}};
@@ -222,7 +222,7 @@ TEST(Lc5PuctTest, MovesLeftPrefersShorterWinsAndLongerLosses) {
 }
 
 TEST(Lc5PuctTest, UpdateAveragesAndFlipsForParent) {
-  Node node{.lifecycle = NodeLifecycle::kExpanded,
+  Node node{.lifecycle = NodeLifecycle::kMaterialized,
             .stats = {.visits = 1, .q = 0.5f, .d = 0.5f, .m = 2.0f},
             .edges = {MakeEdge(kFileA, 1.0f)},
             .tried = {Tried{}}};
@@ -250,7 +250,7 @@ TEST(Lc5PuctTest, UpdateAveragesAndFlipsForParent) {
 }
 
 TEST(Lc5PuctTest, CurrentSendsNodeMeanAndBoundsFlipped) {
-  Node node{.lifecycle = NodeLifecycle::kExpanded,
+  Node node{.lifecycle = NodeLifecycle::kMaterialized,
             .stats = {.visits = 4,
                       .q = 0.25f,
                       .d = 0.5f,
@@ -265,10 +265,10 @@ TEST(Lc5PuctTest, CurrentSendsNodeMeanAndBoundsFlipped) {
   EXPECT_EQ(up.bounds, (Bounds{.lower = -1, .upper = 0}));
 }
 
-// An expanded node with `edges` edges, of which the first ones are tried with
-// one visit each and `bounds`, in the node's frame.
+// A materialized node with `edges` edges, of which the first ones are tried
+// with one visit each and `bounds`, in the node's frame.
 Node MakeBoundedNode(size_t edges, std::vector<Bounds> bounds) {
-  Node node{.lifecycle = NodeLifecycle::kExpanded,
+  Node node{.lifecycle = NodeLifecycle::kMaterialized,
             .stats = {.visits = 1 + static_cast<uint32_t>(bounds.size())}};
   for (size_t i = 0; i < edges; ++i) {
     node.edges.push_back(MakeEdge(File::FromIdx(i), 1.0f / edges));
@@ -290,7 +290,7 @@ Bounds WithPlies(Bounds bounds, uint8_t plies) {
 
 TEST(Lc5PuctTest, TerminalLossProvesParentWin) {
   // The child is checkmated: its install leaf is exact.
-  Node child{.lifecycle = NodeLifecycle::kExpanded,
+  Node child{.lifecycle = NodeLifecycle::kMaterialized,
              .terminal = TerminalKind::kCheckmate};
   const auto leaf =
       PuctAveraging::Leaf(TerminalValue(TerminalKind::kCheckmate), true);
@@ -402,7 +402,7 @@ TEST(Lc5PuctTest, ProvenValueNeedsStickyEndgames) {
 }
 
 TEST(Lc5PuctTest, ChooseEdgeRanksVisitsThenQThenPrior) {
-  Node node{.lifecycle = NodeLifecycle::kExpanded,
+  Node node{.lifecycle = NodeLifecycle::kMaterialized,
             .edges = {MakeEdge(kFileA, 0.5f), MakeEdge(kFileB, 0.3f),
                       MakeEdge(kFileC, 0.2f)}};
   EXPECT_EQ(PuctAveraging::ChooseEdge(node, TestParams()), std::nullopt);
@@ -423,7 +423,7 @@ TEST(Lc5PuctTest, ChooseEdgeRanksVisitsThenQThenPrior) {
 }
 
 TEST(Lc5PuctTest, ChooseMoveFallsBackToTopPrior) {
-  Node node{.lifecycle = NodeLifecycle::kExpanded};
+  Node node{.lifecycle = NodeLifecycle::kMaterialized};
   EXPECT_EQ(PuctAveraging::ChooseMove(node, TestParams()), std::nullopt);
 
   node.edges = {MakeEdge(kFileC, 0.5f), MakeEdge(kFileA, 0.3f),
@@ -505,7 +505,7 @@ using DagNode = NodeState<PuctDag>;
 using DagTried = TriedEdge<PuctDag>;
 
 TEST(Lc5PuctTest, DagEdgesCacheTheChildValue) {
-  DagNode node{.lifecycle = NodeLifecycle::kExpanded,
+  DagNode node{.lifecycle = NodeLifecycle::kMaterialized,
                .edges = {MakeEdge(kFileA, 0.5f), MakeEdge(kFileB, 0.5f)},
                .tried = {DagTried{}, DagTried{}}};
   const VisitValue leaf{.q = 0.2f, .d = 0.4f, .m = 10.0f};
@@ -560,11 +560,11 @@ TEST(Lc5PuctTest, DagReselectReplacesTheEdgeValue) {
   // Edge A has 3 visits at 0.8; the waiter brings 0.2. With N = 4, sqrt(N) =
   // 2: A scores q + 0.5 * 2 / 5 = q + 0.2 and the untried B 0.3 * 2 = 0.6.
   // Averaging gives A q = 0.65 (0.85 > 0.6); replacing gives 0.2 (0.4 < 0.6).
-  const Node node{.lifecycle = NodeLifecycle::kExpanded,
+  const Node node{.lifecycle = NodeLifecycle::kMaterialized,
                   .stats = {.visits = 4},
                   .edges = {MakeEdge(kFileA, 0.5f), MakeEdge(kFileB, 0.3f)},
                   .tried = {MakeTried(3, 0.8f)}};
-  const DagNode dag{.lifecycle = NodeLifecycle::kExpanded,
+  const DagNode dag{.lifecycle = NodeLifecycle::kMaterialized,
                     .stats = {.visits = 4},
                     .edges = {MakeEdge(kFileA, 0.5f), MakeEdge(kFileB, 0.3f)},
                     .tried = {DagTried{.stats = {.visits = 3, .q = 0.8f}}}};
@@ -576,7 +576,7 @@ TEST(Lc5PuctTest, DagReselectReplacesTheEdgeValue) {
 }
 
 TEST(Lc5PuctTest, DagTerminalLossProvesParentWin) {
-  DagNode child{.lifecycle = NodeLifecycle::kExpanded,
+  DagNode child{.lifecycle = NodeLifecycle::kMaterialized,
                 .terminal = TerminalKind::kCheckmate};
   const auto from_child = PuctDag::Update(
       child, nullptr,
@@ -585,7 +585,7 @@ TEST(Lc5PuctTest, DagTerminalLossProvesParentWin) {
   EXPECT_EQ(from_child.bounds, WithPlies(kWin, 1));
   EXPECT_FLOAT_EQ(from_child.value.q, 1.0f);
 
-  DagNode parent{.lifecycle = NodeLifecycle::kExpanded,
+  DagNode parent{.lifecycle = NodeLifecycle::kMaterialized,
                  .stats = {.visits = 1},
                  .edges = {MakeEdge(kFileA, 0.5f), MakeEdge(kFileB, 0.5f)},
                  .tried = {DagTried{}}};

@@ -88,7 +88,7 @@ TEST(Lc5GraphTest, CancellationOnlyErasesMatchingPlaceholder) {
       key, 8, {.moves = {M(kFileA, kFileA)}, .priors = {1.0f}});
   EXPECT_FALSE(graph.CancelMaterialization(key, 8));
   ASSERT_TRUE(graph.SnapshotNode(key));
-  EXPECT_EQ(graph.SnapshotNode(key)->lifecycle, NodeLifecycle::kExpanded);
+  EXPECT_EQ(graph.SnapshotNode(key)->lifecycle, NodeLifecycle::kMaterialized);
 }
 
 TEST(Lc5ValueTest, PerspectiveAndMeans) {
@@ -136,9 +136,8 @@ TEST(Lc5GraphTest, PublicationAcceptanceIsIndependentOfReturnedGeneration) {
   Graph graph;
   const NodeKey key{123};
   const Move move = M(kFileA, kFileA);
-  const ExpansionPayload payload{.moves = {move}, .priors = {1.0f}};
-  const ExpansionPayload replacement{.moves = {M(kFileB, kFileB)},
-                                     .priors = {0.5f}};
+  const NodeEval eval{.moves = {move}, .priors = {1.0f}};
+  const NodeEval replacement{.moves = {M(kFileB, kFileB)}, .priors = {0.5f}};
   const auto created = graph.FindOrCreateMaterialization(key, 7);
 
   auto installed = graph.CompleteMaterialization(key, 8, replacement);
@@ -150,7 +149,7 @@ TEST(Lc5GraphTest, PublicationAcceptanceIsIndependentOfReturnedGeneration) {
   EXPECT_EQ(node->materialization_id, 7u);
   EXPECT_TRUE(node->edges.empty());
 
-  installed = graph.CompleteMaterialization(key, 7, payload);
+  installed = graph.CompleteMaterialization(key, 7, eval);
   EXPECT_EQ(installed.generation, created.generation);
   EXPECT_TRUE(installed.accepted);
   ASSERT_EQ(graph.SelectAndReserve(key, TestParams()).status,
@@ -170,7 +169,7 @@ TEST(Lc5GraphTest, PublicationAcceptanceIsIndependentOfReturnedGeneration) {
     EXPECT_FALSE(installed.accepted);
     node = graph.SnapshotNode(key);
     ASSERT_TRUE(node);
-    EXPECT_EQ(node->lifecycle, NodeLifecycle::kExpanded);
+    EXPECT_EQ(node->lifecycle, NodeLifecycle::kMaterialized);
     EXPECT_EQ(node->materialization_id, 0u);
     ASSERT_EQ(node->edges.size(), 1u);
     EXPECT_EQ(node->edges[0].move, move);
@@ -186,7 +185,7 @@ TEST(Lc5GraphTest, PublicationAcceptanceIsIndependentOfReturnedGeneration) {
   ASSERT_TRUE(graph.Erase(key));
   const auto recreated = graph.FindOrCreateMaterialization(key, 9);
   ASSERT_NE(recreated.generation, created.generation);
-  installed = graph.CompleteMaterialization(key, 7, payload);
+  installed = graph.CompleteMaterialization(key, 7, eval);
   EXPECT_EQ(installed.generation, recreated.generation);
   EXPECT_FALSE(installed.accepted);
   EXPECT_EQ(graph.SnapshotNode(key)->materialization_id, 9u);
@@ -195,8 +194,7 @@ TEST(Lc5GraphTest, PublicationAcceptanceIsIndependentOfReturnedGeneration) {
   EXPECT_TRUE(installed.accepted);
 
   // The insertion path also reports acceptance, not just existing placeholders.
-  EXPECT_TRUE(
-      graph.CompleteMaterialization(NodeKey{456}, 10, payload).accepted);
+  EXPECT_TRUE(graph.CompleteMaterialization(NodeKey{456}, 10, eval).accepted);
   EXPECT_EQ(graph.Size(), 2u);
 }
 
@@ -212,9 +210,8 @@ TEST(Lc5GraphTest, SelectionReportsLifecycleAndGeneration) {
   EXPECT_EQ(materializing.generation, created.generation);
   EXPECT_EQ(materializing.terminal, TerminalKind::kNonTerminal);
 
-  const ExpansionPayload payload{.moves = {M(kFileA, kFileA)},
-                                 .priors = {1.0f}};
-  graph.CompleteMaterialization(key, 7, payload);
+  const NodeEval eval{.moves = {M(kFileA, kFileA)}, .priors = {1.0f}};
+  graph.CompleteMaterialization(key, 7, eval);
   const auto selected = graph.SelectAndReserve(key, TestParams());
   EXPECT_EQ(selected.status, SelectStatus::kSelected);
   EXPECT_EQ(selected.move, M(kFileA, kFileA));
@@ -224,21 +221,21 @@ TEST(Lc5GraphTest, SelectionReportsLifecycleAndGeneration) {
   ASSERT_EQ(full->edges.size(), 1u);
   EXPECT_EQ(TriedAt(*full, 0).in_flight, 1u);
   EXPECT_EQ(full->generation, created.generation);
-  EXPECT_EQ(full->lifecycle, NodeLifecycle::kExpanded);
+  EXPECT_EQ(full->lifecycle, NodeLifecycle::kMaterialized);
   EXPECT_EQ(full->terminal, TerminalKind::kNonTerminal);
 }
 
-TEST(Lc5GraphTest, SelectionReportsExpandedTerminalKind) {
+TEST(Lc5GraphTest, SelectionReportsMaterializedTerminalKind) {
   Graph graph;
   const NodeKey key{123};
   const auto created = graph.FindOrCreateMaterialization(key, 7);
   graph.CompleteMaterialization(
       key, 7,
-      ExpansionPayload{
+      NodeEval{
           .terminal = TerminalKind::kCheckmate, .moves = {}, .priors = {}});
   const auto node = graph.SnapshotNode(key);
   ASSERT_TRUE(node);
-  EXPECT_EQ(node->lifecycle, NodeLifecycle::kExpanded);
+  EXPECT_EQ(node->lifecycle, NodeLifecycle::kMaterialized);
   EXPECT_EQ(node->terminal, TerminalKind::kCheckmate);
   const auto terminal = graph.SelectAndReserve(key, TestParams());
   EXPECT_EQ(terminal.status, SelectStatus::kTerminal);
@@ -302,15 +299,14 @@ TEST(Lc5GraphTest, SelectionReturnsNewGenerationAfterRecreation) {
   Graph graph;
   const NodeKey key{123};
   const auto created = graph.FindOrCreateMaterialization(key, 7);
-  const ExpansionPayload payload{.moves = {M(kFileA, kFileA)},
-                                 .priors = {1.0f}};
-  graph.CompleteMaterialization(key, 7, payload);
+  const NodeEval eval{.moves = {M(kFileA, kFileA)}, .priors = {1.0f}};
+  graph.CompleteMaterialization(key, 7, eval);
   ASSERT_TRUE(graph.Erase(key));
   EXPECT_FALSE(graph.SnapshotNode(key));
 
   const auto recreated = graph.FindOrCreateMaterialization(key, 8);
   ASSERT_NE(recreated.generation, created.generation);
-  graph.CompleteMaterialization(key, 8, payload);
+  graph.CompleteMaterialization(key, 8, eval);
   const auto selected = graph.SelectAndReserve(key, TestParams());
   EXPECT_EQ(selected.status, SelectStatus::kSelected);
   EXPECT_EQ(selected.generation, recreated.generation);
@@ -330,30 +326,29 @@ TEST(Lc5GraphTest, SizeCountsOnlyNewNodes) {
   EXPECT_TRUE(graph.FindOrCreateMaterialization(NodeKey{2}, 9).created);
   EXPECT_EQ(graph.Size(), 2u);
 
-  ExpansionPayload payload{.moves = {M(kFileA, kFileA)}, .priors = {1.0f}};
-  graph.CompleteMaterialization(NodeKey{1}, 8, payload);
+  NodeEval eval{.moves = {M(kFileA, kFileA)}, .priors = {1.0f}};
+  graph.CompleteMaterialization(NodeKey{1}, 8, eval);
   EXPECT_EQ(graph.SnapshotNode(NodeKey{1})->lifecycle,
             NodeLifecycle::kMaterializing);
   EXPECT_EQ(graph.Size(), 2u);
-  graph.CompleteMaterialization(NodeKey{1}, 7, payload);
+  graph.CompleteMaterialization(NodeKey{1}, 7, eval);
   EXPECT_EQ(graph.SnapshotNode(NodeKey{1})->lifecycle,
-            NodeLifecycle::kExpanded);
+            NodeLifecycle::kMaterialized);
   EXPECT_EQ(graph.Size(), 2u);
-  graph.CompleteMaterialization(NodeKey{1}, 7, payload);
+  graph.CompleteMaterialization(NodeKey{1}, 7, eval);
   EXPECT_EQ(graph.Size(), 2u);
   EXPECT_FALSE(graph.FindOrCreateMaterialization(NodeKey{1}, 10).created);
   EXPECT_EQ(graph.Size(), 2u);
 }
 
-TEST(Lc5GraphTest, SizeCountsPayloadInsertionAndSuccessfulErasure) {
+TEST(Lc5GraphTest, SizeCountsEvalInsertionAndSuccessfulErasure) {
   Graph graph;
   NodeKey key{123};
-  ExpansionPayload payload{.moves = {M(kFileA, kFileA)}, .priors = {1.0f}};
+  NodeEval eval{.moves = {M(kFileA, kFileA)}, .priors = {1.0f}};
   const auto generation =
-      graph.CompleteMaterialization(key, 7, payload).generation;
+      graph.CompleteMaterialization(key, 7, eval).generation;
   EXPECT_EQ(graph.Size(), 1u);
-  EXPECT_EQ(graph.CompleteMaterialization(key, 7, payload).generation,
-            generation);
+  EXPECT_EQ(graph.CompleteMaterialization(key, 7, eval).generation, generation);
   EXPECT_EQ(graph.Size(), 1u);
   EXPECT_FALSE(graph.Erase(NodeKey{456}));
   EXPECT_EQ(graph.Size(), 1u);
@@ -361,8 +356,7 @@ TEST(Lc5GraphTest, SizeCountsPayloadInsertionAndSuccessfulErasure) {
   EXPECT_EQ(graph.Size(), 0u);
   EXPECT_FALSE(graph.Erase(key));
   EXPECT_EQ(graph.Size(), 0u);
-  EXPECT_NE(graph.CompleteMaterialization(key, 8, payload).generation,
-            generation);
+  EXPECT_NE(graph.CompleteMaterialization(key, 8, eval).generation, generation);
   EXPECT_EQ(graph.Size(), 1u);
   EXPECT_TRUE(graph.FindOrCreateMaterialization(NodeKey{456}, 9).created);
   EXPECT_EQ(graph.Size(), 2u);
@@ -374,13 +368,13 @@ TEST(Lc5GraphTest, ClearResetsSizeAndAllowsReuse) {
   Graph graph;
   graph.Clear();
   EXPECT_EQ(graph.Size(), 0u);
-  ExpansionPayload payload{.moves = {M(kFileA, kFileA)}, .priors = {1.0f}};
-  // Populate multiple shards with both materializing and expanded nodes.
+  NodeEval eval{.moves = {M(kFileA, kFileA)}, .priors = {1.0f}};
+  // Populate multiple shards with both materializing and materialized nodes.
   for (uint64_t hash = 0; hash < 32; ++hash) {
     if (hash % 2 == 0) {
       graph.FindOrCreateMaterialization(NodeKey{hash}, hash + 1);
     } else {
-      graph.CompleteMaterialization(NodeKey{hash}, hash + 1, payload);
+      graph.CompleteMaterialization(NodeKey{hash}, hash + 1, eval);
     }
   }
   EXPECT_EQ(graph.Size(), 32u);
@@ -392,7 +386,7 @@ TEST(Lc5GraphTest, ClearResetsSizeAndAllowsReuse) {
   EXPECT_EQ(graph.Size(), 0u);
   EXPECT_TRUE(graph.FindOrCreateMaterialization(NodeKey{0}, 33).created);
   EXPECT_EQ(graph.Size(), 1u);
-  graph.CompleteMaterialization(NodeKey{1}, 34, payload);
+  graph.CompleteMaterialization(NodeKey{1}, 34, eval);
   EXPECT_EQ(graph.Size(), 2u);
   EXPECT_TRUE(graph.Erase(NodeKey{0}));
   EXPECT_EQ(graph.Size(), 1u);
@@ -410,8 +404,8 @@ TEST(Lc5GraphTest, LateMaterializationPreservesPublishedEdges) {
   ASSERT_EQ(stale_snapshot->lifecycle, NodeLifecycle::kMaterializing);
 
   const Move move = M(kFileA, kFileA);
-  const ExpansionPayload payload{.moves = {move}, .priors = {1.0f}};
-  graph.CompleteMaterialization(key, 7, payload);
+  const NodeEval eval{.moves = {move}, .priors = {1.0f}};
+  graph.CompleteMaterialization(key, 7, eval);
   ASSERT_EQ(graph.SelectAndReserve(key, TestParams()).status,
             SelectStatus::kSelected);
   ASSERT_EQ(
@@ -422,14 +416,13 @@ TEST(Lc5GraphTest, LateMaterializationPreservesPublishedEdges) {
             SelectStatus::kSelected);
 
   // A caller with the old materializing snapshot must observe publication,
-  // not create a second materialization. Even a late payload cannot reset it.
+  // not create a second materialization. Even a late eval cannot reset it.
   const auto late = graph.FindOrCreateMaterialization(key, 8);
   EXPECT_FALSE(late.created);
-  EXPECT_EQ(late.lifecycle, NodeLifecycle::kExpanded);
+  EXPECT_EQ(late.lifecycle, NodeLifecycle::kMaterialized);
   EXPECT_EQ(late.materialization_id, 0u);
   EXPECT_EQ(late.generation, created.generation);
-  const ExpansionPayload replacement{.moves = {M(kFileB, kFileB)},
-                                     .priors = {1.0f}};
+  const NodeEval replacement{.moves = {M(kFileB, kFileB)}, .priors = {1.0f}};
   for (const auto materialization_id : {7u, 8u}) {
     EXPECT_EQ(
         graph.CompleteMaterialization(key, materialization_id, replacement)
@@ -452,16 +445,16 @@ TEST(Lc5GraphTest, LateMaterializationPreservesPublishedEdges) {
 TEST(Lc5GraphTest, AcceptedInstallCountsLeafValueOnce) {
   Graph graph;
   const NodeKey key{321};
-  const ExpansionPayload payload{.leaf = {.q = 0.5f, .d = 0.25f, .m = 6.0f},
-                                 .moves = {M(kFileA, kFileA)},
-                                 .priors = {1.0f}};
+  const NodeEval eval{.leaf = {.q = 0.5f, .d = 0.25f, .m = 6.0f},
+                      .moves = {M(kFileA, kFileA)},
+                      .priors = {1.0f}};
   graph.FindOrCreateMaterialization(key, 7);
-  EXPECT_FALSE(graph.CompleteMaterialization(key, 8, payload).accepted);
+  EXPECT_FALSE(graph.CompleteMaterialization(key, 8, eval).accepted);
   auto node = graph.SnapshotNode(key);
   ASSERT_TRUE(node);
   EXPECT_EQ(node->stats.visits, 0u);
 
-  EXPECT_TRUE(graph.CompleteMaterialization(key, 7, payload).accepted);
+  EXPECT_TRUE(graph.CompleteMaterialization(key, 7, eval).accepted);
   node = graph.SnapshotNode(key);
   ASSERT_TRUE(node);
   EXPECT_EQ(node->stats.visits, 1u);
@@ -471,8 +464,8 @@ TEST(Lc5GraphTest, AcceptedInstallCountsLeafValueOnce) {
 
   // Duplicate and wrong-id publications do not count the leaf again.
   for (const auto materialization_id : {7u, 8u}) {
-    EXPECT_FALSE(graph.CompleteMaterialization(key, materialization_id, payload)
-                     .accepted);
+    EXPECT_FALSE(
+        graph.CompleteMaterialization(key, materialization_id, eval).accepted);
     node = graph.SnapshotNode(key);
     ASSERT_TRUE(node);
     EXPECT_EQ(node->stats.visits, 1u);
@@ -485,8 +478,8 @@ TEST(Lc5GraphTest, GenerationChecksProtectRecreatedNodes) {
   NodeKey key{123};
   auto first = graph.FindOrCreateMaterialization(key, 7);
   ASSERT_TRUE(first.created);
-  ExpansionPayload payload{.moves = {M(kFileA, kFileA)}, .priors = {1.0f}};
-  EXPECT_EQ(graph.CompleteMaterialization(key, 7, payload).generation,
+  NodeEval eval{.moves = {M(kFileA, kFileA)}, .priors = {1.0f}};
+  EXPECT_EQ(graph.CompleteMaterialization(key, 7, eval).generation,
             first.generation);
   EXPECT_TRUE(graph.Erase(key));
   auto second = graph.FindOrCreateMaterialization(key, 8);
@@ -640,8 +633,8 @@ TEST(Lc5GraphTest, ReservationsAreExactAndCancellationDoesNotCommit) {
   auto created = graph.FindOrCreateMaterialization(key, 1);
   Move first = M(kFileA, kFileA);
   Move second = M(kFileB, kFileB);
-  ExpansionPayload payload{.moves = {first, second}, .priors = {0.5f, 0.5f}};
-  graph.CompleteMaterialization(key, 1, payload);
+  NodeEval eval{.moves = {first, second}, .priors = {0.5f, 0.5f}};
+  graph.CompleteMaterialization(key, 1, eval);
   auto params = TestParams();
   auto selection1 = graph.SelectAndReserve(key, params);
   auto selection2 = graph.SelectAndReserve(key, params);
@@ -664,7 +657,7 @@ TEST(Lc5GraphTest, ReservationsAreExactAndCancellationDoesNotCommit) {
 }
 
 // Priors in descending order, with moves out of encoding order.
-ExpansionPayload FourEdges() {
+NodeEval FourEdges() {
   return {.moves = {M(kFileD, kFileD), M(kFileA, kFileA), M(kFileC, kFileC),
                     M(kFileB, kFileB)},
           .priors = {0.4f, 0.3f, 0.2f, 0.1f}};
@@ -674,21 +667,21 @@ TEST(Lc5GraphTest, TriedPrefixGrowsInPriorOrder) {
   Graph graph;
   const NodeKey key{456};
   const auto created = graph.FindOrCreateMaterialization(key, 1);
-  const auto payload = FourEdges();
-  graph.CompleteMaterialization(key, 1, payload);
+  const auto eval = FourEdges();
+  graph.CompleteMaterialization(key, 1, eval);
   // Untried edges score above every tried one, so each is tried in turn.
   auto params = TestParams();
   params.fpu_value = 1.0f;
   for (uint32_t i = 0; i < 4; ++i) {
     EXPECT_EQ(graph.SnapshotNode(key)->tried.size(), i);
     const auto selection = graph.SelectAndReserve(key, params);
-    EXPECT_EQ(selection.move, payload.moves[i]);
+    EXPECT_EQ(selection.move, eval.moves[i]);
     EXPECT_EQ(graph.SnapshotNode(key)->tried.size(), i + 1);
     graph.BackupNode(key, created.generation, {}, selection.move);
     graph.BackupNode(key, created.generation, {}, std::nullopt);
     EXPECT_EQ(graph.SnapshotNode(key)->tried.size(), i + 1);
   }
-  EXPECT_EQ(graph.SelectAndReserve(key, params).move, payload.moves[0]);
+  EXPECT_EQ(graph.SelectAndReserve(key, params).move, eval.moves[0]);
   EXPECT_EQ(graph.SnapshotNode(key)->tried.size(), 4u);
 }
 
@@ -696,16 +689,16 @@ TEST(Lc5GraphTest, CancelledTriedEdgeIsStillSelectable) {
   Graph graph;
   const NodeKey key{456};
   const auto created = graph.FindOrCreateMaterialization(key, 1);
-  const auto payload = FourEdges();
-  graph.CompleteMaterialization(key, 1, payload);
+  const auto eval = FourEdges();
+  graph.CompleteMaterialization(key, 1, eval);
   auto params = TestParams();
   params.fpu_value = 1.0f;
-  EXPECT_EQ(graph.SelectAndReserve(key, params).move, payload.moves[0]);
-  EXPECT_EQ(graph.SelectAndReserve(key, params).move, payload.moves[1]);
-  EXPECT_EQ(graph.CancelEdge(key, created.generation, payload.moves[0]),
+  EXPECT_EQ(graph.SelectAndReserve(key, params).move, eval.moves[0]);
+  EXPECT_EQ(graph.SelectAndReserve(key, params).move, eval.moves[1]);
+  EXPECT_EQ(graph.CancelEdge(key, created.generation, eval.moves[0]),
             UpdateResult::kApplied);
   EXPECT_EQ(graph.SnapshotNode(key)->tried.size(), 2u);
-  EXPECT_EQ(graph.SelectAndReserve(key, params).move, payload.moves[0]);
+  EXPECT_EQ(graph.SelectAndReserve(key, params).move, eval.moves[0]);
   const auto node = graph.SnapshotNode(key);
   EXPECT_EQ(node->tried.size(), 2u);
   EXPECT_EQ(TriedAt(*node, 0).in_flight, 1u);
@@ -717,18 +710,17 @@ TEST(Lc5GraphTest, FirstUntriedEdgeCompetesWithTriedOnes) {
     Graph graph;
     const NodeKey key{456};
     const auto created = graph.FindOrCreateMaterialization(key, 1);
-    const ExpansionPayload payload{
+    const NodeEval eval{
         .moves = {M(kFileA, kFileA), M(kFileB, kFileB), M(kFileC, kFileC)},
         .priors = {0.5f, 0.3f, 0.2f}};
-    graph.CompleteMaterialization(key, 1, payload);
+    graph.CompleteMaterialization(key, 1, eval);
     const auto params = TestParams();
-    ASSERT_EQ(graph.SelectAndReserve(key, params).move, payload.moves[0]);
-    graph.BackupNode(key, created.generation, {q, 0.0f, 0.0f},
-                     payload.moves[0]);
+    ASSERT_EQ(graph.SelectAndReserve(key, params).move, eval.moves[0]);
+    graph.BackupNode(key, created.generation, {q, 0.0f, 0.0f}, eval.moves[0]);
     // The tried edge scores q + 0.25 and the first untried one 0.3.
     const bool tried_wins = q > 0.05f;
     EXPECT_EQ(graph.SelectAndReserve(key, params).move,
-              payload.moves[tried_wins ? 0 : 1]);
+              eval.moves[tried_wins ? 0 : 1]);
     EXPECT_EQ(graph.SnapshotNode(key)->tried.size(), tried_wins ? 1u : 2u);
   }
 }
@@ -737,12 +729,12 @@ TEST(Lc5GraphTest, ReselectionMovesOnlyTheWaitersReservation) {
   Graph graph;
   const NodeKey key{456};
   const auto created = graph.FindOrCreateMaterialization(key, 1);
-  const ExpansionPayload payload{
+  const NodeEval eval{
       .moves = {M(kFileA, kFileA), M(kFileB, kFileB), M(kFileC, kFileC)},
       .priors = {0.8f, 0.1f, 0.1f}};
-  graph.CompleteMaterialization(key, 1, payload);
-  const Move a = payload.moves[0];
-  const Move b = payload.moves[1];
+  graph.CompleteMaterialization(key, 1, eval);
+  const Move a = eval.moves[0];
+  const Move b = eval.moves[1];
   const auto params = TestParams();
   // Edge A scores 0.8, then 0.8 / 2 = 0.4 against B's 0.1.
   ASSERT_EQ(graph.SelectAndReserve(key, params).move, a);
@@ -773,7 +765,7 @@ TEST(Lc5GraphTest, ReselectionMovesOnlyTheWaitersReservation) {
                 .status,
             SelectStatus::kMissing);
   EXPECT_EQ(graph
-                .ReselectAndReserve(key, created.generation, payload.moves[2],
+                .ReselectAndReserve(key, created.generation, eval.moves[2],
                                     {.value = {.q = -0.9f}}, params)
                 .status,
             SelectStatus::kMissing);
@@ -786,11 +778,11 @@ TEST(Lc5GraphTest, ReselectionMovesOnlyTheWaitersReservation) {
 TEST(Lc5GraphTest, IncomingParentsKeepIndependentEdgeStatistics) {
   Graph graph;
   Move move = M(kFileC, kFileC);
-  ExpansionPayload payload{.moves = {move}, .priors = {1.0f}};
+  NodeEval eval{.moves = {move}, .priors = {1.0f}};
   auto p1 = graph.FindOrCreateMaterialization(NodeKey{1}, 1);
   graph.FindOrCreateMaterialization(NodeKey{2}, 2);
-  graph.CompleteMaterialization(NodeKey{1}, 1, payload);
-  graph.CompleteMaterialization(NodeKey{2}, 2, payload);
+  graph.CompleteMaterialization(NodeKey{1}, 1, eval);
+  graph.CompleteMaterialization(NodeKey{2}, 2, eval);
   auto params = TestParams();
   graph.SelectAndReserve(NodeKey{1}, params);
   graph.BackupNode(NodeKey{1}, p1.generation, {}, move);
@@ -824,7 +816,7 @@ TEST(Lc5NodeRecordTest, RoundTripKeepsStatisticsAndEdges) {
   ASSERT_EQ(node.tried.size(), 2u);
   const auto decoded = DecodeNode<PuctAveraging>(EncodeNode(node));
   ASSERT_TRUE(decoded);
-  EXPECT_EQ(decoded->lifecycle, NodeLifecycle::kExpanded);
+  EXPECT_EQ(decoded->lifecycle, NodeLifecycle::kMaterialized);
   EXPECT_EQ(decoded->terminal, node.terminal);
   EXPECT_EQ(decoded->stats.visits, node.stats.visits);
   EXPECT_EQ(decoded->stats.Q(), node.stats.Q());
@@ -902,7 +894,7 @@ TEST(Lc5GraphTest, RestoreKeepsStatisticsUnderANewGeneration) {
 
   const auto node = graph.SnapshotNode(key);
   ASSERT_TRUE(node);
-  EXPECT_EQ(node->lifecycle, NodeLifecycle::kExpanded);
+  EXPECT_EQ(node->lifecycle, NodeLifecycle::kMaterialized);
   EXPECT_EQ(node->materialization_id, 0u);
   EXPECT_EQ(node->stats.visits, original.stats.visits);
   EXPECT_EQ(node->stats.Q(), original.stats.Q());

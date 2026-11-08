@@ -47,7 +47,7 @@ struct Metrics {
   // Visits parked waiting for a node to be materialized (evaluated or loaded
   // from the store), either as the materialization owner or as a waiter on it.
   std::atomic<uint64_t> visits_suspended{0};
-  // Suspended visits that continued selecting below the now-expanded node.
+  // Suspended visits that continued selecting below the now-materialized node.
   std::atomic<uint64_t> visits_resumed{0};
   // Visits that dropped their path and started selecting again from their
   // origin, without being re-admitted.

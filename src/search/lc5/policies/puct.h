@@ -139,7 +139,7 @@ struct PuctPolicy {
 
   static uint32_t Visits(const ValueStats& stats) { return stats.visits; }
 
-  // The edge to visit next; `node` is expanded, non-terminal, with edges.
+  // The edge to visit next; `node` is materialized, non-terminal, with edges.
   static size_t Select(const NodeState<Self>& node, const Params& params) {
     return SelectEdge(node, node.tried, params);
   }
@@ -181,8 +181,8 @@ struct PuctPolicy {
   // An untried edge is unknown.
   static Bounds BoundsFromEdges(const NodeState<Self>& node);
   // Sets the bounds after an update with `bounds` from the edge (or, without
-  // an edge, the node's own leaf): a terminal's bounds are its leaf's, and an
-  // expanded node's follow from its edges'.
+  // an edge, the node's own leaf): a terminal's bounds are its leaf's, and a
+  // non-terminal node's follow from its edges'.
   static void UpdateBounds(NodeState<Self>& node, TriedEdge<Self>* edge,
                            const Bounds& bounds) {
     if (node.edges.empty()) {

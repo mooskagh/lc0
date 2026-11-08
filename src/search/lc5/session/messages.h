@@ -39,9 +39,9 @@
 #include <vector>
 
 #include "chess/position.h"
-#include "search/lc5/graph/expansion.h"
 #include "search/lc5/graph/key.h"
 #include "search/lc5/graph/node.h"
+#include "search/lc5/graph/node_eval.h"
 #include "search/lc5/graph/value.h"
 #include "search/lc5/visit.h"
 
@@ -61,8 +61,8 @@ struct VisitWakeup {
   VisitId id;     // The visit to continue.
   size_t worker;  // Owning visit worker (the only thread that may mutate it).
   Kind kind = Kind::kSelect;
-  VisitValue value{};   // The leaf value; unset for kRestored and kCancel.
-  bool exact = false;   // `value` is an exact terminal value.
+  VisitValue value{};     // The leaf value; unset for kRestored and kCancel.
+  bool exact = false;     // `value` is an exact terminal value.
   bool terminal = false;  // The leaf is terminal; only counted in metrics.
 };
 
@@ -74,12 +74,12 @@ struct Materialization {
     kStoreHit,   // `record` was loaded from the store.
     kStoreMiss,  // Not in the store; needs NN evaluation.
     kQueued,     // Added to an NN computation that has not run yet.
-    kEvaluated,  // `payload` holds the NN evaluation.
+    kEvaluated,  // `eval` holds the NN evaluation.
   };
   MaterializationId id;     // The open materialization this completes.
   NodeKey key;              // The node to materialize.
   PositionHistory history;  // Position at the node (for terminals and NN).
-  ExpansionPayload payload{};  // Legal moves, filled with priors and value.
+  NodeEval eval{};          // Legal moves, filled with priors and value.
   std::vector<uint8_t> record{};  // Serialized node data on kStoreHit.
   State state = State::kPending;
 };

@@ -40,44 +40,44 @@
 namespace lczero::lc5 {
 namespace {
 
-// Returns a terminal payload, or a nonterminal one with the legal moves.
-ExpansionPayload DetectTerminal(const PositionHistory& history) {
-  ExpansionPayload payload;
+// Returns a terminal evaluation, or a nonterminal one with the legal moves.
+NodeEval DetectTerminal(const PositionHistory& history) {
+  NodeEval eval;
   const Position& position = history.Last();
   const ChessBoard& board = position.GetBoard();
   const auto legal = board.GenerateLegalMoves();
   if (legal.empty()) {
-    payload.terminal = board.IsUnderCheck() ? TerminalKind::kCheckmate
-                                            : TerminalKind::kStalemate;
+    eval.terminal = board.IsUnderCheck() ? TerminalKind::kCheckmate
+                                         : TerminalKind::kStalemate;
   } else if (!board.HasMatingMaterial()) {
-    payload.terminal = TerminalKind::kInsufficientMaterial;
+    eval.terminal = TerminalKind::kInsufficientMaterial;
   } else if (position.GetRule50Ply() >= 100) {
-    payload.terminal = TerminalKind::kRule50;
+    eval.terminal = TerminalKind::kRule50;
   } else if (position.GetRepetitions() >= 2) {
-    payload.terminal = TerminalKind::kRepetition;
+    eval.terminal = TerminalKind::kRepetition;
   } else {
-    payload.moves.assign(legal.begin(), legal.end());
-    return payload;
+    eval.moves.assign(legal.begin(), legal.end());
+    return eval;
   }
-  payload.leaf = TerminalValue(payload.terminal);
-  return payload;
+  eval.leaf = TerminalValue(eval.terminal);
+  return eval;
 }
 
 // Rounds priors to the precision the graph stores them in, then orders edges
 // by descending prior, ties by move encoding. Sorting the rounded values keeps
 // the order the graph relies on even when rounding makes two priors equal.
-void SortByPrior(ExpansionPayload& payload) {
+void SortByPrior(NodeEval& eval) {
   std::vector<std::pair<float, Move>> edges;
-  edges.reserve(payload.moves.size());
-  for (size_t i = 0; i < payload.moves.size(); ++i) {
-    edges.emplace_back(PackedPrior(payload.priors[i]), payload.moves[i]);
+  edges.reserve(eval.moves.size());
+  for (size_t i = 0; i < eval.moves.size(); ++i) {
+    edges.emplace_back(PackedPrior(eval.priors[i]), eval.moves[i]);
   }
   std::ranges::sort(edges, [](const auto& a, const auto& b) {
     if (a.first != b.first) return a.first > b.first;
     return a.second.raw_data() < b.second.raw_data();
   });
   for (size_t i = 0; i < edges.size(); ++i) {
-    std::tie(payload.priors[i], payload.moves[i]) = edges[i];
+    std::tie(eval.priors[i], eval.moves[i]) = edges[i];
   }
 }
 
@@ -172,7 +172,7 @@ void VisitWorker::ResumeVisit(const VisitWakeup& wakeup) {
       break;
     case VisitWakeup::Kind::kSelect:
       // Waiter on a newly-evaluated nonterminal leaf: reselect, restart, or
-      // descend below the newly expanded node according to policy.
+      // descend below the newly materialized node according to policy.
       switch (context_.engine.ResumeVisit(visit, context_.metrics)) {
         case VisitEngine::ResumeAction::kRestart:
           RestartVisit(visit);  // Cancel path reservations and reset to origin.
@@ -353,9 +353,9 @@ bool VisitWorker::SuspendVisit(Visit& visit) {
       [&](MaterializationId materialization_id) {
         node = context_.engine.FindOrCreateMaterialization(visit.current_key,
                                                            materialization_id);
-        assert(node.lifecycle == NodeLifecycle::kExpanded ||
+        assert(node.lifecycle == NodeLifecycle::kMaterialized ||
                node.materialization_id == materialization_id);
-        return node.lifecycle != NodeLifecycle::kExpanded;
+        return node.lifecycle != NodeLifecycle::kMaterialized;
       });
   if (node.created) context_.metrics.graph_nodes_created.fetch_add(1);
   if (!joined) return false;
@@ -398,27 +398,27 @@ void VisitWorker::PrepareMaterialization(Materialization materialization) {
     CancelMaterialization(materialization.id);
     return;
   }
-  materialization.payload = DetectTerminal(materialization.history);
-  if (materialization.payload.terminal != TerminalKind::kNonTerminal) {
+  materialization.eval = DetectTerminal(materialization.history);
+  if (materialization.eval.terminal != TerminalKind::kNonTerminal) {
     CompleteMaterialization(materialization.id,
-                            std::move(materialization.payload));
+                            std::move(materialization.eval));
     return;
   }
-  materialization.payload.priors.resize(materialization.payload.moves.size());
+  materialization.eval.priors.resize(materialization.eval.moves.size());
   materialization.state = Materialization::State::kPending;
   context_.metrics.eval_requests.fetch_add(1);
   queued_evals_.push_back(std::move(materialization));
 }
 
 void VisitWorker::CompleteMaterialization(MaterializationId materialization_id,
-                                          ExpansionPayload payload) {
+                                          NodeEval eval) {
   MaterializationResult installed;
   bool is_root = false;
-  const auto waiters = context_.materializations.Close(
-      materialization_id, [&](NodeKey key) {
+  const auto waiters =
+      context_.materializations.Close(materialization_id, [&](NodeKey key) {
         is_root = key == context_.root.key;
         installed = context_.engine.CompleteMaterialization(
-            key, materialization_id, payload);
+            key, materialization_id, eval);
         return true;
       });
   if (is_root && installed.accepted) notify_controller_ = true;
@@ -430,14 +430,14 @@ void VisitWorker::CompleteMaterialization(MaterializationId materialization_id,
   // unless it is terminal, in which case they also back up. A rejected
   // publication resumes selection only.
   const bool terminal =
-      installed.accepted && payload.terminal != TerminalKind::kNonTerminal;
+      installed.accepted && eval.terminal != TerminalKind::kNonTerminal;
   const auto wake = [&](VisitWakeup wakeup, bool owner) {
     wakeup.kind = installed.accepted && (owner || terminal)
                       ? VisitWakeup::Kind::kBackup
                       : VisitWakeup::Kind::kSelect;
-    wakeup.value = payload.leaf;
+    wakeup.value = eval.leaf;
     wakeup.terminal = terminal;
-    wakeup.exact = installed.accepted && IsExact(payload.terminal);
+    wakeup.exact = installed.accepted && IsExact(eval.terminal);
     DeliverWakeup(wakeup);
   };
   wake(waiters->owner, true);
@@ -447,8 +447,8 @@ void VisitWorker::CompleteMaterialization(MaterializationId materialization_id,
 bool VisitWorker::RestoreMaterialization(MaterializationId materialization_id,
                                          std::span<const uint8_t> record) {
   bool is_root = false;
-  const auto waiters = context_.materializations.Close(
-      materialization_id, [&](NodeKey key) {
+  const auto waiters =
+      context_.materializations.Close(materialization_id, [&](NodeKey key) {
         is_root = key == context_.root.key;
         return context_.engine
             .RestoreFromRecord(key, materialization_id, record)
@@ -474,8 +474,8 @@ bool VisitWorker::RestoreMaterialization(MaterializationId materialization_id,
 void VisitWorker::CancelMaterialization(MaterializationId materialization_id) {
   // Only called on stop, for evaluations that will never be computed. The
   // owner and waiters are still alive and must be woken to cancel.
-  const auto waiters = context_.materializations.Close(
-      materialization_id, [&](NodeKey key) {
+  const auto waiters =
+      context_.materializations.Close(materialization_id, [&](NodeKey key) {
         context_.engine.CancelMaterialization(key, materialization_id);
         return true;
       });
@@ -561,9 +561,9 @@ void VisitWorker::FinishJob(std::unique_ptr<AsyncJob> job) {
   for (auto& materialization : job->materializations) {
     switch (materialization.state) {
       case Materialization::State::kEvaluated:
-        SortByPrior(materialization.payload);
+        SortByPrior(materialization.eval);
         CompleteMaterialization(materialization.id,
-                                std::move(materialization.payload));
+                                std::move(materialization.eval));
         break;
       case Materialization::State::kStoreHit:
         context_.metrics.node_store_hits.fetch_add(1);

@@ -240,7 +240,7 @@ has the engine, configuration, and the seam between `session/` and `policies/`
 | `session/work_queue.h` | Closable MPMC queue for jobs. |
 | `graph/graph.h` | `GameGraph<P>`: sharded node map, reservations, per-node updates, tried-edge stats; node and edge stats belong to the policy. |
 | `graph/key.h`, `graph/value.h`, `graph/prior.h` | Node keys; value sums and perspective flips; fp16 priors. |
-| `graph/node.h`, `graph/expansion.h` | Node, edge and tried-edge state; expansion payloads and terminal kinds. |
+| `graph/node.h`, `graph/node_eval.h` | Node, edge and tried-edge state; node evaluations and terminal kinds. |
 | `graph/node_record.h` | The node record format: encoding and decoding a node's statistics and edges for the policy. |
 | `store/node_store.h`, `store/memory_node_store.cc` | The node store (the graph's cold tier) and its in-RAM implementation. |
 | `policies/policy_engine.h` | `PolicyEngine<P>` implements `VisitEngine` on a `GameGraph<P>` it owns: descent, two-fold check, backup, PV walk. |

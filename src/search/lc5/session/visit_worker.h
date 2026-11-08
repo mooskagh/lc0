@@ -128,12 +128,12 @@ class VisitWorker {
 
   // Materializations.
   // Joins or opens a materialization for `visit.current_key` and suspends
-  // `visit`. Returns false if the node is already expanded, so the caller can
-  // descend.
+  // `visit`. Returns false if the node is already materialized, so the caller
+  // can descend.
   bool SuspendVisit(Visit& visit);
   void PrepareMaterialization(Materialization materialization);
   void CompleteMaterialization(MaterializationId materialization_id,
-                               ExpansionPayload payload);
+                               NodeEval eval);
   // Publishes a node restored from the store; returns false, with the
   // materialization still open, if the record was rejected.
   bool RestoreMaterialization(MaterializationId materialization_id,

@@ -58,9 +58,9 @@ inline bool IsExact(TerminalKind terminal) {
          terminal != TerminalKind::kRepetition;
 }
 
-// Immutable result of expanding a node: either a terminal kind, or legal moves
+// Immutable result of evaluating a node: either a terminal kind, or legal moves
 // with priors and the network's leaf value.
-struct ExpansionPayload {
+struct NodeEval {
   TerminalKind terminal = TerminalKind::kNonTerminal;
   VisitValue leaf{};
   std::vector<Move> moves;

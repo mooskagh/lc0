@@ -115,7 +115,7 @@ class SearchSessionTestPeer {
          static_cast<PolicyEngine<PuctAveraging>&>(*engine.visit_engine_)
              .graph()
              .SnapshotAllForTesting()) {
-      EXPECT_EQ(node.lifecycle, NodeLifecycle::kExpanded);
+      EXPECT_EQ(node.lifecycle, NodeLifecycle::kMaterialized);
       EXPECT_EQ(node.materialization_id, 0u);
       for (const auto& tried : node.tried) EXPECT_EQ(tried.in_flight, 0u);
     }
@@ -418,11 +418,11 @@ class BlockingStore final : public NodeStore {
   std::atomic<size_t> load_calls_{0};
 };
 
-// Records every expanded node of `graph` in `store`.
+// Records every materialized node of `graph` in `store`.
 template <typename P>
 void SeedStore(const GameGraph<P>& graph, RecordingStore& store) {
   for (const auto& [key, node] : graph.SnapshotAllForTesting()) {
-    if (node.lifecycle == NodeLifecycle::kExpanded) {
+    if (node.lifecycle == NodeLifecycle::kMaterialized) {
       store.entries.insert_or_assign(key, EncodeNode(node));
     }
   }
@@ -448,7 +448,7 @@ void ExpectDrained(const SearchSession& session, const GameGraph<P>& graph) {
   EXPECT_EQ(m.publications_rejected.load(), 0u);
   for (const auto& [key, node] : graph.SnapshotAllForTesting()) {
     SCOPED_TRACE(key.hash);
-    EXPECT_EQ(node.lifecycle, NodeLifecycle::kExpanded);
+    EXPECT_EQ(node.lifecycle, NodeLifecycle::kMaterialized);
     EXPECT_EQ(node.materialization_id, 0u);
     for (const auto& tried : node.tried) EXPECT_EQ(tried.in_flight, 0u);
   }
@@ -618,7 +618,7 @@ TEST(Lc5SearchTest, ExactNodeBudgetWithMoreWorkersThanCapacity) {
         std::find(legal.begin(), legal.end(), responder.bestmoves[0].bestmove),
         legal.end());
     // Each completed visit counts once at the root, including the one that
-    // expanded it.
+    // materialized it.
     const auto node = graph.SnapshotNode(root.key);
     ASSERT_TRUE(node);
     EXPECT_EQ(node->stats.visits, expected);
@@ -932,7 +932,7 @@ TEST(Lc5SearchTest, TerminalOwnerAndWaitersNeverEvaluate) {
                            Case{"8/8/8/8/8/6q1/5k2/7K w - - 0 1",
                                 TerminalKind::kStalemate, 0.0f, 1.0f}}) {
     // Without a store the owner finds the terminal right away, so later visits
-    // see it expanded. A store lookup comes first, so they wait on the
+    // see it materialized. A store lookup comes first, so they wait on the
     // materialization.
     for (const bool with_store : {false, true}) {
       SCOPED_TRACE(test.fen);
@@ -1148,7 +1148,7 @@ TEST(Lc5SearchTest, SavedGraphRestoresWithStatisticsInFreshGraph) {
   for (const auto& tried : node->tried) edge_visits += tried.stats.visits;
   EXPECT_EQ(edge_visits, node->stats.visits - 1);
   // Saved nodes are restored too; the visit ends at the first node that was
-  // never expanded, which is the only new evaluation.
+  // never materialized, which is the only new evaluation.
   EXPECT_EQ(backend.inputs.load(), evaluated + 1);
 }
 
@@ -1443,7 +1443,7 @@ TEST(Lc5SearchTest, BlockedStoreLoadsDrainAfterStopOrAbort) {
         auto legal = child.history.Last().GetBoard().GenerateLegalMoves();
         std::ranges::sort(legal, {}, &Move::raw_data);
         NodeState<PuctAveraging> stored{
-            .lifecycle = NodeLifecycle::kExpanded,
+            .lifecycle = NodeLifecycle::kMaterialized,
             .stats = {.visits = 1, .q = 0.75f, .d = 0.25f, .m = 7.0f}};
         for (const Move legal_move : legal) {
           stored.edges.push_back(
@@ -1958,7 +1958,7 @@ TEST(Lc5SearchTest, EngineRetainsGraphAcrossSearchesAndResetsForNewGame) {
     SearchSessionTestPeer::ExpectDrained(engine);
   }
   // First run evaluates the root; retained search evaluates its child instead
-  // of evaluating the root again. NewGame resets that retained expansion.
+  // of evaluating the root again. NewGame resets that retained graph.
   EXPECT_EQ(backend.history_sizes, (std::vector<size_t>{1, 2, 1}));
 }
 

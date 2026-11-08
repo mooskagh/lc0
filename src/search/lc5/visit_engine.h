@@ -47,7 +47,7 @@ namespace lczero::lc5 {
 
 // Root numbers the controller needs for limits, info output and early stopping.
 struct RootStats {
-  bool expanded = false;
+  bool materialized = false;
   uint64_t visits = 0;  // Node visits; 0 if the root is absent.
   size_t edges = 0;
   uint64_t best_edge_visits = 0;
@@ -75,8 +75,9 @@ class VisitEngine {
   virtual void Clear() = 0;
 
   // Selects and reserves edges down to a node to materialize
-  // (kUnexpandedLeaf) or a leaf whose value is in visit.result (kValuedLeaf).
-  enum class DescendResult { kUnexpandedLeaf, kValuedLeaf };
+  // (kUnmaterializedLeaf) or a leaf whose value is in visit.result
+  // (kValuedLeaf).
+  enum class DescendResult { kUnmaterializedLeaf, kValuedLeaf };
   virtual DescendResult DescendVisit(Visit& visit, Metrics& metrics) = 0;
   // Backs visit.result up visit.path; returns true if the first node's
   // bestmove changed.
@@ -96,11 +97,11 @@ class VisitEngine {
   // Node lifecycle for the materialization machinery.
   virtual FindOrCreateResult FindOrCreateMaterialization(
       NodeKey key, MaterializationId materialization_id) = 0;
-  // Expands the node from `payload`; if accepted, `payload.leaf` counts as
+  // Materializes the node from `eval`; if accepted, `eval.leaf` counts as
   // the node's first visit.
   virtual MaterializationResult CompleteMaterialization(
       NodeKey key, MaterializationId materialization_id,
-      const ExpansionPayload& payload) = 0;
+      const NodeEval& eval) = 0;
   // Drops the node if it is still materializing under `materialization_id`; on
   // stop.
   virtual void CancelMaterialization(NodeKey key,
@@ -114,7 +115,7 @@ class VisitEngine {
   // The stored records of `keys`, nullopt where there is none. Needs a store.
   virtual std::vector<std::optional<std::vector<uint8_t>>> ReadFromStore(
       std::span<const NodeKey> keys) = 0;
-  // Expands the node from a stored record with its old statistics; not
+  // Materializes the node from a stored record with its old statistics; not
   // accepted if the record is not this policy's (then evaluate the node).
   virtual MaterializationResult RestoreFromRecord(
       NodeKey key, MaterializationId materialization_id,

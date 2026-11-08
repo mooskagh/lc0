@@ -46,7 +46,7 @@ const OptionId kMaxActiveVisits{"max-active-visits", "MaxActiveVisits",
 const OptionId kHistoryKeyLength{
     "history-key-length", "HistoryKeyLength",
     "History positions beyond current used in Lc5 keys; shorter keys merge "
-    "more histories and reuse the first canonical expansion."};
+    "more histories into the same graph node."};
 const OptionId kMaxBatchDelay{"max-batch-delay-ms", "MaxBatchDelayMs",
                               "Maximum Lc5 partial-batch delay in ms."};
 const OptionId kActiveVisitsRatio{

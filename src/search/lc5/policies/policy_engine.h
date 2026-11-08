@@ -87,8 +87,8 @@ class PolicyEngine final : public VisitEngine {
   }
   MaterializationResult CompleteMaterialization(
       NodeKey key, MaterializationId materialization_id,
-      const ExpansionPayload& payload) override {
-    return graph_.CompleteMaterialization(key, materialization_id, payload);
+      const NodeEval& eval) override {
+    return graph_.CompleteMaterialization(key, materialization_id, eval);
   }
   void CancelMaterialization(NodeKey key,
                              MaterializationId materialization_id) override {
@@ -186,7 +186,7 @@ VisitEngine::DescendResult PolicyEngine<P>::DescendVisit(Visit& visit,
     switch (selected.status) {
       case SelectStatus::kMissing:
       case SelectStatus::kMaterializing:
-        return DescendResult::kUnexpandedLeaf;
+        return DescendResult::kUnmaterializedLeaf;
       case SelectStatus::kTerminal:
         step.generation = selected.generation;
         visit.result = TerminalValue(selected.terminal);
@@ -334,7 +334,7 @@ void PolicyEngine<P>::FillThinkingInfo(const VisitOrigin& root,
   PositionHistory history = root.history;
   std::unordered_set<uint64_t> seen{root.key.hash};
   while (node && pv.size() < kMaxPvLength &&
-         node->lifecycle == NodeLifecycle::kExpanded &&
+         node->lifecycle == NodeLifecycle::kMaterialized &&
          node->terminal == TerminalKind::kNonTerminal) {
     // The root's move is the bestmove, so it is chosen even before any of its
     // edges has a visit.
@@ -355,10 +355,10 @@ RootStats PolicyEngine<P>::GetRootStats(NodeKey root) const {
   RootStats stats;
   const auto node = graph_.SnapshotNode(root);
   if (!node) return stats;
-  stats.expanded = node->lifecycle == NodeLifecycle::kExpanded;
+  stats.materialized = node->lifecycle == NodeLifecycle::kMaterialized;
   stats.visits = P::Visits(node->stats);
   stats.edges = node->edges.size();
-  if (stats.expanded) {
+  if (stats.materialized) {
     if (const auto index = P::ChooseMove(*node, params_)) {
       stats.best_move = node->edges[*index].move;
     }

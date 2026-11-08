@@ -83,8 +83,8 @@ Evaluator::Batch Evaluator::CollectBatch(std::unique_ptr<AsyncJob> job) {
   const auto deadline =
       context_.settings.max_batch_delay_ms == 0
           ? std::chrono::steady_clock::time_point::max()
-          : job->queued_at + std::chrono::milliseconds(
-                                 context_.settings.max_batch_delay_ms);
+          : job->queued_at +
+                std::chrono::milliseconds(context_.settings.max_batch_delay_ms);
   Batch batch{.computation = context_.backend.CreateComputation()};
   for (;;) {
     AddJobToBatch(*batch.computation, *job);
@@ -122,14 +122,14 @@ Evaluator::Batch Evaluator::CollectBatch(std::unique_ptr<AsyncJob> job) {
 void Evaluator::AddJobToBatch(BackendComputation& computation, AsyncJob& job) {
   for (auto& materialization : job.materializations) {
     if (IsStopping()) break;
-    auto& payload = materialization.payload;
+    auto& eval = materialization.eval;
     const auto result = computation.AddInput(
         EvalPosition{.pos = materialization.history.GetPositions(),
-                     .legal_moves = payload.moves},
-        EvalResultPtr{.q = &payload.leaf.q,
-                      .d = &payload.leaf.d,
-                      .m = &payload.leaf.m,
-                      .p = payload.priors});
+                     .legal_moves = eval.moves},
+        EvalResultPtr{.q = &eval.leaf.q,
+                      .d = &eval.leaf.d,
+                      .m = &eval.leaf.m,
+                      .p = eval.priors});
     if (result == BackendComputation::FETCHED_IMMEDIATELY) {
       materialization.state = Materialization::State::kEvaluated;
       context_.metrics.cache_hits.fetch_add(1);

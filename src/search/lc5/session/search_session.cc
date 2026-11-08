@@ -51,13 +51,13 @@ constexpr uint64_t kMaxRootVisits = 4'000'000'000;
 
 // Visits a search may complete: `go nodes`, if given and not pondering, but
 // never so many that the root's visit count would overflow, and at least one if
-// the root is not yet expanded.
+// the root is not yet materialized.
 uint64_t GetNodeLimit(const GoParams& go_params, const RootStats& root) {
   uint64_t limit = kMaxRootVisits - std::min(root.visits, kMaxRootVisits);
   if (!go_params.ponder && go_params.nodes && *go_params.nodes >= 0) {
     limit = std::min(limit, static_cast<uint64_t>(*go_params.nodes));
   }
-  if (!root.expanded) limit = std::max<uint64_t>(limit, 1);
+  if (!root.materialized) limit = std::max<uint64_t>(limit, 1);
   return limit;
 }
 
@@ -148,10 +148,10 @@ void SearchSession::Start() {
 
 void SearchSession::Stop() {
   stop_requested_.store(true);
-  if (engine_->GetRootStats(root_.key).expanded) {
-    limiter_.Stop();            // Close visit admission and set IsStopping().
+  if (engine_->GetRootStats(root_.key).materialized) {
+    limiter_.Stop();  // Close visit admission and set IsStopping().
   } else {
-    limiter_.CapNodeLimit(1);   // Admit only the root visit before stopping.
+    limiter_.CapNodeLimit(1);  // Admit only the root visit before stopping.
   }
   controller_signal_.Notify();  // Wake controller to emit bestmove and drain.
 }
@@ -204,10 +204,9 @@ void SearchSession::MaybeOutputInfo(steady_clock::time_point now,
   const RootStats root = engine_->GetRootStats(root_.key);
   const int depth = static_cast<int>(metrics_.max_depth.load());
   const int seldepth = static_cast<int>(metrics_.max_selected_depth.load());
-  const bool changed =
-      root.expanded && (depth > 0 || seldepth > 0) &&
-      (depth != last_depth_ || seldepth != last_seldepth_ ||
-       root.best_move != last_best_move_);
+  const bool changed = root.materialized && (depth > 0 || seldepth > 0) &&
+                       (depth != last_depth_ || seldepth != last_seldepth_ ||
+                        root.best_move != last_best_move_);
   if (!changed && now < next_info) return;
 
   std::vector<ThinkingInfo> infos{BuildThinkingInfo(false)};
@@ -220,7 +219,7 @@ void SearchSession::MaybeOutputInfo(steady_clock::time_point now,
 
 bool SearchSession::ShouldStop(steady_clock::time_point now) const {
   const RootStats root = engine_->GetRootStats(root_.key);
-  if (!root.expanded) return false;
+  if (!root.materialized) return false;
   if (stop_requested_.load() || time_manager_.ShouldStop(now) ||
       metrics_.visits_completed.load() >= limiter_.node_limit()) {
     return true;

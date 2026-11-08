@@ -111,16 +111,16 @@ class GameGraph {
   FindOrCreateResult FindOrCreateMaterialization(
       NodeKey key, MaterializationId materialization_id);
 
-  // Erases only the matching materializing placeholder, never an expansion.
+  // Erases only the matching materializing placeholder, never a materialized
+  // node.
   bool CancelMaterialization(NodeKey key, MaterializationId materialization_id);
 
-  // Expands the node with `payload` if it is still materializing under
+  // Materializes the node with `eval` if it is still materializing under
   // `materialization_id`, creating it if absent. Publication is one-shot per
-  // generation. An accepted install also updates the node with `payload.leaf`
+  // generation. An accepted install also updates the node with `eval.leaf`
   // as its first visit.
   MaterializationResult CompleteMaterialization(
-      NodeKey key, MaterializationId materialization_id,
-      const ExpansionPayload& payload);
+      NodeKey key, MaterializationId materialization_id, const NodeEval& eval);
 
   // Like CompleteMaterialization, but the node takes the statistics, edges and
   // terminal kind of `restored` (an evicted node) instead of counting a leaf.
@@ -162,8 +162,8 @@ class GameGraph {
 
   std::optional<Node> SnapshotNode(NodeKey key) const;
 
-  // Copies of up to `max` evictable nodes: expanded, not `keep`, with no edge
-  // reserved. Scans shards from `*cursor` on, at most all of them once,
+  // Copies of up to `max` evictable nodes: materialized, not `keep`, with no
+  // edge reserved. Scans shards from `*cursor` on, at most all of them once,
   // and leaves the cursor after the last one scanned. From each shard it takes
   // the `fraction` of its nodes with the fewest visits (at least one node).
   std::vector<std::pair<NodeKey, Node>> EvictCandidates(size_t* cursor,
@@ -228,10 +228,10 @@ class GameGraph {
     return UpdateResult::kApplied;
   }
 
-  // Whether the node can leave the graph: expanded, and no visit holds one
+  // Whether the node can leave the graph: materialized, and no visit holds one
   // of its edges.
   static bool Evictable(const Node& node) {
-    return node.lifecycle == NodeLifecycle::kExpanded &&
+    return node.lifecycle == NodeLifecycle::kMaterialized &&
            std::ranges::none_of(node.tried, [](const Tried& tried) {
              return tried.in_flight > 0;
            });
@@ -284,36 +284,34 @@ bool GameGraph<P>::CancelMaterialization(NodeKey key,
 
 template <typename P>
 MaterializationResult GameGraph<P>::CompleteMaterialization(
-    NodeKey key, MaterializationId materialization_id,
-    const ExpansionPayload& payload) {
-  assert(payload.moves.size() == payload.priors.size());
-  assert(payload.terminal == TerminalKind::kNonTerminal ||
-         payload.moves.empty());
+    NodeKey key, MaterializationId materialization_id, const NodeEval& eval) {
+  assert(eval.moves.size() == eval.priors.size());
+  assert(eval.terminal == TerminalKind::kNonTerminal || eval.moves.empty());
   auto& shard = ShardFor(key);
   absl::MutexLock lock(shard.mutex);
   Node* existing = FindNode(shard.nodes, key);
-  Node& node = existing ? *existing : InsertLocked(shard, key, materialization_id);
-  // Late or duplicate completions must not reset expanded edges, including
+  Node& node =
+      existing ? *existing : InsertLocked(shard, key, materialization_id);
+  // Late or duplicate completions must not reset materialized edges, including
   // their reservations and statistics.
-  if (node.lifecycle == NodeLifecycle::kExpanded ||
+  if (node.lifecycle == NodeLifecycle::kMaterialized ||
       node.materialization_id != materialization_id) {
     return {node.generation, false};
   }
-  node.lifecycle = NodeLifecycle::kExpanded;
+  node.lifecycle = NodeLifecycle::kMaterialized;
   node.materialization_id = 0;
   ++node.version;
-  node.terminal = payload.terminal;
+  node.terminal = eval.terminal;
   node.edges.clear();
-  node.edges.reserve(payload.moves.size());
-  for (size_t i = 0; i < payload.moves.size(); ++i) {
-    node.edges.push_back(
-        {.move = payload.moves[i], .prior = payload.priors[i]});
+  node.edges.reserve(eval.moves.size());
+  for (size_t i = 0; i < eval.moves.size(); ++i) {
+    node.edges.push_back({.move = eval.moves[i], .prior = eval.priors[i]});
   }
   assert(std::ranges::is_sorted(node.edges, PreferOnTie));
   node.tried.clear();
   // The leaf value counts as the node's first visit, so a node keeps it even
   // if the visit that materialized it is cancelled before backing up.
-  P::Update(node, nullptr, P::Leaf(payload.leaf, IsExact(payload.terminal)));
+  P::Update(node, nullptr, P::Leaf(eval.leaf, IsExact(eval.terminal)));
   return {node.generation, true};
 }
 
@@ -323,8 +321,9 @@ MaterializationResult GameGraph<P>::RestoreNode(
   auto& shard = ShardFor(key);
   absl::MutexLock lock(shard.mutex);
   Node* existing = FindNode(shard.nodes, key);
-  Node& node = existing ? *existing : InsertLocked(shard, key, materialization_id);
-  if (node.lifecycle == NodeLifecycle::kExpanded ||
+  Node& node =
+      existing ? *existing : InsertLocked(shard, key, materialization_id);
+  if (node.lifecycle == NodeLifecycle::kMaterialized ||
       node.materialization_id != materialization_id) {
     return {node.generation, false};
   }
@@ -333,7 +332,7 @@ MaterializationResult GameGraph<P>::RestoreNode(
   node = std::move(restored);
   node.generation = generation;
   node.version = version;
-  node.lifecycle = NodeLifecycle::kExpanded;
+  node.lifecycle = NodeLifecycle::kMaterialized;
   node.materialization_id = 0;
   for (auto& tried : node.tried) tried.in_flight = 0;
   return {generation, true};

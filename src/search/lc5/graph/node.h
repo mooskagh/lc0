@@ -32,7 +32,7 @@
 #include <vector>
 
 #include "chess/types.h"
-#include "search/lc5/graph/expansion.h"
+#include "search/lc5/graph/node_eval.h"
 #include "search/lc5/graph/prior.h"
 
 namespace lczero::lc5 {
@@ -44,9 +44,9 @@ using MaterializationId = uint64_t;
 inline constexpr int kMaxActiveVisitsLimit =
     std::numeric_limits<uint16_t>::max();
 
-enum class NodeLifecycle : uint8_t { kMaterializing, kExpanded };
+enum class NodeLifecycle : uint8_t { kMaterializing, kMaterialized };
 
-// A legal move and its prior; every legal move of an expanded node has one.
+// A legal move and its prior; every legal move of a materialized node has one.
 struct LegalEdge {
   Move move;
   PackedPrior prior;
@@ -79,7 +79,7 @@ struct NodeState {
   // Bumped by every change to the node, so an eviction can tell whether the
   // node changed after its record was taken. Wraps around.
   uint32_t version = 0;
-  MaterializationId materialization_id = 0;  // Zero once expanded.
+  MaterializationId materialization_id = 0;  // Zero once materialized.
   TerminalKind terminal = TerminalKind::kNonTerminal;
   typename P::NodeStats stats{};
   std::vector<LegalEdge> edges{};
