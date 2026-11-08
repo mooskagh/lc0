@@ -140,6 +140,7 @@ class VisitWorker {
                               std::span<const uint8_t> record);
   void CancelMaterialization(MaterializationId materialization_id);
   void CancelQueuedMaterializations();
+  void MaybeRequestEviction();
 
   // AsyncJobs. A store thread or an evaluator runs a job and returns it to
   // the inbox; FinishJob finishes it.

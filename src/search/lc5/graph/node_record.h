@@ -43,8 +43,8 @@ namespace lczero::lc5 {
 
 // The record of a materialized node in a NodeStore: its terminal kind, the
 // policy's node statistics, its legal edges and the statistics of its tried
-// edges. Reservations (in_flight), the version and the materialization_id
-// belong to the live graph and are not stored.
+// edges. Reservations (in_flight) and the version belong to the live graph and
+// are not stored.
 //
 // Layout (native byte order; records are not meant to move between
 // machines): RecordHeader, P::NodeStats, LegalEdge[edges],
@@ -104,9 +104,8 @@ std::vector<uint8_t> EncodeNode(const NodeState<P>& node) {
   return record;
 }
 
-// The node of a record from EncodeNode<P>, materialized and with no
-// reservations; nullopt if the record is malformed or from another policy or
-// format version.
+// The node of a record from EncodeNode<P>, with no reservations; nullopt if
+// the record is malformed or from another policy or format version.
 template <typename P>
 std::optional<NodeState<P>> DecodeNode(std::span<const uint8_t> record) {
   static_assert(kTriviallyRecordable<P>);
@@ -129,8 +128,7 @@ std::optional<NodeState<P>> DecodeNode(std::span<const uint8_t> record) {
     if (size > 0) std::memcpy(data, in, size);
     in += size;
   };
-  NodeState<P> node{.lifecycle = NodeLifecycle::kMaterialized,
-                    .terminal = header.terminal};
+  NodeState<P> node{.terminal = header.terminal};
   read(&node.stats, sizeof(NodeStats));
   node.edges.resize(header.edges);
   read(node.edges.data(), header.edges * sizeof(LegalEdge));

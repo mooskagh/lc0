@@ -49,6 +49,8 @@ namespace lczero::lc5 {
 
 // Inter-thread messages and signaling primitives for SearchSession.
 
+using MaterializationId = uint64_t;
+
 // Notification sent to a visit worker to resume or cancel a visit that was
 // waiting on node materialization.
 struct VisitWakeup {

@@ -45,16 +45,9 @@
 
 namespace lczero::lc5 {
 
-struct FindOrCreateResult {
-  bool created;
-  NodeLifecycle lifecycle;
-  MaterializationId materialization_id;
-};
-
 enum class SelectStatus {
   kSelected,
   kMissing,
-  kMaterializing,
   kTerminal,
   kProven
 };
@@ -83,10 +76,10 @@ struct BackupResult {
   bool best_move_changed = false;
 };
 
-// Sharded map from NodeKey to node search state and outgoing edges. Edges do
-// not point to children; callers derive child keys from their own history.
-// The policy P owns the node and edge statistics, how a message updates them
-// and how an edge is selected.
+// Sharded map from NodeKey to materialized node search state and outgoing
+// edges. Edges do not point to children; callers derive child keys from their
+// own history. The policy P owns the node and edge statistics, how a message
+// updates them and how an edge is selected.
 template <typename P>
 class GameGraph {
  public:
@@ -96,28 +89,16 @@ class GameGraph {
 
   static constexpr size_t kShardCount = 1024;
 
-  // Finds an existing node or creates a kMaterializing one owned by
-  // `materialization_id`.
-  FindOrCreateResult FindOrCreateMaterialization(
-      NodeKey key, MaterializationId materialization_id);
+  bool Contains(NodeKey key) const;
 
-  // Erases only the matching materializing placeholder, never a materialized
-  // node.
-  bool CancelMaterialization(NodeKey key, MaterializationId materialization_id);
+  // Inserts the node with `eval` if absent, counting `eval.leaf` as its first
+  // visit. Returns whether `eval` was installed (false if the node was already
+  // present).
+  bool CompleteMaterialization(NodeKey key, const NodeEval& eval);
 
-  // Materializes the node with `eval` if it is still materializing under
-  // `materialization_id`, creating it if absent, and counts `eval.leaf` as its
-  // first visit. Returns whether `eval` was installed (false if the node was
-  // already materialized or owned by another materialization).
-  bool CompleteMaterialization(NodeKey key,
-                               MaterializationId materialization_id,
-                               const NodeEval& eval);
-
-  // Like CompleteMaterialization, but the node takes the statistics, edges and
-  // terminal kind of `restored` (an evicted node) instead of counting a leaf.
-  // Returns whether `restored` was installed.
-  bool RestoreNode(NodeKey key, MaterializationId materialization_id,
-                   Node restored);
+  // Inserts `restored` (an evicted node with its statistics, edges and terminal
+  // kind) if absent. Returns whether `restored` was installed.
+  bool RestoreNode(NodeKey key, Node restored);
 
   // Selects an edge by the policy and reserves it (in_flight += 1); otherwise
   // reports why the node can't be selected from, and for kTerminal also its
@@ -128,8 +109,7 @@ class GameGraph {
 
   // Releases one reservation of `move` and reserves the edge the policy
   // reselects as if that visit had completed with `from_child`. kMissing if
-  // the node is not materialized or `move` holds no reservation; nothing is
-  // changed then.
+  // the node is absent or `move` holds no reservation; nothing is changed then.
   SelectResult ReselectAndReserve(NodeKey key, Move move,
                                   const Message& from_child,
                                   const typename P::Params& params);
@@ -150,10 +130,10 @@ class GameGraph {
 
   std::optional<Node> SnapshotNode(NodeKey key) const;
 
-  // Copies of up to `max` evictable nodes: materialized, not `keep`, with no
-  // edge reserved. Scans shards from `*cursor` on, at most all of them once,
-  // and leaves the cursor after the last one scanned. From each shard it takes
-  // the `fraction` of its nodes with the fewest visits (at least one node).
+  // Copies of up to `max` evictable nodes: not `keep`, with no edge reserved.
+  // Scans shards from `*cursor` on, at most all of them once, and leaves the
+  // cursor after the last one scanned. From each shard it takes the `fraction`
+  // of its nodes with the fewest visits (at least one node).
   std::vector<std::pair<NodeKey, Node>> EvictCandidates(size_t* cursor,
                                                         size_t max,
                                                         double fraction,
@@ -179,10 +159,6 @@ class GameGraph {
   }
   Shard& ShardFor(NodeKey key) { return shards_[ShardIndex(key)]; }
   const Shard& ShardFor(NodeKey key) const { return shards_[ShardIndex(key)]; }
-  // Inserts a fresh materializing node.
-  Node& InsertLocked(Shard& shard, NodeKey key,
-                     MaterializationId materialization_id)
-      ABSL_EXCLUSIVE_LOCKS_REQUIRED(shard.mutex);
   // Reserves the edge at `index` (in_flight += 1), which is tried or the first
   // untried one, and returns its move; the shard must be locked.
   static Move ReserveLocked(Shard& shard, Node& node, size_t index)
@@ -192,13 +168,6 @@ class GameGraph {
   static auto* FindNode(Map& nodes, NodeKey key) {
     const auto it = nodes.find(key);
     return it == nodes.end() ? nullptr : &it->second;
-  }
-
-  template <typename Map>
-  static auto* FindMaterializedNode(Map& nodes, NodeKey key) {
-    auto* node = FindNode(nodes, key);
-    return node && node->lifecycle == NodeLifecycle::kMaterialized ? node
-                                                                   : nullptr;
   }
 
   // The index of the edge with `move`, or edges.size() if there is none.
@@ -220,13 +189,10 @@ class GameGraph {
     return UpdateResult::kApplied;
   }
 
-  // Whether the node can leave the graph: materialized, and no visit holds one
-  // of its edges.
+  // Whether the node can leave the graph: no visit holds one of its edges.
   static bool Evictable(const Node& node) {
-    return node.lifecycle == NodeLifecycle::kMaterialized &&
-           std::ranges::none_of(node.tried, [](const Tried& tried) {
-             return tried.in_flight > 0;
-           });
+    return std::ranges::none_of(
+        node.tried, [](const Tried& tried) { return tried.in_flight > 0; });
   }
 
   std::array<Shard, kShardCount> shards_;
@@ -234,69 +200,31 @@ class GameGraph {
 };
 
 template <typename P>
-NodeState<P>& GameGraph<P>::InsertLocked(Shard& shard, NodeKey key,
-                                         MaterializationId materialization_id) {
-  size_.fetch_add(1, std::memory_order_relaxed);
-  return shard.nodes
-      .emplace(key, Node{.version = ++shard.version,
-                         .materialization_id = materialization_id})
-      .first->second;
-}
-
-template <typename P>
-FindOrCreateResult GameGraph<P>::FindOrCreateMaterialization(
-    NodeKey key, MaterializationId materialization_id) {
-  auto& shard = ShardFor(key);
+bool GameGraph<P>::Contains(NodeKey key) const {
+  const auto& shard = ShardFor(key);
   absl::MutexLock lock(shard.mutex);
-  if (const Node* node = FindNode(shard.nodes, key)) {
-    return {false, node->lifecycle, node->materialization_id};
-  }
-  const Node& node = InsertLocked(shard, key, materialization_id);
-  return {true, node.lifecycle, materialization_id};
+  return shard.nodes.contains(key);
 }
 
 template <typename P>
-bool GameGraph<P>::CancelMaterialization(NodeKey key,
-                                         MaterializationId materialization_id) {
-  auto& shard = ShardFor(key);
-  absl::MutexLock lock(shard.mutex);
-  const Node* node = FindNode(shard.nodes, key);
-  if (!node || node->lifecycle != NodeLifecycle::kMaterializing ||
-      node->materialization_id != materialization_id) {
-    return false;
-  }
-  shard.nodes.erase(key);
-  size_.fetch_sub(1, std::memory_order_relaxed);
-  return true;
-}
-
-template <typename P>
-bool GameGraph<P>::CompleteMaterialization(
-    NodeKey key, MaterializationId materialization_id, const NodeEval& eval) {
+bool GameGraph<P>::CompleteMaterialization(NodeKey key, const NodeEval& eval) {
   assert(eval.moves.size() == eval.priors.size());
   assert(eval.terminal == TerminalKind::kNonTerminal || eval.moves.empty());
   auto& shard = ShardFor(key);
   absl::MutexLock lock(shard.mutex);
-  Node* existing = FindNode(shard.nodes, key);
-  Node& node =
-      existing ? *existing : InsertLocked(shard, key, materialization_id);
   // Late or duplicate completions must not reset materialized edges, including
   // their reservations and statistics.
-  if (node.lifecycle == NodeLifecycle::kMaterialized ||
-      node.materialization_id != materialization_id) {
-    return false;
-  }
-  node.lifecycle = NodeLifecycle::kMaterialized;
-  node.materialization_id = 0;
+  auto [it, inserted] = shard.nodes.try_emplace(key);
+  if (!inserted) return false;
+  size_.fetch_add(1, std::memory_order_relaxed);
+  Node& node = it->second;
   node.version = ++shard.version;
   node.terminal = eval.terminal;
-  node.edges.clear();
   node.edges.reserve(eval.moves.size());
   for (size_t i = 0; i < eval.moves.size(); ++i) {
     node.edges.push_back({.move = eval.moves[i], .prior = eval.priors[i]});
   }
   assert(std::ranges::is_sorted(node.edges, PreferOnTie));
-  node.tried.clear();
   // The leaf value counts as the node's first visit, so a node keeps it even
   // if the visit that materialized it is cancelled before backing up.
   P::Update(node, nullptr, P::Leaf(eval.leaf, IsExact(eval.terminal)));
@@ -304,23 +232,14 @@ bool GameGraph<P>::CompleteMaterialization(
 }
 
 template <typename P>
-bool GameGraph<P>::RestoreNode(NodeKey key,
-                               MaterializationId materialization_id,
-                               Node restored) {
+bool GameGraph<P>::RestoreNode(NodeKey key, Node restored) {
   auto& shard = ShardFor(key);
   absl::MutexLock lock(shard.mutex);
-  Node* existing = FindNode(shard.nodes, key);
-  Node& node =
-      existing ? *existing : InsertLocked(shard, key, materialization_id);
-  if (node.lifecycle == NodeLifecycle::kMaterialized ||
-      node.materialization_id != materialization_id) {
-    return false;
-  }
-  node = std::move(restored);
-  node.version = ++shard.version;
-  node.lifecycle = NodeLifecycle::kMaterialized;
-  node.materialization_id = 0;
-  for (auto& tried : node.tried) tried.in_flight = 0;
+  if (shard.nodes.contains(key)) return false;
+  restored.version = ++shard.version;
+  for (auto& tried : restored.tried) tried.in_flight = 0;
+  shard.nodes.emplace(key, std::move(restored));
+  size_.fetch_add(1, std::memory_order_relaxed);
   return true;
 }
 
@@ -332,9 +251,6 @@ SelectResult GameGraph<P>::SelectAndReserve(NodeKey key,
   absl::MutexLock lock(shard.mutex);
   Node* node = FindNode(shard.nodes, key);
   if (!node) return {.status = SelectStatus::kMissing};
-  if (node->lifecycle == NodeLifecycle::kMaterializing) {
-    return {.status = SelectStatus::kMaterializing};
-  }
   if (node->terminal != TerminalKind::kNonTerminal || node->edges.empty()) {
     return {.status = SelectStatus::kTerminal, .terminal = node->terminal};
   }
@@ -353,7 +269,7 @@ SelectResult GameGraph<P>::ReselectAndReserve(
     const typename P::Params& params) {
   auto& shard = ShardFor(key);
   absl::MutexLock lock(shard.mutex);
-  Node* node = FindMaterializedNode(shard.nodes, key);
+  Node* node = FindNode(shard.nodes, key);
   if (!node) return {.status = SelectStatus::kMissing};
   const size_t index = FindEdge(*node, move);
   if (ReleaseEdge(shard, *node, index) != UpdateResult::kApplied) {
@@ -385,7 +301,7 @@ BackupResult<P> GameGraph<P>::BackupNode(NodeKey key, Message message,
                                          const typename P::Params* params) {
   auto& shard = ShardFor(key);
   absl::MutexLock lock(shard.mutex);
-  Node* node = FindMaterializedNode(shard.nodes, key);
+  Node* node = FindNode(shard.nodes, key);
   if (!node) {
     return {UpdateResult::kMissing,
             move ? UpdateResult::kMissing : UpdateResult::kApplied,
@@ -413,7 +329,7 @@ template <typename P>
 UpdateResult GameGraph<P>::CancelEdge(NodeKey key, Move move) {
   auto& shard = ShardFor(key);
   absl::MutexLock lock(shard.mutex);
-  Node* node = FindMaterializedNode(shard.nodes, key);
+  Node* node = FindNode(shard.nodes, key);
   if (!node) return UpdateResult::kMissing;
   return ReleaseEdge(shard, *node, FindEdge(*node, move));
 }

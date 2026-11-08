@@ -81,18 +81,11 @@ class PolicyEngine final : public VisitEngine {
                         ThinkingInfo& info) const override;
   RootStats GetRootStats(NodeKey root) const override;
 
-  FindOrCreateResult FindOrCreateMaterialization(
-      NodeKey key, MaterializationId materialization_id) override {
-    return graph_.FindOrCreateMaterialization(key, materialization_id);
+  bool ContainsNode(NodeKey key) const override {
+    return graph_.Contains(key);
   }
-  bool CompleteMaterialization(NodeKey key,
-                               MaterializationId materialization_id,
-                               const NodeEval& eval) override {
-    return graph_.CompleteMaterialization(key, materialization_id, eval);
-  }
-  void CancelMaterialization(NodeKey key,
-                             MaterializationId materialization_id) override {
-    graph_.CancelMaterialization(key, materialization_id);
+  bool CompleteMaterialization(NodeKey key, const NodeEval& eval) override {
+    return graph_.CompleteMaterialization(key, eval);
   }
   size_t GetGraphSize() const override { return graph_.Size(); }
 
@@ -105,11 +98,11 @@ class PolicyEngine final : public VisitEngine {
     assert(store_);
     return store_->LoadBatch(keys);
   }
-  bool RestoreFromRecord(NodeKey key, MaterializationId materialization_id,
+  bool RestoreFromRecord(NodeKey key,
                          std::span<const uint8_t> record) override {
     auto node = DecodeNode<P>(record);
     if (!node) return false;
-    return graph_.RestoreNode(key, materialization_id, std::move(*node));
+    return graph_.RestoreNode(key, std::move(*node));
   }
   void EvictToStore(size_t max, NodeKey keep, Metrics& metrics) override {
     assert(store_);
@@ -184,7 +177,6 @@ VisitEngine::DescendResult PolicyEngine<P>::DescendVisit(Visit& visit,
         graph_.SelectAndReserve(visit.current_key, params_, stop_at_proven);
     switch (selected.status) {
       case SelectStatus::kMissing:
-      case SelectStatus::kMaterializing:
         return DescendResult::kUnmaterializedLeaf;
       case SelectStatus::kTerminal:
         step.update_node = true;
@@ -326,7 +318,6 @@ void PolicyEngine<P>::FillThinkingInfo(const VisitOrigin& root,
   PositionHistory history = root.history;
   std::unordered_set<uint64_t> seen{root.key.hash};
   while (node && pv.size() < kMaxPvLength &&
-         node->lifecycle == NodeLifecycle::kMaterialized &&
          node->terminal == TerminalKind::kNonTerminal) {
     // The root's move is the bestmove, so it is chosen even before any of its
     // edges has a visit.
@@ -347,13 +338,11 @@ RootStats PolicyEngine<P>::GetRootStats(NodeKey root) const {
   RootStats stats;
   const auto node = graph_.SnapshotNode(root);
   if (!node) return stats;
-  stats.materialized = node->lifecycle == NodeLifecycle::kMaterialized;
+  stats.materialized = true;
   stats.visits = P::Visits(node->stats);
   stats.edges = node->edges.size();
-  if (stats.materialized) {
-    if (const auto index = P::ChooseMove(*node, params_)) {
-      stats.best_move = node->edges[*index].move;
-    }
+  if (const auto index = P::ChooseMove(*node, params_)) {
+    stats.best_move = node->edges[*index].move;
   }
   stats.decided = P::Decided(*node, params_);
   for (const auto& tried : node->tried) {

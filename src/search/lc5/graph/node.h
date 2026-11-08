@@ -37,14 +37,10 @@
 
 namespace lczero::lc5 {
 
-using MaterializationId = uint64_t;
-
 // Each live visit holds at most one unit of an edge's 16-bit in_flight, which
 // caps the number of live visits.
 inline constexpr int kMaxActiveVisitsLimit =
     std::numeric_limits<uint16_t>::max();
-
-enum class NodeLifecycle : uint8_t { kMaterializing, kMaterialized };
 
 // A legal move and its prior; every legal move of a materialized node has one.
 struct LegalEdge {
@@ -73,12 +69,10 @@ inline bool PreferOnTie(const LegalEdge& a, const LegalEdge& b) {
 
 template <typename P>
 struct NodeState {
-  NodeLifecycle lifecycle = NodeLifecycle::kMaterializing;
   // Initialized from a counter on creation and bumped by every change to the
   // node, so an eviction can tell whether the node changed after its record
   // was taken. Wraps around.
   uint32_t version = 0;
-  MaterializationId materialization_id = 0;  // Zero once materialized.
   TerminalKind terminal = TerminalKind::kNonTerminal;
   typename P::NodeStats stats{};
   std::vector<LegalEdge> edges{};

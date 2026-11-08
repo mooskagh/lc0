@@ -37,7 +37,6 @@
 #include <vector>
 
 #include "search/lc5/graph/key.h"
-#include "search/lc5/graph/node.h"
 #include "search/lc5/session/messages.h"
 
 namespace lczero::lc5 {
@@ -52,10 +51,9 @@ struct MaterializationWaiters {
 // The open materializations, at most one per node. Any visit worker opens or
 // joins one; only its owner's worker closes it.
 //
-// The callbacks run under the table's mutex, and attach a materialization_id to
-// its node or install the node: lock order is materializations -> one graph
-// shard. So a visit that finds no open materialization for a node also finds
-// the node installed.
+// The callbacks run under the table's mutex, and check or install the node in
+// the graph: lock order is materializations -> one graph shard. So a visit
+// that finds no open materialization for a node also finds the node installed.
 class MaterializationTable {
  public:
   struct Joined {
@@ -64,29 +62,26 @@ class MaterializationTable {
     size_t waiters = 0;  // Waiters on the materialization, if joined as one.
   };
 
-  // `attach(materialization_id)` attaches `materialization_id` to node `key`, a
-  // new materialization unless one is open for it, and returns whether to wait
-  // for it. If so, `wakeup` joins the materialization, as its owner if it is
-  // new.
-  template <typename Attach>
-  std::optional<Joined> Join(NodeKey key, VisitWakeup wakeup, Attach&& attach) {
+  // Joins the open materialization for `key`, or opens a new one if `can_open()`
+  // returns true. Returns nullopt if no materialization is open and `can_open()`
+  // declines (the node was materialized since the caller last checked).
+  template <typename CanOpen>
+  std::optional<Joined> Join(NodeKey key, VisitWakeup wakeup,
+                             CanOpen&& can_open) {
     absl::MutexLock lock(mutex_);
-    const auto existing = id_by_key_.find(key);
-    const bool owner = existing == id_by_key_.end();
-    const MaterializationId materialization_id =
-        owner ? next_id_ : existing->second;
-    if (!attach(materialization_id)) return std::nullopt;
-    if (owner) {
-      ++next_id_;
-      materializations_.emplace(materialization_id,
-                                MaterializationWaiters{key, wakeup, {}});
-      id_by_key_.emplace(key, materialization_id);
-      return Joined{.id = materialization_id, .owner = true};
+    if (const auto existing = id_by_key_.find(key);
+        existing != id_by_key_.end()) {
+      auto& waiters = materializations_.at(existing->second).waiters;
+      waiters.push_back(wakeup);
+      return Joined{
+          .id = existing->second, .owner = false, .waiters = waiters.size()};
     }
-    auto& waiters = materializations_.at(materialization_id).waiters;
-    waiters.push_back(wakeup);
-    return Joined{
-        .id = materialization_id, .owner = false, .waiters = waiters.size()};
+    if (!can_open()) return std::nullopt;
+    const MaterializationId materialization_id = next_id_++;
+    materializations_.emplace(materialization_id,
+                              MaterializationWaiters{key, wakeup, {}});
+    id_by_key_.emplace(key, materialization_id);
+    return Joined{.id = materialization_id, .owner = true};
   }
 
   // `close(key)` gets open `materialization_id`'s node `key` its content and

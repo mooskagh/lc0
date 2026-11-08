@@ -39,16 +39,16 @@ VisitWakeup Wakeup(uint64_t id, size_t worker) {
 TEST(Lc5MaterializationTableTest, OwnerOpensAndWaitersJoin) {
   MaterializationTable table;
   EXPECT_TRUE(table.empty());
-  const auto attach = [](MaterializationId) { return true; };
-  const auto owner = table.Join(NodeKey{1}, Wakeup(10, 0), attach);
+  const auto can_open = [] { return true; };
+  const auto owner = table.Join(NodeKey{1}, Wakeup(10, 0), can_open);
   ASSERT_TRUE(owner);
   EXPECT_TRUE(owner->owner);
-  const auto waiter = table.Join(NodeKey{1}, Wakeup(11, 1), attach);
+  const auto waiter = table.Join(NodeKey{1}, Wakeup(11, 1), can_open);
   ASSERT_TRUE(waiter);
   EXPECT_FALSE(waiter->owner);
   EXPECT_EQ(waiter->id, owner->id);
   EXPECT_EQ(waiter->waiters, 1u);
-  const auto other = table.Join(NodeKey{2}, Wakeup(12, 0), attach);
+  const auto other = table.Join(NodeKey{2}, Wakeup(12, 0), can_open);
   ASSERT_TRUE(other);
   EXPECT_TRUE(other->owner);
   EXPECT_NE(other->id, owner->id);
@@ -65,7 +65,7 @@ TEST(Lc5MaterializationTableTest, OwnerOpensAndWaitersJoin) {
   EXPECT_EQ(waiters->waiters[0].worker, 1u);
   EXPECT_FALSE(table.empty());
   // A closed node's next visit opens a new materialization.
-  const auto reopened = table.Join(NodeKey{1}, Wakeup(13, 0), attach);
+  const auto reopened = table.Join(NodeKey{1}, Wakeup(13, 0), can_open);
   ASSERT_TRUE(reopened);
   EXPECT_TRUE(reopened->owner);
   EXPECT_NE(reopened->id, owner->id);
@@ -75,37 +75,31 @@ TEST(Lc5MaterializationTableTest, OwnerOpensAndWaitersJoin) {
   EXPECT_TRUE(table.empty());
 }
 
-TEST(Lc5MaterializationTableTest, AttachCanDecline) {
+TEST(Lc5MaterializationTableTest, CanOpenCanDecline) {
   MaterializationTable table;
-  MaterializationId offered = 0;
-  EXPECT_FALSE(table.Join(NodeKey{1}, Wakeup(10, 0),
-                          [&](MaterializationId materialization_id) {
-                            offered = materialization_id;
-                            return false;
-                          }));
-  EXPECT_NE(offered, 0u);
+  EXPECT_FALSE(table.Join(NodeKey{1}, Wakeup(10, 0), [] { return false; }));
   EXPECT_TRUE(table.empty());
-  const auto owner = table.Join(NodeKey{1}, Wakeup(11, 0),
-                                [](MaterializationId) { return true; });
+  const auto owner =
+      table.Join(NodeKey{1}, Wakeup(11, 0), [] { return true; });
   ASSERT_TRUE(owner);
   EXPECT_TRUE(owner->owner);
-  EXPECT_FALSE(table.Join(NodeKey{1}, Wakeup(12, 0),
-                          [&](MaterializationId materialization_id) {
-                            EXPECT_EQ(materialization_id, owner->id);
-                            return false;
-                          }));
+  // Once open, waiters join without calling can_open.
+  const auto waiter =
+      table.Join(NodeKey{1}, Wakeup(12, 0), [] { return false; });
+  ASSERT_TRUE(waiter);
+  EXPECT_FALSE(waiter->owner);
   const auto waiters = table.Close(owner->id, [](NodeKey) { return true; });
   ASSERT_TRUE(waiters);
-  EXPECT_TRUE(waiters->waiters.empty());
+  EXPECT_EQ(waiters->waiters.size(), 1u);
 }
 
 TEST(Lc5MaterializationTableTest, DeclinedCloseKeepsMaterializationOpen) {
   MaterializationTable table;
-  const auto attach = [](MaterializationId) { return true; };
-  const auto owner = table.Join(NodeKey{1}, Wakeup(10, 0), attach);
+  const auto can_open = [] { return true; };
+  const auto owner = table.Join(NodeKey{1}, Wakeup(10, 0), can_open);
   ASSERT_TRUE(owner);
   EXPECT_FALSE(table.Close(owner->id, [](NodeKey) { return false; }));
-  const auto waiter = table.Join(NodeKey{1}, Wakeup(11, 0), attach);
+  const auto waiter = table.Join(NodeKey{1}, Wakeup(11, 0), can_open);
   ASSERT_TRUE(waiter);
   EXPECT_FALSE(waiter->owner);
   EXPECT_EQ(waiter->id, owner->id);

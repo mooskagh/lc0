@@ -347,17 +347,9 @@ void VisitWorker::FinishVisit(Visit& visit, bool completed) {
 //////////////////////////////////////////////////////////////////////////////
 
 bool VisitWorker::SuspendVisit(Visit& visit) {
-  FindOrCreateResult node{};
   const auto joined = context_.materializations.Join(
       visit.current_key, {.id = visit.id, .worker = worker_id_},
-      [&](MaterializationId materialization_id) {
-        node = context_.engine.FindOrCreateMaterialization(visit.current_key,
-                                                           materialization_id);
-        assert(node.lifecycle == NodeLifecycle::kMaterialized ||
-               node.materialization_id == materialization_id);
-        return node.lifecycle != NodeLifecycle::kMaterialized;
-      });
-  if (node.created) context_.metrics.graph_nodes_created.fetch_add(1);
+      [&] { return !context_.engine.ContainsNode(visit.current_key); });
   if (!joined) return false;
   const bool owner = joined->owner;
   if (owner) {
@@ -374,18 +366,11 @@ bool VisitWorker::SuspendVisit(Visit& visit) {
   visit.state = VisitState::kWaitingMaterialization;
   context_.metrics.visits_suspended.fetch_add(1);
   if (owner) {
-    const bool has_store = context_.engine.HasStore();
-    // Wakes the controller once the graph outgrows its limit, so eviction keeps
-    // up with fast searches between its periodic checks.
-    if (has_store && context_.settings.graph_node_limit > 0 &&
-        context_.engine.GetGraphSize() > context_.settings.graph_node_limit &&
-        context_.controller_signal.RequestEviction()) {
-      notify_controller_ = true;
-    }
+    MaybeRequestEviction();
     Materialization materialization{
         .id = joined->id, .key = visit.current_key, .history = visit.history};
     // A stored node may hold statistics, even if terminal: look it up first.
-    if (has_store) {
+    if (context_.engine.HasStore()) {
       queued_loads_.push_back(std::move(materialization));
     } else {
       PrepareMaterialization(std::move(materialization));
@@ -418,15 +403,19 @@ void VisitWorker::CompleteMaterialization(MaterializationId materialization_id,
   const auto waiters =
       context_.materializations.Close(materialization_id, [&](NodeKey key) {
         is_root = key == context_.root.key;
-        accepted = context_.engine.CompleteMaterialization(
-            key, materialization_id, eval);
+        accepted = context_.engine.CompleteMaterialization(key, eval);
         return true;
       });
   if (is_root && accepted) notify_controller_ = true;
   assert(waiters->owner.worker == worker_id_);
-  RaiseHighWater(context_.metrics.graph_size_high_water,
-                 context_.engine.GetGraphSize());
-  if (!accepted) context_.metrics.publications_rejected.fetch_add(1);
+  if (accepted) {
+    context_.metrics.graph_nodes_created.fetch_add(1);
+    RaiseHighWater(context_.metrics.graph_size_high_water,
+                   context_.engine.GetGraphSize());
+    MaybeRequestEviction();
+  } else {
+    context_.metrics.publications_rejected.fetch_add(1);
+  }
   // The owner backs up the new leaf value; waiters select below the node
   // unless it is terminal, in which case they also back up. A rejected
   // publication resumes selection only.
@@ -451,8 +440,7 @@ bool VisitWorker::RestoreMaterialization(MaterializationId materialization_id,
   const auto waiters =
       context_.materializations.Close(materialization_id, [&](NodeKey key) {
         is_root = key == context_.root.key;
-        return context_.engine.RestoreFromRecord(key, materialization_id,
-                                                 record);
+        return context_.engine.RestoreFromRecord(key, record);
       });
   if (!waiters) return false;
   if (is_root) notify_controller_ = true;
@@ -460,6 +448,7 @@ bool VisitWorker::RestoreMaterialization(MaterializationId materialization_id,
   context_.metrics.nodes_restored.fetch_add(1);
   RaiseHighWater(context_.metrics.graph_size_high_water,
                  context_.engine.GetGraphSize());
+  MaybeRequestEviction();
   // The node has its statistics back and nothing new to back up, so the owner
   // and the waiters all select below it.
   const auto wake = [&](VisitWakeup wakeup) {
@@ -474,11 +463,8 @@ bool VisitWorker::RestoreMaterialization(MaterializationId materialization_id,
 void VisitWorker::CancelMaterialization(MaterializationId materialization_id) {
   // Only called on stop, for evaluations that will never be computed. The
   // owner and waiters are still alive and must be woken to cancel.
-  const auto waiters =
-      context_.materializations.Close(materialization_id, [&](NodeKey key) {
-        context_.engine.CancelMaterialization(key, materialization_id);
-        return true;
-      });
+  const auto waiters = context_.materializations.Close(
+      materialization_id, [](NodeKey) { return true; });
   assert(waiters->owner.worker == worker_id_);
   const auto wake = [&](VisitWakeup wakeup) {
     wakeup.kind = VisitWakeup::Kind::kCancel;
@@ -494,6 +480,16 @@ void VisitWorker::CancelQueuedMaterializations() {
       CancelMaterialization(materialization.id);
     }
     materializations->clear();
+  }
+}
+
+void VisitWorker::MaybeRequestEviction() {
+  // Wakes the controller once the graph outgrows its limit, so eviction keeps
+  // up with fast searches between its periodic checks.
+  if (context_.engine.HasStore() && context_.settings.graph_node_limit > 0 &&
+      context_.engine.GetGraphSize() > context_.settings.graph_node_limit &&
+      context_.controller_signal.RequestEviction()) {
+    notify_controller_ = true;
   }
 }
 

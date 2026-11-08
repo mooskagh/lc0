@@ -95,17 +95,10 @@ class VisitEngine {
   virtual RootStats GetRootStats(NodeKey root) const = 0;
 
   // Node lifecycle for the materialization machinery.
-  virtual FindOrCreateResult FindOrCreateMaterialization(
-      NodeKey key, MaterializationId materialization_id) = 0;
+  virtual bool ContainsNode(NodeKey key) const = 0;
   // Materializes the node from `eval` and counts `eval.leaf` as its first
   // visit; returns whether `eval` was installed.
-  virtual bool CompleteMaterialization(
-      NodeKey key, MaterializationId materialization_id,
-      const NodeEval& eval) = 0;
-  // Drops the node if it is still materializing under `materialization_id`; on
-  // stop.
-  virtual void CancelMaterialization(NodeKey key,
-                                     MaterializationId materialization_id) = 0;
+  virtual bool CompleteMaterialization(NodeKey key, const NodeEval& eval) = 0;
   virtual size_t GetGraphSize() const = 0;
 
   // The NodeStore, the graph's cold tier: nodes evicted from the graph, kept
@@ -119,7 +112,6 @@ class VisitEngine {
   // whether the record was installed (false if it is not this policy's, in
   // which case evaluate the node instead).
   virtual bool RestoreFromRecord(NodeKey key,
-                                 MaterializationId materialization_id,
                                  std::span<const uint8_t> record) = 0;
   // Moves up to `max` nodes from the graph to the store: fewest visits first,
   // never `keep` or a node with a reserved edge. Needs a store.
