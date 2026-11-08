@@ -43,7 +43,7 @@ namespace lczero::lc5 {
 
 // The record of a materialized node in a NodeStore: its terminal kind, the
 // policy's node statistics, its legal edges and the statistics of its tried
-// edges. Reservations (in_flight), the generation and the materialization_id
+// edges. Reservations (in_flight), the version and the materialization_id
 // belong to the live graph and are not stored.
 //
 // Layout (native byte order; records are not meant to move between

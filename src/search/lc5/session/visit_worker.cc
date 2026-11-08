@@ -367,9 +367,10 @@ bool VisitWorker::SuspendVisit(Visit& visit) {
     RaiseHighWater(context_.metrics.maximum_waiters_per_materialization,
                    joined->waiters);
   }
-  // The owner's leaf is counted at install (generation 0 skips it on backup);
-  // waiters keep `node.generation` in case they back up a terminal leaf.
-  visit.path.back().generation = owner ? 0 : node.generation;
+  // The owner's leaf is counted at install (update_node = false skips it on
+  // backup); waiters keep update_node = true in case they back up a terminal
+  // leaf.
+  visit.path.back().update_node = !owner;
   visit.state = VisitState::kWaitingMaterialization;
   context_.metrics.visits_suspended.fetch_add(1);
   if (owner) {
@@ -412,32 +413,32 @@ void VisitWorker::PrepareMaterialization(Materialization materialization) {
 
 void VisitWorker::CompleteMaterialization(MaterializationId materialization_id,
                                           NodeEval eval) {
-  MaterializationResult installed;
+  bool accepted = false;
   bool is_root = false;
   const auto waiters =
       context_.materializations.Close(materialization_id, [&](NodeKey key) {
         is_root = key == context_.root.key;
-        installed = context_.engine.CompleteMaterialization(
+        accepted = context_.engine.CompleteMaterialization(
             key, materialization_id, eval);
         return true;
       });
-  if (is_root && installed.accepted) notify_controller_ = true;
+  if (is_root && accepted) notify_controller_ = true;
   assert(waiters->owner.worker == worker_id_);
   RaiseHighWater(context_.metrics.graph_size_high_water,
                  context_.engine.GetGraphSize());
-  if (!installed.accepted) context_.metrics.publications_rejected.fetch_add(1);
+  if (!accepted) context_.metrics.publications_rejected.fetch_add(1);
   // The owner backs up the new leaf value; waiters select below the node
   // unless it is terminal, in which case they also back up. A rejected
   // publication resumes selection only.
   const bool terminal =
-      installed.accepted && eval.terminal != TerminalKind::kNonTerminal;
+      accepted && eval.terminal != TerminalKind::kNonTerminal;
   const auto wake = [&](VisitWakeup wakeup, bool owner) {
-    wakeup.kind = installed.accepted && (owner || terminal)
+    wakeup.kind = accepted && (owner || terminal)
                       ? VisitWakeup::Kind::kBackup
                       : VisitWakeup::Kind::kSelect;
     wakeup.value = eval.leaf;
     wakeup.terminal = terminal;
-    wakeup.exact = installed.accepted && IsExact(eval.terminal);
+    wakeup.exact = accepted && IsExact(eval.terminal);
     DeliverWakeup(wakeup);
   };
   wake(waiters->owner, true);
@@ -450,9 +451,8 @@ bool VisitWorker::RestoreMaterialization(MaterializationId materialization_id,
   const auto waiters =
       context_.materializations.Close(materialization_id, [&](NodeKey key) {
         is_root = key == context_.root.key;
-        return context_.engine
-            .RestoreFromRecord(key, materialization_id, record)
-            .accepted;
+        return context_.engine.RestoreFromRecord(key, materialization_id,
+                                                 record);
       });
   if (!waiters) return false;
   if (is_root) notify_controller_ = true;

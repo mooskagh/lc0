@@ -97,9 +97,9 @@ class VisitEngine {
   // Node lifecycle for the materialization machinery.
   virtual FindOrCreateResult FindOrCreateMaterialization(
       NodeKey key, MaterializationId materialization_id) = 0;
-  // Materializes the node from `eval`; if accepted, `eval.leaf` counts as
-  // the node's first visit.
-  virtual MaterializationResult CompleteMaterialization(
+  // Materializes the node from `eval` and counts `eval.leaf` as its first
+  // visit; returns whether `eval` was installed.
+  virtual bool CompleteMaterialization(
       NodeKey key, MaterializationId materialization_id,
       const NodeEval& eval) = 0;
   // Drops the node if it is still materializing under `materialization_id`; on
@@ -115,11 +115,12 @@ class VisitEngine {
   // The stored records of `keys`, nullopt where there is none. Needs a store.
   virtual std::vector<std::optional<std::vector<uint8_t>>> ReadFromStore(
       std::span<const NodeKey> keys) = 0;
-  // Materializes the node from a stored record with its old statistics; not
-  // accepted if the record is not this policy's (then evaluate the node).
-  virtual MaterializationResult RestoreFromRecord(
-      NodeKey key, MaterializationId materialization_id,
-      std::span<const uint8_t> record) = 0;
+  // Materializes the node from a stored record with its old statistics; returns
+  // whether the record was installed (false if it is not this policy's, in
+  // which case evaluate the node instead).
+  virtual bool RestoreFromRecord(NodeKey key,
+                                 MaterializationId materialization_id,
+                                 std::span<const uint8_t> record) = 0;
   // Moves up to `max` nodes from the graph to the store: fewest visits first,
   // never `keep` or a node with a reserved edge. Needs a store.
   virtual void EvictToStore(size_t max, NodeKey keep, Metrics& metrics) = 0;

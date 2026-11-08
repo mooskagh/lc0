@@ -46,15 +46,9 @@
 namespace lczero::lc5 {
 
 struct FindOrCreateResult {
-  uint64_t generation;
   bool created;
   NodeLifecycle lifecycle;
   MaterializationId materialization_id;
-};
-
-struct MaterializationResult {
-  uint64_t generation;
-  bool accepted;
 };
 
 enum class SelectStatus {
@@ -68,7 +62,6 @@ enum class SelectStatus {
 struct SelectResult {
   SelectStatus status = SelectStatus::kMissing;
   Move move{};
-  uint64_t generation = 0;
   TerminalKind terminal = TerminalKind::kNonTerminal;
   VisitValue value{};  // The proven value, for kProven.
 };
@@ -76,7 +69,6 @@ struct SelectResult {
 enum class UpdateResult {
   kApplied,
   kMissing,
-  kStale,
   kEdgeMissing,
   kUnderflow
 };
@@ -93,8 +85,6 @@ struct BackupResult {
 
 // Sharded map from NodeKey to node search state and outgoing edges. Edges do
 // not point to children; callers derive child keys from their own history.
-// Every mutation names the node generation it expects, so updates computed
-// against an erased and recreated node are rejected instead of misapplied.
 // The policy P owns the node and edge statistics, how a message updates them
 // and how an edge is selected.
 template <typename P>
@@ -116,34 +106,32 @@ class GameGraph {
   bool CancelMaterialization(NodeKey key, MaterializationId materialization_id);
 
   // Materializes the node with `eval` if it is still materializing under
-  // `materialization_id`, creating it if absent. Publication is one-shot per
-  // generation. An accepted install also updates the node with `eval.leaf`
-  // as its first visit.
-  MaterializationResult CompleteMaterialization(
-      NodeKey key, MaterializationId materialization_id, const NodeEval& eval);
+  // `materialization_id`, creating it if absent, and counts `eval.leaf` as its
+  // first visit. Returns whether `eval` was installed (false if the node was
+  // already materialized or owned by another materialization).
+  bool CompleteMaterialization(NodeKey key,
+                               MaterializationId materialization_id,
+                               const NodeEval& eval);
 
   // Like CompleteMaterialization, but the node takes the statistics, edges and
   // terminal kind of `restored` (an evicted node) instead of counting a leaf.
-  // The node keeps the generation of its materializing placeholder, which is
-  // new, so updates for the evicted node stay rejected.
-  MaterializationResult RestoreNode(NodeKey key,
-                                    MaterializationId materialization_id,
-                                    Node restored);
+  // Returns whether `restored` was installed.
+  bool RestoreNode(NodeKey key, MaterializationId materialization_id,
+                   Node restored);
 
   // Selects an edge by the policy and reserves it (in_flight += 1); otherwise
-  // reports why the node can't be selected from. Every result but kMissing
-  // carries the node's generation, and kTerminal also its terminal kind. With
-  // `stop_at_proven`, a node the policy has proven returns kProven with its
-  // value instead.
+  // reports why the node can't be selected from, and for kTerminal also its
+  // terminal kind. With `stop_at_proven`, a node the policy has proven returns
+  // kProven with its value instead.
   SelectResult SelectAndReserve(NodeKey key, const typename P::Params& params,
                                 bool stop_at_proven = false);
 
   // Releases one reservation of `move` and reserves the edge the policy
   // reselects as if that visit had completed with `from_child`. kMissing if
-  // the node is not `expected_generation` or `move` holds no reservation;
-  // nothing is changed then.
-  SelectResult ReselectAndReserve(NodeKey key, uint64_t expected_generation,
-                                  Move move, const Message& from_child,
+  // the node is not materialized or `move` holds no reservation; nothing is
+  // changed then.
+  SelectResult ReselectAndReserve(NodeKey key, Move move,
+                                  const Message& from_child,
                                   const typename P::Params& params);
 
   // Applies the policy's update to the node and, if `move` is given,
@@ -152,13 +140,13 @@ class GameGraph {
   // statistics after the update (P::Current). `params` is passed only for the
   // root node to populate `best_move_changed`; if `params` is ever needed for
   // all nodes, gate the `ChooseMove` check on a separate root-only flag.
-  BackupResult<P> BackupNode(NodeKey key, uint64_t expected_generation,
-                             Message message, std::optional<Move> move,
+  BackupResult<P> BackupNode(NodeKey key, Message message,
+                             std::optional<Move> move,
                              bool send_current = false,
                              const typename P::Params* params = nullptr);
 
   // Releases an edge reservation without committing a visit.
-  UpdateResult CancelEdge(NodeKey key, uint64_t expected_generation, Move move);
+  UpdateResult CancelEdge(NodeKey key, Move move);
 
   std::optional<Node> SnapshotNode(NodeKey key) const;
 
@@ -170,9 +158,9 @@ class GameGraph {
                                                         size_t max,
                                                         double fraction,
                                                         NodeKey keep) const;
-  // Erases the node if it still is `generation` at `version` and has no
-  // reservations, as when it was copied.
-  bool EraseIfUnchanged(NodeKey key, uint64_t generation, uint32_t version);
+  // Erases the node if it is still at `version` and has no reservations, as
+  // when it was copied.
+  bool EraseIfUnchanged(NodeKey key, uint32_t version);
 
   bool Erase(NodeKey key);
   void Clear();
@@ -183,6 +171,7 @@ class GameGraph {
   struct Shard {
     mutable absl::Mutex mutex;
     absl::flat_hash_map<NodeKey, Node> nodes ABSL_GUARDED_BY(mutex);
+    uint32_t version ABSL_GUARDED_BY(mutex) = 0;
   };
 
   static size_t ShardIndex(NodeKey key) {
@@ -196,7 +185,8 @@ class GameGraph {
       ABSL_EXCLUSIVE_LOCKS_REQUIRED(shard.mutex);
   // Reserves the edge at `index` (in_flight += 1), which is tried or the first
   // untried one, and returns its move; the shard must be locked.
-  static Move ReserveLocked(Node& node, size_t index);
+  static Move ReserveLocked(Shard& shard, Node& node, size_t index)
+      ABSL_EXCLUSIVE_LOCKS_REQUIRED(shard.mutex);
 
   template <typename Map>
   static auto* FindNode(Map& nodes, NodeKey key) {
@@ -204,10 +194,11 @@ class GameGraph {
     return it == nodes.end() ? nullptr : &it->second;
   }
 
-  static UpdateResult CheckGeneration(const Node* node, uint64_t generation) {
-    if (!node) return UpdateResult::kMissing;
-    if (node->generation != generation) return UpdateResult::kStale;
-    return UpdateResult::kApplied;
+  template <typename Map>
+  static auto* FindMaterializedNode(Map& nodes, NodeKey key) {
+    auto* node = FindNode(nodes, key);
+    return node && node->lifecycle == NodeLifecycle::kMaterialized ? node
+                                                                   : nullptr;
   }
 
   // The index of the edge with `move`, or edges.size() if there is none.
@@ -218,13 +209,14 @@ class GameGraph {
 
   // Releases one reservation of the edge at `index`. An edge that was never
   // tried has no reservations.
-  static UpdateResult ReleaseEdge(Node& node, size_t index) {
+  static UpdateResult ReleaseEdge(Shard& shard, Node& node, size_t index)
+      ABSL_EXCLUSIVE_LOCKS_REQUIRED(shard.mutex) {
     if (index >= node.edges.size()) return UpdateResult::kEdgeMissing;
     if (index >= node.tried.size() || node.tried[index].in_flight == 0) {
       return UpdateResult::kUnderflow;
     }
     --node.tried[index].in_flight;
-    ++node.version;
+    node.version = ++shard.version;
     return UpdateResult::kApplied;
   }
 
@@ -239,18 +231,14 @@ class GameGraph {
 
   std::array<Shard, kShardCount> shards_;
   std::atomic<size_t> size_{0};
-  std::atomic<uint64_t> next_generation_{1};
 };
 
 template <typename P>
 NodeState<P>& GameGraph<P>::InsertLocked(Shard& shard, NodeKey key,
                                          MaterializationId materialization_id) {
-  const uint64_t generation =
-      next_generation_.fetch_add(1, std::memory_order_relaxed);
-  assert(generation != 0);
   size_.fetch_add(1, std::memory_order_relaxed);
   return shard.nodes
-      .emplace(key, Node{.generation = generation,
+      .emplace(key, Node{.version = ++shard.version,
                          .materialization_id = materialization_id})
       .first->second;
 }
@@ -261,10 +249,10 @@ FindOrCreateResult GameGraph<P>::FindOrCreateMaterialization(
   auto& shard = ShardFor(key);
   absl::MutexLock lock(shard.mutex);
   if (const Node* node = FindNode(shard.nodes, key)) {
-    return {node->generation, false, node->lifecycle, node->materialization_id};
+    return {false, node->lifecycle, node->materialization_id};
   }
   const Node& node = InsertLocked(shard, key, materialization_id);
-  return {node.generation, true, node.lifecycle, materialization_id};
+  return {true, node.lifecycle, materialization_id};
 }
 
 template <typename P>
@@ -283,7 +271,7 @@ bool GameGraph<P>::CancelMaterialization(NodeKey key,
 }
 
 template <typename P>
-MaterializationResult GameGraph<P>::CompleteMaterialization(
+bool GameGraph<P>::CompleteMaterialization(
     NodeKey key, MaterializationId materialization_id, const NodeEval& eval) {
   assert(eval.moves.size() == eval.priors.size());
   assert(eval.terminal == TerminalKind::kNonTerminal || eval.moves.empty());
@@ -296,11 +284,11 @@ MaterializationResult GameGraph<P>::CompleteMaterialization(
   // their reservations and statistics.
   if (node.lifecycle == NodeLifecycle::kMaterialized ||
       node.materialization_id != materialization_id) {
-    return {node.generation, false};
+    return false;
   }
   node.lifecycle = NodeLifecycle::kMaterialized;
   node.materialization_id = 0;
-  ++node.version;
+  node.version = ++shard.version;
   node.terminal = eval.terminal;
   node.edges.clear();
   node.edges.reserve(eval.moves.size());
@@ -312,12 +300,13 @@ MaterializationResult GameGraph<P>::CompleteMaterialization(
   // The leaf value counts as the node's first visit, so a node keeps it even
   // if the visit that materialized it is cancelled before backing up.
   P::Update(node, nullptr, P::Leaf(eval.leaf, IsExact(eval.terminal)));
-  return {node.generation, true};
+  return true;
 }
 
 template <typename P>
-MaterializationResult GameGraph<P>::RestoreNode(
-    NodeKey key, MaterializationId materialization_id, Node restored) {
+bool GameGraph<P>::RestoreNode(NodeKey key,
+                               MaterializationId materialization_id,
+                               Node restored) {
   auto& shard = ShardFor(key);
   absl::MutexLock lock(shard.mutex);
   Node* existing = FindNode(shard.nodes, key);
@@ -325,17 +314,14 @@ MaterializationResult GameGraph<P>::RestoreNode(
       existing ? *existing : InsertLocked(shard, key, materialization_id);
   if (node.lifecycle == NodeLifecycle::kMaterialized ||
       node.materialization_id != materialization_id) {
-    return {node.generation, false};
+    return false;
   }
-  const uint64_t generation = node.generation;
-  const uint32_t version = node.version + 1;
   node = std::move(restored);
-  node.generation = generation;
-  node.version = version;
+  node.version = ++shard.version;
   node.lifecycle = NodeLifecycle::kMaterialized;
   node.materialization_id = 0;
   for (auto& tried : node.tried) tried.in_flight = 0;
-  return {generation, true};
+  return true;
 }
 
 template <typename P>
@@ -347,48 +333,39 @@ SelectResult GameGraph<P>::SelectAndReserve(NodeKey key,
   Node* node = FindNode(shard.nodes, key);
   if (!node) return {.status = SelectStatus::kMissing};
   if (node->lifecycle == NodeLifecycle::kMaterializing) {
-    return {.status = SelectStatus::kMaterializing,
-            .generation = node->generation};
+    return {.status = SelectStatus::kMaterializing};
   }
   if (node->terminal != TerminalKind::kNonTerminal || node->edges.empty()) {
-    return {.status = SelectStatus::kTerminal,
-            .generation = node->generation,
-            .terminal = node->terminal};
+    return {.status = SelectStatus::kTerminal, .terminal = node->terminal};
   }
   if (stop_at_proven) {
     if (const auto value = P::ProvenValue(*node, params)) {
-      return {.status = SelectStatus::kProven,
-              .generation = node->generation,
-              .value = *value};
+      return {.status = SelectStatus::kProven, .value = *value};
     }
   }
   return {.status = SelectStatus::kSelected,
-          .move = ReserveLocked(*node, P::Select(*node, params)),
-          .generation = node->generation};
+          .move = ReserveLocked(shard, *node, P::Select(*node, params))};
 }
 
 template <typename P>
 SelectResult GameGraph<P>::ReselectAndReserve(
-    NodeKey key, uint64_t expected_generation, Move move,
-    const Message& from_child, const typename P::Params& params) {
+    NodeKey key, Move move, const Message& from_child,
+    const typename P::Params& params) {
   auto& shard = ShardFor(key);
   absl::MutexLock lock(shard.mutex);
-  Node* node = FindNode(shard.nodes, key);
-  if (CheckGeneration(node, expected_generation) != UpdateResult::kApplied) {
-    return {.status = SelectStatus::kMissing};
-  }
+  Node* node = FindMaterializedNode(shard.nodes, key);
+  if (!node) return {.status = SelectStatus::kMissing};
   const size_t index = FindEdge(*node, move);
-  if (ReleaseEdge(*node, index) != UpdateResult::kApplied) {
+  if (ReleaseEdge(shard, *node, index) != UpdateResult::kApplied) {
     return {.status = SelectStatus::kMissing};
   }
   return {.status = SelectStatus::kSelected,
-          .move = ReserveLocked(*node,
-                                P::Reselect(*node, params, index, from_child)),
-          .generation = node->generation};
+          .move = ReserveLocked(shard, *node,
+                                P::Reselect(*node, params, index, from_child))};
 }
 
 template <typename P>
-Move GameGraph<P>::ReserveLocked(Node& node, size_t index) {
+Move GameGraph<P>::ReserveLocked(Shard& shard, Node& node, size_t index) {
   if (index == node.tried.size()) {
     // Grows 2 -> 4 -> 8...; most nodes only ever try a few edges.
     if (node.tried.empty()) node.tried.reserve(2);
@@ -397,23 +374,22 @@ Move GameGraph<P>::ReserveLocked(Node& node, size_t index) {
   Tried& tried = node.tried[index];
   assert(tried.in_flight < kMaxActiveVisitsLimit);
   ++tried.in_flight;
-  ++node.version;
+  node.version = ++shard.version;
   return node.edges[index].move;
 }
 
 template <typename P>
-BackupResult<P> GameGraph<P>::BackupNode(NodeKey key,
-                                         uint64_t expected_generation,
-                                         Message message,
+BackupResult<P> GameGraph<P>::BackupNode(NodeKey key, Message message,
                                          std::optional<Move> move,
                                          bool send_current,
                                          const typename P::Params* params) {
   auto& shard = ShardFor(key);
   absl::MutexLock lock(shard.mutex);
-  Node* node = FindNode(shard.nodes, key);
-  if (const auto check = CheckGeneration(node, expected_generation);
-      check != UpdateResult::kApplied) {
-    return {check, move ? check : UpdateResult::kApplied, std::nullopt};
+  Node* node = FindMaterializedNode(shard.nodes, key);
+  if (!node) {
+    return {UpdateResult::kMissing,
+            move ? UpdateResult::kMissing : UpdateResult::kApplied,
+            std::nullopt};
   }
   const auto best_before =
       params ? P::ChooseMove(*node, *params) : std::nullopt;
@@ -421,11 +397,11 @@ BackupResult<P> GameGraph<P>::BackupNode(NodeKey key,
   UpdateResult edge_result = UpdateResult::kApplied;
   if (move) {
     const size_t index = FindEdge(*node, *move);
-    edge_result = ReleaseEdge(*node, index);
+    edge_result = ReleaseEdge(shard, *node, index);
     if (edge_result == UpdateResult::kApplied) edge = &node->tried[index];
   }
   // The node is updated even if the edge reservation could not be released.
-  ++node->version;
+  node->version = ++shard.version;
   Message to_parent = P::Update(*node, edge, message);
   if (send_current) to_parent = P::Current(*node);
   const bool best_changed =
@@ -434,16 +410,12 @@ BackupResult<P> GameGraph<P>::BackupNode(NodeKey key,
 }
 
 template <typename P>
-UpdateResult GameGraph<P>::CancelEdge(NodeKey key, uint64_t expected_generation,
-                                      Move move) {
+UpdateResult GameGraph<P>::CancelEdge(NodeKey key, Move move) {
   auto& shard = ShardFor(key);
   absl::MutexLock lock(shard.mutex);
-  Node* node = FindNode(shard.nodes, key);
-  if (const auto check = CheckGeneration(node, expected_generation);
-      check != UpdateResult::kApplied) {
-    return check;
-  }
-  return ReleaseEdge(*node, FindEdge(*node, move));
+  Node* node = FindMaterializedNode(shard.nodes, key);
+  if (!node) return UpdateResult::kMissing;
+  return ReleaseEdge(shard, *node, FindEdge(*node, move));
 }
 
 template <typename P>
@@ -486,13 +458,11 @@ std::vector<std::pair<NodeKey, NodeState<P>>> GameGraph<P>::EvictCandidates(
 }
 
 template <typename P>
-bool GameGraph<P>::EraseIfUnchanged(NodeKey key, uint64_t generation,
-                                    uint32_t version) {
+bool GameGraph<P>::EraseIfUnchanged(NodeKey key, uint32_t version) {
   auto& shard = ShardFor(key);
   absl::MutexLock lock(shard.mutex);
   const Node* node = FindNode(shard.nodes, key);
-  if (!node || node->generation != generation || node->version != version ||
-      !Evictable(*node)) {
+  if (!node || node->version != version || !Evictable(*node)) {
     return false;
   }
   shard.nodes.erase(key);

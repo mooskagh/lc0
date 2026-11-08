@@ -47,10 +47,9 @@ struct VisitId {
 
 struct PathStep {
   NodeKey key;
-  // 0 if the step's node is not updated on backup (repetition or installed
-  // leaf).
-  uint64_t generation = 0;
   std::optional<Move> selected_move{};  // The reserved outgoing edge, if any.
+  // Whether backup updates this node (false for repetition or installed leaf).
+  bool update_node = false;
 };
 
 // Where a visit starts selecting. `backup_prefix` lists the steps above `key`

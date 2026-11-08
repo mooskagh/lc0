@@ -101,7 +101,7 @@ TEST(Lc5VisitPoolTest, InitializesAndResetsVisit) {
       .key = NodeKey{42},
       .history = {},
       .backup_prefix = {
-          {.key = NodeKey{7}, .generation = 9, .selected_move = std::nullopt}}};
+          {.key = NodeKey{7}, .selected_move = std::nullopt, .update_node = true}}};
   origin.history.Reset(ChessBoard::kStartposBoard, 0, 0);
   VisitPool pool(1);
   for (uint32_t epoch = 1; epoch <= 2; ++epoch) {
@@ -120,7 +120,7 @@ TEST(Lc5VisitPoolTest, InitializesAndResetsVisit) {
     EXPECT_EQ(visit.current_key, origin.key);
     ASSERT_EQ(visit.path.size(), 1u);
     EXPECT_EQ(visit.path[0].key, NodeKey{7});
-    EXPECT_EQ(visit.path[0].generation, 9u);
+    EXPECT_TRUE(visit.path[0].update_node);
     EXPECT_FALSE(visit.path[0].selected_move);
     EXPECT_FLOAT_EQ(visit.result.q, 0.0f);
     EXPECT_FLOAT_EQ(visit.result.d, 0.0f);

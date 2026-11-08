@@ -61,10 +61,6 @@ struct Metrics {
   std::atomic<uint64_t> two_fold_visits{0};
   std::atomic<uint64_t> selection_node_steps{0};
   std::atomic<uint64_t> backup_node_steps{0};
-  // Backup steps skipped because the node (or its edge) was gone or replaced
-  // by a newer generation since the visit selected through it.
-  std::atomic<uint64_t> stale_generation_node_updates{0};
-  std::atomic<uint64_t> stale_generation_edge_updates{0};
   // Releases of an edge reservation that had none. Should stay 0; a non-zero
   // value means a bug in in-flight bookkeeping.
   std::atomic<uint64_t> invariant_underflow_prevented{0};

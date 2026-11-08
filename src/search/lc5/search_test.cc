@@ -838,16 +838,15 @@ TEST(Lc5SearchTest, ContainedTwoFoldDrawStopsAtFirstOccurrence) {
     Visit visit;
     for (size_t i = 0; i < kNodes; ++i) {
       const NodeKey key{100 + i};
-      const auto created = graph.FindOrCreateMaterialization(key, 1);
+      graph.FindOrCreateMaterialization(key, 1);
       graph.CompleteMaterialization(key, 1,
                                     {.leaf = {.q = 0.5f, .d = 0.0f, .m = 10.0f},
                                      .moves = {move},
                                      .priors = {1.0f}});
       ASSERT_EQ(graph.SelectAndReserve(key, TestParams()).status,
                 SelectStatus::kSelected);
-      visit.path.push_back({.key = key,
-                            .generation = created.generation,
-                            .selected_move = move});
+      visit.path.push_back(
+          {.key = key, .selected_move = move, .update_node = true});
     }
     visit.path.push_back({.key = NodeKey{200}});
     visit.result = draw;

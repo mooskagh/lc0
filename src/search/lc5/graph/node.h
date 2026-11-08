@@ -73,11 +73,10 @@ inline bool PreferOnTie(const LegalEdge& a, const LegalEdge& b) {
 
 template <typename P>
 struct NodeState {
-  // Unique per (re)creation, so updates for an erased node are rejected.
-  uint64_t generation = 0;
   NodeLifecycle lifecycle = NodeLifecycle::kMaterializing;
-  // Bumped by every change to the node, so an eviction can tell whether the
-  // node changed after its record was taken. Wraps around.
+  // Initialized from a counter on creation and bumped by every change to the
+  // node, so an eviction can tell whether the node changed after its record
+  // was taken. Wraps around.
   uint32_t version = 0;
   MaterializationId materialization_id = 0;  // Zero once materialized.
   TerminalKind terminal = TerminalKind::kNonTerminal;

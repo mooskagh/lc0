@@ -85,9 +85,9 @@ class PolicyEngine final : public VisitEngine {
       NodeKey key, MaterializationId materialization_id) override {
     return graph_.FindOrCreateMaterialization(key, materialization_id);
   }
-  MaterializationResult CompleteMaterialization(
-      NodeKey key, MaterializationId materialization_id,
-      const NodeEval& eval) override {
+  bool CompleteMaterialization(NodeKey key,
+                               MaterializationId materialization_id,
+                               const NodeEval& eval) override {
     return graph_.CompleteMaterialization(key, materialization_id, eval);
   }
   void CancelMaterialization(NodeKey key,
@@ -105,11 +105,10 @@ class PolicyEngine final : public VisitEngine {
     assert(store_);
     return store_->LoadBatch(keys);
   }
-  MaterializationResult RestoreFromRecord(
-      NodeKey key, MaterializationId materialization_id,
-      std::span<const uint8_t> record) override {
+  bool RestoreFromRecord(NodeKey key, MaterializationId materialization_id,
+                         std::span<const uint8_t> record) override {
     auto node = DecodeNode<P>(record);
-    if (!node) return {0, false};
+    if (!node) return false;
     return graph_.RestoreNode(key, materialization_id, std::move(*node));
   }
   void EvictToStore(size_t max, NodeKey keep, Metrics& metrics) override {
@@ -135,7 +134,7 @@ class PolicyEngine final : public VisitEngine {
     // stale record is harmless, as the graph is always checked first.
     size_t erased = 0;
     for (const auto& [key, node] : nodes) {
-      erased += graph_.EraseIfUnchanged(key, node.generation, node.version);
+      erased += graph_.EraseIfUnchanged(key, node.version);
     }
     metrics.nodes_evicted.fetch_add(erased);
     metrics.evictions_skipped.fetch_add(nodes.size() - erased);
@@ -188,19 +187,19 @@ VisitEngine::DescendResult PolicyEngine<P>::DescendVisit(Visit& visit,
       case SelectStatus::kMaterializing:
         return DescendResult::kUnmaterializedLeaf;
       case SelectStatus::kTerminal:
-        step.generation = selected.generation;
+        step.update_node = true;
         visit.result = TerminalValue(selected.terminal);
         visit.result_exact = IsExact(selected.terminal);
         metrics.terminal_visits.fetch_add(1);
         return DescendResult::kValuedLeaf;
       case SelectStatus::kProven:
-        step.generation = selected.generation;
+        step.update_node = true;
         visit.result = selected.value;
         visit.result_exact = true;
         metrics.proven_visits.fetch_add(1);
         return DescendResult::kValuedLeaf;
       case SelectStatus::kSelected:
-        step.generation = selected.generation;
+        step.update_node = true;
         break;
     }
     if (Advance(visit, step, selected.move, metrics)) {
@@ -217,8 +216,8 @@ bool PolicyEngine<P>::Advance(Visit& visit, PathStep& step, Move move,
   visit.current_key = MakeNodeKey(visit.history, history_key_length_);
   // A two-fold repetition whose cycle lies within this search is scored as
   // a draw. Whether that holds depends on the root, so the graph node is
-  // left untouched and the leaf is backed up from a step that is not in the
-  // graph (generation 0).
+  // left untouched and the leaf is backed up from a step with
+  // update_node = false.
   const Position& position = visit.history.Last();
   const int ply = static_cast<int>(visit.path.size());
   const int cycle = position.GetPliesSincePrevRepetition();
@@ -258,9 +257,8 @@ VisitEngine::ResumeAction PolicyEngine<P>::ResumeVisit(Visit& visit,
   // value; it is what the parent receives from X, whose own update was
   // counted at install.
   const auto from_child = P::Skip(P::Leaf(visit.result, visit.result_exact));
-  const SelectResult reselected =
-      graph_.ReselectAndReserve(parent.key, parent.generation,
-                                *parent.selected_move, from_child, params_);
+  const SelectResult reselected = graph_.ReselectAndReserve(
+      parent.key, *parent.selected_move, from_child, params_);
   if (reselected.status != SelectStatus::kSelected ||
       reselected.move == *parent.selected_move) {
     return ResumeAction::kSelect;
@@ -282,7 +280,7 @@ bool PolicyEngine<P>::BackupVisit(const Visit& visit, Metrics& metrics) {
     const PathStep& step = visit.path[i];
     // An in-search repetition leaf has no graph node, and an installed leaf
     // took its value at install; the parent receives the skipped-node message.
-    if (step.generation == 0) {
+    if (!step.update_node) {
       message = P::Skip(message);
       continue;
     }
@@ -291,23 +289,17 @@ bool PolicyEngine<P>::BackupVisit(const Visit& visit, Metrics& metrics) {
         i + 1 < visit.path.size() ? step.selected_move : std::nullopt;
     // A contained two-fold draw stops at the repeated position's first
     // occurrence, which takes the draw and sends its own value further up.
-    // If that node is stale or missing, the draw goes on past it (rare).
+    // If that node is missing, the draw goes on past it (rare).
     const bool two_fold_origin = visit.two_fold_origin == i;
-    assert(!two_fold_origin || (step.generation != 0 && move));
-    const BackupResult<P> result =
-        graph_.BackupNode(step.key, step.generation, message, move,
-                          two_fold_origin, i == 0 ? &params_ : nullptr);
+    assert(!two_fold_origin || (step.update_node && move));
+    const BackupResult<P> result = graph_.BackupNode(
+        step.key, message, move, two_fold_origin, i == 0 ? &params_ : nullptr);
     best_move_changed |= result.best_move_changed;
     metrics.backup_node_steps.fetch_add(1);
-    if (result.node != UpdateResult::kApplied) {
-      metrics.stale_generation_node_updates.fetch_add(1);
-    }
     if (result.edge == UpdateResult::kUnderflow) {
       metrics.invariant_underflow_prevented.fetch_add(1);
-    } else if (result.edge != UpdateResult::kApplied) {
-      metrics.stale_generation_edge_updates.fetch_add(1);
     }
-    // A stale or missing node is skipped.
+    // A missing node is skipped.
     message = result.to_parent ? *result.to_parent : P::Stale(message);
   }
   return best_move_changed;
@@ -317,7 +309,7 @@ template <typename P>
 void PolicyEngine<P>::CancelVisit(const Visit& visit, Metrics& metrics) {
   for (const PathStep& step : visit.path) {
     if (step.selected_move &&
-        graph_.CancelEdge(step.key, step.generation, *step.selected_move) ==
+        graph_.CancelEdge(step.key, *step.selected_move) ==
             UpdateResult::kUnderflow) {
       metrics.invariant_underflow_prevented.fetch_add(1);
     }
