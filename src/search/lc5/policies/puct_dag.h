@@ -68,7 +68,7 @@ struct PuctDag : PuctPolicy<PuctDag> {
   static Message Update(NodeState<PuctDag>& node, TriedEdge<PuctDag>* edge,
                         const Message& message) {
     ValueStats& stats = node.stats;
-    const SearchValue& value = message.value;
+    const VisitValue& value = message.value;
     if (edge) {
       const ValueStats& old = edge->stats;
       const float n = static_cast<float>(old.visits);

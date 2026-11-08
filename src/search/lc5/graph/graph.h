@@ -70,7 +70,7 @@ struct SelectResult {
   Move move{};
   uint64_t generation = 0;
   TerminalKind terminal = TerminalKind::kNonTerminal;
-  SearchValue value{};  // The proven value, for kProven.
+  VisitValue value{};  // The proven value, for kProven.
 };
 
 enum class UpdateResult {

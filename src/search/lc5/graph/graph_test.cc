@@ -92,8 +92,8 @@ TEST(Lc5GraphTest, CancellationOnlyErasesMatchingPlaceholder) {
 }
 
 TEST(Lc5ValueTest, PerspectiveAndMeans) {
-  SearchValue child{0.25f, 0.5f, 3.0f};
-  SearchValue parent = child.Parent();
+  VisitValue child{0.25f, 0.5f, 3.0f};
+  VisitValue parent = child.Parent();
   EXPECT_FLOAT_EQ(parent.q, -0.25f);
   EXPECT_FLOAT_EQ(parent.d, 0.5f);
   EXPECT_FLOAT_EQ(parent.m, 4.0f);

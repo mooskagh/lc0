@@ -74,7 +74,7 @@ struct Visit {
   PositionHistory history;
   NodeKey current_key;
   std::vector<PathStep> path;
-  SearchValue result;
+  VisitValue result;
   // `result` is exact: a terminal other than a repetition, or a proven node.
   bool result_exact = false;
   // For a two-fold repetition leaf whose draw is contained: the path index of

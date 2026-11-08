@@ -33,11 +33,11 @@
 namespace lczero::lc5 {
 
 // A value sample from the perspective of the side to move at its node.
-struct SearchValue {
+struct VisitValue {
   float q = 0.0f;
   float d = 0.0f;
   float m = 0.0f;
-  SearchValue Parent() const { return {-q, d, m + 1.0f}; }
+  VisitValue Parent() const { return {-q, d, m + 1.0f}; }
 };
 
 // Game-theoretic bounds on a value from the side to move: -1 loss, 0 draw,
@@ -74,7 +74,7 @@ struct ValueStats {
   float Q() const { return q; }
   float D() const { return d; }
   float M() const { return m; }
-  void Add(const SearchValue& value) {
+  void Add(const VisitValue& value) {
     ++visits;
     const float n = static_cast<float>(visits);
     q += (value.q - q) / n;

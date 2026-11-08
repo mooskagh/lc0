@@ -830,7 +830,7 @@ TEST(Lc5SearchTest, ContainedTwoFoldDrawStopsAtFirstOccurrence) {
   constexpr size_t kNodes = 4;
   constexpr size_t kOrigin = 1;
   const Move move = Move::White(Square(kFileA, kRank2), Square(kFileA, kRank3));
-  const SearchValue draw{.q = 0.0f, .d = 1.0f, .m = 0.0f};
+  const VisitValue draw{.q = 0.0f, .d = 1.0f, .m = 0.0f};
   for (const bool contained : {false, true}) {
     SCOPED_TRACE(contained);
     PolicyEngine<PuctAveraging> engine(TestParams());

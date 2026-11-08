@@ -508,7 +508,7 @@ TEST(Lc5PuctTest, DagEdgesCacheTheChildValue) {
   DagNode node{.lifecycle = NodeLifecycle::kExpanded,
                .edges = {MakeEdge(kFileA, 0.5f), MakeEdge(kFileB, 0.5f)},
                .tried = {DagTried{}, DagTried{}}};
-  const SearchValue leaf{.q = 0.2f, .d = 0.4f, .m = 10.0f};
+  const VisitValue leaf{.q = 0.2f, .d = 0.4f, .m = 10.0f};
   PuctDag::Update(node, nullptr, PuctDag::Leaf(leaf, false));
   EXPECT_EQ(node.stats.visits, 1u);
   EXPECT_FLOAT_EQ(node.stats.Q(), 0.2f);
@@ -516,7 +516,7 @@ TEST(Lc5PuctTest, DagEdgesCacheTheChildValue) {
   // Visits through the edges with changing child values, in the edge frame.
   struct Step {
     size_t edge;
-    SearchValue value;
+    VisitValue value;
   };
   const Step steps[] = {
       {0, {.q = 0.5f, .d = 0.3f, .m = 8.0f}},
@@ -568,7 +568,7 @@ TEST(Lc5PuctTest, DagReselectReplacesTheEdgeValue) {
                     .stats = {.visits = 4},
                     .edges = {MakeEdge(kFileA, 0.5f), MakeEdge(kFileB, 0.3f)},
                     .tried = {DagTried{.stats = {.visits = 3, .q = 0.8f}}}};
-  const SearchValue from_child{.q = 0.2f};
+  const VisitValue from_child{.q = 0.2f};
   EXPECT_EQ(
       PuctAveraging::Reselect(node, TestParams(), 0, {.value = from_child}),
       0u);

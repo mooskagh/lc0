@@ -45,9 +45,9 @@ enum class TerminalKind : uint8_t {
 };
 
 // Value of a terminal position for its side to move.
-inline SearchValue TerminalValue(TerminalKind terminal) {
-  return terminal == TerminalKind::kCheckmate ? SearchValue{-1.0f, 0.0f, 0.0f}
-                                              : SearchValue{0.0f, 1.0f, 0.0f};
+inline VisitValue TerminalValue(TerminalKind terminal) {
+  return terminal == TerminalKind::kCheckmate ? VisitValue{-1.0f, 0.0f, 0.0f}
+                                              : VisitValue{0.0f, 1.0f, 0.0f};
 }
 
 // Whether a terminal's value holds wherever its node is reached. A
@@ -61,7 +61,7 @@ inline bool IsExact(TerminalKind terminal) {
 // with priors and the network's leaf value.
 struct ExpansionPayload {
   TerminalKind terminal = TerminalKind::kNonTerminal;
-  SearchValue leaf{};
+  VisitValue leaf{};
   std::vector<Move> moves;
   std::vector<float> priors;
 };

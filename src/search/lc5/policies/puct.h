@@ -103,14 +103,14 @@ struct PuctPolicy {
   using NodeStats = ValueStats;
   using EdgeStats = ValueStats;
   struct Message {
-    SearchValue value;
+    VisitValue value;
     Bounds bounds = {};
   };
 
   // The message a leaf evaluation (or terminal value) starts the backup with.
   // An exact value (a terminal other than a repetition, or a proven node) is
   // proven.
-  static Message Leaf(const SearchValue& value, bool exact) {
+  static Message Leaf(const VisitValue& value, bool exact) {
     return {value, exact ? Bounds::Exact(value.q, value.m) : Bounds{}};
   }
   // The message the parent receives when this node's update is skipped: an
@@ -128,7 +128,7 @@ struct PuctPolicy {
   // the backed-up message: the node's mean and bounds.
   static Message Current(const NodeState<Self>& node) {
     const ValueStats& stats = node.stats;
-    return {SearchValue{stats.Q(), stats.D(), stats.M()}.Parent(),
+    return {VisitValue{stats.Q(), stats.D(), stats.M()}.Parent(),
             stats.bounds.Parent()};
   }
   // Whether an in-search two-fold draw stops at the repeated position's first
@@ -151,8 +151,8 @@ struct PuctPolicy {
                          size_t index, const Message& from_child);
   // The exact value of a proven node, which a visit backs up instead of
   // descending; nullopt if the node is not proven or StickyEndgames is off.
-  static std::optional<SearchValue> ProvenValue(const NodeState<Self>& node,
-                                                const Params& params);
+  static std::optional<VisitValue> ProvenValue(const NodeState<Self>& node,
+                                               const Params& params);
   // Whether the node's result is proven and StickyEndgames is on.
   static bool Decided(const NodeState<Self>& node, const Params& params) {
     return params.sticky_endgames && node.stats.bounds.Proven();
@@ -334,13 +334,13 @@ size_t PuctPolicy<Self>::Reselect(const NodeState<Self>& node,
 }
 
 template <typename Self>
-std::optional<SearchValue> PuctPolicy<Self>::ProvenValue(
+std::optional<VisitValue> PuctPolicy<Self>::ProvenValue(
     const NodeState<Self>& node, const Params& params) {
   const Bounds& bounds = node.stats.bounds;
   if (!params.sticky_endgames || !bounds.Proven()) return std::nullopt;
-  return SearchValue{.q = static_cast<float>(bounds.lower),
-                     .d = bounds.lower == 0 ? 1.0f : 0.0f,
-                     .m = static_cast<float>(bounds.plies)};
+  return VisitValue{.q = static_cast<float>(bounds.lower),
+                    .d = bounds.lower == 0 ? 1.0f : 0.0f,
+                    .m = static_cast<float>(bounds.plies)};
 }
 
 template <typename Self>
