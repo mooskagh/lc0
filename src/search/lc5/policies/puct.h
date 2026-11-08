@@ -128,7 +128,7 @@ struct PuctPolicy {
   // the backed-up message: the node's mean and bounds.
   static Message Current(const NodeState<Self>& node) {
     const ValueStats& stats = node.stats;
-    return {VisitValue{stats.Q(), stats.D(), stats.M()}.Parent(),
+    return {VisitValue{.q = stats.Q(), .d = stats.D(), .m = stats.M()}.Parent(),
             stats.bounds.Parent()};
   }
   // Whether an in-search two-fold draw stops at the repeated position's first

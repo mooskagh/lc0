@@ -92,14 +92,14 @@ TEST(Lc5GraphTest, CancellationOnlyErasesMatchingPlaceholder) {
 }
 
 TEST(Lc5ValueTest, PerspectiveAndMeans) {
-  VisitValue child{0.25f, 0.5f, 3.0f};
+  VisitValue child{.q = 0.25f, .d = 0.5f, .m = 3.0f};
   VisitValue parent = child.Parent();
   EXPECT_FLOAT_EQ(parent.q, -0.25f);
   EXPECT_FLOAT_EQ(parent.d, 0.5f);
   EXPECT_FLOAT_EQ(parent.m, 4.0f);
   ValueStats stats;
-  stats.Add({0.25f, 0.5f, 3.0f});
-  stats.Add({-0.25f, 0.25f, 5.0f});
+  stats.Add({.q = 0.25f, .d = 0.5f, .m = 3.0f});
+  stats.Add({.q = -0.25f, .d = 0.25f, .m = 5.0f});
   EXPECT_EQ(stats.visits, 2u);
   EXPECT_FLOAT_EQ(stats.Q(), 0.0f);
   EXPECT_FLOAT_EQ(stats.D(), 0.375f);
@@ -113,7 +113,9 @@ TEST(Lc5ValueTest, RunningMeansStayAccurate) {
   EXPECT_EQ(empty.M(), 0.0f);
 
   ValueStats constant;
-  for (int i = 0; i < 100000; ++i) constant.Add({0.3f, 0.2f, 7.0f});
+  for (int i = 0; i < 100000; ++i) {
+    constant.Add({.q = 0.3f, .d = 0.2f, .m = 7.0f});
+  }
   EXPECT_EQ(constant.visits, 100000u);
   EXPECT_EQ(constant.Q(), 0.3f);
   EXPECT_EQ(constant.D(), 0.2f);
@@ -122,7 +124,9 @@ TEST(Lc5ValueTest, RunningMeansStayAccurate) {
   // Q cycles through -0.5, 0, 0.5, 1 with mean 0.25.
   ValueStats sequence;
   for (int i = 0; i < 4000; ++i) {
-    sequence.Add({-0.5f + 0.5f * (i % 4), 0.0f, static_cast<float>(i % 3)});
+    sequence.Add({.q = -0.5f + 0.5f * (i % 4),
+                  .d = 0.0f,
+                  .m = static_cast<float>(i % 3)});
   }
   EXPECT_NEAR(sequence.Q(), 0.25f, 1e-5f);
   EXPECT_NEAR(sequence.M(), 3999.0f / 4000.0f, 1e-5f);
@@ -448,7 +452,7 @@ TEST(Lc5GraphTest, LateMaterializationPreservesPublishedEdges) {
 TEST(Lc5GraphTest, AcceptedInstallCountsLeafValueOnce) {
   Graph graph;
   const NodeKey key{321};
-  const ExpansionPayload payload{.leaf = {0.5f, 0.25f, 6.0f},
+  const ExpansionPayload payload{.leaf = {.q = 0.5f, .d = 0.25f, .m = 6.0f},
                                  .moves = {M(kFileA, kFileA)},
                                  .priors = {1.0f}};
   graph.FindOrCreateMaterialization(key, 7);
@@ -467,9 +471,8 @@ TEST(Lc5GraphTest, AcceptedInstallCountsLeafValueOnce) {
 
   // Duplicate and wrong-id publications do not count the leaf again.
   for (const auto materialization_id : {7u, 8u}) {
-    EXPECT_FALSE(
-        graph.CompleteMaterialization(key, materialization_id, payload)
-            .accepted);
+    EXPECT_FALSE(graph.CompleteMaterialization(key, materialization_id, payload)
+                     .accepted);
     node = graph.SnapshotNode(key);
     ASSERT_TRUE(node);
     EXPECT_EQ(node->stats.visits, 1u);
@@ -799,16 +802,17 @@ TEST(Lc5GraphTest, IncomingParentsKeepIndependentEdgeStatistics) {
 Graph::Node BackedUpNode(Graph& graph, NodeKey key) {
   graph.CompleteMaterialization(
       key, 1,
-      {.leaf = {0.5f, 0.25f, 6.0f},
+      {.leaf = {.q = 0.5f, .d = 0.25f, .m = 6.0f},
        .moves = {M(kFileA, kFileA), M(kFileB, kFileB), M(kFileC, kFileC)},
        .priors = {0.5f, 0.3f, 0.2f}});
   const auto params = TestParams();
   for (int i = 0; i < 2; ++i) {
     const auto selected = graph.SelectAndReserve(key, params);
     EXPECT_EQ(selected.status, SelectStatus::kSelected);
-    graph.BackupNode(key, selected.generation,
-                     PuctAveraging::Leaf({-0.75f, 0.25f, 3.0f}, i == 0),
-                     selected.move);
+    graph.BackupNode(
+        key, selected.generation,
+        PuctAveraging::Leaf({.q = -0.75f, .d = 0.25f, .m = 3.0f}, i == 0),
+        selected.move);
   }
   return *graph.SnapshotNode(key);
 }
@@ -907,13 +911,15 @@ TEST(Lc5GraphTest, RestoreKeepsStatisticsUnderANewGeneration) {
   // Updates for the evicted node are rejected.
   EXPECT_EQ(graph
                 .BackupNode(key, original.generation,
-                            PuctAveraging::Leaf({0.0f, 1.0f, 0.0f}, false),
+                            PuctAveraging::Leaf(
+                                {.q = 0.0f, .d = 1.0f, .m = 0.0f}, false),
                             std::nullopt)
                 .node,
             UpdateResult::kStale);
   EXPECT_EQ(graph
                 .BackupNode(key, restored.generation,
-                            PuctAveraging::Leaf({0.0f, 1.0f, 0.0f}, false),
+                            PuctAveraging::Leaf(
+                                {.q = 0.0f, .d = 1.0f, .m = 0.0f}, false),
                             std::nullopt)
                 .node,
             UpdateResult::kApplied);
@@ -926,9 +932,10 @@ TEST(Lc5GraphTest, EraseIfUnchangedRefusesAfterAnyChange) {
   const auto params = TestParams();
   auto node = BackedUpNode(graph, key);
   // A backup.
-  graph.BackupNode(key, node.generation,
-                   PuctAveraging::Leaf({0.0f, 1.0f, 0.0f}, false),
-                   std::nullopt);
+  graph.BackupNode(
+      key, node.generation,
+      PuctAveraging::Leaf({.q = 0.0f, .d = 1.0f, .m = 0.0f}, false),
+      std::nullopt);
   EXPECT_FALSE(graph.EraseIfUnchanged(key, node.generation, node.version));
   // A reservation, which also makes the node not evictable.
   node = *graph.SnapshotNode(key);
@@ -984,9 +991,10 @@ TEST(Lc5GraphTest, EvictCandidatesPreferFewVisits) {
         keys[i], 1, {.moves = {M(kFileA, kFileA)}, .priors = {1.0f}});
     for (size_t visit = 0; visit < 3 - i % 3 + (i == 3 ? 5 : 0); ++visit) {
       const auto selected = graph.SelectAndReserve(keys[i], params);
-      graph.BackupNode(keys[i], selected.generation,
-                       PuctAveraging::Leaf({0.0f, 1.0f, 0.0f}, false),
-                       selected.move);
+      graph.BackupNode(
+          keys[i], selected.generation,
+          PuctAveraging::Leaf({.q = 0.0f, .d = 1.0f, .m = 0.0f}, false),
+          selected.move);
     }
   }
   size_t cursor = 0;

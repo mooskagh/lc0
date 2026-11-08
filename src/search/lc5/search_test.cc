@@ -1160,7 +1160,8 @@ TEST(Lc5SearchTest, RecordFromAnotherPolicyIsEvaluatedInstead) {
   {
     PolicyEngine<PuctAveraging> other(TestParams());
     other.graph().CompleteMaterialization(
-        root.key, 1, {.leaf = {0.5f, 0.0f, 0.0f}, .moves = {}, .priors = {}});
+        root.key, 1,
+        {.leaf = {.q = 0.5f, .d = 0.0f, .m = 0.0f}, .moves = {}, .priors = {}});
     SeedStore(other.graph(), store);
   }
   ASSERT_EQ(store.entries.size(), 1u);
@@ -1732,7 +1733,8 @@ TEST(Lc5SearchTest, BlockedEvictionDoesNotDelayPartialBatch) {
   sibling.history.Append(legal[1]);
   sibling.key = MakeNodeKey(sibling.history, 7);
   graph.CompleteMaterialization(
-      sibling.key, 2, {.leaf = {0.5f, 0.0f, 0.0f}, .moves = {}, .priors = {}});
+      sibling.key, 2,
+      {.leaf = {.q = 0.5f, .d = 0.0f, .m = 0.0f}, .moves = {}, .priors = {}});
   auto settings = TestSettings(1, 1);
   settings.graph_node_limit = 1;
   settings.eval_threads = 2;
@@ -1773,7 +1775,8 @@ TEST(Lc5SearchTest, RespondsBeforeBlockedEvictionDrains) {
   sibling.history.Append(legal[1]);
   sibling.key = MakeNodeKey(sibling.history, 7);
   graph.CompleteMaterialization(
-      sibling.key, 2, {.leaf = {0.5f, 0.0f, 0.0f}, .moves = {}, .priors = {}});
+      sibling.key, 2,
+      {.leaf = {.q = 0.5f, .d = 0.0f, .m = 0.0f}, .moves = {}, .priors = {}});
   auto settings = TestSettings(1, 1);
   settings.graph_node_limit = 1;
   // Store threads come one per eval thread. With only one, the visit's store

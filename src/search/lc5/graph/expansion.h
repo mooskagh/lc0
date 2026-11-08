@@ -46,8 +46,9 @@ enum class TerminalKind : uint8_t {
 
 // Value of a terminal position for its side to move.
 inline VisitValue TerminalValue(TerminalKind terminal) {
-  return terminal == TerminalKind::kCheckmate ? VisitValue{-1.0f, 0.0f, 0.0f}
-                                              : VisitValue{0.0f, 1.0f, 0.0f};
+  return terminal == TerminalKind::kCheckmate
+             ? VisitValue{.q = -1.0f, .d = 0.0f, .m = 0.0f}
+             : VisitValue{.q = 0.0f, .d = 1.0f, .m = 0.0f};
 }
 
 // Whether a terminal's value holds wherever its node is reached. A
