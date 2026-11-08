@@ -987,11 +987,13 @@ TEST(Lc5SearchTest, ImmediateAndMixedResultsKeepJobStorageAlive) {
     ControlledBackend backend(cache);
     RecordingResponder responder;
     const auto root = Origin();
+    const auto moves = root.history.Last().GetBoard().GenerateLegalMoves();
+    graph.CompleteMaterialization(
+        root.key, 1, {.moves = {moves[0], moves[1]}, .priors = {0.5f, 0.5f}});
     SearchSession session(&engine, &backend, &responder, TestSettings(),
                           TestTimeManagement(), root, GoParams{.nodes = 4},
                           std::chrono::steady_clock::now());
     std::vector<VisitOrigin> origins;
-    const auto moves = root.history.Last().GetBoard().GenerateLegalMoves();
     for (int i = 0; i < 4; ++i) {
       auto origin = root;
       origin.history.Append(moves[i]);
@@ -1003,7 +1005,7 @@ TEST(Lc5SearchTest, ImmediateAndMixedResultsKeepJobStorageAlive) {
     session.Start();
     session.Wait();
     ExpectDrained(session, graph);
-    ExpectFinalOutput(responder, 4);
+    ExpectFinalOutput(responder, 5);
     const bool all = cache == ControlledBackend::Cache::kAll;
     EXPECT_EQ(backend.inputs.load(), 4u);
     EXPECT_EQ(backend.computes.load(), all ? 0u : 1u);
@@ -1336,6 +1338,10 @@ TEST(Lc5SearchTest, MultiworkerMixedCacheResultsRespectBatchAndItemLimits) {
                                 test.batch_size, test.evaluators);
       RecordingResponder responder;
       const auto root = Origin();
+      const auto moves = root.history.Last().GetBoard().GenerateLegalMoves();
+      ASSERT_EQ(moves.size(), 20u);
+      graph.CompleteMaterialization(
+          root.key, 1, {.moves = {moves[0], moves[1]}, .priors = {0.5f, 0.5f}});
       auto settings = TestSettings(4, test.capacity);
       settings.eval_threads = test.evaluators;
       settings.minibatch_size = test.batch_size;
@@ -1344,8 +1350,6 @@ TEST(Lc5SearchTest, MultiworkerMixedCacheResultsRespectBatchAndItemLimits) {
           &engine, &backend, &responder, settings, TestTimeManagement(), root,
           GoParams{.nodes = test.capacity}, std::chrono::steady_clock::now());
       std::vector<VisitOrigin> origins;
-      const auto moves = root.history.Last().GetBoard().GenerateLegalMoves();
-      ASSERT_EQ(moves.size(), 20u);
       // Pre-admission gives every worker independent leaves before submission.
       // Target 4 stresses the in-flight limits with one-item jobs; targets
       // 16/32 exercise mixed results in four/eight-item jobs across evaluators.
@@ -1375,7 +1379,7 @@ TEST(Lc5SearchTest, MultiworkerMixedCacheResultsRespectBatchAndItemLimits) {
       session.Wait();
       ASSERT_TRUE(computing);
       ExpectDrained(session, graph);
-      ExpectFinalOutput(responder, test.capacity);
+      ExpectFinalOutput(responder, 1 + test.capacity);
       EXPECT_EQ(backend.evaluator_ids.size(),
                 static_cast<size_t>(test.evaluators));
       EXPECT_EQ(backend.inputs.load(), test.capacity);
@@ -1386,7 +1390,7 @@ TEST(Lc5SearchTest, MultiworkerMixedCacheResultsRespectBatchAndItemLimits) {
       EXPECT_EQ(session.metrics().visits_cancelled.load(), 0u);
       EXPECT_LE(session.metrics().active_visits_high_water.load(),
                 test.capacity);
-      EXPECT_EQ(graph.Size(), test.capacity);
+      EXPECT_EQ(graph.Size(), 1u + test.capacity);
       const size_t job_size = (test.batch_size + 3) / 4;
       const size_t max_jobs =
           std::min<size_t>(16, 2 * test.batch_size / job_size);

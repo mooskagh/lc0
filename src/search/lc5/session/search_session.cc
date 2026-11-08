@@ -149,8 +149,7 @@ void SearchSession::Start() {
 
 void SearchSession::Stop() {
   stop_requested_.store(true);
-  if (metrics_.visits_completed.load() > 0 ||
-      engine_->GetRootStats(root_.key).expanded) {
+  if (engine_->GetRootStats(root_.key).expanded) {
     limiter_.Stop();            // Close visit admission and set IsStopping().
   } else {
     limiter_.CapNodeLimit(1);   // Admit only the root visit before stopping.
@@ -222,7 +221,7 @@ void SearchSession::MaybeOutputInfo(steady_clock::time_point now,
 
 bool SearchSession::ShouldStop(steady_clock::time_point now) const {
   const RootStats root = engine_->GetRootStats(root_.key);
-  if (!root.expanded && metrics_.visits_completed.load() == 0) return false;
+  if (!root.expanded) return false;
   if (stop_requested_.load() || time_manager_.ShouldStop(now) ||
       metrics_.visits_completed.load() >= limiter_.node_limit()) {
     return true;
