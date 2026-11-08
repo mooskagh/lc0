@@ -29,39 +29,35 @@
 
 #include <cstdint>
 #include <limits>
-#include <vector>
 
 #include "chess/types.h"
 #include "search/lc5/graph/node_eval.h"
 #include "search/lc5/graph/prior.h"
+#include "utils/compact_vector.h"
 
 namespace lczero::lc5 {
 
-// Each live visit holds at most one unit of an edge's 16-bit in_flight, which
-// caps the number of live visits.
+// Maximum live visits, bounded by TriedEdge::in_flight.
 inline constexpr int kMaxActiveVisitsLimit =
     std::numeric_limits<uint16_t>::max();
 
-// A legal move and its prior; every legal move of a materialized node has one.
+// A legal move and its prior.
 struct LegalEdge {
   Move move;
   PackedPrior prior;
 };
 static_assert(sizeof(LegalEdge) == 4);
 
-// The statistics of an edge that has been reserved at least once. The
-// machinery owns the reservations; `stats` belongs to the policy P.
+// Statistics and active reservations of an edge tried at least once.
 template <typename P>
 struct TriedEdge {
-  uint16_t in_flight = 0;  // Virtual loss; bounded by kMaxActiveVisitsLimit.
   typename P::EdgeStats stats{};
+  uint16_t in_flight = 0;  // Virtual loss; bounded by kMaxActiveVisitsLimit.
   static_assert(kMaxActiveVisitsLimit <=
                 std::numeric_limits<decltype(in_flight)>::max());
 };
 
-// Deterministic tie-break between equally ranked edges: higher prior first,
-// then the lower move encoding. A node's edges are sorted in this order, and
-// selection relies on it.
+// Tie-break order for edges: descending prior, then ascending move encoding.
 inline bool PreferOnTie(const LegalEdge& a, const LegalEdge& b) {
   if (a.prior != b.prior) return a.prior > b.prior;
   return a.move.raw_data() < b.move.raw_data();
@@ -69,16 +65,11 @@ inline bool PreferOnTie(const LegalEdge& a, const LegalEdge& b) {
 
 template <typename P>
 struct NodeState {
-  // Initialized from a counter on creation and bumped by every change to the
-  // node, so an eviction can tell whether the node changed after its record
-  // was taken. Wraps around.
-  uint32_t version = 0;
-  TerminalKind terminal = TerminalKind::kNonTerminal;
   typename P::NodeStats stats{};
-  std::vector<LegalEdge> edges{};
-  // tried[i] belongs to edges[i]. Edges from tried.size() on have never been
-  // reserved; selection appends the first of them when it picks it.
-  std::vector<TriedEdge<P>> tried{};
+  uint32_t version = 0;  // Bumped on change so eviction skips modified nodes.
+  TerminalKind terminal = TerminalKind::kNonTerminal;
+  CompactVector<LegalEdge> edges{};     // Sorted by PreferOnTie.
+  CompactVector<TriedEdge<P>> tried{};  // Prefix of edges tried at least once.
 };
 
 }  // namespace lczero::lc5

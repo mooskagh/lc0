@@ -97,11 +97,11 @@ TEST(Lc5VisitPoolTest, StaleAndForeignIdsAreNotLive) {
 }
 
 TEST(Lc5VisitPoolTest, InitializesAndResetsVisit) {
-  VisitOrigin origin{
-      .key = NodeKey{42},
-      .history = {},
-      .backup_prefix = {
-          {.key = NodeKey{7}, .selected_move = std::nullopt, .update_node = true}}};
+  VisitOrigin origin{.key = NodeKey{42},
+                     .history = {},
+                     .backup_prefix = {{.key = NodeKey{7},
+                                        .selected_move = std::nullopt,
+                                        .update_node = true}}};
   origin.history.Reset(ChessBoard::kStartposBoard, 0, 0);
   VisitPool pool(1);
   for (uint32_t epoch = 1; epoch <= 2; ++epoch) {

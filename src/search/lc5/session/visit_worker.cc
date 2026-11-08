@@ -419,12 +419,10 @@ void VisitWorker::CompleteMaterialization(MaterializationId materialization_id,
   // The owner backs up the new leaf value; waiters select below the node
   // unless it is terminal, in which case they also back up. A rejected
   // publication resumes selection only.
-  const bool terminal =
-      accepted && eval.terminal != TerminalKind::kNonTerminal;
+  const bool terminal = accepted && eval.terminal != TerminalKind::kNonTerminal;
   const auto wake = [&](VisitWakeup wakeup, bool owner) {
-    wakeup.kind = accepted && (owner || terminal)
-                      ? VisitWakeup::Kind::kBackup
-                      : VisitWakeup::Kind::kSelect;
+    wakeup.kind = accepted && (owner || terminal) ? VisitWakeup::Kind::kBackup
+                                                  : VisitWakeup::Kind::kSelect;
     wakeup.value = eval.leaf;
     wakeup.terminal = terminal;
     wakeup.exact = accepted && IsExact(eval.terminal);

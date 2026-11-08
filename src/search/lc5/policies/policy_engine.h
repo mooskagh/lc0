@@ -81,9 +81,7 @@ class PolicyEngine final : public VisitEngine {
                         ThinkingInfo& info) const override;
   RootStats GetRootStats(NodeKey root) const override;
 
-  bool ContainsNode(NodeKey key) const override {
-    return graph_.Contains(key);
-  }
+  bool ContainsNode(NodeKey key) const override { return graph_.Contains(key); }
   bool CompleteMaterialization(NodeKey key, const NodeEval& eval) override {
     return graph_.CompleteMaterialization(key, eval);
   }

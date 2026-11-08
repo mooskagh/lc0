@@ -79,8 +79,7 @@ TEST(Lc5MaterializationTableTest, CanOpenCanDecline) {
   MaterializationTable table;
   EXPECT_FALSE(table.Join(NodeKey{1}, Wakeup(10, 0), [] { return false; }));
   EXPECT_TRUE(table.empty());
-  const auto owner =
-      table.Join(NodeKey{1}, Wakeup(11, 0), [] { return true; });
+  const auto owner = table.Join(NodeKey{1}, Wakeup(11, 0), [] { return true; });
   ASSERT_TRUE(owner);
   EXPECT_TRUE(owner->owner);
   // Once open, waiters join without calling can_open.

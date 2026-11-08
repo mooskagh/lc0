@@ -194,11 +194,10 @@ TEST(Lc5GraphTest, ProvenBoundsGoUpAndStopSelectionWhenAsked) {
   const Move move = M(kFileA, kFileA);
   graph.CompleteMaterialization(parent, {.moves = {move}, .priors = {1.0f}});
   graph.CompleteMaterialization(
-      child,
-      {.terminal = TerminalKind::kCheckmate,
-       .leaf = TerminalValue(TerminalKind::kCheckmate),
-       .moves = {},
-       .priors = {}});
+      child, {.terminal = TerminalKind::kCheckmate,
+              .leaf = TerminalValue(TerminalKind::kCheckmate),
+              .moves = {},
+              .priors = {}});
   // The install proves the checkmate; the leaf's own backup keeps it.
   ASSERT_EQ(graph.SelectAndReserve(parent, TestParams()).move, move);
   const auto from_child = graph.BackupNode(
@@ -367,8 +366,7 @@ TEST(Lc5GraphTest, BackupCanSendTheNodesCurrentValue) {
                                  .priors = {1.0f}});
   ASSERT_EQ(graph.SelectAndReserve(key, TestParams()).status,
             SelectStatus::kSelected);
-  const auto result =
-      graph.BackupNode(key, {-0.75f, 0.0f, 4.0f}, move, true);
+  const auto result = graph.BackupNode(key, {-0.75f, 0.0f, 4.0f}, move, true);
   EXPECT_EQ(result.node, UpdateResult::kApplied);
   EXPECT_EQ(result.edge, UpdateResult::kApplied);
   const auto node = graph.SnapshotNode(key);
@@ -545,16 +543,14 @@ TEST(Lc5GraphTest, ReselectionMovesOnlyTheWaitersReservation) {
   EXPECT_EQ(TriedAt(*node, 0).stats.visits, 0u);
   // Nothing changes for a missing node or an edge without reservations.
   EXPECT_EQ(
-      graph
-          .ReselectAndReserve(NodeKey{999}, a, {.value = {.q = -0.9f}}, params)
+      graph.ReselectAndReserve(NodeKey{999}, a, {.value = {.q = -0.9f}}, params)
           .status,
       SelectStatus::kMissing);
-  EXPECT_EQ(
-      graph
-          .ReselectAndReserve(key, eval.moves[2], {.value = {.q = -0.9f}},
-                              params)
-          .status,
-      SelectStatus::kMissing);
+  EXPECT_EQ(graph
+                .ReselectAndReserve(key, eval.moves[2], {.value = {.q = -0.9f}},
+                                    params)
+                .status,
+            SelectStatus::kMissing);
   node = graph.SnapshotNode(key);
   EXPECT_EQ(node->tried.size(), 2u);
   EXPECT_EQ(TriedAt(*node, 0).in_flight, 1u);
@@ -577,17 +573,15 @@ TEST(Lc5GraphTest, IncomingParentsKeepIndependentEdgeStatistics) {
 // A node with two of its three edges tried, visits and proven bounds.
 Graph::Node BackedUpNode(Graph& graph, NodeKey key) {
   graph.CompleteMaterialization(
-      key,
-      {.leaf = {.q = 0.5f, .d = 0.25f, .m = 6.0f},
-       .moves = {M(kFileA, kFileA), M(kFileB, kFileB), M(kFileC, kFileC)},
-       .priors = {0.5f, 0.3f, 0.2f}});
+      key, {.leaf = {.q = 0.5f, .d = 0.25f, .m = 6.0f},
+            .moves = {M(kFileA, kFileA), M(kFileB, kFileB), M(kFileC, kFileC)},
+            .priors = {0.5f, 0.3f, 0.2f}});
   const auto params = TestParams();
   for (int i = 0; i < 2; ++i) {
     const auto selected = graph.SelectAndReserve(key, params);
     EXPECT_EQ(selected.status, SelectStatus::kSelected);
     graph.BackupNode(
-        key,
-        PuctAveraging::Leaf({.q = -0.75f, .d = 0.25f, .m = 3.0f}, i == 0),
+        key, PuctAveraging::Leaf({.q = -0.75f, .d = 0.25f, .m = 3.0f}, i == 0),
         selected.move);
   }
   return *graph.SnapshotNode(key);
@@ -623,11 +617,10 @@ TEST(Lc5NodeRecordTest, RoundTripKeepsStatisticsAndEdges) {
 
   // A terminal node has no edges.
   graph.CompleteMaterialization(
-      NodeKey{43},
-      {.terminal = TerminalKind::kCheckmate,
-       .leaf = TerminalValue(TerminalKind::kCheckmate),
-       .moves = {},
-       .priors = {}});
+      NodeKey{43}, {.terminal = TerminalKind::kCheckmate,
+                    .leaf = TerminalValue(TerminalKind::kCheckmate),
+                    .moves = {},
+                    .priors = {}});
   const auto terminal =
       DecodeNode<PuctAveraging>(EncodeNode(*graph.SnapshotNode(NodeKey{43})));
   ASSERT_TRUE(terminal);
@@ -695,8 +688,7 @@ TEST(Lc5GraphTest, EraseIfUnchangedRefusesAfterAnyChange) {
   auto node = BackedUpNode(graph, key);
   // A backup.
   graph.BackupNode(
-      key,
-      PuctAveraging::Leaf({.q = 0.0f, .d = 1.0f, .m = 0.0f}, false),
+      key, PuctAveraging::Leaf({.q = 0.0f, .d = 1.0f, .m = 0.0f}, false),
       std::nullopt);
   EXPECT_FALSE(graph.EraseIfUnchanged(key, node.version));
   // A reservation, which also makes the node not evictable.

@@ -45,12 +45,7 @@
 
 namespace lczero::lc5 {
 
-enum class SelectStatus {
-  kSelected,
-  kMissing,
-  kTerminal,
-  kProven
-};
+enum class SelectStatus { kSelected, kMissing, kTerminal, kProven };
 
 struct SelectResult {
   SelectStatus status = SelectStatus::kMissing;
@@ -59,12 +54,7 @@ struct SelectResult {
   VisitValue value{};  // The proven value, for kProven.
 };
 
-enum class UpdateResult {
-  kApplied,
-  kMissing,
-  kEdgeMissing,
-  kUnderflow
-};
+enum class UpdateResult { kApplied, kMissing, kEdgeMissing, kUnderflow };
 
 template <typename P>
 struct BackupResult {
@@ -283,8 +273,6 @@ SelectResult GameGraph<P>::ReselectAndReserve(
 template <typename P>
 Move GameGraph<P>::ReserveLocked(Shard& shard, Node& node, size_t index) {
   if (index == node.tried.size()) {
-    // Grows 2 -> 4 -> 8...; most nodes only ever try a few edges.
-    if (node.tried.empty()) node.tried.reserve(2);
     node.tried.emplace_back();
   }
   Tried& tried = node.tried[index];

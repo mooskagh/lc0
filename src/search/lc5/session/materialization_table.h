@@ -62,9 +62,10 @@ class MaterializationTable {
     size_t waiters = 0;  // Waiters on the materialization, if joined as one.
   };
 
-  // Joins the open materialization for `key`, or opens a new one if `can_open()`
-  // returns true. Returns nullopt if no materialization is open and `can_open()`
-  // declines (the node was materialized since the caller last checked).
+  // Joins the open materialization for `key`, or opens a new one if
+  // `can_open()` returns true. Returns nullopt if no materialization is open
+  // and `can_open()` declines (the node was materialized since the caller last
+  // checked).
   template <typename CanOpen>
   std::optional<Joined> Join(NodeKey key, VisitWakeup wakeup,
                              CanOpen&& can_open) {
