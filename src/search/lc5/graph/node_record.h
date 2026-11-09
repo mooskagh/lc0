@@ -80,7 +80,7 @@ constexpr bool kTriviallyRecordable =
     std::is_trivially_copyable_v<LegalEdge>;
 
 template <typename P>
-std::vector<uint8_t> EncodeNode(const NodeState<P>& node) {
+std::vector<uint8_t> EncodeNode(const Node<P>& node) {
   static_assert(kTriviallyRecordable<P>);
   using NodeStats = typename P::NodeStats;
   using EdgeStats = typename P::EdgeStats;
@@ -107,7 +107,7 @@ std::vector<uint8_t> EncodeNode(const NodeState<P>& node) {
 // The node of a record from EncodeNode<P>, with no reservations; nullopt if
 // the record is malformed or from another policy or format version.
 template <typename P>
-std::optional<NodeState<P>> DecodeNode(std::span<const uint8_t> record) {
+std::optional<Node<P>> DecodeNode(std::span<const uint8_t> record) {
   static_assert(kTriviallyRecordable<P>);
   using NodeStats = typename P::NodeStats;
   using EdgeStats = typename P::EdgeStats;
@@ -128,7 +128,7 @@ std::optional<NodeState<P>> DecodeNode(std::span<const uint8_t> record) {
     if (size > 0) std::memcpy(data, in, size);
     in += size;
   };
-  NodeState<P> node{.terminal = header.terminal};
+  Node<P> node{.terminal = header.terminal};
   read(&node.stats, sizeof(NodeStats));
   node.edges.resize(header.edges);
   read(node.edges.data(), header.edges * sizeof(LegalEdge));

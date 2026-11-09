@@ -111,19 +111,22 @@ class SearchSessionTestPeer {
     ASSERT_TRUE(engine.session_->IsFinished());
     ExpectDrained(*engine.session_);
     ASSERT_TRUE(engine.visit_engine_);
-    for (const auto& [key, node] :
-         static_cast<PolicyEngine<PuctAveraging>&>(*engine.visit_engine_)
-             .graph()
-             .SnapshotAllForTesting()) {
-      for (const auto& tried : node.tried) EXPECT_EQ(tried.in_flight, 0u);
-    }
+    const auto& graph =
+        static_cast<PolicyEngine<PuctAveraging>&>(*engine.visit_engine_)
+            .graph();
+    size_t cursor = 0;
+    EXPECT_EQ(graph
+                  .FindEvictableNodes(&cursor, graph.Size() + 1, 1.0,
+                                      NodeKey{~0ull})
+                  .size(),
+              graph.Size());
   }
 };
 
 namespace {
 
 // The statistics of edge `i`; an untried edge has none, so it reads as empty.
-const TriedEdge<PuctAveraging>& TriedAt(const NodeState<PuctAveraging>& node,
+const TriedEdge<PuctAveraging>& TriedAt(const Node<PuctAveraging>& node,
                                         size_t i) {
   static const TriedEdge<PuctAveraging> kUntried;
   return i < node.tried.size() ? node.tried[i] : kUntried;
@@ -419,7 +422,9 @@ class BlockingStore final : public NodeStore {
 // Records every node of `graph` in `store`.
 template <typename P>
 void SeedStore(const GameGraph<P>& graph, RecordingStore& store) {
-  for (const auto& [key, node] : graph.SnapshotAllForTesting()) {
+  size_t cursor = 0;
+  for (const auto& [key, node] :
+       graph.FindEvictableNodes(&cursor, graph.Size(), 1.0, NodeKey{~0ull})) {
     store.entries.insert_or_assign(key, EncodeNode(node));
   }
 }
@@ -440,12 +445,13 @@ void ExpectDrained(const SearchSession& session, const GameGraph<P>& graph) {
   const auto& m = session.metrics();
   EXPECT_EQ(m.visits_admitted.load(),
             m.visits_completed.load() + m.visits_cancelled.load());
-  EXPECT_EQ(m.invariant_underflow_prevented.load(), 0u);
   EXPECT_EQ(m.publications_rejected.load(), 0u);
-  for (const auto& [key, node] : graph.SnapshotAllForTesting()) {
-    SCOPED_TRACE(key.hash);
-    for (const auto& tried : node.tried) EXPECT_EQ(tried.in_flight, 0u);
-  }
+  size_t cursor = 0;
+  EXPECT_EQ(graph
+                .FindEvictableNodes(&cursor, graph.Size() + 1, 1.0,
+                                    NodeKey{~0ull})
+                .size(),
+            graph.Size());
 }
 
 void ExpectFinalOutput(const RecordingResponder& responder, uint64_t nodes) {
@@ -748,8 +754,11 @@ TEST(Lc5SearchTest, PuctDagDrainsAndKeepsNodeMeans) {
     EXPECT_EQ(node->stats.visits, static_cast<uint64_t>(kNodes));
     // A node's visits are its own sample plus its edges' visits, whose cached
     // values its mean weighs.
-    const auto snapshot = graph.SnapshotAllForTesting();
-    std::unordered_map<uint64_t, const NodeState<PuctDag>*> nodes;
+    size_t cursor = 0;
+    const auto snapshot =
+        graph.FindEvictableNodes(&cursor, graph.Size(), 1.0, NodeKey{~0ull});
+    ASSERT_EQ(snapshot.size(), graph.Size());
+    std::unordered_map<uint64_t, const Node<PuctDag>*> nodes;
     for (const auto& [key, n] : snapshot) {
       nodes[key.hash] = &n;
       EXPECT_LE(std::abs(n.stats.Q()), 1.0f);
@@ -832,12 +841,11 @@ TEST(Lc5SearchTest, ContainedTwoFoldDrawStopsAtFirstOccurrence) {
     Visit visit;
     for (size_t i = 0; i < kNodes; ++i) {
       const NodeKey key{100 + i};
-      graph.CompleteMaterialization(key,
-                                    {.leaf = {.q = 0.5f, .d = 0.0f, .m = 10.0f},
-                                     .moves = {move},
-                                     .priors = {1.0f}});
-      ASSERT_EQ(graph.SelectAndReserve(key, TestParams()).status,
-                SelectStatus::kSelected);
+      graph.InsertNode(key, {.leaf = {.q = 0.5f, .d = 0.0f, .m = 10.0f},
+                             .moves = {move},
+                             .priors = {1.0f}});
+      ASSERT_EQ(graph.SelectAndReserveEdge(key, TestParams()).status,
+                SelectResult::kEdgeSelected);
       visit.path.push_back(
           {.key = key, .selected_move = move, .update_node = true});
     }
@@ -981,7 +989,7 @@ TEST(Lc5SearchTest, ImmediateAndMixedResultsKeepJobStorageAlive) {
     RecordingResponder responder;
     const auto root = Origin();
     const auto moves = root.history.Last().GetBoard().GenerateLegalMoves();
-    graph.CompleteMaterialization(
+    graph.InsertNode(
         root.key, {.moves = {moves[0], moves[1]}, .priors = {0.5f, 0.5f}});
     SearchSession session(&engine, &backend, &responder, TestSettings(),
                           TestTimeManagement(), root, GoParams{.nodes = 4},
@@ -1029,8 +1037,7 @@ TEST(Lc5SearchTest, BlockedBackendStopAndAbortDrainReservations) {
     const auto moves = root.history.Last().GetBoard().GenerateLegalMoves();
     // All visits reserve the same root edge and share the child
     // materialization.
-    graph.CompleteMaterialization(root.key,
-                                  {.moves = {moves[0]}, .priors = {1.0f}});
+    graph.InsertNode(root.key, {.moves = {moves[0]}, .priors = {1.0f}});
     auto child = root;
     child.history.Append(moves[0]);
     child.key = MakeNodeKey(child.history, 7);
@@ -1151,7 +1158,7 @@ TEST(Lc5SearchTest, RecordFromAnotherPolicyIsEvaluatedInstead) {
   const auto root = Origin();
   {
     PolicyEngine<PuctAveraging> other(TestParams());
-    other.graph().CompleteMaterialization(
+    other.graph().InsertNode(
         root.key,
         {.leaf = {.q = 0.5f, .d = 0.0f, .m = 0.0f}, .moves = {}, .priors = {}});
     SeedStore(other.graph(), store);
@@ -1222,7 +1229,7 @@ TEST(Lc5SearchTest, CollectionFlushesWhileAnotherWorkerIsBlockedInStore) {
     RecordingResponder responder;
     const auto root = Origin();
     const auto moves = root.history.Last().GetBoard().GenerateLegalMoves();
-    graph.CompleteMaterialization(
+    graph.InsertNode(
         root.key, {.moves = {moves[0], moves[1]}, .priors = {0.5f, 0.5f}});
     auto first = root;
     first.history.Append(moves[0]);
@@ -1334,7 +1341,7 @@ TEST(Lc5SearchTest, MultiworkerMixedCacheResultsRespectBatchAndItemLimits) {
       const auto root = Origin();
       const auto moves = root.history.Last().GetBoard().GenerateLegalMoves();
       ASSERT_EQ(moves.size(), 20u);
-      graph.CompleteMaterialization(
+      graph.InsertNode(
           root.key, {.moves = {moves[0], moves[1]}, .priors = {0.5f, 0.5f}});
       auto settings = TestSettings(4, test.capacity);
       settings.eval_threads = test.evaluators;
@@ -1425,8 +1432,7 @@ TEST(Lc5SearchTest, BlockedStoreLoadsDrainAfterStopOrAbort) {
       RecordingResponder responder;
       const auto root = Origin();
       const auto move = root.history.Last().GetBoard().GenerateLegalMoves()[0];
-      graph.CompleteMaterialization(root.key,
-                                    {.moves = {move}, .priors = {1.0f}});
+      graph.InsertNode(root.key, {.moves = {move}, .priors = {1.0f}});
       auto child = root;
       child.history.Append(move);
       child.key = MakeNodeKey(child.history, 7);
@@ -1434,7 +1440,7 @@ TEST(Lc5SearchTest, BlockedStoreLoadsDrainAfterStopOrAbort) {
         // Uniform priors, so edge order is by move encoding.
         auto legal = child.history.Last().GetBoard().GenerateLegalMoves();
         std::ranges::sort(legal, {}, &Move::raw_data);
-        NodeState<PuctAveraging> stored{
+        Node<PuctAveraging> stored{
             .stats = {.visits = 1, .q = 0.75f, .d = 0.25f, .m = 7.0f}};
         for (const Move legal_move : legal) {
           stored.edges.push_back(
@@ -1529,8 +1535,7 @@ TEST(Lc5SearchTest, QueuedBacklogCannotComputeAgainAfterStop) {
     RecordingResponder responder;
     const auto root = Origin();
     const auto moves = root.history.Last().GetBoard().GenerateLegalMoves();
-    graph.CompleteMaterialization(root.key,
-                                  {.moves = {moves[0]}, .priors = {1.0f}});
+    graph.InsertNode(root.key, {.moves = {moves[0]}, .priors = {1.0f}});
     auto settings = TestSettings(4, 20);
     settings.eval_threads = evaluators;
     SearchSession session(&engine, &backend, &responder, settings,
@@ -1571,7 +1576,7 @@ TEST(Lc5SearchTest, AuthorizedEvaluationsBackUpToRootAfterStop) {
   // Uniform priors, so edge order is by move encoding.
   auto legal = root.history.Last().GetBoard().GenerateLegalMoves();
   std::ranges::sort(legal, {}, &Move::raw_data);
-  graph.CompleteMaterialization(
+  graph.InsertNode(
       root.key,
       {.moves = {legal.begin(), legal.end()},
        .priors = std::vector<float>(legal.size(), 1.0f / legal.size())});
@@ -1613,8 +1618,7 @@ TEST(Lc5SearchTest, StopDuringAddInputKeepsOnlyImmediateResults) {
   RecordingResponder responder;
   const auto root = Origin();
   const auto moves = root.history.Last().GetBoard().GenerateLegalMoves();
-  graph.CompleteMaterialization(root.key,
-                                {.moves = {moves[0]}, .priors = {1.0f}});
+  graph.InsertNode(root.key, {.moves = {moves[0]}, .priors = {1.0f}});
   auto settings = TestSettings(1, 4);
   settings.minibatch_size = 8;
   SearchSession session(&engine, &backend, &responder, settings,
@@ -1656,8 +1660,7 @@ TEST(Lc5SearchTest, NonfittingJobStaysQueuedAndIsCancelledAfterStop) {
   RecordingResponder responder;
   const auto root = Origin();
   const auto moves = root.history.Last().GetBoard().GenerateLegalMoves();
-  graph.CompleteMaterialization(root.key,
-                                {.moves = {moves[0]}, .priors = {1.0f}});
+  graph.InsertNode(root.key, {.moves = {moves[0]}, .priors = {1.0f}});
   auto settings = TestSettings(1, 6);
   settings.minibatch_size = 5;
   SearchSession session(&engine, &backend, &responder, settings,
@@ -1718,12 +1721,12 @@ TEST(Lc5SearchTest, BlockedEvictionDoesNotDelayPartialBatch) {
   const auto legal = root.history.Last().GetBoard().GenerateLegalMoves();
   // As in RespondsBeforeBlockedEvictionDrains: the sibling is evicted while
   // the one visit evaluates the first edge's child.
-  graph.CompleteMaterialization(
+  graph.InsertNode(
       root.key, {.moves = {legal[0], legal[1]}, .priors = {0.9f, 0.1f}});
   auto sibling = root;
   sibling.history.Append(legal[1]);
   sibling.key = MakeNodeKey(sibling.history, 7);
-  graph.CompleteMaterialization(
+  graph.InsertNode(
       sibling.key,
       {.leaf = {.q = 0.5f, .d = 0.0f, .m = 0.0f}, .moves = {}, .priors = {}});
   auto settings = TestSettings(1, 1);
@@ -1760,12 +1763,12 @@ TEST(Lc5SearchTest, RespondsBeforeBlockedEvictionDrains) {
   const auto legal = root.history.Last().GetBoard().GenerateLegalMoves();
   // The one visit takes the first edge and blocks in the backend; the
   // sibling below the second edge is the node to evict.
-  graph.CompleteMaterialization(
+  graph.InsertNode(
       root.key, {.moves = {legal[0], legal[1]}, .priors = {0.9f, 0.1f}});
   auto sibling = root;
   sibling.history.Append(legal[1]);
   sibling.key = MakeNodeKey(sibling.history, 7);
-  graph.CompleteMaterialization(
+  graph.InsertNode(
       sibling.key,
       {.leaf = {.q = 0.5f, .d = 0.0f, .m = 0.0f}, .moves = {}, .priors = {}});
   auto settings = TestSettings(1, 1);
@@ -1820,7 +1823,6 @@ TEST(Lc5SearchTest, EvictionKeepsGraphSmallAndLosesNoVisits) {
     EXPECT_GT(m.nodes_evicted.load(), 0u);
     EXPECT_GT(m.nodes_restored.load(), 0u);
     EXPECT_EQ(m.restores_rejected.load(), 0u);
-    EXPECT_EQ(m.invariant_underflow_prevented.load(), 0u);
     // Every completed visit reached the root, which is never evicted.
     const auto node = graph.SnapshotNode(root.key);
     ASSERT_TRUE(node);
@@ -1962,8 +1964,7 @@ TEST(Lc5SearchTest, ThinkingInfoEmittedOnDepthSeldepthAndBestMoveChanges) {
   const auto legal = root.history.Last().GetBoard().GenerateLegalMoves();
   const Move m0 = legal[0];
   const Move m1 = legal[1];
-  graph.CompleteMaterialization(root.key,
-                                {.moves = {m0, m1}, .priors = {0.55f, 0.45f}});
+  graph.InsertNode(root.key, {.moves = {m0, m1}, .priors = {0.55f, 0.45f}});
 
   // Pause at input 2 before Fill() so visit 1's backup is reported first, then
   // switch q so visit 2 flips the root's best move well before the 1s timer.

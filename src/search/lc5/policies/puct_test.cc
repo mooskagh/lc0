@@ -36,7 +36,7 @@
 namespace lczero::lc5 {
 namespace {
 
-using Node = NodeState<PuctAveraging>;
+using Node = lc5::Node<PuctAveraging>;
 using Tried = TriedEdge<PuctAveraging>;
 
 Move M(File from, File to) {
@@ -490,7 +490,7 @@ TEST(Lc5PuctTest, PoliciesShareThePuctOptions) {
   EXPECT_EQ(MakeVisitEngine("puct-dag")->GetName(), "puct-dag");
 }
 
-using DagNode = NodeState<PuctDag>;
+using DagNode = lc5::Node<PuctDag>;
 using DagTried = TriedEdge<PuctDag>;
 
 TEST(Lc5PuctTest, DagEdgesCacheTheChildValue) {

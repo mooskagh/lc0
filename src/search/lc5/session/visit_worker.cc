@@ -310,12 +310,12 @@ void VisitWorker::BackupVisit(Visit& visit) {
 }
 
 void VisitWorker::CancelVisit(Visit& visit) {
-  context_.engine.CancelVisit(visit, context_.metrics);
+  context_.engine.CancelVisit(visit);
   FinishVisit(visit, false);
 }
 
 void VisitWorker::RestartVisit(Visit& visit) {
-  context_.engine.CancelVisit(visit, context_.metrics);
+  context_.engine.CancelVisit(visit);
   visit.history = visit.origin.history;
   visit.current_key = visit.origin.key;
   visit.path = visit.origin.backup_prefix;

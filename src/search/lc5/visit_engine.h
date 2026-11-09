@@ -83,7 +83,7 @@ class VisitEngine {
   // bestmove changed.
   virtual bool BackupVisit(const Visit& visit, Metrics& metrics) = 0;
   // Releases every edge reservation on visit.path without committing a visit.
-  virtual void CancelVisit(const Visit& visit, Metrics& metrics) = 0;
+  virtual void CancelVisit(const Visit& visit) = 0;
   // A waiter's node finished materializing; visit.result holds its leaf value.
   // Selects on (kSelect, maybe from another edge at the parent), restarts from
   // the root (kRestart), or backs up visit.result (kBackup: a repetition).

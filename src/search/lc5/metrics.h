@@ -61,9 +61,6 @@ struct Metrics {
   std::atomic<uint64_t> two_fold_visits{0};
   std::atomic<uint64_t> selection_node_steps{0};
   std::atomic<uint64_t> backup_node_steps{0};
-  // Releases of an edge reservation that had none. Should stay 0; a non-zero
-  // value means a bug in in-flight bookkeeping.
-  std::atomic<uint64_t> invariant_underflow_prevented{0};
   std::atomic<uint64_t> materializations_started{0};
   // Visits that hit a node already being materialized by another visit and
   // waited on its materialization instead of starting one.

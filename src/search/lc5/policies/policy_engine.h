@@ -75,15 +75,17 @@ class PolicyEngine final : public VisitEngine {
 
   DescendResult DescendVisit(Visit& visit, Metrics& metrics) override;
   bool BackupVisit(const Visit& visit, Metrics& metrics) override;
-  void CancelVisit(const Visit& visit, Metrics& metrics) override;
+  void CancelVisit(const Visit& visit) override;
   ResumeAction ResumeVisit(Visit& visit, Metrics& metrics) override;
   void FillThinkingInfo(const VisitOrigin& root,
                         ThinkingInfo& info) const override;
   RootStats GetRootStats(NodeKey root) const override;
 
-  bool ContainsNode(NodeKey key) const override { return graph_.Contains(key); }
+  bool ContainsNode(NodeKey key) const override {
+    return graph_.ContainsNode(key);
+  }
   bool CompleteMaterialization(NodeKey key, const NodeEval& eval) override {
-    return graph_.CompleteMaterialization(key, eval);
+    return graph_.InsertNode(key, eval);
   }
   size_t GetGraphSize() const override { return graph_.Size(); }
 
@@ -100,7 +102,7 @@ class PolicyEngine final : public VisitEngine {
                          std::span<const uint8_t> record) override {
     auto node = DecodeNode<P>(record);
     if (!node) return false;
-    return graph_.RestoreNode(key, std::move(*node));
+    return graph_.InsertNode(key, std::move(*node));
   }
   void EvictToStore(size_t max, NodeKey keep, Metrics& metrics) override {
     assert(store_);
@@ -108,10 +110,10 @@ class PolicyEngine final : public VisitEngine {
     if (size == 0 || max == 0) return;
     const double fraction =
         std::min(1.0, static_cast<double>(max) / static_cast<double>(size));
-    std::vector<std::pair<NodeKey, NodeState<P>>> nodes;
+    std::vector<std::pair<NodeKey, Node<P>>> nodes;
     {
       absl::MutexLock lock(evict_mutex_);
-      nodes = graph_.EvictCandidates(&evict_cursor_, max, fraction, keep);
+      nodes = graph_.FindEvictableNodes(&evict_cursor_, max, fraction, keep);
     }
     // Store first: once a node leaves the graph, a miss must find its record.
     std::vector<StoredNode> records;
@@ -125,7 +127,7 @@ class PolicyEngine final : public VisitEngine {
     // stale record is harmless, as the graph is always checked first.
     size_t erased = 0;
     for (const auto& [key, node] : nodes) {
-      erased += graph_.EraseIfUnchanged(key, node.version);
+      erased += graph_.EraseNode(key, node.version);
     }
     metrics.nodes_evicted.fetch_add(erased);
     metrics.evictions_skipped.fetch_add(nodes.size() - erased);
@@ -172,23 +174,23 @@ VisitEngine::DescendResult PolicyEngine<P>::DescendVisit(Visit& visit,
     const bool stop_at_proven =
         visit.path.size() > visit.origin.backup_prefix.size() + 1;
     const SelectResult selected =
-        graph_.SelectAndReserve(visit.current_key, params_, stop_at_proven);
+        graph_.SelectAndReserveEdge(visit.current_key, params_, stop_at_proven);
     switch (selected.status) {
-      case SelectStatus::kMissing:
+      case SelectResult::kNodeMissing:
         return DescendResult::kUnmaterializedLeaf;
-      case SelectStatus::kTerminal:
+      case SelectResult::kNodeTerminal:
         step.update_node = true;
         visit.result = TerminalValue(selected.terminal);
         visit.result_exact = IsExact(selected.terminal);
         metrics.terminal_visits.fetch_add(1);
         return DescendResult::kValuedLeaf;
-      case SelectStatus::kProven:
+      case SelectResult::kNodeProven:
         step.update_node = true;
         visit.result = selected.value;
         visit.result_exact = true;
         metrics.proven_visits.fetch_add(1);
         return DescendResult::kValuedLeaf;
-      case SelectStatus::kSelected:
+      case SelectResult::kEdgeSelected:
         step.update_node = true;
         break;
     }
@@ -247,19 +249,17 @@ VisitEngine::ResumeAction PolicyEngine<P>::ResumeVisit(Visit& visit,
   // value; it is what the parent receives from X, whose own update was
   // counted at install.
   const auto from_child = P::Skip(P::Leaf(visit.result, visit.result_exact));
-  const SelectResult reselected = graph_.ReselectAndReserve(
+  const std::optional<Move> reselected = graph_.ReselectAndReserveEdge(
       parent.key, *parent.selected_move, from_child, params_);
-  if (reselected.status != SelectStatus::kSelected ||
-      reselected.move == *parent.selected_move) {
+  if (!reselected || *reselected == *parent.selected_move) {
     return ResumeAction::kSelect;
   }
   metrics.visits_reselected.fetch_add(1);
   // pop_back leaves `parent` valid.
   visit.path.pop_back();
   visit.history.Pop();
-  return Advance(visit, parent, reselected.move, metrics)
-             ? ResumeAction::kBackup
-             : ResumeAction::kSelect;
+  return Advance(visit, parent, *reselected, metrics) ? ResumeAction::kBackup
+                                                      : ResumeAction::kSelect;
 }
 
 template <typename P>
@@ -282,13 +282,10 @@ bool PolicyEngine<P>::BackupVisit(const Visit& visit, Metrics& metrics) {
     // If that node is missing, the draw goes on past it (rare).
     const bool two_fold_origin = visit.two_fold_origin == i;
     assert(!two_fold_origin || (step.update_node && move));
-    const BackupResult<P> result = graph_.BackupNode(
+    const UpdateResult<P> result = graph_.UpdateNode(
         step.key, message, move, two_fold_origin, i == 0 ? &params_ : nullptr);
     best_move_changed |= result.best_move_changed;
     metrics.backup_node_steps.fetch_add(1);
-    if (result.edge == UpdateResult::kUnderflow) {
-      metrics.invariant_underflow_prevented.fetch_add(1);
-    }
     // A missing node is skipped.
     message = result.to_parent ? *result.to_parent : P::Stale(message);
   }
@@ -296,12 +293,10 @@ bool PolicyEngine<P>::BackupVisit(const Visit& visit, Metrics& metrics) {
 }
 
 template <typename P>
-void PolicyEngine<P>::CancelVisit(const Visit& visit, Metrics& metrics) {
+void PolicyEngine<P>::CancelVisit(const Visit& visit) {
   for (const PathStep& step : visit.path) {
-    if (step.selected_move &&
-        graph_.CancelEdge(step.key, *step.selected_move) ==
-            UpdateResult::kUnderflow) {
-      metrics.invariant_underflow_prevented.fetch_add(1);
+    if (step.selected_move) {
+      graph_.ReleaseEdge(step.key, *step.selected_move);
     }
   }
 }

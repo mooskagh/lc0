@@ -65,7 +65,7 @@ struct PuctDag : PuctPolicy<PuctDag> {
   // the new one (n + 1 visits at the child's value); without one (the node's
   // own evaluation, or a terminal or proven value), the value is a sample of
   // its own.
-  static Message Update(NodeState<PuctDag>& node, TriedEdge<PuctDag>* edge,
+  static Message Update(Node<PuctDag>& node, TriedEdge<PuctDag>* edge,
                         const Message& message) {
     ValueStats& stats = node.stats;
     const VisitValue& value = message.value;

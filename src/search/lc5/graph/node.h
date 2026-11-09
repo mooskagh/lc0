@@ -64,7 +64,7 @@ inline bool PreferOnTie(const LegalEdge& a, const LegalEdge& b) {
 }
 
 template <typename P>
-struct NodeState {
+struct Node {
   typename P::NodeStats stats{};
   uint32_t version = 0;  // Bumped on change so eviction skips modified nodes.
   TerminalKind terminal = TerminalKind::kNonTerminal;

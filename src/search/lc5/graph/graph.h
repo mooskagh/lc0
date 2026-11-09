@@ -45,21 +45,23 @@
 
 namespace lczero::lc5 {
 
-enum class SelectStatus { kSelected, kMissing, kTerminal, kProven };
-
 struct SelectResult {
-  SelectStatus status = SelectStatus::kMissing;
+  enum class Status {
+    kEdgeSelected,
+    kNodeMissing,
+    kNodeTerminal,
+    kNodeProven,
+  };
+  using enum Status;
+
+  Status status = kNodeMissing;
   Move move{};
   TerminalKind terminal = TerminalKind::kNonTerminal;
-  VisitValue value{};  // The proven value, for kProven.
+  VisitValue value{};  // The proven value, for kNodeProven.
 };
 
-enum class UpdateResult { kApplied, kMissing, kEdgeMissing, kUnderflow };
-
 template <typename P>
-struct BackupResult {
-  UpdateResult node;
-  UpdateResult edge;
+struct UpdateResult {
   // What the parent receives; set only when the node update was applied.
   std::optional<typename P::Message> to_parent;
   // Whether the node's bestmove changed; checked only when `params` is given.
@@ -73,69 +75,59 @@ struct BackupResult {
 template <typename P>
 class GameGraph {
  public:
-  using Node = NodeState<P>;
+  using Node = lc5::Node<P>;
   using Tried = TriedEdge<P>;
   using Message = typename P::Message;
 
   static constexpr size_t kShardCount = 1024;
 
-  bool Contains(NodeKey key) const;
+  // Selects and reserves an edge (in_flight += 1), or reports why the node
+  // cannot be selected from (missing, terminal, or proven if `stop_at_proven`).
+  SelectResult SelectAndReserveEdge(NodeKey key,
+                                    const typename P::Params& params,
+                                    bool stop_at_proven = false);
 
-  // Inserts the node with `eval` if absent, counting `eval.leaf` as its first
-  // visit. Returns whether `eval` was installed (false if the node was already
-  // present).
-  bool CompleteMaterialization(NodeKey key, const NodeEval& eval);
+  // Releases `move` (in_flight -= 1) and reserves the edge reselected with
+  // `from_child` (in_flight += 1); returns the new move, or nullopt if failed.
+  std::optional<Move> ReselectAndReserveEdge(NodeKey key, Move move,
+                                             const Message& from_child,
+                                             const typename P::Params& params);
 
-  // Inserts `restored` (an evicted node with its statistics, edges and terminal
-  // kind) if absent. Returns whether `restored` was installed.
-  bool RestoreNode(NodeKey key, Node restored);
+  // Releases an edge reservation (in_flight -= 1) without committing a visit;
+  // returns true if a reservation was released.
+  bool ReleaseEdge(NodeKey key, Move move);
 
-  // Selects an edge by the policy and reserves it (in_flight += 1); otherwise
-  // reports why the node can't be selected from, and for kTerminal also its
-  // terminal kind. With `stop_at_proven`, a node the policy has proven returns
-  // kProven with its value instead.
-  SelectResult SelectAndReserve(NodeKey key, const typename P::Params& params,
-                                bool stop_at_proven = false);
+  bool ContainsNode(NodeKey key) const;
 
-  // Releases one reservation of `move` and reserves the edge the policy
-  // reselects as if that visit had completed with `from_child`. kMissing if
-  // the node is absent or `move` holds no reservation; nothing is changed then.
-  SelectResult ReselectAndReserve(NodeKey key, Move move,
-                                  const Message& from_child,
-                                  const typename P::Params& params);
+  // Inserts a new node initialized from `eval` (counting `eval.leaf` as its
+  // first visit) if absent; returns true if inserted, false if already present.
+  bool InsertNode(NodeKey key, const NodeEval& eval);
 
-  // Applies the policy's update to the node and, if `move` is given,
-  // completes that edge's reservation. On success `to_parent` is the message
-  // the parent receives: the update's, or with `send_current` the node's
-  // statistics after the update (P::Current). `params` is passed only for the
-  // root node to populate `best_move_changed`; if `params` is ever needed for
-  // all nodes, gate the `ChooseMove` check on a separate root-only flag.
-  BackupResult<P> BackupNode(NodeKey key, Message message,
+  // Inserts `node` (e.g. restored from the store, with in_flight reset to 0) if
+  // absent; returns true if inserted, false if already present.
+  bool InsertNode(NodeKey key, Node node);
+
+  // Updates the node (and `move`'s edge with in_flight -= 1, if given), sending
+  // `P::Current` when `send_current` and checking bestmove when `params`.
+  UpdateResult<P> UpdateNode(NodeKey key, Message message,
                              std::optional<Move> move,
                              bool send_current = false,
                              const typename P::Params* params = nullptr);
 
-  // Releases an edge reservation without committing a visit.
-  UpdateResult CancelEdge(NodeKey key, Move move);
+  // Up to `max` unreserved nodes (all in_flight == 0, excluding `keep`) with
+  // the fewest visits per shard (`fraction` of each), advancing `*cursor`.
+  std::vector<std::pair<NodeKey, Node>> FindEvictableNodes(size_t* cursor,
+                                                           size_t max,
+                                                           double fraction,
+                                                           NodeKey keep) const;
+
+  // Erases the node if still at `version` with no reservations (in_flight == 0
+  // on all edges); returns true if erased.
+  bool EraseNode(NodeKey key, uint32_t version);
 
   std::optional<Node> SnapshotNode(NodeKey key) const;
-
-  // Copies of up to `max` evictable nodes: not `keep`, with no edge reserved.
-  // Scans shards from `*cursor` on, at most all of them once, and leaves the
-  // cursor after the last one scanned. From each shard it takes the `fraction`
-  // of its nodes with the fewest visits (at least one node).
-  std::vector<std::pair<NodeKey, Node>> EvictCandidates(size_t* cursor,
-                                                        size_t max,
-                                                        double fraction,
-                                                        NodeKey keep) const;
-  // Erases the node if it is still at `version` and has no reservations, as
-  // when it was copied.
-  bool EraseIfUnchanged(NodeKey key, uint32_t version);
-
-  bool Erase(NodeKey key);
-  void Clear();
   size_t Size() const { return size_.load(std::memory_order_relaxed); }
-  std::vector<std::pair<NodeKey, Node>> SnapshotAllForTesting() const;
+  void Clear();
 
  private:
   struct Shard {
@@ -149,9 +141,8 @@ class GameGraph {
   }
   Shard& ShardFor(NodeKey key) { return shards_[ShardIndex(key)]; }
   const Shard& ShardFor(NodeKey key) const { return shards_[ShardIndex(key)]; }
-  // Reserves the edge at `index` (in_flight += 1), which is tried or the first
-  // untried one, and returns its move; the shard must be locked.
-  static Move ReserveLocked(Shard& shard, Node& node, size_t index)
+  // Reserves the edge at `index` (in_flight += 1) and returns its move.
+  static Move ReserveEdgeLocked(Shard& shard, Node& node, size_t index)
       ABSL_EXCLUSIVE_LOCKS_REQUIRED(shard.mutex);
 
   template <typename Map>
@@ -160,26 +151,25 @@ class GameGraph {
     return it == nodes.end() ? nullptr : &it->second;
   }
 
-  // The index of the edge with `move`, or edges.size() if there is none.
+  // The index of the edge with `move`, or edges.size() if not found.
   static size_t FindEdge(const Node& node, Move move) {
     return std::ranges::find(node.edges, move, &LegalEdge::move) -
            node.edges.begin();
   }
 
-  // Releases one reservation of the edge at `index`. An edge that was never
-  // tried has no reservations.
-  static UpdateResult ReleaseEdge(Shard& shard, Node& node, size_t index)
+  // Releases one reservation of the edge at `index` (in_flight -= 1); returns
+  // true if released.
+  static bool ReleaseEdgeLocked(Shard& shard, Node& node, size_t index)
       ABSL_EXCLUSIVE_LOCKS_REQUIRED(shard.mutex) {
-    if (index >= node.edges.size()) return UpdateResult::kEdgeMissing;
     if (index >= node.tried.size() || node.tried[index].in_flight == 0) {
-      return UpdateResult::kUnderflow;
+      return false;
     }
     --node.tried[index].in_flight;
     node.version = ++shard.version;
-    return UpdateResult::kApplied;
+    return true;
   }
 
-  // Whether the node can leave the graph: no visit holds one of its edges.
+  // Returns true if no edge on `node` holds an in-flight reservation.
   static bool Evictable(const Node& node) {
     return std::ranges::none_of(
         node.tried, [](const Tried& tried) { return tried.in_flight > 0; });
@@ -190,14 +180,67 @@ class GameGraph {
 };
 
 template <typename P>
-bool GameGraph<P>::Contains(NodeKey key) const {
+SelectResult GameGraph<P>::SelectAndReserveEdge(
+    NodeKey key, const typename P::Params& params, bool stop_at_proven) {
+  auto& shard = ShardFor(key);
+  absl::MutexLock lock(shard.mutex);
+  Node* node = FindNode(shard.nodes, key);
+  if (!node) return {.status = SelectResult::kNodeMissing};
+  if (node->terminal != TerminalKind::kNonTerminal || node->edges.empty()) {
+    return {.status = SelectResult::kNodeTerminal, .terminal = node->terminal};
+  }
+  if (stop_at_proven) {
+    if (const auto value = P::ProvenValue(*node, params)) {
+      return {.status = SelectResult::kNodeProven, .value = *value};
+    }
+  }
+  return {.status = SelectResult::kEdgeSelected,
+          .move = ReserveEdgeLocked(shard, *node, P::Select(*node, params))};
+}
+
+template <typename P>
+std::optional<Move> GameGraph<P>::ReselectAndReserveEdge(
+    NodeKey key, Move move, const Message& from_child,
+    const typename P::Params& params) {
+  auto& shard = ShardFor(key);
+  absl::MutexLock lock(shard.mutex);
+  Node* node = FindNode(shard.nodes, key);
+  if (!node) return std::nullopt;
+  const size_t index = FindEdge(*node, move);
+  if (!ReleaseEdgeLocked(shard, *node, index)) return std::nullopt;
+  return ReserveEdgeLocked(shard, *node,
+                           P::Reselect(*node, params, index, from_child));
+}
+
+template <typename P>
+Move GameGraph<P>::ReserveEdgeLocked(Shard& shard, Node& node, size_t index) {
+  if (index == node.tried.size()) {
+    node.tried.emplace_back();
+  }
+  Tried& tried = node.tried[index];
+  assert(tried.in_flight < kMaxActiveVisitsLimit);
+  ++tried.in_flight;
+  node.version = ++shard.version;
+  return node.edges[index].move;
+}
+
+template <typename P>
+bool GameGraph<P>::ReleaseEdge(NodeKey key, Move move) {
+  auto& shard = ShardFor(key);
+  absl::MutexLock lock(shard.mutex);
+  Node* node = FindNode(shard.nodes, key);
+  return node && ReleaseEdgeLocked(shard, *node, FindEdge(*node, move));
+}
+
+template <typename P>
+bool GameGraph<P>::ContainsNode(NodeKey key) const {
   const auto& shard = ShardFor(key);
   absl::MutexLock lock(shard.mutex);
   return shard.nodes.contains(key);
 }
 
 template <typename P>
-bool GameGraph<P>::CompleteMaterialization(NodeKey key, const NodeEval& eval) {
+bool GameGraph<P>::InsertNode(NodeKey key, const NodeEval& eval) {
   assert(eval.moves.size() == eval.priors.size());
   assert(eval.terminal == TerminalKind::kNonTerminal || eval.moves.empty());
   auto& shard = ShardFor(key);
@@ -222,7 +265,7 @@ bool GameGraph<P>::CompleteMaterialization(NodeKey key, const NodeEval& eval) {
 }
 
 template <typename P>
-bool GameGraph<P>::RestoreNode(NodeKey key, Node restored) {
+bool GameGraph<P>::InsertNode(NodeKey key, Node restored) {
   auto& shard = ShardFor(key);
   absl::MutexLock lock(shard.mutex);
   if (shard.nodes.contains(key)) return false;
@@ -234,75 +277,20 @@ bool GameGraph<P>::RestoreNode(NodeKey key, Node restored) {
 }
 
 template <typename P>
-SelectResult GameGraph<P>::SelectAndReserve(NodeKey key,
-                                            const typename P::Params& params,
-                                            bool stop_at_proven) {
-  auto& shard = ShardFor(key);
-  absl::MutexLock lock(shard.mutex);
-  Node* node = FindNode(shard.nodes, key);
-  if (!node) return {.status = SelectStatus::kMissing};
-  if (node->terminal != TerminalKind::kNonTerminal || node->edges.empty()) {
-    return {.status = SelectStatus::kTerminal, .terminal = node->terminal};
-  }
-  if (stop_at_proven) {
-    if (const auto value = P::ProvenValue(*node, params)) {
-      return {.status = SelectStatus::kProven, .value = *value};
-    }
-  }
-  return {.status = SelectStatus::kSelected,
-          .move = ReserveLocked(shard, *node, P::Select(*node, params))};
-}
-
-template <typename P>
-SelectResult GameGraph<P>::ReselectAndReserve(
-    NodeKey key, Move move, const Message& from_child,
-    const typename P::Params& params) {
-  auto& shard = ShardFor(key);
-  absl::MutexLock lock(shard.mutex);
-  Node* node = FindNode(shard.nodes, key);
-  if (!node) return {.status = SelectStatus::kMissing};
-  const size_t index = FindEdge(*node, move);
-  if (ReleaseEdge(shard, *node, index) != UpdateResult::kApplied) {
-    return {.status = SelectStatus::kMissing};
-  }
-  return {.status = SelectStatus::kSelected,
-          .move = ReserveLocked(shard, *node,
-                                P::Reselect(*node, params, index, from_child))};
-}
-
-template <typename P>
-Move GameGraph<P>::ReserveLocked(Shard& shard, Node& node, size_t index) {
-  if (index == node.tried.size()) {
-    node.tried.emplace_back();
-  }
-  Tried& tried = node.tried[index];
-  assert(tried.in_flight < kMaxActiveVisitsLimit);
-  ++tried.in_flight;
-  node.version = ++shard.version;
-  return node.edges[index].move;
-}
-
-template <typename P>
-BackupResult<P> GameGraph<P>::BackupNode(NodeKey key, Message message,
+UpdateResult<P> GameGraph<P>::UpdateNode(NodeKey key, Message message,
                                          std::optional<Move> move,
                                          bool send_current,
                                          const typename P::Params* params) {
   auto& shard = ShardFor(key);
   absl::MutexLock lock(shard.mutex);
   Node* node = FindNode(shard.nodes, key);
-  if (!node) {
-    return {UpdateResult::kMissing,
-            move ? UpdateResult::kMissing : UpdateResult::kApplied,
-            std::nullopt};
-  }
+  if (!node) return {};
   const auto best_before =
       params ? P::ChooseMove(*node, *params) : std::nullopt;
   Tried* edge = nullptr;
-  UpdateResult edge_result = UpdateResult::kApplied;
   if (move) {
     const size_t index = FindEdge(*node, *move);
-    edge_result = ReleaseEdge(shard, *node, index);
-    if (edge_result == UpdateResult::kApplied) edge = &node->tried[index];
+    if (ReleaseEdgeLocked(shard, *node, index)) edge = &node->tried[index];
   }
   // The node is updated even if the edge reservation could not be released.
   node->version = ++shard.version;
@@ -310,29 +298,11 @@ BackupResult<P> GameGraph<P>::BackupNode(NodeKey key, Message message,
   if (send_current) to_parent = P::Current(*node);
   const bool best_changed =
       params && P::ChooseMove(*node, *params) != best_before;
-  return {UpdateResult::kApplied, edge_result, to_parent, best_changed};
+  return {to_parent, best_changed};
 }
 
 template <typename P>
-UpdateResult GameGraph<P>::CancelEdge(NodeKey key, Move move) {
-  auto& shard = ShardFor(key);
-  absl::MutexLock lock(shard.mutex);
-  Node* node = FindNode(shard.nodes, key);
-  if (!node) return UpdateResult::kMissing;
-  return ReleaseEdge(shard, *node, FindEdge(*node, move));
-}
-
-template <typename P>
-std::optional<NodeState<P>> GameGraph<P>::SnapshotNode(NodeKey key) const {
-  const auto& shard = ShardFor(key);
-  absl::MutexLock lock(shard.mutex);
-  const Node* node = FindNode(shard.nodes, key);
-  if (!node) return std::nullopt;
-  return *node;
-}
-
-template <typename P>
-std::vector<std::pair<NodeKey, NodeState<P>>> GameGraph<P>::EvictCandidates(
+std::vector<std::pair<NodeKey, Node<P>>> GameGraph<P>::FindEvictableNodes(
     size_t* cursor, size_t max, double fraction, NodeKey keep) const {
   std::vector<std::pair<NodeKey, Node>> result;
   std::vector<std::pair<uint64_t, const std::pair<const NodeKey, Node>*>>
@@ -362,7 +332,7 @@ std::vector<std::pair<NodeKey, NodeState<P>>> GameGraph<P>::EvictCandidates(
 }
 
 template <typename P>
-bool GameGraph<P>::EraseIfUnchanged(NodeKey key, uint32_t version) {
+bool GameGraph<P>::EraseNode(NodeKey key, uint32_t version) {
   auto& shard = ShardFor(key);
   absl::MutexLock lock(shard.mutex);
   const Node* node = FindNode(shard.nodes, key);
@@ -375,12 +345,12 @@ bool GameGraph<P>::EraseIfUnchanged(NodeKey key, uint32_t version) {
 }
 
 template <typename P>
-bool GameGraph<P>::Erase(NodeKey key) {
-  auto& shard = ShardFor(key);
+std::optional<Node<P>> GameGraph<P>::SnapshotNode(NodeKey key) const {
+  const auto& shard = ShardFor(key);
   absl::MutexLock lock(shard.mutex);
-  if (shard.nodes.erase(key) == 0) return false;
-  size_.fetch_sub(1, std::memory_order_relaxed);
-  return true;
+  const Node* node = FindNode(shard.nodes, key);
+  if (!node) return std::nullopt;
+  return *node;
 }
 
 template <typename P>
@@ -392,17 +362,6 @@ void GameGraph<P>::Clear() {
     size_.fetch_sub(shard.nodes.size(), std::memory_order_relaxed);
     shard.nodes.clear();
   }
-}
-
-template <typename P>
-std::vector<std::pair<NodeKey, NodeState<P>>>
-GameGraph<P>::SnapshotAllForTesting() const {
-  std::vector<std::pair<NodeKey, Node>> result;
-  for (const auto& shard : shards_) {
-    absl::MutexLock lock(shard.mutex);
-    result.insert(result.end(), shard.nodes.begin(), shard.nodes.end());
-  }
-  return result;
 }
 
 }  // namespace lczero::lc5
