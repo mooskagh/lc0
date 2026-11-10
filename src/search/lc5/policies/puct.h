@@ -47,9 +47,6 @@
 namespace lczero::lc5 {
 
 enum class FpuStrategy { kAbsolute, kReduction };
-// How far an in-search two-fold draw is backed up: to the search root, or to
-// the repeated position's first occurrence only.
-enum class TwoFoldDraws { kRoot, kContained };
 
 // The parameters of PUCT selection, shared by all PUCT policies (which
 // therefore share their options).
@@ -75,7 +72,6 @@ struct PuctParams {
   // Use proven bounds in selection, the move choice, early stopping and
   // mate scores. Bounds are tracked either way.
   bool sticky_endgames = false;
-  TwoFoldDraws two_fold_draws = TwoFoldDraws::kRoot;
 
   static void Populate(OptionsParser* options);
   // Moves-left stays off if the backend has no moves-left head.
@@ -120,19 +116,6 @@ struct PuctPolicy {
   // without bounds, which belong to a node that is not the parent's child.
   static Message Stale(const Message& message) {
     return {message.value.Parent(), Bounds{}};
-  }
-
-  // What the parent receives from the node's current statistics instead of
-  // the backed-up message: the node's mean and bounds.
-  static Message Current(const Node<Self>& node) {
-    const ValueStats& stats = node.stats;
-    return {VisitValue{.q = stats.Q(), .d = stats.D(), .m = stats.M()}.Parent(),
-            stats.bounds.Parent()};
-  }
-  // Whether an in-search two-fold draw stops at the repeated position's first
-  // occurrence, which then sends its Current value further up.
-  static bool ContainTwoFold(const Params& params) {
-    return params.two_fold_draws == TwoFoldDraws::kContained;
   }
 
   static uint32_t Visits(const ValueStats& stats) { return stats.visits; }

@@ -214,10 +214,6 @@ bool PolicyEngine<P>::Advance(Visit& visit, PathStep& step, Move move,
   const int ply = static_cast<int>(visit.path.size());
   const int cycle = position.GetPliesSincePrevRepetition();
   if (position.GetRepetitions() == 1 && ply >= 4 && ply >= cycle) {
-    // The first occurrence is `cycle` plies up the path. This assumes path
-    // indices count plies from the history's root, which holds while
-    // backup_prefix is empty.
-    if (P::ContainTwoFold(params_)) visit.two_fold_origin = ply - cycle;
     visit.path.push_back({.key = visit.current_key});
     RaiseHighWater(metrics.max_selected_depth, visit.path.size());
     visit.result = TerminalValue(TerminalKind::kRepetition);
@@ -246,17 +242,17 @@ VisitEngine::ResumeAction PolicyEngine<P>::ResumeVisit(Visit& visit,
   }
   PathStep& parent = visit.path[visit.path.size() - 2];
   // X's owner has already backed up, so the parent's edge holds X's value.
-  const std::optional<Move> reselected =
+  const Move reselected =
       graph_.ReselectAndReserveEdge(parent.key, *parent.selected_move, params_);
-  if (!reselected || *reselected == *parent.selected_move) {
+  if (reselected == *parent.selected_move) {
     return ResumeAction::kSelect;
   }
   metrics.visits_reselected.fetch_add(1);
   // pop_back leaves `parent` valid.
   visit.path.pop_back();
   visit.history.Pop();
-  return Advance(visit, parent, *reselected, metrics) ? ResumeAction::kBackup
-                                                      : ResumeAction::kSelect;
+  return Advance(visit, parent, reselected, metrics) ? ResumeAction::kBackup
+                                                     : ResumeAction::kSelect;
 }
 
 template <typename P>
@@ -274,13 +270,8 @@ bool PolicyEngine<P>::BackupVisit(const Visit& visit, Metrics& metrics) {
     // The leaf commits only its node value; ancestors complete their edges.
     const auto move =
         i + 1 < visit.path.size() ? step.selected_move : std::nullopt;
-    // A contained two-fold draw stops at the repeated position's first
-    // occurrence, which takes the draw and sends its own value further up.
-    // If that node is missing, the draw goes on past it (rare).
-    const bool two_fold_origin = visit.two_fold_origin == i;
-    assert(!two_fold_origin || (step.update_node && move));
-    const UpdateResult<P> result = graph_.UpdateNode(
-        step.key, message, move, two_fold_origin, i == 0 ? &params_ : nullptr);
+    const UpdateResult<P> result =
+        graph_.UpdateNode(step.key, message, move, i == 0 ? &params_ : nullptr);
     best_move_changed |= result.best_move_changed;
     metrics.backup_node_steps.fetch_add(1);
     // A missing node is skipped.

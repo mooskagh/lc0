@@ -27,9 +27,11 @@
 
 #include "search/lc5/graph/graph.h"
 
+#include <absl/algorithm/container.h>
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <bit>
 #include <cstddef>
 #include <vector>
 
@@ -143,7 +145,7 @@ TEST(Lc5GraphTest, DuplicatePublicationDoesNotDisturbExistingNode) {
   EXPECT_EQ(TriedAt(*node, 0).in_flight, 1u);
   EXPECT_FLOAT_EQ(TriedAt(*node, 0).stats.Q(), 0.25f);
   EXPECT_EQ(node->stats.visits, 2u);
-  EXPECT_TRUE(graph.ReleaseEdge(key, move));
+  graph.ReleaseEdge(key, move);
 
   ASSERT_TRUE(graph.EraseNode(key, graph.SnapshotNode(key)->version));
   EXPECT_FALSE(graph.ContainsNode(key));
@@ -357,63 +359,12 @@ TEST(Lc5GraphTest, BackupCommitsNodeAndOptionalEdgeSums) {
   EXPECT_FLOAT_EQ(TriedAt(*node, 0).stats.M(), 4.0f);
 }
 
-TEST(Lc5GraphTest, BackupCanSendTheNodesCurrentValue) {
-  Graph graph;
-  NodeKey key{457};
-  Move move = M(kFileA, kFileA);
-  // The install counts the leaf value once: Q 0.25, D 0.5, M 2.
-  graph.InsertNode(key, {.leaf = {.q = 0.25f, .d = 0.5f, .m = 2.0f},
-                         .moves = {move},
-                         .priors = {1.0f}});
-  ASSERT_EQ(graph.SelectAndReserveEdge(key, TestParams()).status,
-            SelectResult::kEdgeSelected);
-  const auto result = graph.UpdateNode(key, {-0.75f, 0.0f, 4.0f}, move, true);
-  const auto node = graph.SnapshotNode(key);
-  ASSERT_TRUE(node);
-  EXPECT_EQ(node->stats.visits, 2u);
-  EXPECT_FLOAT_EQ(node->stats.Q(), -0.25f);
-  EXPECT_FLOAT_EQ(node->stats.D(), 0.25f);
-  EXPECT_FLOAT_EQ(node->stats.M(), 3.0f);
-  EXPECT_EQ(TriedAt(*node, 0).stats.visits, 1u);
-  EXPECT_EQ(TriedAt(*node, 0).in_flight, 0u);
-  EXPECT_FLOAT_EQ(TriedAt(*node, 0).stats.Q(), -0.75f);
-  // The parent receives the node's new mean, not the backed-up value.
-  ASSERT_TRUE(result.to_parent);
-  EXPECT_FLOAT_EQ(result.to_parent->value.q, 0.25f);
-  EXPECT_FLOAT_EQ(result.to_parent->value.d, 0.25f);
-  EXPECT_FLOAT_EQ(result.to_parent->value.m, 4.0f);
-  EXPECT_EQ(result.to_parent->bounds, Bounds{});
-}
-
 TEST(Lc5GraphTest, BackupRejectsMissingNodes) {
   Graph graph;
   NodeKey key{456};
-  Move move = M(kFileA, kFileA);
-  auto result = graph.UpdateNode(key, {0.25f, 0.5f, 3.0f}, move);
+  auto result = graph.UpdateNode(key, {0.25f, 0.5f, 3.0f}, std::nullopt);
   EXPECT_FALSE(result.to_parent);
   EXPECT_FALSE(graph.SnapshotNode(key));
-}
-
-TEST(Lc5GraphTest, BackupCommitsNodeDespiteEdgeFailure) {
-  Graph graph;
-  NodeKey key{456};
-  Move move = M(kFileA, kFileA);
-  graph.InsertNode(key, {.moves = {move}, .priors = {1.0f}});
-  auto result = graph.UpdateNode(key, {0.25f, 0.5f, 3.0f}, move);
-  EXPECT_TRUE(result.to_parent);
-  result = graph.UpdateNode(key, {0.25f, 0.5f, 3.0f}, M(kFileB, kFileB));
-  EXPECT_TRUE(result.to_parent);
-  auto node = graph.SnapshotNode(key);
-  ASSERT_TRUE(node);
-  EXPECT_EQ(node->stats.visits, 3u);
-  EXPECT_FLOAT_EQ(node->stats.Q(), 0.5f / 3);
-  EXPECT_FLOAT_EQ(node->stats.D(), 1.0f / 3);
-  EXPECT_FLOAT_EQ(node->stats.M(), 2.0f);
-  EXPECT_EQ(TriedAt(*node, 0).stats.visits, 0u);
-  EXPECT_EQ(TriedAt(*node, 0).in_flight, 0u);
-  EXPECT_FLOAT_EQ(TriedAt(*node, 0).stats.Q(), 0.0f);
-  EXPECT_FLOAT_EQ(TriedAt(*node, 0).stats.D(), 0.0f);
-  EXPECT_FLOAT_EQ(TriedAt(*node, 0).stats.M(), 0.0f);
 }
 
 TEST(Lc5GraphTest, ReservationsAreExactAndCancellationDoesNotCommit) {
@@ -428,7 +379,7 @@ TEST(Lc5GraphTest, ReservationsAreExactAndCancellationDoesNotCommit) {
   auto selection2 = graph.SelectAndReserveEdge(key, params);
   EXPECT_EQ(selection1.move, first);
   EXPECT_EQ(selection2.move, second);
-  EXPECT_TRUE(graph.ReleaseEdge(key, first));
+  graph.ReleaseEdge(key, first);
   EXPECT_TRUE(graph.UpdateNode(key, {{0.4f, 0.2f, 2.0f}}, second).to_parent);
   auto node = graph.SnapshotNode(key);
   ASSERT_TRUE(node);
@@ -436,7 +387,6 @@ TEST(Lc5GraphTest, ReservationsAreExactAndCancellationDoesNotCommit) {
   EXPECT_EQ(TriedAt(*node, 0).in_flight, 0u);
   EXPECT_EQ(TriedAt(*node, 1).stats.visits, 1u);
   EXPECT_FLOAT_EQ(TriedAt(*node, 1).stats.Q(), 0.4f);
-  EXPECT_FALSE(graph.ReleaseEdge(key, first));
 }
 
 // Priors in descending order, with moves out of encoding order.
@@ -476,7 +426,7 @@ TEST(Lc5GraphTest, CancelledTriedEdgeIsStillSelectable) {
   params.fpu_value = 1.0f;
   EXPECT_EQ(graph.SelectAndReserveEdge(key, params).move, eval.moves[0]);
   EXPECT_EQ(graph.SelectAndReserveEdge(key, params).move, eval.moves[1]);
-  EXPECT_TRUE(graph.ReleaseEdge(key, eval.moves[0]));
+  graph.ReleaseEdge(key, eval.moves[0]);
   EXPECT_EQ(graph.SnapshotNode(key)->tried.size(), 2u);
   EXPECT_EQ(graph.SelectAndReserveEdge(key, params).move, eval.moves[0]);
   const auto node = graph.SnapshotNode(key);
@@ -539,17 +489,6 @@ TEST(Lc5GraphTest, ReselectionMovesOnlyTheWaitersReservation) {
   EXPECT_EQ(TriedAt(*node, 0).stats.visits, 1u);
   EXPECT_EQ(TriedAt(*node, 0).in_flight, 0u);
   EXPECT_EQ(TriedAt(*node, 1).stats.visits, 0u);
-  EXPECT_EQ(TriedAt(*node, 1).in_flight, 1u);
-
-  // Nothing changes for a missing node or an edge without reservations.
-  EXPECT_EQ(graph.ReselectAndReserveEdge(NodeKey{999}, a, params),
-            std::nullopt);
-  EXPECT_EQ(graph.ReselectAndReserveEdge(bad, a, params), std::nullopt);
-  EXPECT_EQ(graph.ReselectAndReserveEdge(bad, eval.moves[2], params),
-            std::nullopt);
-  node = graph.SnapshotNode(bad);
-  EXPECT_EQ(node->tried.size(), 2u);
-  EXPECT_EQ(TriedAt(*node, 0).in_flight, 0u);
   EXPECT_EQ(TriedAt(*node, 1).in_flight, 1u);
 }
 
@@ -726,11 +665,15 @@ TEST(Lc5GraphTest, FindEvictableNodesSkipReservedAndKeptNodes) {
 TEST(Lc5GraphTest, FindEvictableNodesPreferFewVisits) {
   Graph graph;
   const auto params = TestParams();
-  // All keys in one shard (the graph's shard index is the top 10 bits of a
+  // All keys in one shard (the graph's shard index is the top bits of a
   // Fibonacci hash), so the fraction applies to them together.
   std::vector<NodeKey> keys;
   for (uint64_t i = 0; keys.size() < 4; ++i) {
-    if ((i * 11400714819323198485ull) >> 54 == 0) keys.push_back(NodeKey{i});
+    if ((i * 11400714819323198485ull) >>
+            (64 - std::countr_zero(Graph::kShardCount)) ==
+        0) {
+      keys.push_back(NodeKey{i});
+    }
   }
   for (size_t i = 0; i < keys.size(); ++i) {
     graph.InsertNode(keys[i], {.moves = {M(kFileA, kFileA)}, .priors = {1.0f}});
@@ -750,7 +693,7 @@ TEST(Lc5GraphTest, FindEvictableNodesPreferFewVisits) {
   for (const auto& candidate : candidates) {
     visits.push_back(graph.SnapshotNode(candidate.first)->stats.visits);
   }
-  std::ranges::sort(visits);
+  absl::c_sort(visits);
   // Visits are 4, 3, 2 and 9; the two lowest are taken.
   EXPECT_EQ(visits, (std::vector<uint32_t>{2, 3}));
 }

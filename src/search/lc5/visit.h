@@ -76,9 +76,6 @@ struct Visit {
   VisitValue result;
   // `result` is exact: a terminal other than a repetition, or a proven node.
   bool result_exact = false;
-  // For a two-fold repetition leaf whose draw is contained: the path index of
-  // the repeated position's first occurrence, the last step the draw reaches.
-  std::optional<size_t> two_fold_origin{};
 };
 
 }  // namespace lczero::lc5

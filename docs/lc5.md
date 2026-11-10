@@ -60,11 +60,7 @@ Code: `session/search_session.cc`, `policies/policy_engine.h`, `policies/puct.cc
      root: back up its exact value without descending.
    - The position is a **two-fold repetition** whose cycle lies within this
      search (at least 4 plies from the root): back up a draw. This depends on
-     the root, so the graph node itself is not marked terminal. With
-     `TwoFoldDraws=contained`, the draw goes up only as far as the repeated
-     position's first occurrence, which takes it; positions above receive
-     that node's current value instead, so nodes kept for later searches do
-     not hold draws that were only valid from this root.
+     the root, so the graph node itself is not marked terminal.
    - The node **doesn't exist yet**: create it in a "materializing" state,
      become its owner and queue the position for the network.
    - The node is **already materializing**: become a waiter on it.
@@ -286,7 +282,6 @@ Options of the `puct` and `puct-dag` policies (they share them):
 | `MovesLeftMaxEffect`, `MovesLeftThreshold`, `MovesLeftSlope` | 0.0345, 0.8, 0.0027 | Largest bonus, node \|Q\| above which it applies, bonus per ply of M difference. |
 | `MovesLeftConstantFactor`, `MovesLeftScaledFactor`, `MovesLeftQuadraticFactor` | 0, 1.6521, −0.6521 | Bonus scaling: a + b·x + c·x², x = edge \|Q\| above the threshold, rescaled to [0, 1]. |
 | `StickyEndgames` | false | Use proven wins, draws and losses in selection, the bestmove, early stopping and mate scores. Repetition draws are not proven. |
-| `TwoFoldDraws` | root | How far a two-fold repetition inside the search is backed up as a draw: to the search root, or contained at the repeated position's first occurrence, which sends its own value further up. |
 
 ## Policies
 
@@ -303,8 +298,7 @@ edge and a node remember.
   sees what the child learned through other parents too, from its next visit
   through that edge. Without `StickyEndgames`, a node's visits are always
   1 + its edges' visits. A two-fold draw is cached by the edge that reached
-  it and goes further up only through the nodes' values, so `TwoFoldDraws`
-  makes no difference.
+  it and goes further up only through the nodes' values.
 
 With a short `HistoryKeyLength` more positions share a node, which matters
 most for `puct-dag`. The key still includes the fifty-move counter, so the

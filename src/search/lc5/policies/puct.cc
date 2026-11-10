@@ -83,11 +83,6 @@ const OptionId kStickyEndgames{
     "Prove wins, draws and losses from terminal positions up the tree and use "
     "them in selection, the move choice, early stopping and mate scores. "
     "Repetition draws are not proven."};
-const OptionId kTwoFoldDraws{
-    "two-fold-draws", "TwoFoldDraws",
-    "How far a two-fold repetition inside the search is backed up as a draw: "
-    "to the search root, or only to the repeated position's first occurrence, "
-    "whose own value then goes further up."};
 
 WaiterResume WaiterResumeFromString(const std::string& value) {
   if (value == "reselect") return WaiterResume::kReselect;
@@ -138,9 +133,6 @@ void PuctParams::Populate(OptionsParser* options) {
   options->Add<FloatOption>(kMovesLeftQuadraticFactor, -1.0f, 1.0f) =
       ml.quadratic_factor;
   options->Add<BoolOption>(kStickyEndgames) = defaults.sticky_endgames;
-  options->Add<ChoiceOption>(kTwoFoldDraws,
-                             std::vector<std::string>{"root", "contained"}) =
-      defaults.two_fold_draws == TwoFoldDraws::kRoot ? "root" : "contained";
 }
 
 PuctParams PuctParams::FromOptions(const OptionsDict& options,
@@ -165,10 +157,7 @@ PuctParams PuctParams::FromOptions(const OptionsDict& options,
            .constant_factor = options.Get<float>(kMovesLeftConstantFactor),
            .scaled_factor = options.Get<float>(kMovesLeftScaledFactor),
            .quadratic_factor = options.Get<float>(kMovesLeftQuadraticFactor)},
-      .sticky_endgames = options.Get<bool>(kStickyEndgames),
-      .two_fold_draws = options.Get<std::string>(kTwoFoldDraws) == "contained"
-                            ? TwoFoldDraws::kContained
-                            : TwoFoldDraws::kRoot};
+      .sticky_endgames = options.Get<bool>(kStickyEndgames)};
 }
 
 // The default policy.

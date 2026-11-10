@@ -45,10 +45,18 @@ namespace lczero::lc5 {
 //
 // A cached value refreshes only when a visit goes through that edge. A
 // two-fold draw is cached by the edge that reached it and reaches ancestors
-// only through the nodes' values, so TwoFoldDraws makes no difference here.
-// With a short HistoryKeyLength, more positions share a node and its value.
+// only through the nodes' values. With a short HistoryKeyLength, more positions
+// share a node and its value.
 struct PuctDag : PuctPolicy<PuctDag> {
   static constexpr std::string_view kName = "puct-dag";
+
+  // What the parent receives from the node's current statistics: the node's
+  // mean and bounds.
+  static Message Current(const Node<PuctDag>& node) {
+    const ValueStats& stats = node.stats;
+    return {VisitValue{.q = stats.Q(), .d = stats.D(), .m = stats.M()}.Parent(),
+            stats.bounds.Parent()};
+  }
 
   // Folds `message` into the node and, if given, the edge the visit took, and
   // returns the node's current value and bounds. Through an edge, the node's

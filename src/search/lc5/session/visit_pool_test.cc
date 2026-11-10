@@ -125,9 +125,7 @@ TEST(Lc5VisitPoolTest, InitializesAndResetsVisit) {
     EXPECT_FLOAT_EQ(visit.result.q, 0.0f);
     EXPECT_FLOAT_EQ(visit.result.d, 0.0f);
     EXPECT_FLOAT_EQ(visit.result.m, 0.0f);
-    EXPECT_FALSE(visit.two_fold_origin);
     visit.result = {1.0f, 0.5f, 3.0f};
-    visit.two_fold_origin = 3;
     pool.Release(*id);
     // The slot itself is reset, not only marked free.
     EXPECT_FALSE(visit.id);

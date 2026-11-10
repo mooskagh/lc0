@@ -868,91 +868,67 @@ TEST(Lc5SearchTest, StickyEndgamesPlaysMateAndStopsEarly) {
   }
 }
 
-TEST(Lc5SearchTest, ContainedTwoFoldDrawStopsAtFirstOccurrence) {
-  // Path: nodes 0..3, then a two-fold leaf repeating node 1.
+TEST(Lc5SearchTest, TwoFoldDrawBacksUpToRoot) {
+  // Path: nodes 0..3, then a two-fold leaf with update_node = false.
   constexpr size_t kNodes = 4;
-  constexpr size_t kOrigin = 1;
   const Move move = Move::White(Square(kFileA, kRank2), Square(kFileA, kRank3));
   const VisitValue draw{.q = 0.0f, .d = 1.0f, .m = 0.0f};
-  for (const bool contained : {false, true}) {
-    SCOPED_TRACE(contained);
-    PolicyEngine<PuctAveraging> engine(TestParams());
-    auto& graph = engine.graph();
-    Visit visit;
-    for (size_t i = 0; i < kNodes; ++i) {
-      const NodeKey key{100 + i};
-      graph.InsertNode(key, {.leaf = {.q = 0.5f, .d = 0.0f, .m = 10.0f},
-                             .moves = {move},
-                             .priors = {1.0f}});
-      ASSERT_EQ(graph.SelectAndReserveEdge(key, TestParams()).status,
-                SelectResult::kEdgeSelected);
-      visit.path.push_back(
-          {.key = key, .selected_move = move, .update_node = true});
-    }
-    visit.path.push_back({.key = NodeKey{200}});
-    visit.result = draw;
-    if (contained) visit.two_fold_origin = kOrigin;
-    Metrics metrics;
-    engine.BackupVisit(visit, metrics);
+  PolicyEngine<PuctAveraging> engine(TestParams());
+  auto& graph = engine.graph();
+  Visit visit;
+  for (size_t i = 0; i < kNodes; ++i) {
+    const NodeKey key{100 + i};
+    graph.InsertNode(key, {.leaf = {.q = 0.5f, .d = 0.0f, .m = 10.0f},
+                           .moves = {move},
+                           .priors = {1.0f}});
+    ASSERT_EQ(graph.SelectAndReserveEdge(key, TestParams()).status,
+              SelectResult::kEdgeSelected);
+    visit.path.push_back(
+        {.key = key, .selected_move = move, .update_node = true});
+  }
+  visit.path.push_back({.key = NodeKey{200}});
+  visit.result = draw;
+  Metrics metrics;
+  engine.BackupVisit(visit, metrics);
 
-    // Nodes from the first occurrence down, and their edges, take the draw;
-    // its M grows by one per ply up.
-    for (size_t i = kOrigin; i < kNodes; ++i) {
-      SCOPED_TRACE(i);
-      const auto node = graph.SnapshotNode(NodeKey{100 + i});
-      ASSERT_TRUE(node);
-      const float m = static_cast<float>(kNodes - i);
-      EXPECT_EQ(node->stats.visits, 2u);
-      EXPECT_FLOAT_EQ(node->stats.Q(), 0.25f);
-      EXPECT_FLOAT_EQ(node->stats.D(), 0.5f);
-      EXPECT_FLOAT_EQ(node->stats.M(), (10.0f + m) / 2);
-      EXPECT_EQ(TriedAt(*node, 0).in_flight, 0u);
-      EXPECT_FLOAT_EQ(TriedAt(*node, 0).stats.Q(), 0.0f);
-      EXPECT_FLOAT_EQ(TriedAt(*node, 0).stats.D(), 1.0f);
-      EXPECT_FLOAT_EQ(TriedAt(*node, 0).stats.M(), m);
-    }
-    // Above it, the edge into the first occurrence takes that node's value
-    // (Q 0.25, D 0.5, M 6.5) instead, or the draw if not contained.
-    const auto root = graph.SnapshotNode(NodeKey{100});
-    ASSERT_TRUE(root);
-    const auto& edge = TriedAt(*root, 0);
-    EXPECT_EQ(edge.in_flight, 0u);
-    EXPECT_EQ(edge.stats.visits, 1u);
-    EXPECT_FLOAT_EQ(edge.stats.Q(), contained ? -0.25f : 0.0f);
-    EXPECT_FLOAT_EQ(edge.stats.D(), contained ? 0.5f : 1.0f);
-    EXPECT_FLOAT_EQ(edge.stats.M(), contained ? 7.5f : 4.0f);
-    EXPECT_EQ(root->stats.visits, 2u);
-    EXPECT_FLOAT_EQ(root->stats.Q(), contained ? 0.125f : 0.25f);
+  for (size_t i = 0; i < kNodes; ++i) {
+    SCOPED_TRACE(i);
+    const auto node = graph.SnapshotNode(NodeKey{100 + i});
+    ASSERT_TRUE(node);
+    const float m = static_cast<float>(kNodes - i);
+    EXPECT_EQ(node->stats.visits, 2u);
+    EXPECT_FLOAT_EQ(node->stats.Q(), 0.25f);
+    EXPECT_FLOAT_EQ(node->stats.D(), 0.5f);
+    EXPECT_FLOAT_EQ(node->stats.M(), (10.0f + m) / 2);
+    EXPECT_EQ(TriedAt(*node, 0).in_flight, 0u);
+    EXPECT_FLOAT_EQ(TriedAt(*node, 0).stats.Q(), 0.0f);
+    EXPECT_FLOAT_EQ(TriedAt(*node, 0).stats.D(), 1.0f);
+    EXPECT_FLOAT_EQ(TriedAt(*node, 0).stats.M(), m);
   }
 }
 
 TEST(Lc5SearchTest, TwoFoldDrawsFromRealCyclesDrain) {
   // Kings and blocked pawns: few moves, so king shuffles repeat early.
   const auto root = Origin("k7/p7/P7/8/8/8/8/7K w - - 0 1");
-  for (const auto mode : {TwoFoldDraws::kRoot, TwoFoldDraws::kContained}) {
-    for (const int threads : {1, 2}) {
-      SCOPED_TRACE(static_cast<int>(mode));
-      SCOPED_TRACE(threads);
-      auto params = TestParams();
-      params.two_fold_draws = mode;
-      PolicyEngine<PuctAveraging> engine(params);
-      auto& graph = engine.graph();
-      ControlledBackend backend;
-      RecordingResponder responder;
-      constexpr int64_t kNodes = 2000;
-      SearchSession session(&engine, &backend, &responder,
-                            TestSettings(threads, 16), TestTimeManagement(),
-                            root, GoParams{.nodes = kNodes},
-                            std::chrono::steady_clock::now());
-      session.Start();
-      session.Wait();
-      ExpectDrained(session, graph);
-      ExpectFinalOutput(responder, kNodes);
-      EXPECT_GT(session.metrics().two_fold_visits.load(), 0u);
-      const auto node = graph.SnapshotNode(root.key);
-      ASSERT_TRUE(node);
-      EXPECT_EQ(node->stats.visits, static_cast<uint64_t>(kNodes));
-    }
+  for (const int threads : {1, 2}) {
+    SCOPED_TRACE(threads);
+    PolicyEngine<PuctAveraging> engine(TestParams());
+    auto& graph = engine.graph();
+    ControlledBackend backend;
+    RecordingResponder responder;
+    constexpr int64_t kNodes = 2000;
+    SearchSession session(&engine, &backend, &responder,
+                          TestSettings(threads, 16), TestTimeManagement(), root,
+                          GoParams{.nodes = kNodes},
+                          std::chrono::steady_clock::now());
+    session.Start();
+    session.Wait();
+    ExpectDrained(session, graph);
+    ExpectFinalOutput(responder, kNodes);
+    EXPECT_GT(session.metrics().two_fold_visits.load(), 0u);
+    const auto node = graph.SnapshotNode(root.key);
+    ASSERT_TRUE(node);
+    EXPECT_EQ(node->stats.visits, static_cast<uint64_t>(kNodes));
   }
 }
 
