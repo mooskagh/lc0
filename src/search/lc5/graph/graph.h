@@ -52,6 +52,7 @@ struct SelectResult {
     kNodeTerminal,
     kNodeProven,
   };
+  // `using enum Status;` triggers a GCC 11 ICE (tsubst_copy) in templates.
   static constexpr Status kEdgeSelected = Status::kEdgeSelected;
   static constexpr Status kNodeMissing = Status::kNodeMissing;
   static constexpr Status kNodeTerminal = Status::kNodeTerminal;
