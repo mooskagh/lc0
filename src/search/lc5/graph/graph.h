@@ -52,7 +52,10 @@ struct SelectResult {
     kNodeTerminal,
     kNodeProven,
   };
-  using enum Status;
+  static constexpr Status kEdgeSelected = Status::kEdgeSelected;
+  static constexpr Status kNodeMissing = Status::kNodeMissing;
+  static constexpr Status kNodeTerminal = Status::kNodeTerminal;
+  static constexpr Status kNodeProven = Status::kNodeProven;
 
   Status status = kNodeMissing;
   Move move{};
