@@ -171,24 +171,6 @@ TEST(Lc5PuctTest, InFlightCountsInTotals) {
   EXPECT_EQ(PuctAveraging::Select(node, TestParams()), 1u);
 }
 
-TEST(Lc5PuctTest, ReselectCountsWaiterAsCompleted) {
-  // The owner's visit is still in flight on edge A; the waiter's reservation
-  // has been released and counts as completed with the child's value.
-  const Node node{.stats = {.visits = 1},
-                  .edges = {MakeEdge(kFileA, 0.5f), MakeEdge(kFileB, 0.3f)},
-                  .tried = {Tried{.in_flight = 1}}};
-  // N = 2, so sqrt(N) = 1.414. Edge A scores q + 0.5 * 1.414 / 3 = q + 0.236
-  // and edge B 0.3 * 1.414 = 0.424.
-  // q = -0.9: A -0.664 < B 0.424.
-  EXPECT_EQ(
-      PuctAveraging::Reselect(node, TestParams(), 0, {.value = {.q = -0.9f}}),
-      1u);
-  // q = 0.9: A 1.136 > B 0.424.
-  EXPECT_EQ(
-      PuctAveraging::Reselect(node, TestParams(), 0, {.value = {.q = 0.9f}}),
-      0u);
-}
-
 TEST(Lc5PuctTest, MovesLeftPrefersShorterWinsAndLongerLosses) {
   auto params = TestParams();
   params.moves_left.enabled = true;
@@ -544,21 +526,21 @@ TEST(Lc5PuctTest, DagEdgesCacheTheChildValue) {
   }
 }
 
-TEST(Lc5PuctTest, DagReselectReplacesTheEdgeValue) {
-  // Edge A has 3 visits at 0.8; the waiter brings 0.2. With N = 4, sqrt(N) =
-  // 2: A scores q + 0.5 * 2 / 5 = q + 0.2 and the untried B 0.3 * 2 = 0.6.
+TEST(Lc5PuctTest, DagUpdateReplacesTheEdgeValue) {
+  // Edge A has 3 visits at 0.8; a fourth visit brings 0.2. With N = 4, sqrt(N)
+  // = 2: A scores q + 0.5 * 2 / 5 = q + 0.2 and the untried B 0.3 * 2 = 0.6.
   // Averaging gives A q = 0.65 (0.85 > 0.6); replacing gives 0.2 (0.4 < 0.6).
-  const Node node{.stats = {.visits = 4},
-                  .edges = {MakeEdge(kFileA, 0.5f), MakeEdge(kFileB, 0.3f)},
-                  .tried = {MakeTried(3, 0.8f)}};
-  const DagNode dag{.stats = {.visits = 4},
-                    .edges = {MakeEdge(kFileA, 0.5f), MakeEdge(kFileB, 0.3f)},
-                    .tried = {DagTried{.stats = {.visits = 3, .q = 0.8f}}}};
+  Node node{.stats = {.visits = 4, .q = 0.8f},
+            .edges = {MakeEdge(kFileA, 0.5f), MakeEdge(kFileB, 0.3f)},
+            .tried = {MakeTried(3, 0.8f)}};
+  DagNode dag{.stats = {.visits = 4, .q = 0.8f},
+              .edges = {MakeEdge(kFileA, 0.5f), MakeEdge(kFileB, 0.3f)},
+              .tried = {DagTried{.stats = {.visits = 3, .q = 0.8f}}}};
   const VisitValue from_child{.q = 0.2f};
-  EXPECT_EQ(
-      PuctAveraging::Reselect(node, TestParams(), 0, {.value = from_child}),
-      0u);
-  EXPECT_EQ(PuctDag::Reselect(dag, TestParams(), 0, {.value = from_child}), 1u);
+  PuctAveraging::Update(node, &node.tried[0], {.value = from_child});
+  PuctDag::Update(dag, &dag.tried[0], {.value = from_child});
+  EXPECT_EQ(PuctAveraging::Select(node, TestParams()), 0u);
+  EXPECT_EQ(PuctDag::Select(dag, TestParams()), 1u);
 }
 
 TEST(Lc5PuctTest, DagTerminalLossProvesParentWin) {

@@ -63,8 +63,8 @@ struct VisitWakeup {
   VisitId id;     // The visit to continue.
   size_t worker;  // Owning visit worker (the only thread that may mutate it).
   Kind kind = Kind::kSelect;
-  VisitValue value{};     // The leaf value; unset for kRestored and kCancel.
-  bool exact = false;     // `value` is an exact terminal value.
+  VisitValue value{};     // The leaf value, for kBackup.
+  bool exact = false;     // `value` is an exact terminal value, for kBackup.
   bool terminal = false;  // The leaf is terminal; only counted in metrics.
 };
 

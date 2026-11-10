@@ -245,12 +245,9 @@ VisitEngine::ResumeAction PolicyEngine<P>::ResumeVisit(Visit& visit,
     return ResumeAction::kSelect;
   }
   PathStep& parent = visit.path[visit.path.size() - 2];
-  // X's owner has not backed up yet, so the parent's edge does not show X's
-  // value; it is what the parent receives from X, whose own update was
-  // counted at install.
-  const auto from_child = P::Skip(P::Leaf(visit.result, visit.result_exact));
-  const std::optional<Move> reselected = graph_.ReselectAndReserveEdge(
-      parent.key, *parent.selected_move, from_child, params_);
+  // X's owner has already backed up, so the parent's edge holds X's value.
+  const std::optional<Move> reselected =
+      graph_.ReselectAndReserveEdge(parent.key, *parent.selected_move, params_);
   if (!reselected || *reselected == *parent.selected_move) {
     return ResumeAction::kSelect;
   }

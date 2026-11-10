@@ -74,10 +74,10 @@ Code: `session/search_session.cc`, `policies/policy_engine.h`, `policies/puct.cc
    node: its legal moves, priors and value.
 
 5. **Waiting.** When a node is installed, its owner backs up the network's
-   value. Its waiters do not back anything up. By default
-   (`WaiterResume=reselect`) a waiter reruns PUCT at the node's parent,
-   counting its own visit as completed with the node's value, and switches
-   to another edge if that one is now better (about +7 Elo over `select`).
+   value before its waiters resume. Waiters do not back anything up. By default
+   (`WaiterResume=reselect`) a waiter reruns PUCT at the node's parent (whose
+   edge now holds the owner's backed-up value) and switches to another edge if
+   that one is now better (about +7 Elo over `select`).
    With `WaiterResume=select` it continues selecting *below* the new node
    and ends up at some other leaf; with `WaiterResume=restart` it restarts
    from the root instead (this was the `RestartWaiters` option; in earlier

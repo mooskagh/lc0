@@ -87,10 +87,10 @@ class GameGraph {
                                     const typename P::Params& params,
                                     bool stop_at_proven = false);
 
-  // Releases `move` (in_flight -= 1) and reserves the edge reselected with
-  // `from_child` (in_flight += 1); returns the new move, or nullopt if failed.
+  // Releases `move` (in_flight -= 1) and selects and reserves an edge
+  // (in_flight += 1); returns the selected move, or nullopt if `move` could not
+  // be released.
   std::optional<Move> ReselectAndReserveEdge(NodeKey key, Move move,
-                                             const Message& from_child,
                                              const typename P::Params& params);
 
   // Releases an edge reservation (in_flight -= 1) without committing a visit;
@@ -200,16 +200,15 @@ SelectResult GameGraph<P>::SelectAndReserveEdge(
 
 template <typename P>
 std::optional<Move> GameGraph<P>::ReselectAndReserveEdge(
-    NodeKey key, Move move, const Message& from_child,
-    const typename P::Params& params) {
+    NodeKey key, Move move, const typename P::Params& params) {
   auto& shard = ShardFor(key);
   absl::MutexLock lock(shard.mutex);
   Node* node = FindNode(shard.nodes, key);
   if (!node) return std::nullopt;
-  const size_t index = FindEdge(*node, move);
-  if (!ReleaseEdgeLocked(shard, *node, index)) return std::nullopt;
-  return ReserveEdgeLocked(shard, *node,
-                           P::Reselect(*node, params, index, from_child));
+  if (!ReleaseEdgeLocked(shard, *node, FindEdge(*node, move))) {
+    return std::nullopt;
+  }
+  return ReserveEdgeLocked(shard, *node, P::Select(*node, params));
 }
 
 template <typename P>

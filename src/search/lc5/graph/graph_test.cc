@@ -506,41 +506,50 @@ TEST(Lc5GraphTest, FirstUntriedEdgeCompetesWithTriedOnes) {
 
 TEST(Lc5GraphTest, ReselectionMovesOnlyTheWaitersReservation) {
   Graph graph;
-  const NodeKey key{456};
   const NodeEval eval{
       .moves = {M(kFileA, kFileA), M(kFileB, kFileB), M(kFileC, kFileC)},
       .priors = {0.8f, 0.1f, 0.1f}};
-  graph.InsertNode(key, eval);
   const Move a = eval.moves[0];
   const Move b = eval.moves[1];
   const auto params = TestParams();
-  // Edge A scores 0.8, then 0.8 / 2 = 0.4 against B's 0.1.
-  ASSERT_EQ(graph.SelectAndReserveEdge(key, params).move, a);
-  ASSERT_EQ(graph.SelectAndReserveEdge(key, params).move, a);
-  // N = 2 and sqrt(N) = 1.414. A good child keeps edge A, 0.9 + 0.8 * 1.414 /
-  // 3 = 1.277 against B's 0.141, and its reservation.
-  EXPECT_EQ(graph.ReselectAndReserveEdge(key, a, {.value = {.q = 0.9f}}, params),
-            a);
-  auto node = graph.SnapshotNode(key);
-  EXPECT_EQ(TriedAt(*node, 0).in_flight, 2u);
-  EXPECT_EQ(TriedAt(*node, 0).stats.visits, 0u);
-  // A bad child moves it to edge B: A scores -0.9 + 0.377 = -0.523.
-  EXPECT_EQ(
-      graph.ReselectAndReserveEdge(key, a, {.value = {.q = -0.9f}}, params), b);
-  node = graph.SnapshotNode(key);
+
+  // Good child: owner backs up 0.9 on A, and the waiter keeps edge A (N = 1,
+  // A scores 0.9 + 0.8 / 2 = 1.3 against B's 0.1).
+  const NodeKey good{456};
+  graph.InsertNode(good, eval);
+  ASSERT_EQ(graph.SelectAndReserveEdge(good, params).move, a);
+  ASSERT_EQ(graph.SelectAndReserveEdge(good, params).move, a);
+  graph.UpdateNode(good, {.value = {.q = 0.9f}}, a);
+  EXPECT_EQ(graph.ReselectAndReserveEdge(good, a, params), a);
+  auto node = graph.SnapshotNode(good);
+  EXPECT_EQ(node->tried.size(), 1u);
+  EXPECT_EQ(TriedAt(*node, 0).stats.visits, 1u);
   EXPECT_EQ(TriedAt(*node, 0).in_flight, 1u);
-  EXPECT_EQ(TriedAt(*node, 1).in_flight, 1u);
-  EXPECT_EQ(TriedAt(*node, 0).stats.visits, 0u);
-  // Nothing changes for a missing node or an edge without reservations.
-  EXPECT_EQ(graph.ReselectAndReserveEdge(NodeKey{999}, a,
-                                         {.value = {.q = -0.9f}}, params),
-            std::nullopt);
-  EXPECT_EQ(graph.ReselectAndReserveEdge(key, eval.moves[2],
-                                         {.value = {.q = -0.9f}}, params),
-            std::nullopt);
-  node = graph.SnapshotNode(key);
+
+  // Bad child: owner backs up -0.9 on A, and the waiter moves to edge B (N = 1,
+  // A scores -0.9 + 0.8 / 2 = -0.5 against B's 0.1).
+  const NodeKey bad{457};
+  graph.InsertNode(bad, eval);
+  ASSERT_EQ(graph.SelectAndReserveEdge(bad, params).move, a);
+  ASSERT_EQ(graph.SelectAndReserveEdge(bad, params).move, a);
+  graph.UpdateNode(bad, {.value = {.q = -0.9f}}, a);
+  EXPECT_EQ(graph.ReselectAndReserveEdge(bad, a, params), b);
+  node = graph.SnapshotNode(bad);
   EXPECT_EQ(node->tried.size(), 2u);
-  EXPECT_EQ(TriedAt(*node, 0).in_flight, 1u);
+  EXPECT_EQ(TriedAt(*node, 0).stats.visits, 1u);
+  EXPECT_EQ(TriedAt(*node, 0).in_flight, 0u);
+  EXPECT_EQ(TriedAt(*node, 1).stats.visits, 0u);
+  EXPECT_EQ(TriedAt(*node, 1).in_flight, 1u);
+
+  // Nothing changes for a missing node or an edge without reservations.
+  EXPECT_EQ(graph.ReselectAndReserveEdge(NodeKey{999}, a, params),
+            std::nullopt);
+  EXPECT_EQ(graph.ReselectAndReserveEdge(bad, a, params), std::nullopt);
+  EXPECT_EQ(graph.ReselectAndReserveEdge(bad, eval.moves[2], params),
+            std::nullopt);
+  node = graph.SnapshotNode(bad);
+  EXPECT_EQ(node->tried.size(), 2u);
+  EXPECT_EQ(TriedAt(*node, 0).in_flight, 0u);
   EXPECT_EQ(TriedAt(*node, 1).in_flight, 1u);
 }
 

@@ -723,6 +723,46 @@ TEST(Lc5SearchTest, WaitersDrainAndCountOnceInEveryResumeMode) {
   }
 }
 
+TEST(Lc5SearchTest, WaiterReselectsAfterOwnerBackup) {
+  const auto root = Origin();
+  const auto moves = root.history.Last().GetBoard().GenerateLegalMoves();
+  for (const int threads : {1, 2}) {
+    for (const bool child_bad_for_root : {true, false}) {
+      SCOPED_TRACE(threads);
+      SCOPED_TRACE(child_bad_for_root);
+      PolicyEngine<PuctAveraging> engine(TestParams());
+      auto& graph = engine.graph();
+      graph.InsertNode(root.key,
+                       {.moves = {moves[0], moves[1]}, .priors = {0.8f, 0.2f}});
+      ControlledBackend backend;
+      // Positive child Q flips to negative on the root's edge.
+      backend.q = child_bad_for_root ? 0.9f : -0.9f;
+      RecordingResponder responder;
+      SearchSession session(&engine, &backend, &responder,
+                            TestSettings(threads, 4), TestTimeManagement(),
+                            root, GoParams{.nodes = 2},
+                            std::chrono::steady_clock::now());
+      // Both visits pick moves[0] (0.8, then 0.8 / 2 = 0.4 > 0.2): one owner
+      // and one waiter (on the other worker when threads == 2).
+      ASSERT_TRUE(SearchSessionTestPeer::AdmitVisit(session, root));
+      ASSERT_TRUE(SearchSessionTestPeer::AdmitVisit(session, root));
+      SearchSessionTestPeer::PrepareAdmissions(session);
+      session.Start();
+      session.Wait();
+      ExpectDrained(session, graph);
+      ExpectFinalOutput(responder, 3);
+      EXPECT_EQ(session.metrics().visits_completed.load(), 2u);
+      EXPECT_EQ(session.metrics().materialization_waiters.load(), 1u);
+      EXPECT_EQ(session.metrics().visits_reselected.load(),
+                child_bad_for_root ? 1u : 0u);
+      const auto node = graph.SnapshotNode(root.key);
+      ASSERT_TRUE(node);
+      EXPECT_EQ(TriedAt(*node, 0).stats.visits, child_bad_for_root ? 1u : 2u);
+      EXPECT_EQ(TriedAt(*node, 1).stats.visits, child_bad_for_root ? 1u : 0u);
+    }
+  }
+}
+
 TEST(Lc5SearchTest, PuctDagDrainsAndKeepsNodeMeans) {
   // Kings and blocked pawns: with HistoryKeyLength 0, king routes that
   // commute share a node from the fourth ply.

@@ -159,12 +159,13 @@ void VisitWorker::ResumeVisit(const VisitWakeup& wakeup) {
     return;
   }
   visit.path.back().selected_move.reset();
-  visit.result = wakeup.value;
-  visit.result_exact = wakeup.exact;
+  if (wakeup.terminal) context_.metrics.terminal_visits.fetch_add(1);
   switch (wakeup.kind) {
     case VisitWakeup::Kind::kBackup:
-      visit.state = VisitState::kReadyBackup;
-      break;
+      visit.result = wakeup.value;
+      visit.result_exact = wakeup.exact;
+      BackupVisit(visit);
+      return;
     case VisitWakeup::Kind::kRestored:
       // Node restored from store with its prior stats; descend below it.
       visit.state = VisitState::kReadySelect;
@@ -178,8 +179,8 @@ void VisitWorker::ResumeVisit(const VisitWakeup& wakeup) {
           RestartVisit(visit);  // Cancel path reservations and reset to origin.
           break;
         case VisitEngine::ResumeAction::kBackup:
-          visit.state = VisitState::kReadyBackup;  // Reselected into 2-fold.
-          break;
+          BackupVisit(visit);  // Reselected into 2-fold.
+          return;
         case VisitEngine::ResumeAction::kSelect:
           visit.state = VisitState::kReadySelect;
           context_.metrics.visits_resumed.fetch_add(1);
@@ -190,7 +191,6 @@ void VisitWorker::ResumeVisit(const VisitWakeup& wakeup) {
       assert(false);
       break;
   }
-  if (wakeup.terminal) context_.metrics.terminal_visits.fetch_add(1);
   ready_visits_.push_back(wakeup.id);  // Queue for next AdvanceVisit pass.
 }
 
@@ -269,10 +269,6 @@ bool VisitWorker::HasReadyWork() const {
 void VisitWorker::AdvanceVisit(VisitId id) {
   // Only this worker releases its visits, and never one that is ready.
   Visit& visit = context_.visits.Get(id);
-  if (visit.state == VisitState::kReadyBackup) {
-    BackupVisit(visit);
-    return;
-  }
   if (IsStopping()) {
     CancelVisit(visit);
     return;
@@ -428,6 +424,7 @@ void VisitWorker::CompleteMaterialization(MaterializationId materialization_id,
     wakeup.exact = accepted && IsExact(eval.terminal);
     DeliverWakeup(wakeup);
   };
+  // Wake the owner first so ProcessInbox backs it up before any waiter resumes.
   wake(waiters->owner, true);
   for (const auto& wakeup : waiters->waiters) wake(wakeup, false);
 }

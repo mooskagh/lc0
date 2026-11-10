@@ -64,7 +64,6 @@ enum class VisitState : uint8_t {
   kFree,
   kReadySelect,
   kWaitingMaterialization,
-  kReadyBackup,
 };
 
 struct Visit {

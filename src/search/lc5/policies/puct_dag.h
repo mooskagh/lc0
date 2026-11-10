@@ -50,15 +50,6 @@ namespace lczero::lc5 {
 struct PuctDag : PuctPolicy<PuctDag> {
   static constexpr std::string_view kName = "puct-dag";
 
-  // A completed visit through the edge replaces its cached value with the
-  // child's and adds one to its weight.
-  static void UpdateEdge(ValueStats& edge, const Message& from_child) {
-    ++edge.visits;
-    edge.q = from_child.value.q;
-    edge.d = from_child.value.d;
-    edge.m = from_child.value.m;
-  }
-
   // Folds `message` into the node and, if given, the edge the visit took, and
   // returns the node's current value and bounds. Through an edge, the node's
   // mean swaps the edge's old contribution (n visits at its cached value) for
@@ -70,16 +61,18 @@ struct PuctDag : PuctPolicy<PuctDag> {
     ValueStats& stats = node.stats;
     const VisitValue& value = message.value;
     if (edge) {
-      const ValueStats& old = edge->stats;
-      const float n = static_cast<float>(old.visits);
+      ValueStats& edge_stats = edge->stats;
+      const float n = static_cast<float>(edge_stats.visits++);
       const float total = static_cast<float>(++stats.visits);
-      stats.q += ((n + 1.0f) * value.q - n * old.q - stats.q) / total;
-      stats.d += ((n + 1.0f) * value.d - n * old.d - stats.d) / total;
-      stats.m += ((n + 1.0f) * value.m - n * old.m - stats.m) / total;
+      stats.q += ((n + 1.0f) * value.q - n * edge_stats.q - stats.q) / total;
+      stats.d += ((n + 1.0f) * value.d - n * edge_stats.d - stats.d) / total;
+      stats.m += ((n + 1.0f) * value.m - n * edge_stats.m - stats.m) / total;
       // Against float drift.
       stats.q = std::clamp(stats.q, -1.0f, 1.0f);
       stats.d = std::clamp(stats.d, 0.0f, 1.0f);
-      UpdateEdge(edge->stats, message);
+      edge_stats.q = value.q;
+      edge_stats.d = value.d;
+      edge_stats.m = value.m;
     } else {
       stats.Add(value);
     }

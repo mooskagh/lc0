@@ -33,10 +33,8 @@
 #include <cstddef>
 #include <cstdint>
 #include <optional>
-#include <span>
 #include <string_view>
 #include <tuple>
-#include <vector>
 
 #include "chess/callbacks.h"
 #include "search/lc5/graph/graph.h"
@@ -90,10 +88,10 @@ ThinkingInfo::WDL WdlFromValue(float q, float d);
 int CentipawnsFromQ(float q);
 
 // PUCT selection, move choice, bounds and reporting over ValueStats nodes and
-// edges. `Self` supplies kName, Update and UpdateEdge: how a message changes
-// the node and the edge it came through, and what the parent receives. Nodes
-// and edges keep value means and bounds, and the message is a value and
-// bounds from the side to move at the node.
+// edges. `Self` supplies kName and Update: how a message changes the node and
+// the edge it came through, and what the parent receives. Nodes and edges keep
+// value means and bounds, and the message is a value and bounds from the side
+// to move at the node.
 template <typename Self>
 struct PuctPolicy {
   using Params = PuctParams;
@@ -140,15 +138,7 @@ struct PuctPolicy {
   static uint32_t Visits(const ValueStats& stats) { return stats.visits; }
 
   // The edge to visit next; `node` is materialized, non-terminal, with edges.
-  static size_t Select(const Node<Self>& node, const Params& params) {
-    return SelectEdge(node, node.tried, params);
-  }
-  // The edge a waiter visits next after its visit through edge `index` found
-  // the child's value `from_child`: selection is rerun as if that visit had
-  // completed. The graph has already released its reservation; other visits
-  // in flight on the edge still count as in flight.
-  static size_t Reselect(const Node<Self>& node, const Params& params,
-                         size_t index, const Message& from_child);
+  static size_t Select(const Node<Self>& node, const Params& params);
   // The exact value of a proven node, which a visit backs up instead of
   // descending; nullopt if the node is not proven or StickyEndgames is off.
   static std::optional<VisitValue> ProvenValue(const Node<Self>& node,
@@ -201,12 +191,6 @@ struct PuctPolicy {
   static WaiterResume OnResume(const Params& params) {
     return params.waiter_resume;
   }
-
- private:
-  // PUCT selection with `tried_edges` in place of node.tried.
-  static size_t SelectEdge(const Node<Self>& node,
-                           std::span<const TriedEdge<Self>> tried_edges,
-                           const Params& params);
 };
 
 // PUCT over running averages: an edge averages the values of the visits that
@@ -214,17 +198,13 @@ struct PuctPolicy {
 struct PuctAveraging : PuctPolicy<PuctAveraging> {
   static constexpr std::string_view kName = "puct";
 
-  // A completed visit through the edge adds the child's value to its mean.
-  static void UpdateEdge(ValueStats& edge, const Message& from_child) {
-    edge.Add(from_child.value);
-  }
   // Folds `message` into the node and, if given, the edge the visit took, and
   // returns what the parent receives: the value and the node's own bounds.
   static Message Update(Node<PuctAveraging>& node,
                         TriedEdge<PuctAveraging>* edge,
                         const Message& message) {
     node.stats.Add(message.value);
-    if (edge) UpdateEdge(edge->stats, message);
+    if (edge) edge->stats.Add(message.value);
     UpdateBounds(node, edge, message.bounds);
     return {message.value.Parent(), node.stats.bounds.Parent()};
   }
@@ -233,9 +213,7 @@ struct PuctAveraging : PuctPolicy<PuctAveraging> {
 static_assert(sizeof(TriedEdge<PuctAveraging>) <= 24);
 
 template <typename Self>
-size_t PuctPolicy<Self>::SelectEdge(
-    const Node<Self>& node, std::span<const TriedEdge<Self>> tried_edges,
-    const Params& params) {
+size_t PuctPolicy<Self>::Select(const Node<Self>& node, const Params& params) {
   const auto started = [](const TriedEdge<Self>& tried) {
     return tried.stats.visits + tried.in_flight;
   };
@@ -244,8 +222,8 @@ size_t PuctPolicy<Self>::SelectEdge(
   // Only tried edges have been started, so the sums only need that prefix.
   uint64_t children_started = 0;
   float visited_policy = 0.0f;
-  for (size_t i = 0; i < tried_edges.size(); ++i) {
-    const uint32_t n = started(tried_edges[i]);
+  for (size_t i = 0; i < node.tried.size(); ++i) {
+    const uint32_t n = started(node.tried[i]);
     children_started += n;
     if (n > 0) visited_policy += node.edges[i].prior;
   }
@@ -278,25 +256,25 @@ size_t PuctPolicy<Self>::SelectEdge(
                 ml.quadratic_factor * q * q);
   };
   const auto score = [&](size_t i) {
-    const bool is_tried = i < tried_edges.size();
-    const bool has_visits = is_tried && tried_edges[i].stats.visits;
-    float q = has_visits ? tried_edges[i].stats.Q() : fpu;
+    const bool is_tried = i < node.tried.size();
+    const bool has_visits = is_tried && node.tried[i].stats.visits;
+    float q = has_visits ? node.tried[i].stats.Q() : fpu;
     // With StickyEndgames, a proven edge scores its exact value without a
     // moves-left term, and an unproven one stays within its bounds. Untried
     // edges get neither, nor a moves-left term, so they still share one score
     // apart from the prior.
     if (has_visits && params.sticky_endgames) {
-      const Bounds& bounds = tried_edges[i].stats.bounds;
+      const Bounds& bounds = node.tried[i].stats.bounds;
       if (bounds.Proven()) {
         q = bounds.lower;
       } else {
         q = std::clamp<float>(q, bounds.lower, bounds.upper);
-        if (use_m) q += m_utility(tried_edges[i], q);
+        if (use_m) q += m_utility(node.tried[i], q);
       }
     } else if (has_visits && use_m) {
-      q += m_utility(tried_edges[i], q);
+      q += m_utility(node.tried[i], q);
     }
-    const uint32_t n = is_tried ? started(tried_edges[i]) : 0u;
+    const uint32_t n = is_tried ? started(node.tried[i]) : 0u;
     return q + cpuct * node.edges[i].prior * scale / (1.0f + n);
   };
   const auto pick_best = [&](size_t end) {
@@ -316,21 +294,9 @@ size_t PuctPolicy<Self>::SelectEdge(
   // Untried edges share the FPU and are sorted by PreferOnTie, so the first
   // one beats or ties all later ones and wins the tie.
   const size_t best_index =
-      pick_best(std::min(tried_edges.size() + 1, node.edges.size()));
+      pick_best(std::min(node.tried.size() + 1, node.edges.size()));
   assert(pick_best(node.edges.size()) == best_index);
   return best_index;
-}
-
-template <typename Self>
-size_t PuctPolicy<Self>::Reselect(const Node<Self>& node,
-                                  const Params& params, size_t index,
-                                  const Message& from_child) {
-  assert(index < node.tried.size());
-  // Only runs when a waiter resumes, so copying the tried edges is cheap
-  // enough.
-  std::vector<TriedEdge<Self>> tried(node.tried.begin(), node.tried.end());
-  Self::UpdateEdge(tried[index].stats, from_child);
-  return SelectEdge(node, tried, params);
 }
 
 template <typename Self>
