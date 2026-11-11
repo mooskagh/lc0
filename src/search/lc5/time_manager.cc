@@ -37,17 +37,31 @@ namespace {
 // Visits to complete before the visit rate is trusted for early stopping.
 constexpr uint64_t kSmartPruningMinVisits = 100;
 
-std::optional<int64_t> GetTimeBudgetMs(TimeManager::Config config,
-                                       const GoParams& params,
-                                       bool black_to_move, int64_t saved_ms) {
-  if (params.ponder) return std::nullopt;
+}  // namespace
+
+TimeManager::TimeManager(Config config, const GoParams& params,
+                         bool black_to_move, Clock::time_point start_time,
+                         int64_t saved_ms)
+    : start_time_(start_time), saved_ms_(std::max<int64_t>(0, saved_ms)) {
+  // Compute the budget inline rather than passing `saved_ms_` to a helper:
+  // GCC 16 `-O3 -flto` IPA-CP folds `MAX_EXPR(saved_ms, 0)` pass-throughs to 0.
+  if (params.ponder) return;
   if (params.movetime) {
-    return std::max<int64_t>(0, *params.movetime - config.move_overhead_ms);
+    const int64_t budget =
+        std::max<int64_t>(0, *params.movetime - config.move_overhead_ms);
+    deadline_ = start_time + std::chrono::milliseconds(budget);
+    return;
   }
-  if (params.infinite) return std::nullopt;
+  if (params.infinite) return;
   const auto& remaining = black_to_move ? params.btime : params.wtime;
-  if (!remaining) return std::nullopt;
-  if (*remaining <= config.move_overhead_ms) return 0;
+  if (!remaining) return;
+
+  clock_budget_ = true;
+  smart_pruning_factor_ = config.smart_pruning_factor;
+  if (*remaining <= config.move_overhead_ms) {
+    deadline_ = start_time;
+    return;
+  }
 
   const int64_t usable = *remaining - config.move_overhead_ms;
   const int64_t increment = std::max<int64_t>(
@@ -59,23 +73,10 @@ std::optional<int64_t> GetTimeBudgetMs(TimeManager::Config config,
   // Divide the clock and future increments over the implied move horizon.
   // The current move's increment is only received after we finish searching.
   const long double budget =
-      usable * fraction + increment * (1 - fraction) + saved_ms;
-  return static_cast<int64_t>(
+      usable * fraction + increment * (1 - fraction) + saved_ms_;
+  const auto clamped = static_cast<int64_t>(
       std::clamp(budget, 1.0L, static_cast<long double>(usable)));
-}
-
-}  // namespace
-
-TimeManager::TimeManager(Config config, const GoParams& params,
-                         bool black_to_move, Clock::time_point start_time,
-                         int64_t saved_ms)
-    : start_time_(start_time), saved_ms_(std::max<int64_t>(0, saved_ms)) {
-  if (const auto budget =
-          GetTimeBudgetMs(config, params, black_to_move, saved_ms_)) {
-    deadline_ = start_time + std::chrono::milliseconds(*budget);
-    clock_budget_ = !params.movetime;
-    if (clock_budget_) smart_pruning_factor_ = config.smart_pruning_factor;
-  }
+  deadline_ = start_time + std::chrono::milliseconds(clamped);
 }
 
 bool TimeManager::CanAffordVisits(uint64_t visits, uint64_t visits_done,
