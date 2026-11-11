@@ -47,6 +47,7 @@ constexpr auto kInfoInterval = std::chrono::seconds(1);
 constexpr auto kControllerInterval = std::chrono::milliseconds(10);
 // Root visits are counted in uint32_t; classic caps a search the same way.
 constexpr uint64_t kMaxRootVisits = 4'000'000'000;
+constexpr size_t kMaxEvictionBatch = 16'384;
 
 // Visits a search may complete: `go nodes`, if given and not pondering, but
 // never so many that the root's visit count would overflow, and at least one if
@@ -352,16 +353,23 @@ void SearchSession::SendEvictionJob() {
     return;
   controller_signal_.TakeEvictionRequests();
   const size_t limit = settings_.graph_node_limit;
-  const size_t size = engine_->GetGraphSize();
-  if (size <= limit) return;
-  // Evict down to a low-water mark, so the next round is not due right away.
+  // Evict down to a low-water mark, in bounded batches so loads interleave.
   const size_t target = limit - limit / 10;
+  const size_t size = engine_->GetGraphSize();
+  if (size <= target || (size <= limit && !evicting_.load())) {
+    evicting_.store(false);
+    return;
+  }
+  evicting_.store(true);
   evictions_in_flight_.fetch_add(1);
-  store_jobs_.Push(EvictionJob{.count = size - target});
+  store_jobs_.Push(
+      EvictionJob{.count = std::min(size - target, kMaxEvictionBatch)});
 }
 
 void SearchSession::RunEvictionJob(const EvictionJob& job) {
-  engine_->EvictToStore(job.count, root_.key, metrics_);
+  if (engine_->EvictToStore(job.count, root_.key, metrics_) == 0) {
+    evicting_.store(false);
+  }
   // The controller may queue the next round, or finish draining.
   evictions_in_flight_.fetch_sub(1);
   controller_signal_.Notify();

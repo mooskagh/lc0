@@ -28,9 +28,11 @@
 #include "search/lc5/graph/graph.h"
 
 #include <absl/algorithm/container.h>
+#include <absl/container/flat_hash_set.h>
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <array>
 #include <bit>
 #include <cstddef>
 #include <vector>
@@ -47,6 +49,7 @@ Move M(File from, File to) {
 }
 
 using Graph = GameGraph<PuctAveraging>;
+static_assert(sizeof(Node<PuctAveraging>) == 64);
 
 // The statistics of edge `i`; an untried edge has none, so it reads as empty.
 const TriedEdge<PuctAveraging>& TriedAt(const Node<PuctAveraging>& node,
@@ -281,7 +284,7 @@ TEST(Lc5GraphTest, ClearResetsSizeAndAllowsReuse) {
     graph.InsertNode(NodeKey{hash}, eval);
   }
   EXPECT_EQ(graph.Size(), 32u);
-  size_t cursor = 0;
+  Graph::EvictCursor cursor;
   EXPECT_EQ(graph.Size(), graph.FindEvictableNodes(&cursor, 64, 1.0).size());
   graph.Clear();
   EXPECT_EQ(graph.Size(), 0u);
@@ -644,7 +647,8 @@ TEST(Lc5GraphTest, FindEvictableNodesSkipReservedNodes) {
   }
   ASSERT_EQ(graph.SelectAndReserveEdge(reserved, params).status,
             SelectResult::kEdgeSelected);
-  size_t cursor = 0;
+  EXPECT_EQ(graph.SnapshotNode(reserved)->in_flight, 1u);
+  Graph::EvictCursor cursor;
   const auto candidates = graph.FindEvictableNodes(&cursor, 10, 1.0);
   ASSERT_EQ(candidates.size(), 1u);
   EXPECT_EQ(candidates[0].first, idle);
@@ -678,7 +682,7 @@ TEST(Lc5GraphTest, FindEvictableNodesPreferFewVisits) {
           selected.move);
     }
   }
-  size_t cursor = 0;
+  Graph::EvictCursor cursor;
   const auto candidates = graph.FindEvictableNodes(&cursor, 2, 0.5);
   ASSERT_EQ(candidates.size(), 2u);
   std::vector<uint32_t> visits;
@@ -688,6 +692,81 @@ TEST(Lc5GraphTest, FindEvictableNodesPreferFewVisits) {
   absl::c_sort(visits);
   // Visits are 4, 3, 2 and 9; the two lowest are taken.
   EXPECT_EQ(visits, (std::vector<uint32_t>{2, 3}));
+}
+
+TEST(Lc5GraphTest, FindEvictableNodesStreamsWindowsAndAlternatesShards) {
+  constexpr size_t kWindow = Graph::kEvictWindow;
+  constexpr size_t kShard0Count = 2 * kWindow + 100;
+  constexpr size_t kShard1Count = kWindow + 50;
+  const auto shard_of = [](uint64_t hash) {
+    return (hash * 11400714819323198485ull) >>
+           (64 - std::countr_zero(Graph::kShardCount));
+  };
+
+  Graph graph;
+  const NodeEval eval{.moves = {M(kFileA, kFileA)}, .priors = {1.0f}};
+  size_t in_shard0 = 0, in_shard1 = 0;
+  // Starts at 0 so NodeKey{0} is present in shard 0.
+  for (uint64_t i = 0; in_shard0 < kShard0Count || in_shard1 < kShard1Count;
+       ++i) {
+    const size_t shard = shard_of(i);
+    if (shard == 0 && in_shard0 < kShard0Count) {
+      graph.InsertNode(NodeKey{i}, eval);
+      ++in_shard0;
+    } else if (shard == 1 && in_shard1 < kShard1Count) {
+      graph.InsertNode(NodeKey{i}, eval);
+      ++in_shard1;
+    }
+  }
+  ASSERT_TRUE(graph.ContainsNode(NodeKey{0}));
+  ASSERT_EQ(graph.Size(), kShard0Count + kShard1Count);
+
+  Graph::EvictCursor cursor;
+  // Without erasing, each shard sweeps every one of its keys (including 0 in
+  // shard 0) with no repeats per revolution, then wraps back to begin().
+  std::array<absl::flat_hash_set<NodeKey>, 2> seen;
+  std::array<size_t, 2> revolutions{};
+  while (revolutions[0] < 2 || revolutions[1] < 2) {
+    const auto batch = graph.FindEvictableNodes(&cursor, kWindow, 1.0);
+    ASSERT_FALSE(batch.empty());
+    for (const auto& [key, _] : batch) {
+      const size_t s = shard_of(key.hash);
+      ASSERT_LT(s, 2u);
+      EXPECT_TRUE(seen[s].insert(key).second);
+      if (seen[s].size() == (s == 0 ? kShard0Count : kShard1Count)) {
+        if (s == 0) EXPECT_TRUE(seen[0].contains(NodeKey{0}));
+        seen[s].clear();
+        ++revolutions[s];
+      }
+    }
+  }
+
+  // With erasing between windows, shard 0 and shard 1 alternate until empty.
+  cursor = {};
+  const auto erase_all = [&](const auto& batch) {
+    for (const auto& [key, node] : batch) {
+      EXPECT_TRUE(graph.EraseNode(key, node.version));
+    }
+  };
+  const auto first = graph.FindEvictableNodes(&cursor, kWindow, 1.0);
+  ASSERT_EQ(first.size(), kWindow);
+  EXPECT_EQ(shard_of(first.front().first.hash), 0u);
+  erase_all(first);
+
+  const auto second = graph.FindEvictableNodes(&cursor, kWindow, 1.0);
+  ASSERT_EQ(second.size(), kWindow);
+  EXPECT_EQ(shard_of(second.front().first.hash), 1u);
+  erase_all(second);
+
+  const auto third = graph.FindEvictableNodes(&cursor, kWindow, 1.0);
+  ASSERT_EQ(third.size(), kWindow);
+  EXPECT_EQ(shard_of(third.front().first.hash), 0u);
+  erase_all(third);
+
+  const auto fourth = graph.FindEvictableNodes(&cursor, kWindow, 1.0);
+  ASSERT_EQ(fourth.size(), 150u);
+  erase_all(fourth);
+  EXPECT_EQ(graph.Size(), 0u);
 }
 
 }  // namespace

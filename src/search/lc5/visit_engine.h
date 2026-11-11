@@ -113,8 +113,9 @@ class VisitEngine {
   virtual bool RestoreFromRecord(NodeKey key,
                                  std::span<const uint8_t> record) = 0;
   // Moves up to `max` nodes from the graph to the store: fewest visits first,
-  // never `keep` or a node with a reserved edge. Needs a store.
-  virtual void EvictToStore(size_t max, NodeKey keep, Metrics& metrics) = 0;
+  // never `keep` or a node with a reserved edge; returns how many were evicted.
+  // Needs a store.
+  virtual size_t EvictToStore(size_t max, NodeKey keep, Metrics& metrics) = 0;
 };
 
 }  // namespace lczero::lc5

@@ -71,6 +71,8 @@ class PolicyEngine final : public VisitEngine {
   void Clear() override {
     graph_.Clear();
     if (store_) store_->Clear();
+    absl::MutexLock lock(evict_mutex_);
+    evict_cursor_ = {};
   }
 
   DescendResult DescendVisit(Visit& visit, Metrics& metrics) override;
@@ -104,17 +106,19 @@ class PolicyEngine final : public VisitEngine {
     if (!node) return false;
     return graph_.InsertNode(key, std::move(*node));
   }
-  void EvictToStore(size_t max, NodeKey keep, Metrics& metrics) override {
+  size_t EvictToStore(size_t max, NodeKey keep, Metrics& metrics) override {
     assert(store_);
     const size_t size = graph_.Size();
-    if (size == 0 || max == 0) return;
+    if (size == 0 || max == 0) return 0;
     const double fraction =
-        std::min(1.0, static_cast<double>(max) / static_cast<double>(size));
+        std::clamp(static_cast<double>(max) / static_cast<double>(size),
+                   kMinEvictFraction, 1.0);
     std::vector<std::pair<NodeKey, Node<P>>> nodes;
     {
       absl::MutexLock lock(evict_mutex_);
       nodes = graph_.FindEvictableNodes(&evict_cursor_, max, fraction);
     }
+    if (nodes.empty()) return 0;
     // Store first: once a node leaves the graph, a miss must find its record.
     std::vector<StoredNode> records;
     records.reserve(nodes.size());
@@ -131,12 +135,14 @@ class PolicyEngine final : public VisitEngine {
     }
     metrics.nodes_evicted.fetch_add(erased);
     metrics.evictions_skipped.fetch_add(nodes.size() - erased);
+    return erased;
   }
 
   GameGraph<P>& graph() { return graph_; }
 
  private:
   static constexpr size_t kMaxPvLength = 256;
+  static constexpr double kMinEvictFraction = 0.1;
 
   // Moves in the graph are from the side to move's perspective; UCI is not.
   static Move ToUci(Move move, const Position& position) {
@@ -156,7 +162,8 @@ class PolicyEngine final : public VisitEngine {
   std::unique_ptr<NodeStore> store_;
   // Where the next eviction scan starts, so evictions spread over all shards.
   absl::Mutex evict_mutex_;
-  size_t evict_cursor_ ABSL_GUARDED_BY(evict_mutex_) = 0;
+  typename GameGraph<P>::EvictCursor evict_cursor_
+      ABSL_GUARDED_BY(evict_mutex_);
 };
 
 template <typename P>

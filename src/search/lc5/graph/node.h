@@ -66,7 +66,8 @@ inline bool PreferOnTie(const LegalEdge& a, const LegalEdge& b) {
 template <typename P>
 struct Node {
   typename P::NodeStats stats{};
-  uint32_t version = 0;  // Bumped on change so eviction skips modified nodes.
+  uint32_t version = 0;    // Bumped on change so eviction skips modified nodes.
+  uint32_t in_flight = 0;  // Total active reservations across `tried`.
   TerminalKind terminal = TerminalKind::kNonTerminal;
   CompactVector<LegalEdge> edges{};     // Sorted by PreferOnTie.
   CompactVector<TriedEdge<P>> tried{};  // Prefix of edges tried at least once.

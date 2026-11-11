@@ -138,6 +138,8 @@ class SearchSession {
   std::atomic<size_t> jobs_in_flight_{0};
   // Eviction jobs queued or running; the controller queues more only at zero.
   std::atomic<size_t> evictions_in_flight_{0};
+  // Active while draining the graph from its limit down to the low-water mark.
+  std::atomic<bool> evicting_{false};
 
   // Queues, workers and threads.
   std::vector<WorkerInbox> inboxes_;  // By visit worker index.

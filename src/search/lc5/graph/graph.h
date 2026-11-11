@@ -36,8 +36,8 @@
 #include <atomic>
 #include <bit>
 #include <cassert>
+#include <cstddef>
 #include <cstdint>
-#include <limits>
 #include <optional>
 #include <utility>
 #include <vector>
@@ -79,7 +79,29 @@ class GameGraph {
   using Message = typename P::Message;
 
   static constexpr size_t kShardCount = 1024;
+  static constexpr size_t kEvictWindow = 4096;
   static_assert(kShardCount > 1 && std::has_single_bit(kShardCount));
+
+  // Position in a rolling eviction scan: the next shard to visit, and for each
+  // shard the key where its last window stopped (a key from another shard means
+  // begin()).
+  struct EvictCursor {
+    size_t shard = 0;
+    std::array<NodeKey, kShardCount> next_keys = {NodeKey{1}};
+  };
+
+  size_t Size() const { return size_.load(std::memory_order_relaxed); }
+  bool ContainsNode(NodeKey key) const;
+  std::optional<Node> SnapshotNode(NodeKey key) const;
+  void Clear();
+
+  // Inserts a new node initialized from `eval` (counting `eval.leaf` as its
+  // first visit) if absent; returns true if inserted, false if already present.
+  bool InsertNode(NodeKey key, const NodeEval& eval);
+
+  // Inserts `node` (e.g. restored from the store, with in_flight reset to 0) if
+  // absent; returns true if inserted, false if already present.
+  bool InsertNode(NodeKey key, Node node);
 
   // Selects and reserves an edge (in_flight += 1), or reports why the node
   // cannot be selected from (missing, terminal, or proven if `stop_at_proven`).
@@ -92,36 +114,22 @@ class GameGraph {
   Move ReselectAndReserveEdge(NodeKey key, Move move,
                               const typename P::Params& params);
 
-  // Releases an edge reservation (in_flight -= 1) without committing a visit.
-  void ReleaseEdge(NodeKey key, Move move);
-
-  bool ContainsNode(NodeKey key) const;
-
-  // Inserts a new node initialized from `eval` (counting `eval.leaf` as its
-  // first visit) if absent; returns true if inserted, false if already present.
-  bool InsertNode(NodeKey key, const NodeEval& eval);
-
-  // Inserts `node` (e.g. restored from the store, with in_flight reset to 0) if
-  // absent; returns true if inserted, false if already present.
-  bool InsertNode(NodeKey key, Node node);
-
   // Updates the node (and `move`'s edge with in_flight -= 1, if given); returns
   // the message to the parent, or nullopt if the node is absent.
   std::optional<Message> UpdateNode(NodeKey key, Message message,
                                     std::optional<Move> move);
 
-  // Up to `max` unreserved nodes (all in_flight == 0) with the fewest visits
-  // per shard (`fraction` of each), advancing `*cursor`.
+  // Releases an edge reservation (in_flight -= 1) without committing a visit.
+  void ReleaseEdge(NodeKey key, Move move);
+
+  // Up to `max` unreserved nodes (in_flight == 0) with the fewest visits per
+  // shard window (`fraction` of each), advancing `*cursor`.
   std::vector<std::pair<NodeKey, Node>> FindEvictableNodes(
-      size_t* cursor, size_t max, double fraction) const;
+      EvictCursor* cursor, size_t max, double fraction) const;
 
-  // Erases the node if still at `version` with no reservations (in_flight == 0
-  // on all edges); returns true if erased.
+  // Erases the node if still at `version` with no reservations (in_flight ==
+  // 0); returns true if erased.
   bool EraseNode(NodeKey key, uint32_t version);
-
-  std::optional<Node> SnapshotNode(NodeKey key) const;
-  size_t Size() const { return size_.load(std::memory_order_relaxed); }
-  void Clear();
 
  private:
   using Map = absl::flat_hash_map<NodeKey, Node>;
@@ -132,15 +140,19 @@ class GameGraph {
     uint32_t version ABSL_GUARDED_BY(mutex) = 0;
   };
 
-  static size_t ShardIndex(NodeKey key) {
+  static constexpr size_t ShardIndex(NodeKey key) {
     return (key.hash * 11400714819323198485ull) >>
            (64 - std::countr_zero(kShardCount));
   }
+
+  // A key that never hashes to `shard`, marking the start of its map.
+  static constexpr NodeKey StartOfShard(size_t shard) {
+    return NodeKey{shard == 0 ? 1u : 0u};
+  }
+  static_assert(ShardIndex(NodeKey{0}) == 0 && ShardIndex(NodeKey{1}) != 0);
+
   Shard& ShardFor(NodeKey key) { return shards_[ShardIndex(key)]; }
   const Shard& ShardFor(NodeKey key) const { return shards_[ShardIndex(key)]; }
-  // Reserves the edge at `index` (in_flight += 1) and returns its move.
-  static Move ReserveEdgeLocked(Shard& shard, Node& node, size_t index)
-      ABSL_EXCLUSIVE_LOCKS_REQUIRED(shard.mutex);
 
   // The index of the edge with `move`, or edges.size() if not found.
   static size_t GetEdgeIndex(const Node& node, Move move) {
@@ -150,19 +162,27 @@ class GameGraph {
            node.edges.begin();
   }
 
+  // Reserves the edge at `index` (in_flight += 1) and returns its move.
+  static Move ReserveEdgeLocked(Shard& shard, Node& node, size_t index)
+      ABSL_EXCLUSIVE_LOCKS_REQUIRED(shard.mutex) {
+    if (index == node.tried.size()) node.tried.emplace_back();
+    Tried& tried = node.tried[index];
+    assert(tried.in_flight < kMaxActiveVisitsLimit);
+    ++tried.in_flight;
+    ++node.in_flight;
+    node.version = ++shard.version;
+    return node.edges[index].move;
+  }
+
   // Releases one reservation of the edge at `index` (in_flight -= 1).
   static void ReleaseEdgeLocked(Shard& shard, Node& node, size_t index)
       ABSL_EXCLUSIVE_LOCKS_REQUIRED(shard.mutex) {
     assert(index < node.tried.size());
     assert(node.tried[index].in_flight > 0);
+    assert(node.in_flight > 0);
     --node.tried[index].in_flight;
+    --node.in_flight;
     node.version = ++shard.version;
-  }
-
-  // Returns true if no edge on `node` holds an in-flight reservation.
-  static bool IsEvictable(const Node& node) {
-    return absl::c_none_of(
-        node.tried, [](const Tried& tried) { return tried.in_flight > 0; });
   }
 
   std::array<Shard, kShardCount> shards_;
@@ -170,59 +190,30 @@ class GameGraph {
 };
 
 template <typename P>
-SelectResult GameGraph<P>::SelectAndReserveEdge(
-    NodeKey key, const typename P::Params& params, bool stop_at_proven) {
-  auto& shard = ShardFor(key);
-  absl::MutexLock lock(shard.mutex);
-  Node* node = FindOrNull(shard.nodes, key);
-  if (!node) return {.status = SelectResult::kNodeMissing};
-  if (node->terminal != TerminalKind::kNonTerminal || node->edges.empty()) {
-    return {.status = SelectResult::kNodeTerminal, .terminal = node->terminal};
-  }
-  if (stop_at_proven) {
-    if (const auto value = P::ProvenValue(*node, params)) {
-      return {.status = SelectResult::kNodeProven, .value = *value};
-    }
-  }
-  return {.status = SelectResult::kEdgeSelected,
-          .move = ReserveEdgeLocked(shard, *node, P::Select(*node, params))};
-}
-
-template <typename P>
-Move GameGraph<P>::ReselectAndReserveEdge(
-    NodeKey key, Move move, const typename P::Params& params) {
-  auto& shard = ShardFor(key);
-  absl::MutexLock lock(shard.mutex);
-  Node& node = FindOrAssert(shard.nodes, key);
-  ReleaseEdgeLocked(shard, node, GetEdgeIndex(node, move));
-  return ReserveEdgeLocked(shard, node, P::Select(node, params));
-}
-
-template <typename P>
-Move GameGraph<P>::ReserveEdgeLocked(Shard& shard, Node& node, size_t index) {
-  if (index == node.tried.size()) {
-    node.tried.emplace_back();
-  }
-  Tried& tried = node.tried[index];
-  assert(tried.in_flight < kMaxActiveVisitsLimit);
-  ++tried.in_flight;
-  node.version = ++shard.version;
-  return node.edges[index].move;
-}
-
-template <typename P>
-void GameGraph<P>::ReleaseEdge(NodeKey key, Move move) {
-  auto& shard = ShardFor(key);
-  absl::MutexLock lock(shard.mutex);
-  Node& node = FindOrAssert(shard.nodes, key);
-  ReleaseEdgeLocked(shard, node, GetEdgeIndex(node, move));
-}
-
-template <typename P>
 bool GameGraph<P>::ContainsNode(NodeKey key) const {
   const auto& shard = ShardFor(key);
   absl::MutexLock lock(shard.mutex);
   return shard.nodes.contains(key);
+}
+
+template <typename P>
+std::optional<Node<P>> GameGraph<P>::SnapshotNode(NodeKey key) const {
+  const auto& shard = ShardFor(key);
+  absl::MutexLock lock(shard.mutex);
+  const Node* node = FindOrNull(shard.nodes, key);
+  if (!node) return std::nullopt;
+  return *node;
+}
+
+template <typename P>
+void GameGraph<P>::Clear() {
+  for (auto& shard : shards_) {
+    absl::MutexLock lock(shard.mutex);
+    // Subtract per shard to preserve concurrent insertions into shards that
+    // have already been cleared.
+    size_.fetch_sub(shard.nodes.size(), std::memory_order_relaxed);
+    shard.nodes.clear();
+  }
 }
 
 template <typename P>
@@ -252,10 +243,40 @@ bool GameGraph<P>::InsertNode(NodeKey key, Node restored) {
   absl::MutexLock lock(shard.mutex);
   if (shard.nodes.contains(key)) return false;
   restored.version = ++shard.version;
+  restored.in_flight = 0;
   for (auto& tried : restored.tried) tried.in_flight = 0;
   shard.nodes.emplace(key, std::move(restored));
   size_.fetch_add(1, std::memory_order_relaxed);
   return true;
+}
+
+template <typename P>
+SelectResult GameGraph<P>::SelectAndReserveEdge(
+    NodeKey key, const typename P::Params& params, bool stop_at_proven) {
+  auto& shard = ShardFor(key);
+  absl::MutexLock lock(shard.mutex);
+  Node* node = FindOrNull(shard.nodes, key);
+  if (!node) return {.status = SelectResult::kNodeMissing};
+  if (node->terminal != TerminalKind::kNonTerminal || node->edges.empty()) {
+    return {.status = SelectResult::kNodeTerminal, .terminal = node->terminal};
+  }
+  if (stop_at_proven) {
+    if (const auto value = P::ProvenValue(*node, params)) {
+      return {.status = SelectResult::kNodeProven, .value = *value};
+    }
+  }
+  return {.status = SelectResult::kEdgeSelected,
+          .move = ReserveEdgeLocked(shard, *node, P::Select(*node, params))};
+}
+
+template <typename P>
+Move GameGraph<P>::ReselectAndReserveEdge(NodeKey key, Move move,
+                                          const typename P::Params& params) {
+  auto& shard = ShardFor(key);
+  absl::MutexLock lock(shard.mutex);
+  Node& node = FindOrAssert(shard.nodes, key);
+  ReleaseEdgeLocked(shard, node, GetEdgeIndex(node, move));
+  return ReserveEdgeLocked(shard, node, P::Select(node, params));
 }
 
 template <typename P>
@@ -279,26 +300,53 @@ std::optional<typename P::Message> GameGraph<P>::UpdateNode(
 }
 
 template <typename P>
+void GameGraph<P>::ReleaseEdge(NodeKey key, Move move) {
+  auto& shard = ShardFor(key);
+  absl::MutexLock lock(shard.mutex);
+  Node& node = FindOrAssert(shard.nodes, key);
+  ReleaseEdgeLocked(shard, node, GetEdgeIndex(node, move));
+}
+
+template <typename P>
 std::vector<std::pair<NodeKey, Node<P>>> GameGraph<P>::FindEvictableNodes(
-    size_t* cursor, size_t max, double fraction) const {
+    EvictCursor* cursor, size_t max, double fraction) const {
   std::vector<std::pair<NodeKey, Node>> result;
   std::vector<std::pair<uint64_t, const std::pair<const NodeKey, Node>*>>
       evictable;
+  evictable.reserve(kEvictWindow);
   for (size_t scanned = 0; scanned < kShardCount && result.size() < max;
        ++scanned) {
-    const Shard& shard = shards_[*cursor];
-    *cursor = (*cursor + 1) % kShardCount;
+    const size_t shard_index = cursor->shard;
+    cursor->shard = (shard_index + 1) % kShardCount;
+    const Shard& shard = shards_[shard_index];
     absl::MutexLock lock(shard.mutex);
+    if (shard.nodes.empty()) continue;
+
+    const NodeKey resume = cursor->next_keys[shard_index];
+    auto it = ShardIndex(resume) == shard_index ? shard.nodes.find(resume)
+                                                : shard.nodes.end();
+    if (it == shard.nodes.end()) it = shard.nodes.begin();
+
+    const size_t remaining = max - result.size();
     evictable.clear();
-    for (const auto& entry : shard.nodes) {
-      if (!IsEvictable(entry.second)) continue;
-      evictable.emplace_back(P::Visits(entry.second.stats), &entry);
+    size_t window = 0;
+    while (window < kEvictWindow && it != shard.nodes.end() &&
+           (evictable.size() < remaining ||
+            fraction * static_cast<double>(window) <
+                static_cast<double>(remaining))) {
+      if (it->second.in_flight == 0) {
+        evictable.emplace_back(P::Visits(it->second.stats), &*it);
+      }
+      ++window;
+      ++it;
     }
+    cursor->next_keys[shard_index] =
+        it == shard.nodes.end() ? StartOfShard(shard_index) : it->first;
+    if (evictable.empty()) continue;
+
     const size_t wanted = std::max<size_t>(
-        1, static_cast<size_t>(
-               fraction * static_cast<double>(shard.nodes.size()) + 0.5));
-    const size_t take =
-        std::min({wanted, evictable.size(), max - result.size()});
+        1, static_cast<size_t>(fraction * static_cast<double>(window) + 0.5));
+    const size_t take = std::min({wanted, evictable.size(), remaining});
     absl::c_nth_element(
         evictable, evictable.begin() + take,
         [](const auto& a, const auto& b) { return a.first < b.first; });
@@ -314,32 +362,10 @@ bool GameGraph<P>::EraseNode(NodeKey key, uint32_t version) {
   auto& shard = ShardFor(key);
   absl::MutexLock lock(shard.mutex);
   const Node* node = FindOrNull(shard.nodes, key);
-  if (!node || node->version != version || !IsEvictable(*node)) {
-    return false;
-  }
+  if (!node || node->version != version || node->in_flight > 0) return false;
   shard.nodes.erase(key);
   size_.fetch_sub(1, std::memory_order_relaxed);
   return true;
-}
-
-template <typename P>
-std::optional<Node<P>> GameGraph<P>::SnapshotNode(NodeKey key) const {
-  const auto& shard = ShardFor(key);
-  absl::MutexLock lock(shard.mutex);
-  const Node* node = FindOrNull(shard.nodes, key);
-  if (!node) return std::nullopt;
-  return *node;
-}
-
-template <typename P>
-void GameGraph<P>::Clear() {
-  for (auto& shard : shards_) {
-    absl::MutexLock lock(shard.mutex);
-    // Subtract per shard to preserve concurrent insertions into shards that
-    // have already been cleared.
-    size_.fetch_sub(shard.nodes.size(), std::memory_order_relaxed);
-    shard.nodes.clear();
-  }
 }
 
 }  // namespace lczero::lc5
