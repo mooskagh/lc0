@@ -43,9 +43,8 @@ namespace {
 
 using std::chrono::steady_clock;
 constexpr auto kInfoInterval = std::chrono::seconds(1);
-constexpr auto kSmartPruningInterval = std::chrono::milliseconds(10);
-// How often the controller checks the graph against its node limit.
-constexpr auto kEvictionInterval = std::chrono::milliseconds(10);
+// How often the controller polls for info changes, smart pruning and eviction.
+constexpr auto kControllerInterval = std::chrono::milliseconds(10);
 // Root visits are counted in uint32_t; classic caps a search the same way.
 constexpr uint64_t kMaxRootVisits = 4'000'000'000;
 
@@ -237,13 +236,11 @@ bool SearchSession::ShouldStop(steady_clock::time_point now) const {
 steady_clock::time_point SearchSession::NextWakeup(
     steady_clock::time_point now, steady_clock::time_point next_info) const {
   if (IsStopping()) return steady_clock::time_point::max();
-  auto wake_at = next_info;
+  auto wake_at = std::min(next_info, now + kControllerInterval);
   if (const auto deadline = time_manager_.deadline();
       deadline && *deadline > now) {
     wake_at = std::min(wake_at, *deadline);
   }
-  if (may_stop_early_) wake_at = std::min(wake_at, now + kSmartPruningInterval);
-  if (HasNodeLimit()) wake_at = std::min(wake_at, now + kEvictionInterval);
   return wake_at;
 }
 

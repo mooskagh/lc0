@@ -74,7 +74,7 @@ class PolicyEngine final : public VisitEngine {
   }
 
   DescendResult DescendVisit(Visit& visit, Metrics& metrics) override;
-  bool BackupVisit(const Visit& visit, Metrics& metrics) override;
+  void BackupVisit(const Visit& visit, Metrics& metrics) override;
   void CancelVisit(const Visit& visit) override;
   ResumeAction ResumeVisit(Visit& visit, Metrics& metrics) override;
   void FillThinkingInfo(const VisitOrigin& root,
@@ -256,8 +256,7 @@ VisitEngine::ResumeAction PolicyEngine<P>::ResumeVisit(Visit& visit,
 }
 
 template <typename P>
-bool PolicyEngine<P>::BackupVisit(const Visit& visit, Metrics& metrics) {
-  bool best_move_changed = false;
+void PolicyEngine<P>::BackupVisit(const Visit& visit, Metrics& metrics) {
   typename P::Message message = P::Leaf(visit.result, visit.result_exact);
   for (size_t i = visit.path.size(); i-- > 0;) {
     const PathStep& step = visit.path[i];
@@ -270,14 +269,11 @@ bool PolicyEngine<P>::BackupVisit(const Visit& visit, Metrics& metrics) {
     // The leaf commits only its node value; ancestors complete their edges.
     const auto move =
         i + 1 < visit.path.size() ? step.selected_move : std::nullopt;
-    const UpdateResult<P> result =
-        graph_.UpdateNode(step.key, message, move, i == 0 ? &params_ : nullptr);
-    best_move_changed |= result.best_move_changed;
+    const auto to_parent = graph_.UpdateNode(step.key, message, move);
     metrics.backup_node_steps.fetch_add(1);
     // A missing node is skipped.
-    message = result.to_parent ? *result.to_parent : P::Stale(message);
+    message = to_parent ? *to_parent : P::Stale(message);
   }
-  return best_move_changed;
 }
 
 template <typename P>

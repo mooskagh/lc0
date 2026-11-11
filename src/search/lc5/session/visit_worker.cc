@@ -279,15 +279,8 @@ void VisitWorker::AdvanceVisit(VisitId id) {
       CancelVisit(visit);
       return;
     }
-    const uint64_t seldepth =
-        context_.metrics.max_selected_depth.load(std::memory_order_relaxed);
-    const auto descended =
-        context_.engine.DescendVisit(visit, context_.metrics);
-    if (context_.metrics.max_selected_depth.load(std::memory_order_relaxed) >
-        seldepth) {
-      notify_controller_ = true;
-    }
-    if (descended == VisitEngine::DescendResult::kValuedLeaf) {
+    if (context_.engine.DescendVisit(visit, context_.metrics) ==
+        VisitEngine::DescendResult::kValuedLeaf) {
       BackupVisit(visit);
       return;
     }
@@ -296,12 +289,8 @@ void VisitWorker::AdvanceVisit(VisitId id) {
 }
 
 void VisitWorker::BackupVisit(Visit& visit) {
-  if (context_.engine.BackupVisit(visit, context_.metrics)) {
-    notify_controller_ = true;
-  }
-  if (RaiseHighWater(context_.metrics.max_depth, visit.path.size())) {
-    notify_controller_ = true;
-  }
+  context_.engine.BackupVisit(visit, context_.metrics);
+  RaiseHighWater(context_.metrics.max_depth, visit.path.size());
   FinishVisit(visit, true);
 }
 

@@ -181,17 +181,18 @@ class RecordingResponder final : public UciResponder {
     {
       std::lock_guard lock(mutex_);
       thinking.insert(thinking.end(), infos->begin(), infos->end());
-      thinking_count.fetch_add(infos->size());
     }
     cv_.notify_all();
   }
-  bool WaitForThinking(size_t count) {
+  template <typename Pred>
+  bool WaitForThinking(Pred pred, std::chrono::milliseconds timeout =
+                                      std::chrono::milliseconds(500)) {
     std::unique_lock lock(mutex_);
-    return cv_.wait_for(lock, std::chrono::seconds(5),
-                        [&] { return thinking_count.load() >= count; });
+    return cv_.wait_for(lock, timeout, [&] {
+      return std::any_of(thinking.begin(), thinking.end(), pred);
+    });
   }
   std::atomic<size_t> bestmove_count{0};
-  std::atomic<size_t> thinking_count{0};
   std::vector<BestMoveInfo> bestmoves;
   std::vector<ThinkingInfo> thinking;
 
@@ -1978,9 +1979,13 @@ TEST(Lc5SearchTest, ThinkingInfoEmittedOnDepthSeldepthAndBestMoveChanges) {
   RecordingResponder responder;
   const auto root = Origin();
   const auto legal = root.history.Last().GetBoard().GenerateLegalMoves();
-  const Move m0 = legal[0];
-  const Move m1 = legal[1];
-  graph.InsertNode(root.key, {.moves = {m0, m1}, .priors = {0.55f, 0.45f}});
+  const auto [m0, m1] = std::minmax(legal[0], legal[1], [](Move a, Move b) {
+    return a.raw_data() < b.raw_data();
+  });
+  // Equal priors break ties to m0 first, and keep m1 ahead once m0 gets one bad
+  // evaluation instead of m0's higher prior reclaiming the lead before the
+  // 10ms controller poll.
+  graph.InsertNode(root.key, {.moves = {m0, m1}, .priors = {0.5f, 0.5f}});
 
   // Pause at input 2 before Fill() so visit 1's backup is reported first, then
   // switch q so visit 2 flips the root's best move well before the 1s timer.
@@ -1994,20 +1999,26 @@ TEST(Lc5SearchTest, ThinkingInfoEmittedOnDepthSeldepthAndBestMoveChanges) {
   // Visit 1 evaluates m0's child with +0.8 for opponent (-0.8 for root) and
   // backs up: depth=2, seldepth=2, bestmove=m0. Visit 2 blocks at input 2.
   ASSERT_TRUE(backend.input.WaitForArrival());
-  ASSERT_TRUE(responder.WaitForThinking(1));
+  ASSERT_TRUE(responder.WaitForThinking([&](const ThinkingInfo& info) {
+    return !info.pv.empty() && info.pv.front() == m0 && info.depth == 2 &&
+           info.seldepth == 2;
+  }));
 
   // Visit 2 and later visits evaluate with 0.0 (better than m0's -0.8 at every
   // ply): bestmove switches from m0 to m1, and depth/seldepth increase.
   backend.q = 0.0f;
   backend.input.Release();
-  ASSERT_TRUE(responder.WaitForThinking(3));
+  ASSERT_TRUE(responder.WaitForThinking([&](const ThinkingInfo& info) {
+    return !info.pv.empty() && info.pv.front() == m1 && info.depth > 2 &&
+           info.seldepth > 2;
+  }));
 
   session.Stop();
   session.Wait();
   ExpectDrained(session, graph);
-  ASSERT_GE(responder.thinking.size(), 4u);
+  ASSERT_GE(responder.thinking.size(), 3u);
   EXPECT_GE(responder.thinking[0].depth, 0);
-  EXPECT_EQ(responder.thinking[0].seldepth, 2);
+  EXPECT_GE(responder.thinking[0].seldepth, 1);
   EXPECT_EQ(responder.thinking[0].pv.front(), m0);
   EXPECT_TRUE(std::any_of(responder.thinking.begin(),
                           responder.thinking.end() - 1,

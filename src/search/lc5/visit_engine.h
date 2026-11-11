@@ -79,9 +79,8 @@ class VisitEngine {
   // (kValuedLeaf).
   enum class DescendResult { kUnmaterializedLeaf, kValuedLeaf };
   virtual DescendResult DescendVisit(Visit& visit, Metrics& metrics) = 0;
-  // Backs visit.result up visit.path; returns true if the first node's
-  // bestmove changed.
-  virtual bool BackupVisit(const Visit& visit, Metrics& metrics) = 0;
+  // Backs visit.result up visit.path.
+  virtual void BackupVisit(const Visit& visit, Metrics& metrics) = 0;
   // Releases every edge reservation on visit.path without committing a visit.
   virtual void CancelVisit(const Visit& visit) = 0;
   // A waiter's node finished materializing and its owner has backed up.

@@ -130,7 +130,7 @@ TEST(Lc5GraphTest, DuplicatePublicationDoesNotDisturbExistingNode) {
   EXPECT_TRUE(graph.ContainsNode(key));
   ASSERT_EQ(graph.SelectAndReserveEdge(key, TestParams()).status,
             SelectResult::kEdgeSelected);
-  ASSERT_TRUE(graph.UpdateNode(key, {0.25f, 0.5f, 3.0f}, move).to_parent);
+  ASSERT_TRUE(graph.UpdateNode(key, {0.25f, 0.5f, 3.0f}, move));
   ASSERT_EQ(graph.SelectAndReserveEdge(key, TestParams()).status,
             SelectResult::kEdgeSelected);
   // Duplicate publications are rejected and must not disturb statistics or
@@ -204,13 +204,11 @@ TEST(Lc5GraphTest, ProvenBoundsGoUpAndStopSelectionWhenAsked) {
   const auto from_child = graph.UpdateNode(
       child, PuctAveraging::Leaf(TerminalValue(TerminalKind::kCheckmate), true),
       std::nullopt);
-  ASSERT_TRUE(from_child.to_parent);
-  EXPECT_EQ(from_child.to_parent->bounds,
-            (Bounds{.lower = 1, .upper = 1, .plies = 1}));
-  const auto up = graph.UpdateNode(parent, *from_child.to_parent, move);
-  ASSERT_TRUE(up.to_parent);
-  EXPECT_EQ(up.to_parent->bounds,
-            (Bounds{.lower = -1, .upper = -1, .plies = 2}));
+  ASSERT_TRUE(from_child);
+  EXPECT_EQ(from_child->bounds, (Bounds{.lower = 1, .upper = 1, .plies = 1}));
+  const auto up = graph.UpdateNode(parent, *from_child, move);
+  ASSERT_TRUE(up);
+  EXPECT_EQ(up->bounds, (Bounds{.lower = -1, .upper = -1, .plies = 2}));
   EXPECT_EQ(graph.SnapshotNode(parent)->stats.bounds,
             (Bounds{.lower = 1, .upper = 1, .plies = 1}));
 
@@ -331,7 +329,7 @@ TEST(Lc5GraphTest, BackupCommitsNodeAndOptionalEdgeSums) {
   Move move = M(kFileA, kFileA);
   graph.InsertNode(key, {.moves = {move}, .priors = {1.0f}});
   auto result = graph.UpdateNode(key, {0.25f, 0.5f, 3.0f}, std::nullopt);
-  EXPECT_TRUE(result.to_parent);
+  EXPECT_TRUE(result);
   auto node = graph.SnapshotNode(key);
   ASSERT_TRUE(node);
   EXPECT_EQ(node->stats.visits, 2u);
@@ -342,10 +340,10 @@ TEST(Lc5GraphTest, BackupCommitsNodeAndOptionalEdgeSums) {
   ASSERT_EQ(graph.SelectAndReserveEdge(key, TestParams()).status,
             SelectResult::kEdgeSelected);
   result = graph.UpdateNode(key, {-0.5f, 0.25f, 4.0f}, move);
-  ASSERT_TRUE(result.to_parent);
-  EXPECT_FLOAT_EQ(result.to_parent->value.q, 0.5f);
-  EXPECT_FLOAT_EQ(result.to_parent->value.d, 0.25f);
-  EXPECT_FLOAT_EQ(result.to_parent->value.m, 5.0f);
+  ASSERT_TRUE(result);
+  EXPECT_FLOAT_EQ(result->value.q, 0.5f);
+  EXPECT_FLOAT_EQ(result->value.d, 0.25f);
+  EXPECT_FLOAT_EQ(result->value.m, 5.0f);
   node = graph.SnapshotNode(key);
   ASSERT_TRUE(node);
   EXPECT_EQ(node->stats.visits, 3u);
@@ -363,7 +361,7 @@ TEST(Lc5GraphTest, BackupRejectsMissingNodes) {
   Graph graph;
   NodeKey key{456};
   auto result = graph.UpdateNode(key, {0.25f, 0.5f, 3.0f}, std::nullopt);
-  EXPECT_FALSE(result.to_parent);
+  EXPECT_FALSE(result);
   EXPECT_FALSE(graph.SnapshotNode(key));
 }
 
@@ -380,7 +378,7 @@ TEST(Lc5GraphTest, ReservationsAreExactAndCancellationDoesNotCommit) {
   EXPECT_EQ(selection1.move, first);
   EXPECT_EQ(selection2.move, second);
   graph.ReleaseEdge(key, first);
-  EXPECT_TRUE(graph.UpdateNode(key, {{0.4f, 0.2f, 2.0f}}, second).to_parent);
+  EXPECT_TRUE(graph.UpdateNode(key, {{0.4f, 0.2f, 2.0f}}, second));
   auto node = graph.SnapshotNode(key);
   ASSERT_TRUE(node);
   EXPECT_EQ(TriedAt(*node, 0).stats.visits, 0u);
@@ -606,12 +604,9 @@ TEST(Lc5GraphTest, RestoreKeepsStatisticsUnderANewVersion) {
   EXPECT_EQ(node->tried[0].stats.visits, original.tried[0].stats.visits);
   // A stale eviction for the old version is rejected.
   EXPECT_FALSE(graph.EraseNode(key, original.version));
-  EXPECT_TRUE(graph
-                  .UpdateNode(key,
-                              PuctAveraging::Leaf(
-                                  {.q = 0.0f, .d = 1.0f, .m = 0.0f}, false),
-                              std::nullopt)
-                  .to_parent);
+  EXPECT_TRUE(graph.UpdateNode(
+      key, PuctAveraging::Leaf({.q = 0.0f, .d = 1.0f, .m = 0.0f}, false),
+      std::nullopt));
   EXPECT_EQ(graph.SnapshotNode(key)->stats.visits, original.stats.visits + 1);
 }
 

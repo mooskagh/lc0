@@ -66,14 +66,6 @@ struct SelectResult {
   VisitValue value{};  // The proven value, for kNodeProven.
 };
 
-template <typename P>
-struct UpdateResult {
-  // What the parent receives; set only when the node update was applied.
-  std::optional<typename P::Message> to_parent;
-  // Whether the node's bestmove changed; checked only when `params` is given.
-  bool best_move_changed = false;
-};
-
 // Sharded map from NodeKey to materialized node search state and outgoing
 // edges. Edges do not point to children; callers derive child keys from their
 // own history. The policy P owns the node and edge statistics, how a message
@@ -112,11 +104,10 @@ class GameGraph {
   // absent; returns true if inserted, false if already present.
   bool InsertNode(NodeKey key, Node node);
 
-  // Updates the node (and `move`'s edge with in_flight -= 1, if given),
-  // checking bestmove when `params`.
-  UpdateResult<P> UpdateNode(NodeKey key, Message message,
-                             std::optional<Move> move,
-                             const typename P::Params* params = nullptr);
+  // Updates the node (and `move`'s edge with in_flight -= 1, if given); returns
+  // the message to the parent, or nullopt if the node is absent.
+  std::optional<Message> UpdateNode(NodeKey key, Message message,
+                                    std::optional<Move> move);
 
   // Up to `max` unreserved nodes (all in_flight == 0, excluding `keep`) with
   // the fewest visits per shard (`fraction` of each), advancing `*cursor`.
@@ -283,18 +274,15 @@ bool GameGraph<P>::InsertNode(NodeKey key, Node restored) {
 }
 
 template <typename P>
-UpdateResult<P> GameGraph<P>::UpdateNode(NodeKey key, Message message,
-                                         std::optional<Move> move,
-                                         const typename P::Params* params) {
+std::optional<typename P::Message> GameGraph<P>::UpdateNode(
+    NodeKey key, Message message, std::optional<Move> move) {
   auto& shard = ShardFor(key);
   absl::MutexLock lock(shard.mutex);
   Node* node = FindOrNull(shard.nodes, key);
   if (!node) {
     assert(!move);
-    return {};
+    return std::nullopt;
   }
-  const auto best_before =
-      params ? P::ChooseMove(*node, *params) : std::nullopt;
   Tried* edge = nullptr;
   if (move) {
     const size_t index = FindEdge(*node, *move);
@@ -302,10 +290,7 @@ UpdateResult<P> GameGraph<P>::UpdateNode(NodeKey key, Message message,
     edge = &node->tried[index];
   }
   node->version = ++shard.version;
-  const Message to_parent = P::Update(*node, edge, message);
-  const bool best_changed =
-      params && P::ChooseMove(*node, *params) != best_before;
-  return {to_parent, best_changed};
+  return P::Update(*node, edge, message);
 }
 
 template <typename P>
