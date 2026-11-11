@@ -44,6 +44,7 @@
 
 #include "search/lc5/graph/key.h"
 #include "search/lc5/graph/node.h"
+#include "utils/map_util.h"
 
 namespace lczero::lc5 {
 
@@ -109,12 +110,10 @@ class GameGraph {
   std::optional<Message> UpdateNode(NodeKey key, Message message,
                                     std::optional<Move> move);
 
-  // Up to `max` unreserved nodes (all in_flight == 0, excluding `keep`) with
-  // the fewest visits per shard (`fraction` of each), advancing `*cursor`.
-  std::vector<std::pair<NodeKey, Node>> FindEvictableNodes(size_t* cursor,
-                                                           size_t max,
-                                                           double fraction,
-                                                           NodeKey keep) const;
+  // Up to `max` unreserved nodes (all in_flight == 0) with the fewest visits
+  // per shard (`fraction` of each), advancing `*cursor`.
+  std::vector<std::pair<NodeKey, Node>> FindEvictableNodes(
+      size_t* cursor, size_t max, double fraction) const;
 
   // Erases the node if still at `version` with no reservations (in_flight == 0
   // on all edges); returns true if erased.
@@ -143,22 +142,8 @@ class GameGraph {
   static Move ReserveEdgeLocked(Shard& shard, Node& node, size_t index)
       ABSL_EXCLUSIVE_LOCKS_REQUIRED(shard.mutex);
 
-  static Node* FindOrNull(Map& nodes, NodeKey key) {
-    const auto it = nodes.find(key);
-    return it == nodes.end() ? nullptr : &it->second;
-  }
-  static const Node* FindOrNull(const Map& nodes, NodeKey key) {
-    const auto it = nodes.find(key);
-    return it == nodes.end() ? nullptr : &it->second;
-  }
-  static Node& FindOrAssert(Map& nodes, NodeKey key) {
-    const auto it = nodes.find(key);
-    assert(it != nodes.end());
-    return it->second;
-  }
-
   // The index of the edge with `move`, or edges.size() if not found.
-  static size_t FindEdge(const Node& node, Move move) {
+  static size_t GetEdgeIndex(const Node& node, Move move) {
     return absl::c_find_if(
                node.edges,
                [move](const LegalEdge& edge) { return edge.move == move; }) -
@@ -175,7 +160,7 @@ class GameGraph {
   }
 
   // Returns true if no edge on `node` holds an in-flight reservation.
-  static bool Evictable(const Node& node) {
+  static bool IsEvictable(const Node& node) {
     return absl::c_none_of(
         node.tried, [](const Tried& tried) { return tried.in_flight > 0; });
   }
@@ -209,7 +194,7 @@ Move GameGraph<P>::ReselectAndReserveEdge(
   auto& shard = ShardFor(key);
   absl::MutexLock lock(shard.mutex);
   Node& node = FindOrAssert(shard.nodes, key);
-  ReleaseEdgeLocked(shard, node, FindEdge(node, move));
+  ReleaseEdgeLocked(shard, node, GetEdgeIndex(node, move));
   return ReserveEdgeLocked(shard, node, P::Select(node, params));
 }
 
@@ -230,7 +215,7 @@ void GameGraph<P>::ReleaseEdge(NodeKey key, Move move) {
   auto& shard = ShardFor(key);
   absl::MutexLock lock(shard.mutex);
   Node& node = FindOrAssert(shard.nodes, key);
-  ReleaseEdgeLocked(shard, node, FindEdge(node, move));
+  ReleaseEdgeLocked(shard, node, GetEdgeIndex(node, move));
 }
 
 template <typename P>
@@ -285,7 +270,7 @@ std::optional<typename P::Message> GameGraph<P>::UpdateNode(
   }
   Tried* edge = nullptr;
   if (move) {
-    const size_t index = FindEdge(*node, *move);
+    const size_t index = GetEdgeIndex(*node, *move);
     ReleaseEdgeLocked(shard, *node, index);
     edge = &node->tried[index];
   }
@@ -295,7 +280,7 @@ std::optional<typename P::Message> GameGraph<P>::UpdateNode(
 
 template <typename P>
 std::vector<std::pair<NodeKey, Node<P>>> GameGraph<P>::FindEvictableNodes(
-    size_t* cursor, size_t max, double fraction, NodeKey keep) const {
+    size_t* cursor, size_t max, double fraction) const {
   std::vector<std::pair<NodeKey, Node>> result;
   std::vector<std::pair<uint64_t, const std::pair<const NodeKey, Node>*>>
       evictable;
@@ -306,7 +291,7 @@ std::vector<std::pair<NodeKey, Node<P>>> GameGraph<P>::FindEvictableNodes(
     absl::MutexLock lock(shard.mutex);
     evictable.clear();
     for (const auto& entry : shard.nodes) {
-      if (entry.first == keep || !Evictable(entry.second)) continue;
+      if (!IsEvictable(entry.second)) continue;
       evictable.emplace_back(P::Visits(entry.second.stats), &entry);
     }
     const size_t wanted = std::max<size_t>(
@@ -329,7 +314,7 @@ bool GameGraph<P>::EraseNode(NodeKey key, uint32_t version) {
   auto& shard = ShardFor(key);
   absl::MutexLock lock(shard.mutex);
   const Node* node = FindOrNull(shard.nodes, key);
-  if (!node || node->version != version || !Evictable(*node)) {
+  if (!node || node->version != version || !IsEvictable(*node)) {
     return false;
   }
   shard.nodes.erase(key);

@@ -113,7 +113,7 @@ class PolicyEngine final : public VisitEngine {
     std::vector<std::pair<NodeKey, Node<P>>> nodes;
     {
       absl::MutexLock lock(evict_mutex_);
-      nodes = graph_.FindEvictableNodes(&evict_cursor_, max, fraction, keep);
+      nodes = graph_.FindEvictableNodes(&evict_cursor_, max, fraction);
     }
     // Store first: once a node leaves the graph, a miss must find its record.
     std::vector<StoredNode> records;
@@ -127,7 +127,7 @@ class PolicyEngine final : public VisitEngine {
     // stale record is harmless, as the graph is always checked first.
     size_t erased = 0;
     for (const auto& [key, node] : nodes) {
-      erased += graph_.EraseNode(key, node.version);
+      if (key != keep) erased += graph_.EraseNode(key, node.version);
     }
     metrics.nodes_evicted.fetch_add(erased);
     metrics.evictions_skipped.fetch_add(nodes.size() - erased);

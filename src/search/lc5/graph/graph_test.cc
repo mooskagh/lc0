@@ -282,12 +282,10 @@ TEST(Lc5GraphTest, ClearResetsSizeAndAllowsReuse) {
   }
   EXPECT_EQ(graph.Size(), 32u);
   size_t cursor = 0;
-  EXPECT_EQ(graph.Size(),
-            graph.FindEvictableNodes(&cursor, 64, 1.0, NodeKey{~0ull}).size());
+  EXPECT_EQ(graph.Size(), graph.FindEvictableNodes(&cursor, 64, 1.0).size());
   graph.Clear();
   EXPECT_EQ(graph.Size(), 0u);
-  EXPECT_TRUE(
-      graph.FindEvictableNodes(&cursor, 64, 1.0, NodeKey{~0ull}).empty());
+  EXPECT_TRUE(graph.FindEvictableNodes(&cursor, 64, 1.0).empty());
   graph.Clear();
   EXPECT_EQ(graph.Size(), 0u);
   EXPECT_TRUE(graph.InsertNode(NodeKey{0}, eval));
@@ -637,24 +635,24 @@ TEST(Lc5GraphTest, EraseNodeRefusesAfterAnyChange) {
   EXPECT_EQ(graph.Size(), 0u);
 }
 
-TEST(Lc5GraphTest, FindEvictableNodesSkipReservedAndKeptNodes) {
+TEST(Lc5GraphTest, FindEvictableNodesSkipReservedNodes) {
   Graph graph;
   const auto params = TestParams();
-  const NodeKey keep{1}, reserved{2}, idle{4};
-  for (const NodeKey key : {keep, reserved, idle}) {
+  const NodeKey reserved{2}, idle{4};
+  for (const NodeKey key : {reserved, idle}) {
     graph.InsertNode(key, {.moves = {M(kFileA, kFileA)}, .priors = {1.0f}});
   }
   ASSERT_EQ(graph.SelectAndReserveEdge(reserved, params).status,
             SelectResult::kEdgeSelected);
   size_t cursor = 0;
-  const auto candidates = graph.FindEvictableNodes(&cursor, 10, 1.0, keep);
+  const auto candidates = graph.FindEvictableNodes(&cursor, 10, 1.0);
   ASSERT_EQ(candidates.size(), 1u);
   EXPECT_EQ(candidates[0].first, idle);
   const auto node = graph.SnapshotNode(idle);
   EXPECT_EQ(candidates[0].second.version, node->version);
   EXPECT_EQ(EncodeNode(candidates[0].second), EncodeNode(*node));
   // Nothing is erased until the eviction is confirmed.
-  EXPECT_EQ(graph.Size(), 3u);
+  EXPECT_EQ(graph.Size(), 2u);
 }
 
 TEST(Lc5GraphTest, FindEvictableNodesPreferFewVisits) {
@@ -681,8 +679,7 @@ TEST(Lc5GraphTest, FindEvictableNodesPreferFewVisits) {
     }
   }
   size_t cursor = 0;
-  const auto candidates =
-      graph.FindEvictableNodes(&cursor, 2, 0.5, NodeKey{~0ull});
+  const auto candidates = graph.FindEvictableNodes(&cursor, 2, 0.5);
   ASSERT_EQ(candidates.size(), 2u);
   std::vector<uint32_t> visits;
   for (const auto& candidate : candidates) {

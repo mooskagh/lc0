@@ -115,10 +115,7 @@ class SearchSessionTestPeer {
         static_cast<PolicyEngine<PuctAveraging>&>(*engine.visit_engine_)
             .graph();
     size_t cursor = 0;
-    EXPECT_EQ(graph
-                  .FindEvictableNodes(&cursor, graph.Size() + 1, 1.0,
-                                      NodeKey{~0ull})
-                  .size(),
+    EXPECT_EQ(graph.FindEvictableNodes(&cursor, graph.Size() + 1, 1.0).size(),
               graph.Size());
   }
 };
@@ -425,7 +422,7 @@ template <typename P>
 void SeedStore(const GameGraph<P>& graph, RecordingStore& store) {
   size_t cursor = 0;
   for (const auto& [key, node] :
-       graph.FindEvictableNodes(&cursor, graph.Size(), 1.0, NodeKey{~0ull})) {
+       graph.FindEvictableNodes(&cursor, graph.Size(), 1.0)) {
     store.entries.insert_or_assign(key, EncodeNode(node));
   }
 }
@@ -448,10 +445,7 @@ void ExpectDrained(const SearchSession& session, const GameGraph<P>& graph) {
             m.visits_completed.load() + m.visits_cancelled.load());
   EXPECT_EQ(m.publications_rejected.load(), 0u);
   size_t cursor = 0;
-  EXPECT_EQ(graph
-                .FindEvictableNodes(&cursor, graph.Size() + 1, 1.0,
-                                    NodeKey{~0ull})
-                .size(),
+  EXPECT_EQ(graph.FindEvictableNodes(&cursor, graph.Size() + 1, 1.0).size(),
             graph.Size());
 }
 
@@ -796,8 +790,7 @@ TEST(Lc5SearchTest, PuctDagDrainsAndKeepsNodeMeans) {
     // A node's visits are its own sample plus its edges' visits, whose cached
     // values its mean weighs.
     size_t cursor = 0;
-    const auto snapshot =
-        graph.FindEvictableNodes(&cursor, graph.Size(), 1.0, NodeKey{~0ull});
+    const auto snapshot = graph.FindEvictableNodes(&cursor, graph.Size(), 1.0);
     ASSERT_EQ(snapshot.size(), graph.Size());
     std::unordered_map<uint64_t, const Node<PuctDag>*> nodes;
     for (const auto& [key, n] : snapshot) {
