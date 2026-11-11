@@ -37,9 +37,7 @@
 #include <cstddef>
 #include <vector>
 
-#include "search/lc5/graph/node_record.h"
 #include "search/lc5/policies/puct.h"
-#include "search/lc5/policies/puct_dag.h"
 
 namespace lczero::lc5 {
 namespace {
@@ -521,87 +519,30 @@ Graph::Node BackedUpNode(Graph& graph, NodeKey key) {
   return *graph.SnapshotNode(key);
 }
 
-TEST(Lc5NodeRecordTest, RoundTripKeepsStatisticsAndEdges) {
-  Graph graph;
-  const NodeKey key{42};
-  const auto node = BackedUpNode(graph, key);
-  ASSERT_EQ(node.tried.size(), 2u);
-  const auto decoded = DecodeNode<PuctAveraging>(EncodeNode(node));
-  ASSERT_TRUE(decoded);
-  EXPECT_EQ(decoded->terminal, node.terminal);
-  EXPECT_EQ(decoded->stats.visits, node.stats.visits);
-  EXPECT_EQ(decoded->stats.Q(), node.stats.Q());
-  EXPECT_EQ(decoded->stats.D(), node.stats.D());
-  EXPECT_EQ(decoded->stats.M(), node.stats.M());
-  EXPECT_EQ(decoded->stats.bounds, node.stats.bounds);
-  ASSERT_EQ(decoded->edges.size(), node.edges.size());
-  for (size_t i = 0; i < node.edges.size(); ++i) {
-    EXPECT_EQ(decoded->edges[i].move, node.edges[i].move);
-    EXPECT_EQ(decoded->edges[i].prior.bits, node.edges[i].prior.bits);
-  }
-  ASSERT_EQ(decoded->tried.size(), node.tried.size());
-  for (size_t i = 0; i < node.tried.size(); ++i) {
-    EXPECT_EQ(decoded->tried[i].in_flight, 0u);
-    EXPECT_EQ(decoded->tried[i].stats.visits, node.tried[i].stats.visits);
-    EXPECT_EQ(decoded->tried[i].stats.Q(), node.tried[i].stats.Q());
-    EXPECT_EQ(decoded->tried[i].stats.bounds, node.tried[i].stats.bounds);
-  }
-  // The first backup was exact, so that edge is proven.
-  EXPECT_TRUE(decoded->tried[0].stats.bounds.Proven());
-
-  // A terminal node has no edges.
-  graph.InsertNode(
-      NodeKey{43}, {.terminal = TerminalKind::kCheckmate,
-                    .leaf = TerminalValue(TerminalKind::kCheckmate),
-                    .moves = {},
-                    .priors = {}});
-  const auto terminal =
-      DecodeNode<PuctAveraging>(EncodeNode(*graph.SnapshotNode(NodeKey{43})));
-  ASSERT_TRUE(terminal);
-  EXPECT_EQ(terminal->terminal, TerminalKind::kCheckmate);
-  EXPECT_TRUE(terminal->edges.empty());
-  EXPECT_EQ(terminal->stats.visits, 1u);
-}
-
-TEST(Lc5NodeRecordTest, RejectsOtherPoliciesAndMalformedRecords) {
-  Graph graph;
-  const auto record = EncodeNode(BackedUpNode(graph, NodeKey{42}));
-  EXPECT_FALSE(DecodeNode<PuctDag>(record));
-  EXPECT_TRUE(DecodeNode<PuctAveraging>(record));
-  EXPECT_FALSE(DecodeNode<PuctAveraging>({}));
-  auto truncated = record;
-  truncated.pop_back();
-  EXPECT_FALSE(DecodeNode<PuctAveraging>(truncated));
-  auto longer = record;
-  longer.push_back(0);
-  EXPECT_FALSE(DecodeNode<PuctAveraging>(longer));
-  auto version = record;
-  version[offsetof(RecordHeader, version)] ^= 1;
-  EXPECT_FALSE(DecodeNode<PuctAveraging>(version));
-}
-
 TEST(Lc5GraphTest, RestoreKeepsStatisticsUnderANewVersion) {
   Graph graph;
   const NodeKey key{42};
   const auto original = BackedUpNode(graph, key);
-  const auto record = EncodeNode(original);
   ASSERT_TRUE(graph.EraseNode(key, original.version));
   EXPECT_EQ(graph.Size(), 0u);
 
-  auto decoded = DecodeNode<PuctAveraging>(record);
-  ASSERT_TRUE(decoded);
-  EXPECT_TRUE(graph.InsertNode(key, *decoded));
+  auto restored = original;
+  restored.in_flight = 3;
+  restored.tried[0].in_flight = 3;
+  EXPECT_TRUE(graph.InsertNode(key, restored));
   EXPECT_EQ(graph.Size(), 1u);
   // Duplicate restore is rejected.
-  EXPECT_FALSE(graph.InsertNode(key, *decoded));
+  EXPECT_FALSE(graph.InsertNode(key, restored));
   EXPECT_EQ(graph.Size(), 1u);
 
   const auto node = graph.SnapshotNode(key);
   ASSERT_TRUE(node);
   EXPECT_GT(node->version, original.version);
+  EXPECT_EQ(node->in_flight, 0u);
   EXPECT_EQ(node->stats.visits, original.stats.visits);
   EXPECT_EQ(node->stats.Q(), original.stats.Q());
   ASSERT_EQ(node->tried.size(), original.tried.size());
+  EXPECT_EQ(node->tried[0].in_flight, 0u);
   EXPECT_EQ(node->tried[0].stats.visits, original.tried[0].stats.visits);
   // A stale eviction for the old version is rejected.
   EXPECT_FALSE(graph.EraseNode(key, original.version));
@@ -654,7 +595,9 @@ TEST(Lc5GraphTest, FindEvictableNodesSkipReservedNodes) {
   EXPECT_EQ(candidates[0].first, idle);
   const auto node = graph.SnapshotNode(idle);
   EXPECT_EQ(candidates[0].second.version, node->version);
-  EXPECT_EQ(EncodeNode(candidates[0].second), EncodeNode(*node));
+  EXPECT_EQ(candidates[0].second.stats.visits, node->stats.visits);
+  ASSERT_EQ(candidates[0].second.edges.size(), node->edges.size());
+  EXPECT_EQ(candidates[0].second.edges[0].move, node->edges[0].move);
   // Nothing is erased until the eviction is confirmed.
   EXPECT_EQ(graph.Size(), 2u);
 }

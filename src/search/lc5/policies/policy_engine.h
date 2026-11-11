@@ -41,7 +41,7 @@
 #include <vector>
 
 #include "search/lc5/graph/graph.h"
-#include "search/lc5/graph/node_record.h"
+#include "search/lc5/policies/node_serialization.h"
 #include "search/lc5/settings.h"
 #include "search/lc5/visit_engine.h"
 
@@ -102,9 +102,7 @@ class PolicyEngine final : public VisitEngine {
   }
   bool RestoreFromRecord(NodeKey key,
                          std::span<const uint8_t> record) override {
-    auto node = DecodeNode<P>(record);
-    if (!node) return false;
-    return graph_.InsertNode(key, std::move(*node));
+    return graph_.InsertNode(key, DeserializeNode<P>(record));
   }
   size_t EvictToStore(size_t max, NodeKey keep, Metrics& metrics) override {
     assert(store_);
@@ -123,7 +121,7 @@ class PolicyEngine final : public VisitEngine {
     std::vector<StoredNode> records;
     records.reserve(nodes.size());
     for (const auto& [key, node] : nodes) {
-      records.push_back({key, EncodeNode(node)});
+      records.push_back({key, SerializeNode(node)});
     }
     store_->StoreBatch(records);
     metrics.node_store_evict_batches.fetch_add(1);

@@ -36,8 +36,8 @@
 
 namespace lczero::lc5 {
 
-// A node's search state, serialized by the graph (see node_record.h). The
-// store does not look inside it.
+// A node's search state, serialized by the VisitEngine. The store does not
+// look inside it.
 struct StoredNode {
   NodeKey key;
   std::vector<uint8_t> record;

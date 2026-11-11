@@ -548,7 +548,7 @@ void VisitWorker::FinishJob(std::unique_ptr<AsyncJob> job) {
         context_.metrics.node_store_hits.fetch_add(1);
         if (!RestoreMaterialization(materialization.id,
                                     materialization.record)) {
-          // Not a record for this policy or format: evaluate the node.
+          // Rejected record: evaluate the node instead.
           context_.metrics.restores_rejected.fetch_add(1);
           materialization.record.clear();
           PrepareMaterialization(std::move(materialization));

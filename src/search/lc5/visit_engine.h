@@ -108,8 +108,8 @@ class VisitEngine {
   virtual std::vector<std::optional<std::vector<uint8_t>>> ReadFromStore(
       std::span<const NodeKey> keys) = 0;
   // Materializes the node from a stored record with its old statistics; returns
-  // whether the record was installed (false if it is not this policy's, in
-  // which case evaluate the node instead).
+  // whether the record was installed (false if it was rejected, in which case
+  // evaluate the node instead).
   virtual bool RestoreFromRecord(NodeKey key,
                                  std::span<const uint8_t> record) = 0;
   // Moves up to `max` nodes from the graph to the store: fewest visits first,

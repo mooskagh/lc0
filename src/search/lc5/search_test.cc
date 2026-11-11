@@ -39,7 +39,7 @@
 #include <vector>
 
 #include "search/lc5/engine.h"
-#include "search/lc5/graph/node_record.h"
+#include "search/lc5/policies/node_serialization.h"
 #include "search/lc5/policies/policy_engine.h"
 #include "search/lc5/policies/puct.h"
 #include "search/lc5/policies/puct_dag.h"
@@ -423,7 +423,7 @@ void SeedStore(const GameGraph<P>& graph, RecordingStore& store) {
   typename GameGraph<P>::EvictCursor cursor;
   for (const auto& [key, node] :
        graph.FindEvictableNodes(&cursor, graph.Size(), 1.0)) {
-    store.entries.insert_or_assign(key, EncodeNode(node));
+    store.entries.insert_or_assign(key, SerializeNode(node));
   }
 }
 
@@ -1161,35 +1161,6 @@ TEST(Lc5SearchTest, SavedGraphRestoresWithStatisticsInFreshGraph) {
   EXPECT_EQ(backend.inputs.load(), evaluated + 1);
 }
 
-TEST(Lc5SearchTest, RecordFromAnotherPolicyIsEvaluatedInstead) {
-  PolicyEngine<PuctDag> engine(TestParams());
-  auto& store = InstallStore<RecordingStore>(engine);
-  ControlledBackend backend;
-  const auto root = Origin();
-  {
-    PolicyEngine<PuctAveraging> other(TestParams());
-    other.graph().InsertNode(
-        root.key,
-        {.leaf = {.q = 0.5f, .d = 0.0f, .m = 0.0f}, .moves = {}, .priors = {}});
-    SeedStore(other.graph(), store);
-  }
-  ASSERT_EQ(store.entries.size(), 1u);
-  RecordingResponder responder;
-  SearchSession session(&engine, &backend, &responder, TestSettings(),
-                        TestTimeManagement(), root, GoParams{.nodes = 1},
-                        std::chrono::steady_clock::now());
-  session.Start();
-  session.Wait();
-  ExpectDrained(session, engine.graph());
-  EXPECT_EQ(session.metrics().node_store_hits.load(), 1u);
-  EXPECT_EQ(session.metrics().restores_rejected.load(), 1u);
-  EXPECT_EQ(session.metrics().nodes_restored.load(), 0u);
-  EXPECT_EQ(backend.inputs.load(), 1u);
-  const auto node = engine.graph().SnapshotNode(root.key);
-  ASSERT_TRUE(node);
-  EXPECT_FALSE(node->edges.empty());
-}
-
 TEST(Lc5SearchTest, RootBootstrapFlushesDependencyWithoutWaitingForTimer) {
   // A positive one-minute delay cannot be the reason this bootstrap flushes.
   for (const int delay : {0, 60000}) {
@@ -1456,7 +1427,7 @@ TEST(Lc5SearchTest, BlockedStoreLoadsDrainAfterStopOrAbort) {
           stored.edges.push_back(
               {.move = legal_move, .prior = 1.0f / legal.size()});
         }
-        store.recording.entries.emplace(child.key, EncodeNode(stored));
+        store.recording.entries.emplace(child.key, SerializeNode(stored));
       }
       SearchSession session(&engine, &backend, &responder, TestSettings(),
                             TestTimeManagement(), root,

@@ -1320,6 +1320,14 @@ if get_option('gtest')
         include_directories: includes, link_with: lc0_lib,
         dependencies: [gtest, absl_flat_hash_map_dep, absl_synchronization_dep]),
       args: '--gtest_output=xml:lc5_puct_test.xml', timeout: 90)
+
+    test('Lc5NodeSerialization',
+      executable('lc5_node_serialization_test',
+        'src/search/lc5/policies/node_serialization_test.cc',
+        pb_files,
+        include_directories: includes, link_with: lc0_lib,
+        dependencies: [gtest, absl_flat_hash_map_dep, absl_synchronization_dep]),
+      args: '--gtest_output=xml:lc5_node_serialization_test.xml', timeout: 90)
   endif
 endif
 
