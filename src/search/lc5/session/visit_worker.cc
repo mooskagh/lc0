@@ -153,7 +153,7 @@ void VisitWorker::ResumeVisit(const VisitWakeup& wakeup) {
   assert(visit.state == VisitState::kWaitingMaterialization);
   // On stop, only visits that already have a leaf value to back up may finish.
   if (wakeup.kind == VisitWakeup::Kind::kCancel ||
-      (IsStopping() && (wakeup.kind == VisitWakeup::Kind::kSelect ||
+      (IsStopping() && (wakeup.kind == VisitWakeup::Kind::kDescend ||
                         wakeup.kind == VisitWakeup::Kind::kRestored))) {
     CancelVisit(visit);
     return;
@@ -168,21 +168,18 @@ void VisitWorker::ResumeVisit(const VisitWakeup& wakeup) {
       return;
     case VisitWakeup::Kind::kRestored:
       // Node restored from store with its prior stats; descend below it.
-      visit.state = VisitState::kReadySelect;
+      visit.state = VisitState::kReadyDescend;
       context_.metrics.visits_resumed.fetch_add(1);
       break;
-    case VisitWakeup::Kind::kSelect:
-      // Waiter on a newly-evaluated nonterminal leaf: reselect, restart, or
-      // descend below the newly materialized node according to policy.
+    case VisitWakeup::Kind::kDescend:
+      // Waiter on a newly-evaluated nonterminal leaf: reselect at the parent
+      // and either back up a repetition or continue descending.
       switch (context_.engine.ResumeVisit(visit, context_.metrics)) {
-        case VisitEngine::ResumeAction::kRestart:
-          RestartVisit(visit);  // Cancel path reservations and reset to origin.
-          break;
         case VisitEngine::ResumeAction::kBackup:
           BackupVisit(visit);  // Reselected into 2-fold.
           return;
-        case VisitEngine::ResumeAction::kSelect:
-          visit.state = VisitState::kReadySelect;
+        case VisitEngine::ResumeAction::kDescend:
+          visit.state = VisitState::kReadyDescend;
           context_.metrics.visits_resumed.fetch_add(1);
           break;
       }
@@ -273,7 +270,7 @@ void VisitWorker::AdvanceVisit(VisitId id) {
     CancelVisit(visit);
     return;
   }
-  assert(visit.state == VisitState::kReadySelect);
+  assert(visit.state == VisitState::kReadyDescend);
   for (;;) {
     if (IsStopping()) {
       CancelVisit(visit);
@@ -297,15 +294,6 @@ void VisitWorker::BackupVisit(Visit& visit) {
 void VisitWorker::CancelVisit(Visit& visit) {
   context_.engine.CancelVisit(visit);
   FinishVisit(visit, false);
-}
-
-void VisitWorker::RestartVisit(Visit& visit) {
-  context_.engine.CancelVisit(visit);
-  visit.history = visit.origin.history;
-  visit.current_key = visit.origin.key;
-  visit.path = visit.origin.backup_prefix;
-  visit.state = VisitState::kReadySelect;
-  context_.metrics.visits_restarted.fetch_add(1);
 }
 
 void VisitWorker::FinishVisit(Visit& visit, bool completed) {
@@ -400,13 +388,13 @@ void VisitWorker::CompleteMaterialization(MaterializationId materialization_id,
   } else {
     context_.metrics.publications_rejected.fetch_add(1);
   }
-  // The owner backs up the new leaf value; waiters select below the node
+  // The owner backs up the new leaf value; waiters descend below the node
   // unless it is terminal, in which case they also back up. A rejected
-  // publication resumes selection only.
+  // publication resumes descending only.
   const bool terminal = accepted && eval.terminal != TerminalKind::kNonTerminal;
   const auto wake = [&](VisitWakeup wakeup, bool owner) {
     wakeup.kind = accepted && (owner || terminal) ? VisitWakeup::Kind::kBackup
-                                                  : VisitWakeup::Kind::kSelect;
+                                                  : VisitWakeup::Kind::kDescend;
     wakeup.value = eval.leaf;
     wakeup.terminal = terminal;
     wakeup.exact = accepted && IsExact(eval.terminal);

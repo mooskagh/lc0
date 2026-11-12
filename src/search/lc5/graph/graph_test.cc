@@ -202,16 +202,20 @@ TEST(Lc5GraphTest, ProvenBoundsGoUpAndStopSelectionWhenAsked) {
               .priors = {}});
   // The install proves the checkmate; the leaf's own backup keeps it.
   ASSERT_EQ(graph.SelectAndReserveEdge(parent, TestParams()).move, move);
-  const auto from_child = graph.UpdateNode(
-      child, PuctAveraging::Leaf(TerminalValue(TerminalKind::kCheckmate), true),
-      std::nullopt);
+  const auto from_child =
+      graph.UpdateNode(child,
+                       PuctAveraging::MakeLeafMessage(
+                           TerminalValue(TerminalKind::kCheckmate), true),
+                       std::nullopt);
   ASSERT_TRUE(from_child);
-  EXPECT_EQ(from_child->bounds, (Bounds{.lower = 1, .upper = 1, .plies = 1}));
+  EXPECT_EQ(from_child->bounds,
+            (GameResultBounds{.lower = 1, .upper = 1, .plies = 1}));
   const auto up = graph.UpdateNode(parent, *from_child, move);
   ASSERT_TRUE(up);
-  EXPECT_EQ(up->bounds, (Bounds{.lower = -1, .upper = -1, .plies = 2}));
+  EXPECT_EQ(up->bounds,
+            (GameResultBounds{.lower = -1, .upper = -1, .plies = 2}));
   EXPECT_EQ(graph.SnapshotNode(parent)->stats.bounds,
-            (Bounds{.lower = 1, .upper = 1, .plies = 1}));
+            (GameResultBounds{.lower = 1, .upper = 1, .plies = 1}));
 
   // A proven node stops selection only with StickyEndgames and when asked.
   auto params = TestParams();
@@ -512,9 +516,10 @@ Graph::Node BackedUpNode(Graph& graph, NodeKey key) {
   for (int i = 0; i < 2; ++i) {
     const auto selected = graph.SelectAndReserveEdge(key, params);
     EXPECT_EQ(selected.status, SelectResult::kEdgeSelected);
-    graph.UpdateNode(
-        key, PuctAveraging::Leaf({.q = -0.75f, .d = 0.25f, .m = 3.0f}, i == 0),
-        selected.move);
+    graph.UpdateNode(key,
+                     PuctAveraging::MakeLeafMessage(
+                         {.q = -0.75f, .d = 0.25f, .m = 3.0f}, i == 0),
+                     selected.move);
   }
   return *graph.SnapshotNode(key);
 }
@@ -547,7 +552,8 @@ TEST(Lc5GraphTest, RestoreKeepsStatisticsUnderANewVersion) {
   // A stale eviction for the old version is rejected.
   EXPECT_FALSE(graph.EraseNode(key, original.version));
   EXPECT_TRUE(graph.UpdateNode(
-      key, PuctAveraging::Leaf({.q = 0.0f, .d = 1.0f, .m = 0.0f}, false),
+      key,
+      PuctAveraging::MakeLeafMessage({.q = 0.0f, .d = 1.0f, .m = 0.0f}, false),
       std::nullopt));
   EXPECT_EQ(graph.SnapshotNode(key)->stats.visits, original.stats.visits + 1);
 }
@@ -559,7 +565,8 @@ TEST(Lc5GraphTest, EraseNodeRefusesAfterAnyChange) {
   auto node = BackedUpNode(graph, key);
   // A backup.
   graph.UpdateNode(
-      key, PuctAveraging::Leaf({.q = 0.0f, .d = 1.0f, .m = 0.0f}, false),
+      key,
+      PuctAveraging::MakeLeafMessage({.q = 0.0f, .d = 1.0f, .m = 0.0f}, false),
       std::nullopt);
   EXPECT_FALSE(graph.EraseNode(key, node.version));
   // A reservation, which also makes the node not evictable.
@@ -619,10 +626,10 @@ TEST(Lc5GraphTest, FindEvictableNodesPreferFewVisits) {
     graph.InsertNode(keys[i], {.moves = {M(kFileA, kFileA)}, .priors = {1.0f}});
     for (size_t visit = 0; visit < 3 - i % 3 + (i == 3 ? 5 : 0); ++visit) {
       const auto selected = graph.SelectAndReserveEdge(keys[i], params);
-      graph.UpdateNode(
-          keys[i],
-          PuctAveraging::Leaf({.q = 0.0f, .d = 1.0f, .m = 0.0f}, false),
-          selected.move);
+      graph.UpdateNode(keys[i],
+                       PuctAveraging::MakeLeafMessage(
+                           {.q = 0.0f, .d = 1.0f, .m = 0.0f}, false),
+                       selected.move);
     }
   }
   Graph::EvictCursor cursor;

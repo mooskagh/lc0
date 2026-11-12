@@ -62,7 +62,7 @@ struct VisitOrigin {
 
 enum class VisitState : uint8_t {
   kFree,
-  kReadySelect,
+  kReadyDescend,
   kWaitingMaterialization,
 };
 

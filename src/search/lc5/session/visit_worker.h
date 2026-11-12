@@ -122,8 +122,6 @@ class VisitWorker {
   void ResumeVisit(const VisitWakeup& wakeup);
   void BackupVisit(Visit& visit);
   void CancelVisit(Visit& visit);
-  // Releases the visit's reservations and returns it to its origin.
-  void RestartVisit(Visit& visit);
   void FinishVisit(Visit& visit, bool completed);
 
   // Materializations.

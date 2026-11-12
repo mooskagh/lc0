@@ -41,7 +41,6 @@ std::string Metrics::Format(size_t graph_size, size_t active,
       << " evicted=" << nodes_evicted.load()
       << " restored=" << nodes_restored.load()
       << " suspended=" << visits_suspended.load()
-      << " restarted=" << visits_restarted.load()
       << " reselected=" << visits_reselected.load()
       << " proven=" << proven_visits.load()
       << " twofold=" << two_fold_visits.load() << " active=" << active

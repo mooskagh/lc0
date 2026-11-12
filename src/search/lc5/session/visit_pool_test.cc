@@ -110,7 +110,7 @@ TEST(Lc5VisitPoolTest, InitializesAndResetsVisit) {
     EXPECT_EQ(id->epoch(), epoch);
     auto& visit = pool.Get(*id);
     EXPECT_EQ(visit.id, *id);
-    EXPECT_EQ(visit.state, VisitState::kReadySelect);
+    EXPECT_EQ(visit.state, VisitState::kReadyDescend);
     EXPECT_EQ(visit.origin.key, origin.key);
     EXPECT_EQ(visit.origin.history.Last(), origin.history.Last());
     ASSERT_EQ(visit.origin.backup_prefix.size(), 1u);
@@ -163,7 +163,7 @@ TEST(Lc5VisitPoolTest, ConcurrentAllocationAndRelease) {
         EXPECT_FALSE(owned[id->slot()].exchange(true));
         const Visit& visit = pool.Get(*id);
         EXPECT_EQ(visit.id, *id);
-        EXPECT_EQ(visit.state, VisitState::kReadySelect);
+        EXPECT_EQ(visit.state, VisitState::kReadyDescend);
         EXPECT_LE(pool.active(), pool.capacity());
         EXPECT_TRUE(owned[id->slot()].exchange(false));
         pool.Release(*id);

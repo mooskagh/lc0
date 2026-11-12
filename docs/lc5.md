@@ -70,14 +70,10 @@ Code: `session/search_session.cc`, `policies/policy_engine.h`, `policies/puct.cc
    node: its legal moves, priors and value.
 
 5. **Waiting.** When a node is installed, its owner backs up the network's
-   value before its waiters resume. Waiters do not back anything up. By default
-   (`WaiterResume=reselect`) a waiter reruns PUCT at the node's parent (whose
-   edge now holds the owner's backed-up value) and switches to another edge if
-   that one is now better (about +7 Elo over `select`).
-   With `WaiterResume=select` it continues selecting *below* the new node
-   and ends up at some other leaf; with `WaiterResume=restart` it restarts
-   from the root instead (this was the `RestartWaiters` option; in earlier
-   testing it was worse).
+   value before its waiters resume. Waiters do not back anything up; instead,
+   each waiter reruns PUCT at the node's parent (whose edge now holds the
+   owner's backed-up value) and switches to another edge if that one is now
+   better, or continues descending below the new node otherwise.
 
 6. **Backup.** Along the path, add the value to each node and edge and
    release the reservations. Node values are from the side to move at that
@@ -277,7 +273,6 @@ Options of the `puct` and `puct-dag` policies (they share them):
 |---|---|---|
 | `CPuct`, `CPuctBase`, `CPuctFactor` | 1.745, 38739, 3.894 | As classic. |
 | `FpuStrategy`, `FpuValue` | reduction, 0.33 | As classic. |
-| `WaiterResume` | reselect | After waiting for a node's evaluation: select below it, reselect at its parent, or restart from the root. |
 | `MovesLeft` | true | Prefer shorter wins and longer losses in clearly decided nodes. Off without a moves-left head. |
 | `MovesLeftMaxEffect`, `MovesLeftThreshold`, `MovesLeftSlope` | 0.0345, 0.8, 0.0027 | Largest bonus, node \|Q\| above which it applies, bonus per ply of M difference. |
 | `MovesLeftConstantFactor`, `MovesLeftScaledFactor`, `MovesLeftQuadraticFactor` | 0, 1.6521, −0.6521 | Bonus scaling: a + b·x + c·x², x = edge \|Q\| above the threshold, rescaled to [0, 1]. |

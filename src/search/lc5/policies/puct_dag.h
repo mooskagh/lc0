@@ -50,9 +50,8 @@ namespace lczero::lc5 {
 struct PuctDag : PuctPolicy<PuctDag> {
   static constexpr std::string_view kName = "puct-dag";
 
-  // What the parent receives from the node's current statistics: the node's
-  // mean and bounds.
-  static Message Current(const Node<PuctDag>& node) {
+  // Sent to the parent during backprop: the node's current mean and bounds.
+  static Message MakeCurrentMessage(const Node<PuctDag>& node) {
     const ValueStats& stats = node.stats;
     return {VisitValue{.q = stats.Q(), .d = stats.D(), .m = stats.M()}.Parent(),
             stats.bounds.Parent()};
@@ -64,8 +63,8 @@ struct PuctDag : PuctPolicy<PuctDag> {
   // the new one (n + 1 visits at the child's value); without one (the node's
   // own evaluation, or a terminal or proven value), the value is a sample of
   // its own.
-  static Message Update(Node<PuctDag>& node, TriedEdge<PuctDag>* edge,
-                        const Message& message) {
+  static Message ApplyMessage(Node<PuctDag>& node, TriedEdge<PuctDag>* edge,
+                              const Message& message) {
     ValueStats& stats = node.stats;
     const VisitValue& value = message.value;
     if (edge) {
@@ -85,7 +84,7 @@ struct PuctDag : PuctPolicy<PuctDag> {
       stats.Add(value);
     }
     UpdateBounds(node, edge, message.bounds);
-    return Current(node);
+    return MakeCurrentMessage(node);
   }
 };
 

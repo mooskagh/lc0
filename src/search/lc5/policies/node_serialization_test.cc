@@ -50,15 +50,15 @@ Node<PuctAveraging> SampleNode() {
                 {.move = M(kFileB, kFileB), .prior = 0.3f},
                 {.move = M(kFileC, kFileC), .prior = 0.2f}},
       .tried = {{.in_flight = 1}, {.in_flight = 1}}};
-  PuctAveraging::Update(
-      node, nullptr,
-      PuctAveraging::Leaf({.q = 0.5f, .d = 0.25f, .m = 6.0f}, false));
-  PuctAveraging::Update(
-      node, &node.tried[0],
-      PuctAveraging::Leaf({.q = -0.75f, .d = 0.25f, .m = 3.0f}, true));
-  PuctAveraging::Update(
-      node, &node.tried[1],
-      PuctAveraging::Leaf({.q = -0.75f, .d = 0.25f, .m = 3.0f}, false));
+  PuctAveraging::ApplyMessage(node, nullptr,
+                              PuctAveraging::MakeLeafMessage(
+                                  {.q = 0.5f, .d = 0.25f, .m = 6.0f}, false));
+  PuctAveraging::ApplyMessage(node, &node.tried[0],
+                              PuctAveraging::MakeLeafMessage(
+                                  {.q = -0.75f, .d = 0.25f, .m = 3.0f}, true));
+  PuctAveraging::ApplyMessage(node, &node.tried[1],
+                              PuctAveraging::MakeLeafMessage(
+                                  {.q = -0.75f, .d = 0.25f, .m = 3.0f}, false));
   return node;
 }
 
@@ -91,9 +91,10 @@ TEST(Lc5NodeSerializationTest, RoundTripKeepsStatisticsAndEdges) {
 
   // A terminal node has no edges.
   Node<PuctAveraging> terminal_node{.terminal = TerminalKind::kCheckmate};
-  PuctAveraging::Update(
+  PuctAveraging::ApplyMessage(
       terminal_node, nullptr,
-      PuctAveraging::Leaf(TerminalValue(TerminalKind::kCheckmate), true));
+      PuctAveraging::MakeLeafMessage(TerminalValue(TerminalKind::kCheckmate),
+                                     true));
   const auto terminal =
       DeserializeNode<PuctAveraging>(SerializeNode(terminal_node));
   EXPECT_EQ(terminal.terminal, TerminalKind::kCheckmate);

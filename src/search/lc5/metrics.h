@@ -49,10 +49,7 @@ struct Metrics {
   std::atomic<uint64_t> visits_suspended{0};
   // Suspended visits that continued selecting below the now-materialized node.
   std::atomic<uint64_t> visits_resumed{0};
-  // Visits that dropped their path and started selecting again from their
-  // origin, without being re-admitted.
-  std::atomic<uint64_t> visits_restarted{0};
-  // Waiters that switched edges at their node's parent (WaiterResume=reselect).
+  // Waiters that switched edges at their node's parent.
   std::atomic<uint64_t> visits_reselected{0};
   std::atomic<uint64_t> terminal_visits{0};
   // Visits that backed up a proven node's value (StickyEndgames).

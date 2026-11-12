@@ -55,7 +55,7 @@ std::optional<VisitId> VisitPool::Allocate(const VisitOrigin& origin) {
   if (++slot.epoch == 0) ++slot.epoch;
   const VisitId id{(static_cast<uint64_t>(slot.epoch) << 32) | i};
   slot.visit = Visit{.id = id,
-                     .state = VisitState::kReadySelect,
+                     .state = VisitState::kReadyDescend,
                      .origin = origin,
                      .history = origin.history,
                      .current_key = origin.key,

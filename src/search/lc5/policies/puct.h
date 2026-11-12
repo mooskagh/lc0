@@ -56,7 +56,6 @@ struct PuctParams {
   float cpuct_factor = 3.894f;
   FpuStrategy fpu_strategy = FpuStrategy::kReduction;
   float fpu_value = 0.33f;
-  WaiterResume waiter_resume = WaiterResume::kReselect;
   // Moves-left utility: in clearly decided nodes, prefer edges that shorten
   // a win or lengthen a loss. Needs a network with a moves-left head.
   struct MovesLeft {
@@ -79,15 +78,15 @@ struct PuctParams {
                                 const BackendAttributes& backend);
 };
 
-// The WDL and centipawn score that Describe reports for a value.
+// The WDL and centipawn score that FillThinkingInfo reports for a value.
 ThinkingInfo::WDL WdlFromValue(float q, float d);
 int CentipawnsFromQ(float q);
 
 // PUCT selection, move choice, bounds and reporting over ValueStats nodes and
-// edges. `Self` supplies kName and Update: how a message changes the node and
-// the edge it came through, and what the parent receives. Nodes and edges keep
-// value means and bounds, and the message is a value and bounds from the side
-// to move at the node.
+// edges. `Self` supplies kName and ApplyMessage: how a message changes the node
+// and the edge it came through, and what the parent receives. Nodes and edges
+// keep value means and bounds, and the message is a value and bounds from the
+// side to move at the node.
 template <typename Self>
 struct PuctPolicy {
   using Params = PuctParams;
@@ -98,66 +97,57 @@ struct PuctPolicy {
   using EdgeStats = ValueStats;
   struct Message {
     VisitValue value;
-    Bounds bounds = {};
+    GameResultBounds bounds = {};
   };
 
-  // The message a leaf evaluation (or terminal value) starts the backup with.
-  // An exact value (a terminal other than a repetition, or a proven node) is
-  // proven.
-  static Message Leaf(const VisitValue& value, bool exact) {
-    return {value, exact ? Bounds::Exact(value.q, value.m) : Bounds{}};
+  // Sent to seed a newly installed node and to start backprop from a leaf;
+  // `exact` (non-repetition terminals, proven nodes) sets proven bounds.
+  static Message MakeLeafMessage(const VisitValue& value, bool exact) {
+    return {value, exact ? GameResultBounds::Exact(value.q, value.m)
+                         : GameResultBounds{}};
   }
-  // The message the parent receives when this node's update is skipped: an
-  // in-search repetition leaf or a counted leaf.
-  static Message Skip(const Message& message) {
+  // Sent to the parent during backprop when skipping a node update (an
+  // in-search repetition leaf, or a leaf already counted at install).
+  static Message MakeSkipMessage(const Message& message) {
     return {message.value.Parent(), message.bounds.Parent()};
   }
-  // The message the parent receives past a stale or missing node: the value
-  // without bounds, which belong to a node that is not the parent's child.
-  static Message Stale(const Message& message) {
-    return {message.value.Parent(), Bounds{}};
+  // Sent to the parent during backprop when a node is missing from the graph
+  // (evicted before backup): forwards the flipped value without bounds.
+  static Message MakeStaleMessage(const Message& message) {
+    return {message.value.Parent(), GameResultBounds{}};
   }
 
-  static uint32_t Visits(const ValueStats& stats) { return stats.visits; }
-
-  // The edge to visit next; `node` is materialized, non-terminal, with edges.
-  static size_t Select(const Node<Self>& node, const Params& params);
+  // The edge index to visit next; `node` is materialized, non-terminal, with
+  // edges.
+  static size_t PickEdgeToVisit(const Node<Self>& node, const Params& params);
   // The exact value of a proven node, which a visit backs up instead of
   // descending; nullopt if the node is not proven or StickyEndgames is off.
-  static std::optional<VisitValue> ProvenValue(const Node<Self>& node,
-                                               const Params& params);
+  static std::optional<VisitValue> GetProvenNodeValue(const Node<Self>& node,
+                                                      const Params& params);
   // Whether the node's result is proven and StickyEndgames is on.
-  static bool Decided(const Node<Self>& node, const Params& params) {
+  static bool IsNodeDecided(const Node<Self>& node, const Params& params) {
     return params.sticky_endgames && node.stats.bounds.Proven();
   }
-  // The index of the PV and bestmove edge: most visits, then best Q, then
-  // PreferOnTie; nullopt if no edge has a visit. With StickyEndgames, a
-  // proven win comes first (shortest first) and a proven loss last (longest
-  // first).
-  static std::optional<size_t> ChooseEdge(const Node<Self>& node,
-                                          const Params& params);
-  // The index of the bestmove edge: ChooseEdge, or before any edge has a visit
-  // the highest-prior one (edges are sorted by PreferOnTie); nullopt if no
-  // edges.
-  static std::optional<size_t> ChooseMove(const Node<Self>& node,
-                                          const Params& params) {
-    const auto index = ChooseEdge(node, params);
-    if (index || node.edges.empty()) return index;
-    return 0;
-  }
+  // The PV and bestmove move: most visits, then best Q, then PreferOnTie;
+  // if no edge has a visit, the highest-prior edge when `allow_unvisited` is
+  // true, or nullopt. With StickyEndgames, a proven win comes first (shortest
+  // first) and a proven loss last (longest first).
+  static std::optional<Move> GetBestMove(const Node<Self>& node,
+                                         const Params& params,
+                                         bool allow_unvisited = false);
   // Fills the score and WDL of `info` if the node has visits; with
   // StickyEndgames, a proven win or loss as a mate score instead.
-  static void Describe(const Node<Self>& node, const Params& params,
-                       ThinkingInfo& info);
+  static void FillThinkingInfo(const Node<Self>& node, const Params& params,
+                               ThinkingInfo& info);
 
   // The node's bounds from its edges' bounds, which are in the node's frame.
   // An untried edge is unknown.
-  static Bounds BoundsFromEdges(const Node<Self>& node);
+  static GameResultBounds ComputeBoundsFromEdges(const Node<Self>& node);
   // Sets the bounds after an update with `bounds` from the edge (or, without
   // an edge, the node's own leaf): a terminal's bounds are its leaf's, and a
   // non-terminal node's follow from its edges'.
   static void UpdateBounds(Node<Self>& node, TriedEdge<Self>* edge,
-                           const Bounds& bounds) {
+                           const GameResultBounds& bounds) {
     if (node.edges.empty()) {
       // A terminal's bounds are its own leaf's.
       node.stats.bounds = bounds;
@@ -165,14 +155,8 @@ struct PuctPolicy {
       // Bounds rarely change, so the node is recomputed only then. A
       // node-only update (the leaf's own value) leaves them alone.
       edge->stats.bounds = bounds;
-      node.stats.bounds = BoundsFromEdges(node);
+      node.stats.bounds = ComputeBoundsFromEdges(node);
     }
-  }
-
-  // Reselecting or restarting is like a collision: select again with the new
-  // value known, rather than committing this visit to the subtree.
-  static WaiterResume OnResume(const Params& params) {
-    return params.waiter_resume;
   }
 };
 
@@ -183,20 +167,20 @@ struct PuctAveraging : PuctPolicy<PuctAveraging> {
 
   // Folds `message` into the node and, if given, the edge the visit took, and
   // returns what the parent receives: the value and the node's own bounds.
-  static Message Update(Node<PuctAveraging>& node,
-                        TriedEdge<PuctAveraging>* edge,
-                        const Message& message) {
+  static Message ApplyMessage(Node<PuctAveraging>& node,
+                              TriedEdge<PuctAveraging>* edge,
+                              const Message& message) {
     node.stats.Add(message.value);
     if (edge) edge->stats.Add(message.value);
     UpdateBounds(node, edge, message.bounds);
     return {message.value.Parent(), node.stats.bounds.Parent()};
   }
 };
-// The bounds grew the edge from 20 to 24 bytes.
 static_assert(sizeof(TriedEdge<PuctAveraging>) <= 24);
 
 template <typename Self>
-size_t PuctPolicy<Self>::Select(const Node<Self>& node, const Params& params) {
+size_t PuctPolicy<Self>::PickEdgeToVisit(const Node<Self>& node,
+                                         const Params& params) {
   const auto started = [](const TriedEdge<Self>& tried) {
     return tried.stats.visits + tried.in_flight;
   };
@@ -247,7 +231,7 @@ size_t PuctPolicy<Self>::Select(const Node<Self>& node, const Params& params) {
     // edges get neither, nor a moves-left term, so they still share one score
     // apart from the prior.
     if (has_visits && params.sticky_endgames) {
-      const Bounds& bounds = node.tried[i].stats.bounds;
+      const GameResultBounds& bounds = node.tried[i].stats.bounds;
       if (bounds.Proven()) {
         q = bounds.lower;
       } else {
@@ -283,9 +267,9 @@ size_t PuctPolicy<Self>::Select(const Node<Self>& node, const Params& params) {
 }
 
 template <typename Self>
-std::optional<VisitValue> PuctPolicy<Self>::ProvenValue(
+std::optional<VisitValue> PuctPolicy<Self>::GetProvenNodeValue(
     const Node<Self>& node, const Params& params) {
-  const Bounds& bounds = node.stats.bounds;
+  const GameResultBounds& bounds = node.stats.bounds;
   if (!params.sticky_endgames || !bounds.Proven()) return std::nullopt;
   return VisitValue{.q = static_cast<float>(bounds.lower),
                     .d = bounds.lower == 0 ? 1.0f : 0.0f,
@@ -293,8 +277,9 @@ std::optional<VisitValue> PuctPolicy<Self>::ProvenValue(
 }
 
 template <typename Self>
-std::optional<size_t> PuctPolicy<Self>::ChooseEdge(const Node<Self>& node,
-                                                   const Params& params) {
+std::optional<Move> PuctPolicy<Self>::GetBestMove(const Node<Self>& node,
+                                                  const Params& params,
+                                                  bool allow_unvisited) {
   // Untried edges have no visits.
   const auto rank = [&](size_t i) {
     const auto& stats = node.tried[i].stats;
@@ -316,17 +301,20 @@ std::optional<size_t> PuctPolicy<Self>::ChooseEdge(const Node<Self>& node,
     // Ties keep the lower index, which PreferOnTie prefers.
     if (!best || rank(i) > rank(*best)) best = i;
   }
-  return best;
+  if (best) return node.edges[*best].move;
+  if (allow_unvisited && !node.edges.empty()) return node.edges[0].move;
+  return std::nullopt;
 }
 
 template <typename Self>
-void PuctPolicy<Self>::Describe(const Node<Self>& node,
-                                const Params& params, ThinkingInfo& info) {
+void PuctPolicy<Self>::FillThinkingInfo(const Node<Self>& node,
+                                        const Params& params,
+                                        ThinkingInfo& info) {
   const NodeStats& stats = node.stats;
   if (!stats.visits) return;
   info.score = CentipawnsFromQ(stats.Q());
   info.wdl = WdlFromValue(stats.Q(), stats.D());
-  const Bounds& bounds = stats.bounds;
+  const GameResultBounds& bounds = stats.bounds;
   // A terminal root (0 plies) has no move to show a mate for.
   if (params.sticky_endgames && bounds.Proven() && bounds.lower != 0 &&
       bounds.plies > 0) {
@@ -338,10 +326,11 @@ void PuctPolicy<Self>::Describe(const Node<Self>& node,
 }
 
 template <typename Self>
-Bounds PuctPolicy<Self>::BoundsFromEdges(const Node<Self>& node) {
-  Bounds bounds{.lower = -1,
-                .upper = static_cast<int8_t>(
-                    node.tried.size() < node.edges.size() ? 1 : -1)};
+GameResultBounds PuctPolicy<Self>::ComputeBoundsFromEdges(
+    const Node<Self>& node) {
+  GameResultBounds bounds{.lower = -1,
+                          .upper = static_cast<int8_t>(
+                              node.tried.size() < node.edges.size() ? 1 : -1)};
   for (const auto& tried : node.tried) {
     bounds.lower = std::max(bounds.lower, tried.stats.bounds.lower);
     bounds.upper = std::max(bounds.upper, tried.stats.bounds.upper);

@@ -233,7 +233,8 @@ bool GameGraph<P>::InsertNode(NodeKey key, const NodeEval& eval) {
     node.edges.push_back({.move = eval.moves[i], .prior = eval.priors[i]});
   }
   assert(absl::c_is_sorted(node.edges, PreferOnTie));
-  P::Update(node, nullptr, P::Leaf(eval.leaf, IsExact(eval.terminal)));
+  P::ApplyMessage(node, nullptr,
+                  P::MakeLeafMessage(eval.leaf, IsExact(eval.terminal)));
   return true;
 }
 
@@ -261,12 +262,13 @@ SelectResult GameGraph<P>::SelectAndReserveEdge(
     return {.status = SelectResult::kNodeTerminal, .terminal = node->terminal};
   }
   if (stop_at_proven) {
-    if (const auto value = P::ProvenValue(*node, params)) {
+    if (const auto value = P::GetProvenNodeValue(*node, params)) {
       return {.status = SelectResult::kNodeProven, .value = *value};
     }
   }
   return {.status = SelectResult::kEdgeSelected,
-          .move = ReserveEdgeLocked(shard, *node, P::Select(*node, params))};
+          .move = ReserveEdgeLocked(shard, *node,
+                                    P::PickEdgeToVisit(*node, params))};
 }
 
 template <typename P>
@@ -276,7 +278,7 @@ Move GameGraph<P>::ReselectAndReserveEdge(NodeKey key, Move move,
   absl::MutexLock lock(shard.mutex);
   Node& node = FindOrAssert(shard.nodes, key);
   ReleaseEdgeLocked(shard, node, GetEdgeIndex(node, move));
-  return ReserveEdgeLocked(shard, node, P::Select(node, params));
+  return ReserveEdgeLocked(shard, node, P::PickEdgeToVisit(node, params));
 }
 
 template <typename P>
@@ -296,7 +298,7 @@ std::optional<typename P::Message> GameGraph<P>::UpdateNode(
     edge = &node->tried[index];
   }
   node->version = ++shard.version;
-  return P::Update(*node, edge, message);
+  return P::ApplyMessage(*node, edge, message);
 }
 
 template <typename P>
@@ -335,7 +337,7 @@ std::vector<std::pair<NodeKey, Node<P>>> GameGraph<P>::FindEvictableNodes(
             fraction * static_cast<double>(window) <
                 static_cast<double>(remaining))) {
       if (it->second.in_flight == 0) {
-        evictable.emplace_back(P::Visits(it->second.stats), &*it);
+        evictable.emplace_back(it->second.stats.visits, &*it);
       }
       ++window;
       ++it;

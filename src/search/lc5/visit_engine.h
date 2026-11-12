@@ -84,9 +84,9 @@ class VisitEngine {
   // Releases every edge reservation on visit.path without committing a visit.
   virtual void CancelVisit(const Visit& visit) = 0;
   // A waiter's node finished materializing and its owner has backed up.
-  // Selects on (kSelect, maybe from another edge at the parent), restarts from
-  // the root (kRestart), or backs up visit.result (kBackup: a repetition).
-  enum class ResumeAction { kSelect, kRestart, kBackup };
+  // Descends on (kDescend, maybe from another edge at the parent) or backs up
+  // visit.result (kBackup: a repetition).
+  enum class ResumeAction { kDescend, kBackup };
   virtual ResumeAction ResumeVisit(Visit& visit, Metrics& metrics) = 0;
   // Fills the score, WDL and PV of `info`; the caller fills the rest.
   virtual void FillThinkingInfo(const VisitOrigin& root,

@@ -43,23 +43,23 @@ struct VisitValue {
 // Game-theoretic bounds on a value from the side to move: -1 loss, 0 draw,
 // 1 win. Proven when lower == upper; `plies` is then the distance to the end
 // of the game.
-struct Bounds {
+struct GameResultBounds {
   int8_t lower = -1;
   int8_t upper = 1;
   uint8_t plies = 0;  // Saturates at 255.
 
   bool Proven() const { return lower == upper; }
   // The bounds one ply up, for the other side; plies count only when proven.
-  Bounds Parent() const {
+  GameResultBounds Parent() const {
     return {static_cast<int8_t>(-upper), static_cast<int8_t>(-lower),
             static_cast<uint8_t>(Proven() ? std::min(255, plies + 1) : 0)};
   }
   // The proven bounds of an exact value, such as a checkmate or a draw.
-  static Bounds Exact(float q, float m) {
+  static GameResultBounds Exact(float q, float m) {
     const int8_t result = q > 0.5f ? 1 : q < -0.5f ? -1 : 0;
     return {result, result, static_cast<uint8_t>(std::clamp(m, 0.0f, 255.0f))};
   }
-  bool operator==(const Bounds&) const = default;
+  bool operator==(const GameResultBounds&) const = default;
 };
 
 // Running means, as in classic: each Add moves the mean towards the sample.
@@ -69,7 +69,7 @@ struct ValueStats {
   float d = 0.0f;
   float m = 0.0f;
   // Maintained by the policy from the messages; Add leaves them alone.
-  Bounds bounds{};
+  GameResultBounds bounds{};
 
   float Q() const { return q; }
   float D() const { return d; }

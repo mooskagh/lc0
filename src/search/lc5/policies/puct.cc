@@ -46,11 +46,6 @@ const OptionId kFpuStrategy{"fpu-strategy", "FpuStrategy",
                             "Lc5 first-play urgency strategy."};
 const OptionId kFpuValue{"fpu-value", "FpuValue",
                          "Lc5 absolute FPU value or FPU reduction."};
-const OptionId kWaiterResume{
-    "waiter-resume", "WaiterResume",
-    "What a visit does after waiting for a node's evaluation: select below "
-    "that node, reselect at its parent with the new value (and switch edges if "
-    "another one is now better), or restart from the root."};
 const OptionId kMovesLeft{
     "moves-left", "MovesLeft",
     "Use the network's moves-left estimate to prefer shorter wins and longer "
@@ -84,12 +79,6 @@ const OptionId kStickyEndgames{
     "them in selection, the move choice, early stopping and mate scores. "
     "Repetition draws are not proven."};
 
-WaiterResume WaiterResumeFromString(const std::string& value) {
-  if (value == "reselect") return WaiterResume::kReselect;
-  if (value == "restart") return WaiterResume::kRestart;
-  return WaiterResume::kSelect;
-}
-
 }  // namespace
 
 ThinkingInfo::WDL WdlFromValue(float q, float d) {
@@ -115,12 +104,6 @@ void PuctParams::Populate(OptionsParser* options) {
       defaults.fpu_strategy == FpuStrategy::kAbsolute ? "absolute"
                                                       : "reduction";
   options->Add<FloatOption>(kFpuValue, -100.0f, 100.0f) = defaults.fpu_value;
-  options->Add<ChoiceOption>(
-      kWaiterResume,
-      std::vector<std::string>{"select", "reselect", "restart"}) =
-      defaults.waiter_resume == WaiterResume::kSelect     ? "select"
-      : defaults.waiter_resume == WaiterResume::kReselect ? "reselect"
-                                                          : "restart";
   const auto& ml = defaults.moves_left;
   options->Add<BoolOption>(kMovesLeft) = ml.enabled;
   options->Add<FloatOption>(kMovesLeftMaxEffect, 0.0f, 1.0f) = ml.max_effect;
@@ -145,8 +128,6 @@ PuctParams PuctParams::FromOptions(const OptionsDict& options,
                           ? FpuStrategy::kAbsolute
                           : FpuStrategy::kReduction,
       .fpu_value = options.Get<float>(kFpuValue),
-      .waiter_resume =
-          WaiterResumeFromString(options.Get<std::string>(kWaiterResume)),
       // Without a moves-left head, M is only the mean depth of the leaves
       // below.
       .moves_left =
