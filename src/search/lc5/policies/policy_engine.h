@@ -27,16 +27,17 @@
 
 #pragma once
 
+#include <absl/container/flat_hash_set.h>
 #include <absl/synchronization/mutex.h>
 
 #include <algorithm>
 #include <cassert>
 #include <cstddef>
+#include <cstdint>
 #include <memory>
 #include <optional>
 #include <span>
 #include <string_view>
-#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -47,16 +48,11 @@
 
 namespace lczero::lc5 {
 
-// Search over a GameGraph it owns, with node and edge statistics, selection
-// and backup supplied by the policy P (see PuctPolicy in puct.h for the
-// interface).
+// VisitEngine backed by a GameGraph<P>, delegating node/edge statistics,
+// selection, and backup to policy P (see PuctPolicy in puct.h).
 template <typename P>
 class PolicyEngine final : public VisitEngine {
  public:
-  explicit PolicyEngine(typename P::Params params = {},
-                        int history_key_length = 7)
-      : params_(params), history_key_length_(history_key_length) {}
-
   std::string_view GetName() const override { return P::kName; }
   void Configure(const OptionsDict& options,
                  const BackendAttributes& backend) override {
@@ -99,62 +95,26 @@ class PolicyEngine final : public VisitEngine {
                          std::span<const uint8_t> record) override {
     return graph_.InsertNode(key, DeserializeNode<P>(record));
   }
-  size_t EvictToStore(size_t max, NodeKey keep, Metrics& metrics) override {
-    assert(store_);
-    const size_t size = graph_.Size();
-    if (size == 0 || max == 0) return 0;
-    const double fraction =
-        std::clamp(static_cast<double>(max) / static_cast<double>(size),
-                   kMinEvictFraction, 1.0);
-    std::vector<std::pair<NodeKey, Node<P>>> nodes;
-    {
-      absl::MutexLock lock(evict_mutex_);
-      nodes = graph_.FindEvictableNodes(&evict_cursor_, max, fraction);
-    }
-    if (nodes.empty()) return 0;
-    // Store first: once a node leaves the graph, a miss must find its record.
-    std::vector<StoredNode> records;
-    records.reserve(nodes.size());
-    for (const auto& [key, node] : nodes) {
-      records.push_back({key, SerializeNode(node)});
-    }
-    store_->StoreBatch(records);
-    metrics.node_store_evict_batches.fetch_add(1);
-    // A node that changed since its record was taken stays in the graph; its
-    // stale record is harmless, as the graph is always checked first.
-    size_t erased = 0;
-    for (const auto& [key, node] : nodes) {
-      if (key != keep) erased += graph_.EraseNode(key, node.version);
-    }
-    metrics.nodes_evicted.fetch_add(erased);
-    metrics.evictions_skipped.fetch_add(nodes.size() - erased);
-    return erased;
-  }
-
-  GameGraph<P>& graph() { return graph_; }
+  size_t EvictToStore(size_t max, NodeKey keep, Metrics& metrics) override;
 
  private:
   static constexpr size_t kMaxPvLength = 256;
   static constexpr double kMinEvictFraction = 0.1;
 
-  // Moves in the graph are from the side to move's perspective; UCI is not.
-  static Move ToUci(Move move, const Position& position) {
-    if (position.IsBlackToMove()) move.Flip();
-    return move;
+  static bool IsBelowOrigin(const Visit& visit) {
+    return visit.path.size() > visit.origin.backup_prefix.size() + 1;
   }
 
-  // Takes `move` from `step`, the last path step, extending visit.history and
-  // visit.current_key. Returns true if that reaches an in-search repetition,
-  // whose value is then in visit.result.
-  bool Advance(Visit& visit, PathStep& step, Move move, Metrics& metrics);
+  // Follows `move` from the current node; returns kBackup if that reaches an
+  // in-search two-fold repetition (setting `visit.result`), else kDescend.
+  ResumeAction FollowEdge(Visit& visit, Move move, Metrics& metrics);
 
   GameGraph<P> graph_;
-  typename P::Params params_;
-  // Earlier positions hashed into a NodeKey.
-  int history_key_length_;
+  typename P::Params params_{};
+  int history_key_length_ = 7;  // Preceding positions hashed into a NodeKey.
   std::unique_ptr<NodeStore> store_;
-  // Where the next eviction scan starts, so evictions spread over all shards.
   absl::Mutex evict_mutex_;
+  // Rolling cursor so eviction scans spread across all shards.
   typename GameGraph<P>::EvictCursor evict_cursor_
       ABSL_GUARDED_BY(evict_mutex_);
 };
@@ -169,157 +129,176 @@ VisitEngine::DescendResult PolicyEngine<P>::DescendVisit(Visit& visit,
     PathStep& step = visit.path.back();
     metrics.selection_node_steps.fetch_add(1);
     RaiseHighWater(metrics.max_selected_depth, visit.path.size());
-    // Below the search root, a proven node backs up its exact value. The root
-    // keeps selecting, so its PV still deepens.
-    const bool stop_at_proven =
-        visit.path.size() > visit.origin.backup_prefix.size() + 1;
-    const SelectResult selected =
-        graph_.SelectAndReserveEdge(visit.current_key, params_, stop_at_proven);
-    switch (selected.status) {
+    // Keep selecting at the origin even when proven so its PV still deepens.
+    const SelectResult selection = graph_.SelectAndReserveEdge(
+        visit.current_key, params_, /*stop_at_proven=*/IsBelowOrigin(visit));
+    step.update_node = selection.status != SelectResult::kNodeMissing;
+    switch (selection.status) {
       case SelectResult::kNodeMissing:
         return DescendResult::kUnmaterializedLeaf;
       case SelectResult::kNodeTerminal:
-        step.update_node = true;
-        visit.result = TerminalValue(selected.terminal);
-        visit.result_exact = IsExact(selected.terminal);
+        visit.result = TerminalValue(selection.terminal);
+        visit.result_exact = IsExact(selection.terminal);
         metrics.terminal_visits.fetch_add(1);
         return DescendResult::kValuedLeaf;
       case SelectResult::kNodeProven:
-        step.update_node = true;
-        visit.result = selected.value;
+        visit.result = selection.value;
         visit.result_exact = true;
         metrics.proven_visits.fetch_add(1);
         return DescendResult::kValuedLeaf;
       case SelectResult::kEdgeSelected:
-        step.update_node = true;
         break;
     }
-    if (Advance(visit, step, selected.move, metrics)) {
+    if (FollowEdge(visit, selection.move, metrics) == ResumeAction::kBackup) {
       return DescendResult::kValuedLeaf;
     }
   }
 }
 
 template <typename P>
-bool PolicyEngine<P>::Advance(Visit& visit, PathStep& step, Move move,
-                              Metrics& metrics) {
-  step.selected_move = move;
-  visit.history.Append(move);
-  visit.current_key = MakeNodeKey(visit.history, history_key_length_);
-  // A two-fold repetition whose cycle lies within this search is scored as
-  // a draw. Whether that holds depends on the root, so the graph node is
-  // left untouched and the leaf is backed up from a step with
-  // update_node = false.
-  const Position& position = visit.history.Last();
-  const int ply = static_cast<int>(visit.path.size());
-  const int cycle = position.GetPliesSincePrevRepetition();
-  if (position.GetRepetitions() == 1 && ply >= 4 && ply >= cycle) {
-    visit.path.push_back({.key = visit.current_key});
-    RaiseHighWater(metrics.max_selected_depth, visit.path.size());
-    visit.result = TerminalValue(TerminalKind::kRepetition);
-    visit.result_exact = false;
-    metrics.terminal_visits.fetch_add(1);
-    metrics.two_fold_visits.fetch_add(1);
-    return true;
-  }
-  return false;
-}
-
-template <typename P>
-VisitEngine::ResumeAction PolicyEngine<P>::ResumeVisit(Visit& visit,
-                                                       Metrics& metrics) {
-  // The waiter's node X is the search root: it has no parent in this search.
-  if (visit.path.size() < visit.origin.backup_prefix.size() + 2) {
-    return ResumeAction::kDescend;
-  }
-  PathStep& parent = visit.path[visit.path.size() - 2];
-  // X's owner has already backed up, so the parent's edge holds X's value.
-  const Move reselected =
-      graph_.ReselectAndReserveEdge(parent.key, *parent.selected_move, params_);
-  if (reselected == *parent.selected_move) {
-    return ResumeAction::kDescend;
-  }
-  metrics.visits_reselected.fetch_add(1);
-  // pop_back leaves `parent` valid.
-  visit.path.pop_back();
-  visit.history.Pop();
-  return Advance(visit, parent, reselected, metrics) ? ResumeAction::kBackup
-                                                     : ResumeAction::kDescend;
-}
-
-template <typename P>
 void PolicyEngine<P>::BackupVisit(const Visit& visit, Metrics& metrics) {
-  typename P::BackupValue backup =
-      P::MakeLeafBackup(visit.result, visit.result_exact);
-  for (size_t i = visit.path.size(); i-- > 0;) {
-    const PathStep& step = visit.path[i];
-    // An in-search repetition leaf has no graph node, and an installed leaf
-    // took its value at install; the parent receives the skipped-node backup.
-    if (!step.update_node) {
+  assert(visit.path.empty() || !visit.path.back().selected_move);
+  auto backup = P::MakeLeafBackup(visit.result, visit.result_exact);
+  for (auto it = visit.path.rbegin(); it != visit.path.rend(); ++it) {
+    // Skip repetition leaves and leaves already counted at installation.
+    if (!it->update_node) {
       backup = P::MakeSkipBackup(backup);
       continue;
     }
-    // The leaf commits only its node value; ancestors complete their edges.
-    const auto move =
-        i + 1 < visit.path.size() ? step.selected_move : std::nullopt;
-    const auto to_parent = graph_.BackupThroughNode(step.key, backup, move);
+    const auto parent_backup =
+        graph_.BackupThroughNode(it->key, backup, it->selected_move);
     metrics.backup_node_steps.fetch_add(1);
-    // A missing node is skipped.
-    backup = to_parent ? *to_parent : P::MakeStaleBackup(backup);
+    backup = parent_backup.value_or(P::MakeStaleBackup(backup));
   }
 }
 
 template <typename P>
 void PolicyEngine<P>::CancelVisit(const Visit& visit) {
   for (const PathStep& step : visit.path) {
-    if (step.selected_move) {
-      graph_.ReleaseEdge(step.key, *step.selected_move);
-    }
+    if (step.selected_move) graph_.ReleaseEdge(step.key, *step.selected_move);
   }
+}
+
+template <typename P>
+VisitEngine::ResumeAction PolicyEngine<P>::ResumeVisit(Visit& visit,
+                                                       Metrics& metrics) {
+  // At the origin there is no parent edge to reselect.
+  if (!IsBelowOrigin(visit)) return ResumeAction::kDescend;
+  const PathStep& parent = visit.path[visit.path.size() - 2];
+  // The leaf's owner has already backed up, so the parent edge holds its value.
+  const Move reselected =
+      graph_.ReselectAndReserveEdge(parent.key, *parent.selected_move, params_);
+  if (reselected == *parent.selected_move) return ResumeAction::kDescend;
+  metrics.visits_reselected.fetch_add(1);
+  visit.path.pop_back();
+  visit.history.Pop();
+  return FollowEdge(visit, reselected, metrics);
 }
 
 template <typename P>
 void PolicyEngine<P>::FillThinkingInfo(const VisitOrigin& root,
                                        ThinkingInfo& info) const {
+  info.pv.clear();
   auto node = graph_.SnapshotNode(root.key);
-  if (node) P::FillThinkingInfo(*node, params_, info);
-  std::vector<Move>& pv = info.pv;
-  pv.clear();
+  if (!node) return;
+  P::FillThinkingInfo(*node, params_, info);
   PositionHistory history = root.history;
-  std::unordered_set<uint64_t> seen{root.key.hash};
-  while (node && pv.size() < kMaxPvLength &&
+  absl::flat_hash_set<NodeKey> seen{root.key};
+  while (node && info.pv.size() < kMaxPvLength &&
          node->terminal == TerminalKind::kNonTerminal && !node->edges.empty()) {
     const Move move = P::GetBestMove(*node, params_);
-    pv.push_back(ToUci(move, history.Last()));
+    Move uci_move = move;
+    // Graph moves are from the side-to-move's perspective; UCI is not.
+    if (history.IsBlackToMove()) uci_move.Flip();
+    info.pv.push_back(uci_move);
     history.Append(move);
     const NodeKey key = MakeNodeKey(history, history_key_length_);
-    if (!seen.insert(key.hash).second) break;
+    if (!seen.insert(key).second) break;
     node = graph_.SnapshotNode(key);
   }
 }
 
 template <typename P>
 RootStats PolicyEngine<P>::GetRootStats(NodeKey root) const {
-  RootStats stats;
   const auto node = graph_.SnapshotNode(root);
-  if (!node) return stats;
-  stats.materialized = true;
-  stats.visits = node->stats.visits;
-  stats.edges = node->edges.size();
-  if (!node->edges.empty()) {
-    stats.best_move = P::GetBestMove(*node, params_);
-  }
-  stats.decided = P::IsNodeDecided(*node, params_);
+  if (!node) return {};
+  RootStats stats{
+      .materialized = true,
+      .visits = node->stats.visits,
+      .edges = node->edges.size(),
+      .best_move =
+          node->edges.empty() ? Move{} : P::GetBestMove(*node, params_),
+      .decided = P::IsNodeDecided(*node, params_),
+  };
   for (const auto& tried : node->tried) {
     const uint64_t visits = tried.stats.visits;
     if (visits > stats.best_edge_visits) {
-      stats.second_edge_visits = stats.best_edge_visits;
-      stats.best_edge_visits = visits;
+      stats.second_edge_visits = std::exchange(stats.best_edge_visits, visits);
     } else {
       stats.second_edge_visits = std::max(stats.second_edge_visits, visits);
     }
   }
   return stats;
+}
+
+template <typename P>
+size_t PolicyEngine<P>::EvictToStore(size_t max, NodeKey keep,
+                                     Metrics& metrics) {
+  assert(store_);
+  const size_t size = graph_.Size();
+  if (size == 0 || max == 0) return 0;
+  const double fraction =
+      std::clamp(static_cast<double>(max) / size, kMinEvictFraction, 1.0);
+  std::vector<std::pair<NodeKey, Node<P>>> candidates;
+  {
+    absl::MutexLock lock(evict_mutex_);
+    candidates = graph_.FindEvictableNodes(&evict_cursor_, max, fraction);
+  }
+  std::erase_if(candidates,
+                [keep](const auto& entry) { return entry.first == keep; });
+  if (candidates.empty()) return 0;
+
+  // Store before erasing so a concurrent miss always finds the record.
+  std::vector<StoredNode> records;
+  records.reserve(candidates.size());
+  for (const auto& [key, node] : candidates) {
+    records.push_back({key, SerializeNode(node)});
+  }
+  store_->StoreBatch(records);
+  metrics.node_store_evict_batches.fetch_add(1);
+
+  // Modified nodes stay in the graph; stale store records are harmless because
+  // the graph is checked first.
+  size_t erased = 0;
+  for (const auto& [key, node] : candidates) {
+    if (graph_.EraseNode(key, node.version)) ++erased;
+  }
+  metrics.nodes_evicted.fetch_add(erased);
+  metrics.evictions_skipped.fetch_add(candidates.size() - erased);
+  return erased;
+}
+
+template <typename P>
+VisitEngine::ResumeAction PolicyEngine<P>::FollowEdge(Visit& visit, Move move,
+                                                      Metrics& metrics) {
+  visit.path.back().selected_move = move;
+  visit.history.Append(move);
+  visit.current_key = MakeNodeKey(visit.history, history_key_length_);
+  // Score an in-search two-fold repetition as a draw without touching its graph
+  // node, since repetition depends on the search path rather than the node.
+  const Position& pos = visit.history.Last();
+  const int search_plies = static_cast<int>(visit.path.size());
+  if (pos.GetRepetitions() == 1 && search_plies >= 4 &&
+      search_plies >= pos.GetPliesSincePrevRepetition()) {
+    visit.path.push_back({.key = visit.current_key});
+    RaiseHighWater(metrics.max_selected_depth, visit.path.size());
+    visit.result = TerminalValue(TerminalKind::kRepetition);
+    visit.result_exact = false;
+    metrics.terminal_visits.fetch_add(1);
+    metrics.two_fold_visits.fetch_add(1);
+    return ResumeAction::kBackup;
+  }
+  return ResumeAction::kDescend;
 }
 
 }  // namespace lczero::lc5
