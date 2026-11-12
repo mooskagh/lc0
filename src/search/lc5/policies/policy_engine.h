@@ -288,14 +288,10 @@ void PolicyEngine<P>::FillThinkingInfo(const VisitOrigin& root,
   PositionHistory history = root.history;
   std::unordered_set<uint64_t> seen{root.key.hash};
   while (node && pv.size() < kMaxPvLength &&
-         node->terminal == TerminalKind::kNonTerminal) {
-    // The root's move is the bestmove, so it is chosen even before any of its
-    // edges has a visit.
-    const auto move =
-        P::GetBestMove(*node, params_, /*allow_unvisited=*/pv.empty());
-    if (!move) break;
-    pv.push_back(ToUci(*move, history.Last()));
-    history.Append(*move);
+         node->terminal == TerminalKind::kNonTerminal && !node->edges.empty()) {
+    const Move move = P::GetBestMove(*node, params_);
+    pv.push_back(ToUci(move, history.Last()));
+    history.Append(move);
     const NodeKey key = MakeNodeKey(history, history_key_length_);
     if (!seen.insert(key.hash).second) break;
     node = graph_.SnapshotNode(key);
@@ -310,9 +306,8 @@ RootStats PolicyEngine<P>::GetRootStats(NodeKey root) const {
   stats.materialized = true;
   stats.visits = node->stats.visits;
   stats.edges = node->edges.size();
-  if (const auto move =
-          P::GetBestMove(*node, params_, /*allow_unvisited=*/true)) {
-    stats.best_move = *move;
+  if (!node->edges.empty()) {
+    stats.best_move = P::GetBestMove(*node, params_);
   }
   stats.decided = P::IsNodeDecided(*node, params_);
   for (const auto& tried : node->tried) {

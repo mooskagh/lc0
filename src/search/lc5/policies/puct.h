@@ -27,12 +27,15 @@
 
 #pragma once
 
+#include <absl/algorithm/container.h>
+
 #include <algorithm>
 #include <cassert>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
+#include <span>
 #include <string_view>
 #include <tuple>
 
@@ -135,13 +138,10 @@ struct PuctPolicy {
   static bool IsNodeDecided(const Node<Self>& node, const Params& params) {
     return params.sticky_endgames && node.stats.bounds.Proven();
   }
-  // The PV and bestmove move: most visits, then best Q, then PreferOnTie;
-  // if no edge has a visit, the highest-prior edge when `allow_unvisited` is
-  // true, or nullopt. With StickyEndgames, a proven win comes first (shortest
+  // The PV and bestmove move (`node` has edges): most visits, then best Q,
+  // then PreferOnTie. With StickyEndgames, a proven win comes first (shortest
   // first) and a proven loss last (longest first).
-  static std::optional<Move> GetBestMove(const Node<Self>& node,
-                                         const Params& params,
-                                         bool allow_unvisited = false);
+  static Move GetBestMove(const Node<Self>& node, const Params& params);
   // Fills the score and WDL of `info` if the node has visits; with
   // StickyEndgames, a proven win or loss as a mate score instead.
   static void FillThinkingInfo(const Node<Self>& node, const Params& params,
@@ -272,33 +272,27 @@ std::optional<VisitValue> PuctPolicy<Self>::GetProvenNodeValue(
 }
 
 template <typename Self>
-std::optional<Move> PuctPolicy<Self>::GetBestMove(const Node<Self>& node,
-                                                  const Params& params,
-                                                  bool allow_unvisited) {
-  // Untried edges have no visits.
-  const auto rank = [&](size_t i) {
-    const auto& stats = node.tried[i].stats;
-    // With StickyEndgames: proven wins, then the rest, then proven losses.
-    int result = 0;
-    float plies = 0.0f;
-    if (params.sticky_endgames && stats.bounds.lower == 1) {
-      result = 1;
-      plies = -stats.bounds.plies;
-    } else if (params.sticky_endgames && stats.bounds.upper == -1) {
-      result = -1;
-      plies = stats.bounds.plies;
-    }
-    return std::tuple(result, plies, stats.visits, stats.Q());
+Move PuctPolicy<Self>::GetBestMove(const Node<Self>& node,
+                                   const Params& params) {
+  assert(!node.edges.empty());
+  const auto rank = [&](const LegalEdge& edge) {
+    const size_t i = &edge - node.edges.data();
+    const EdgeStats s = i < node.tried.size() && node.tried[i].stats.visits > 0
+                            ? node.tried[i].stats
+                            : EdgeStats{};
+    const int outcome =
+        params.sticky_endgames && s.bounds.Proven() ? s.bounds.lower : 0;
+    return std::tuple(outcome, -outcome * s.bounds.plies, s.visits, s.Q());
   };
-  std::optional<size_t> best;
-  for (size_t i = 0; i < node.tried.size(); ++i) {
-    if (node.tried[i].stats.visits == 0) continue;
-    // Ties keep the lower index, which PreferOnTie prefers.
-    if (!best || rank(i) > rank(*best)) best = i;
-  }
-  if (best) return node.edges[*best].move;
-  if (allow_unvisited && !node.edges.empty()) return node.edges[0].move;
-  return std::nullopt;
+  // Untried edges share empty stats and are sorted by PreferOnTie, so the first
+  // one ties all later ones and wins the tie.
+  const std::span candidates(
+      node.edges.data(), std::min(node.tried.size() + 1, node.edges.size()));
+  return absl::c_max_element(candidates,
+                             [&](const LegalEdge& a, const LegalEdge& b) {
+                               return rank(a) < rank(b);
+                             })
+      ->move;
 }
 
 template <typename Self>

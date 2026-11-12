@@ -345,6 +345,9 @@ TEST(Lc5PuctTest, StickyGetBestMovePrefersShortWinsAndLongLosses) {
   node = MakeBoundedNode(2, {WithPlies(kLoss, 1), GameResultBounds{}});
   node.tried[0].stats.visits = 10;
   EXPECT_EQ(PuctAveraging::GetBestMove(node, params), node.edges[1].move);
+  node = MakeBoundedNode(2, {WithPlies(kLoss, 1)});
+  node.tried[0].stats.visits = 10;
+  EXPECT_EQ(PuctAveraging::GetBestMove(node, params), node.edges[1].move);
   node = MakeBoundedNode(2, {WithPlies(kLoss, 1), WithPlies(kLoss, 3)});
   node.tried[0].stats.visits = 10;
   EXPECT_EQ(PuctAveraging::GetBestMove(node, params), node.edges[1].move);
@@ -370,9 +373,12 @@ TEST(Lc5PuctTest, GetProvenNodeValueNeedsStickyEndgames) {
 TEST(Lc5PuctTest, GetBestMoveRanksVisitsThenQThenPrior) {
   Node node{.edges = {MakeEdge(kFileA, 0.5f), MakeEdge(kFileB, 0.3f),
                       MakeEdge(kFileC, 0.2f)}};
-  EXPECT_EQ(PuctAveraging::GetBestMove(node, TestParams()), std::nullopt);
+  // With no visits yet, falls back to the highest-prior edge.
+  EXPECT_EQ(PuctAveraging::GetBestMove(node, TestParams()), node.edges[0].move);
+  node.tried = {Tried{.in_flight = 1}};
+  EXPECT_EQ(PuctAveraging::GetBestMove(node, TestParams()), node.edges[0].move);
 
-  // Tried edges without a visit don't count.
+  // Tried edges without a visit don't beat a visited edge.
   node.tried = {Tried{.in_flight = 1}, Tried{}, MakeTried(1, -0.9f)};
   EXPECT_EQ(PuctAveraging::GetBestMove(node, TestParams()), node.edges[2].move);
 
@@ -385,21 +391,6 @@ TEST(Lc5PuctTest, GetBestMoveRanksVisitsThenQThenPrior) {
 
   node.tried[0].stats = {.visits = 3, .q = -1.0f};
   EXPECT_EQ(PuctAveraging::GetBestMove(node, TestParams()), node.edges[0].move);
-}
-
-TEST(Lc5PuctTest, GetBestMoveFallsBackToTopPriorWhenAllowed) {
-  Node node;
-  EXPECT_EQ(PuctAveraging::GetBestMove(node, TestParams(), true), std::nullopt);
-
-  node.edges = {MakeEdge(kFileC, 0.5f), MakeEdge(kFileA, 0.3f),
-                MakeEdge(kFileB, 0.2f)};
-  EXPECT_EQ(PuctAveraging::GetBestMove(node, TestParams()), std::nullopt);
-  EXPECT_EQ(PuctAveraging::GetBestMove(node, TestParams(), true),
-            node.edges[0].move);
-
-  node.tried = {Tried{}, Tried{}, MakeTried(1)};
-  EXPECT_EQ(PuctAveraging::GetBestMove(node, TestParams(), true),
-            node.edges[2].move);
 }
 
 TEST(Lc5PuctTest, FillThinkingInfoNeedsVisits) {
