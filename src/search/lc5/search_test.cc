@@ -25,27 +25,29 @@
   Program grant you additional permission to convey the resulting work.
 */
 
+#include <absl/algorithm/container.h>
 #include <gtest/gtest.h>
 
 #include <algorithm>
 #include <cassert>
 #include <condition_variable>
 #include <limits>
+#include <memory>
 #include <mutex>
 #include <optional>
+#include <string>
+#include <string_view>
 #include <thread>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
 #include "search/lc5/engine.h"
-#include "search/lc5/policies/node_serialization.h"
-#include "search/lc5/policies/policy_engine.h"
 #include "search/lc5/policies/puct.h"
-#include "search/lc5/policies/puct_dag.h"
 #include "search/lc5/policies/registry.h"
 #include "search/lc5/session/search_session.h"
 #include "search/lc5/store/memory_node_store.h"
+#include "search/lc5/visit_engine.h"
 
 namespace lczero::lc5 {
 
@@ -111,23 +113,10 @@ class SearchSessionTestPeer {
     ASSERT_TRUE(engine.session_->IsFinished());
     ExpectDrained(*engine.session_);
     ASSERT_TRUE(engine.visit_engine_);
-    const auto& graph =
-        static_cast<PolicyEngine<PuctAveraging>&>(*engine.visit_engine_)
-            .graph();
-    GameGraph<PuctAveraging>::EvictCursor cursor;
-    EXPECT_EQ(graph.FindEvictableNodes(&cursor, graph.Size() + 1, 1.0).size(),
-              graph.Size());
   }
 };
 
 namespace {
-
-// The statistics of edge `i`; an untried edge has none, so it reads as empty.
-const TriedEdge<PuctAveraging>& TriedAt(const Node<PuctAveraging>& node,
-                                        size_t i) {
-  static const TriedEdge<PuctAveraging> kUntried;
-  return i < node.tried.size() ? node.tried[i] : kUntried;
-}
 
 Settings::Resolved TestSettings(int threads = 1, int capacity = 4) {
   return {.threads = threads,
@@ -138,12 +127,27 @@ Settings::Resolved TestSettings(int threads = 1, int capacity = 4) {
           .active_visits_ratio = 0.0f};
 }
 
-PuctAveraging::Params TestParams() {
-  return {.cpuct = 1.0f,
-          .cpuct_base = 100.0f,
-          .cpuct_factor = 0.0f,
-          .fpu_strategy = FpuStrategy::kAbsolute,
-          .fpu_value = 0.0f};
+std::unique_ptr<VisitEngine> MakeTestEngine(std::string_view policy = "puct",
+                                            bool sticky_endgames = false,
+                                            int history_key_length = 7) {
+  OptionsParser parser;
+  Settings::Populate(&parser);
+  PopulatePolicyOptions(&parser);
+  parser.SetUciOption("CPuct", "1");
+  parser.SetUciOption("CPuctBase", "100");
+  parser.SetUciOption("CPuctFactor", "0");
+  parser.SetUciOption("FpuStrategy", "absolute");
+  parser.SetUciOption("FpuValue", "0");
+  parser.SetUciOption("StickyEndgames", sticky_endgames ? "true" : "false");
+  parser.SetUciOption("HistoryKeyLength", std::to_string(history_key_length));
+  auto engine = MakeVisitEngine(policy);
+  engine->Configure(parser.GetOptionsDict(), {.has_mlh = true,
+                                              .has_wdl = true,
+                                              .runs_on_cpu = true,
+                                              .suggested_num_search_threads = 1,
+                                              .recommended_batch_size = 4,
+                                              .maximum_batch_size = 4});
+  return engine;
 }
 
 TimeManager::Config TestTimeManagement() {
@@ -417,16 +421,6 @@ class BlockingStore final : public NodeStore {
   std::atomic<size_t> load_calls_{0};
 };
 
-// Records every node of `graph` in `store`.
-template <typename P>
-void SeedStore(const GameGraph<P>& graph, RecordingStore& store) {
-  typename GameGraph<P>::EvictCursor cursor;
-  for (const auto& [key, node] :
-       graph.FindEvictableNodes(&cursor, graph.Size(), 1.0)) {
-    store.entries.insert_or_assign(key, SerializeNode(node));
-  }
-}
-
 // Gives `engine` a new store and returns it.
 template <typename S, typename... Args>
 S& InstallStore(VisitEngine& engine, Args&&... args) {
@@ -436,17 +430,13 @@ S& InstallStore(VisitEngine& engine, Args&&... args) {
   return result;
 }
 
-template <typename P>
-void ExpectDrained(const SearchSession& session, const GameGraph<P>& graph) {
+void ExpectDrained(const SearchSession& session) {
   ASSERT_TRUE(session.IsFinished());
   SearchSessionTestPeer::ExpectDrained(session);
   const auto& m = session.metrics();
   EXPECT_EQ(m.visits_admitted.load(),
             m.visits_completed.load() + m.visits_cancelled.load());
   EXPECT_EQ(m.publications_rejected.load(), 0u);
-  typename GameGraph<P>::EvictCursor cursor;
-  EXPECT_EQ(graph.FindEvictableNodes(&cursor, graph.Size() + 1, 1.0).size(),
-            graph.Size());
 }
 
 void ExpectFinalOutput(const RecordingResponder& responder, uint64_t nodes) {
@@ -472,23 +462,22 @@ TEST(Lc5SearchTest, ExpiredTimeBudgetStopsAndDrains) {
   for (const auto& params :
        {GoParams{.movetime = 0}, GoParams{.movetime = -1},
         GoParams{.wtime = 0, .btime = 0}, GoParams{.movetime = 60000}}) {
-    PolicyEngine<PuctAveraging> engine(TestParams());
-    auto& graph = engine.graph();
-    auto& store = InstallStore<RecordingStore>(engine);
+    auto engine = MakeTestEngine();
+    auto& store = InstallStore<RecordingStore>(*engine);
     ControlledBackend backend;
     RecordingResponder responder;
     const auto root = Origin();
     // A synthetic old origin also verifies that preparation time is charged.
     SearchSession session(
-        &engine, &backend, &responder, TestSettings(), TestTimeManagement(),
-        root, params,
+        engine.get(), &backend, &responder, TestSettings(),
+        TestTimeManagement(), root, params,
         std::chrono::steady_clock::now() - std::chrono::minutes(2));
     ASSERT_TRUE(SearchSessionTestPeer::AdmitVisit(session, root));
     session.Start();
     session.Wait();
     // Startup can race expiration; neither completed visits nor evaluations
     // are required to be zero. All admitted work must still drain.
-    ExpectDrained(session, graph);
+    ExpectDrained(session);
     ExpectFinalOutput(responder, session.metrics().visits_completed.load());
     ExpectLegalBestmove(responder, root);
     // Nothing is evicted without a graph node limit.
@@ -497,22 +486,21 @@ TEST(Lc5SearchTest, ExpiredTimeBudgetStopsAndDrains) {
 }
 
 TEST(Lc5SearchTest, AbortSuppressesOutputWithExpiredTimeBudget) {
-  PolicyEngine<PuctAveraging> engine(TestParams());
-  auto& graph = engine.graph();
-  InstallStore<RecordingStore>(engine);
+  auto engine = MakeTestEngine();
+  InstallStore<RecordingStore>(*engine);
   ControlledBackend backend;
   RecordingResponder responder;
   const auto root = Origin();
   SearchSession session(
-      &engine, &backend, &responder, TestSettings(), TestTimeManagement(), root,
-      GoParams{.movetime = 0},
+      engine.get(), &backend, &responder, TestSettings(), TestTimeManagement(),
+      root, GoParams{.movetime = 0},
       std::chrono::steady_clock::now() - std::chrono::minutes(2));
   ASSERT_TRUE(SearchSessionTestPeer::AdmitVisit(session, root));
   // Abort before startup so output commitment cannot race the assertion.
   session.Abort();
   session.Start();
   session.Wait();
-  ExpectDrained(session, graph);
+  ExpectDrained(session);
   EXPECT_TRUE(responder.bestmoves.empty());
   EXPECT_TRUE(responder.thinking.empty());
 }
@@ -532,17 +520,16 @@ TEST(Lc5SearchTest, ExplicitMovetimeAndInfiniteOverrideExhaustedClock) {
       SCOPED_TRACE(fen);
       SCOPED_TRACE(params.infinite);
       SCOPED_TRACE(params.movetime.value_or(-1));
-      PolicyEngine<PuctAveraging> engine(TestParams());
-      auto& graph = engine.graph();
+      auto engine = MakeTestEngine();
       ControlledBackend backend;
       RecordingResponder responder;
       const auto root = Origin(fen);
-      SearchSession session(&engine, &backend, &responder, TestSettings(),
+      SearchSession session(engine.get(), &backend, &responder, TestSettings(),
                             TestTimeManagement(), root, params,
                             std::chrono::steady_clock::now());
       session.Start();
       session.Wait();
-      ExpectDrained(session, graph);
+      ExpectDrained(session);
       EXPECT_EQ(session.metrics().visits_admitted.load(), 1u);
       EXPECT_EQ(session.metrics().visits_completed.load(), 1u);
       EXPECT_EQ(session.metrics().visits_cancelled.load(), 0u);
@@ -553,14 +540,13 @@ TEST(Lc5SearchTest, ExplicitMovetimeAndInfiniteOverrideExhaustedClock) {
 }
 
 TEST(Lc5SearchTest, PonderIgnoresZeroNodeAndTimeLimits) {
-  PolicyEngine<PuctAveraging> engine(TestParams());
-  auto& graph = engine.graph();
+  auto engine = MakeTestEngine();
   ControlledBackend backend(ControlledBackend::Cache::kNone, true);
   RecordingResponder responder;
   const auto root = Origin();
   SearchSession session(
-      &engine, &backend, &responder, TestSettings(1, 1), TestTimeManagement(),
-      root,
+      engine.get(), &backend, &responder, TestSettings(1, 1),
+      TestTimeManagement(), root,
       GoParams{
           .wtime = 0, .btime = 0, .nodes = 0, .movetime = 0, .ponder = true},
       std::chrono::steady_clock::now() - std::chrono::minutes(2));
@@ -579,7 +565,7 @@ TEST(Lc5SearchTest, PonderIgnoresZeroNodeAndTimeLimits) {
   session.Wait();
   ASSERT_TRUE(computing) << "Ponder must admit work despite zero limits";
   ASSERT_TRUE(continued) << "Ponder must continue after the first evaluation";
-  ExpectDrained(session, graph);
+  ExpectDrained(session);
   EXPECT_GE(session.metrics().visits_admitted.load(), 2u);
   ExpectFinalOutput(responder, session.metrics().visits_completed.load());
   ExpectLegalBestmove(responder, root);
@@ -588,17 +574,17 @@ TEST(Lc5SearchTest, PonderIgnoresZeroNodeAndTimeLimits) {
 TEST(Lc5SearchTest, ExactNodeBudgetWithMoreWorkersThanCapacity) {
   for (const int64_t nodes : {0, 1, 7}) {
     SCOPED_TRACE(nodes);
-    PolicyEngine<PuctAveraging> engine(TestParams());
-    auto& graph = engine.graph();
+    auto engine = MakeTestEngine();
     ControlledBackend backend;
     RecordingResponder responder;
     auto root = Origin();
-    SearchSession session(&engine, &backend, &responder, TestSettings(8, 2),
-                          TestTimeManagement(), root, GoParams{.nodes = nodes},
+    SearchSession session(engine.get(), &backend, &responder,
+                          TestSettings(8, 2), TestTimeManagement(), root,
+                          GoParams{.nodes = nodes},
                           std::chrono::steady_clock::now());
     session.Start();
     session.Wait();
-    ExpectDrained(session, graph);
+    ExpectDrained(session);
     const uint64_t expected = std::max<int64_t>(1, nodes);
     EXPECT_EQ(session.metrics().visits_admitted.load(), expected);
     EXPECT_EQ(session.metrics().visits_completed.load(), expected);
@@ -609,14 +595,13 @@ TEST(Lc5SearchTest, ExactNodeBudgetWithMoreWorkersThanCapacity) {
     EXPECT_TRUE(responder.thinking.back().score.has_value());
     EXPECT_TRUE(responder.thinking.back().wdl.has_value());
     const auto legal = root.history.Last().GetBoard().GenerateLegalMoves();
-    EXPECT_NE(
-        std::find(legal.begin(), legal.end(), responder.bestmoves[0].bestmove),
-        legal.end());
+    EXPECT_NE(absl::c_find(legal, responder.bestmoves[0].bestmove),
+              legal.end());
     // Each completed visit counts once at the root, including the one that
     // materialized it.
-    const auto node = graph.SnapshotNode(root.key);
-    ASSERT_TRUE(node);
-    EXPECT_EQ(node->stats.visits, expected);
+    const RootStats stats = engine->GetRootStats(root.key);
+    ASSERT_TRUE(stats.materialized);
+    EXPECT_EQ(stats.visits, expected);
   }
 }
 
@@ -635,17 +620,17 @@ TEST(Lc5SearchTest, ReportsCentipawnsAndWdlFromRootSideToMove) {
          {Case{0.25f, 37, 375, 125}, Case{-0.25f, -37, 125, 375},
           Case{0.0f, 0, 250, 250}}) {
       SCOPED_TRACE(test.q);
-      PolicyEngine<PuctAveraging> engine(TestParams());
-      auto& graph = engine.graph();
+      auto engine = MakeTestEngine();
       ControlledBackend backend;
       backend.q = test.q;
       RecordingResponder responder;
-      SearchSession session(
-          &engine, &backend, &responder, TestSettings(), TestTimeManagement(),
-          Origin(fen), GoParams{.nodes = 1}, std::chrono::steady_clock::now());
+      SearchSession session(engine.get(), &backend, &responder, TestSettings(),
+                            TestTimeManagement(), Origin(fen),
+                            GoParams{.nodes = 1},
+                            std::chrono::steady_clock::now());
       session.Start();
       session.Wait();
-      ExpectDrained(session, graph);
+      ExpectDrained(session);
       ExpectFinalOutput(responder, 1);
       const auto& final = responder.thinking.back();
       ASSERT_TRUE(final.score.has_value());
@@ -659,12 +644,11 @@ TEST(Lc5SearchTest, ReportsCentipawnsAndWdlFromRootSideToMove) {
 }
 
 TEST(Lc5SearchTest, OwnerBacksUpLeafWhileWaitersResumeSelection) {
-  PolicyEngine<PuctAveraging> engine(TestParams());
-  auto& graph = engine.graph();
+  auto engine = MakeTestEngine();
   ControlledBackend backend;
   RecordingResponder responder;
   auto root = Origin();
-  SearchSession session(&engine, &backend, &responder, TestSettings(),
+  SearchSession session(engine.get(), &backend, &responder, TestSettings(),
                         TestTimeManagement(), root, GoParams{.nodes = 4},
                         std::chrono::steady_clock::now());
   // One worker consumes all four admissions before sending the root job.
@@ -673,42 +657,40 @@ TEST(Lc5SearchTest, OwnerBacksUpLeafWhileWaitersResumeSelection) {
   EXPECT_FALSE(SearchSessionTestPeer::AdmitVisit(session, root));
   session.Start();
   session.Wait();
-  ExpectDrained(session, graph);
+  ExpectDrained(session);
   ExpectFinalOutput(responder, 4);
   EXPECT_EQ(session.metrics().visits_completed.load(), 4u);
   EXPECT_GE(session.metrics().materialization_waiters.load(), 3u);
   EXPECT_GE(session.metrics().visits_resumed.load(), 3u);
-  const auto node = graph.SnapshotNode(root.key);
-  ASSERT_TRUE(node);
-  EXPECT_EQ(node->stats.visits, 4u);
-  uint64_t edge_visits = 0;
-  for (const auto& tried : node->tried) edge_visits += tried.stats.visits;
-  // Only the owner backs up at the root leaf. Each waiter must traverse an
-  // edge.
-  EXPECT_EQ(edge_visits, 3u);
+  const RootStats stats = engine->GetRootStats(root.key);
+  ASSERT_TRUE(stats.materialized);
+  EXPECT_EQ(stats.visits, 4u);
+  // Only the owner backs up at the root leaf; each waiter traverses an edge to
+  // a distinct child.
+  EXPECT_EQ(stats.best_edge_visits, 1u);
+  EXPECT_EQ(engine->GetGraphSize(), 4u);
 }
 
 TEST(Lc5SearchTest, WaitersDrainAndCountOnce) {
   for (const int threads : {1, 2}) {
     SCOPED_TRACE(threads);
-    PolicyEngine<PuctAveraging> engine(TestParams());
-    auto& graph = engine.graph();
+    auto engine = MakeTestEngine();
     ControlledBackend backend;
     RecordingResponder responder;
     auto root = Origin();
     constexpr int64_t kNodes = 64;
-    SearchSession session(&engine, &backend, &responder,
+    SearchSession session(engine.get(), &backend, &responder,
                           TestSettings(threads, 16), TestTimeManagement(), root,
                           GoParams{.nodes = kNodes},
                           std::chrono::steady_clock::now());
     session.Start();
     session.Wait();
-    ExpectDrained(session, graph);
+    ExpectDrained(session);
     ExpectFinalOutput(responder, kNodes);
     EXPECT_EQ(session.metrics().visits_completed.load(), kNodes);
-    const auto node = graph.SnapshotNode(root.key);
-    ASSERT_TRUE(node);
-    EXPECT_EQ(node->stats.visits, static_cast<uint64_t>(kNodes));
+    const RootStats stats = engine->GetRootStats(root.key);
+    ASSERT_TRUE(stats.materialized);
+    EXPECT_EQ(stats.visits, static_cast<uint64_t>(kNodes));
   }
 }
 
@@ -719,15 +701,14 @@ TEST(Lc5SearchTest, WaiterReselectsAfterOwnerBackup) {
     for (const bool child_bad_for_root : {true, false}) {
       SCOPED_TRACE(threads);
       SCOPED_TRACE(child_bad_for_root);
-      PolicyEngine<PuctAveraging> engine(TestParams());
-      auto& graph = engine.graph();
-      graph.InsertNode(root.key,
-                       {.moves = {moves[0], moves[1]}, .priors = {0.8f, 0.2f}});
+      auto engine = MakeTestEngine();
+      engine->CompleteMaterialization(
+          root.key, {.moves = {moves[0], moves[1]}, .priors = {0.8f, 0.2f}});
       ControlledBackend backend;
       // Positive child Q flips to negative on the root's edge.
       backend.q = child_bad_for_root ? 0.9f : -0.9f;
       RecordingResponder responder;
-      SearchSession session(&engine, &backend, &responder,
+      SearchSession session(engine.get(), &backend, &responder,
                             TestSettings(threads, 4), TestTimeManagement(),
                             root, GoParams{.nodes = 2},
                             std::chrono::steady_clock::now());
@@ -738,26 +719,33 @@ TEST(Lc5SearchTest, WaiterReselectsAfterOwnerBackup) {
       SearchSessionTestPeer::PrepareAdmissions(session);
       session.Start();
       session.Wait();
-      ExpectDrained(session, graph);
+      ExpectDrained(session);
       ExpectFinalOutput(responder, 3);
       EXPECT_EQ(session.metrics().visits_completed.load(), 2u);
       EXPECT_EQ(session.metrics().materialization_waiters.load(), 1u);
       EXPECT_EQ(session.metrics().visits_reselected.load(),
                 child_bad_for_root ? 1u : 0u);
-      const auto node = graph.SnapshotNode(root.key);
-      ASSERT_TRUE(node);
-      EXPECT_EQ(TriedAt(*node, 0).stats.visits, child_bad_for_root ? 1u : 2u);
-      EXPECT_EQ(TriedAt(*node, 1).stats.visits, child_bad_for_root ? 1u : 0u);
+      const RootStats stats = engine->GetRootStats(root.key);
+      ASSERT_TRUE(stats.materialized);
+      EXPECT_EQ(stats.best_edge_visits, child_bad_for_root ? 1u : 2u);
+      EXPECT_EQ(stats.second_edge_visits, child_bad_for_root ? 1u : 0u);
     }
   }
 }
 
-TEST(Lc5SearchTest, PuctDagDrainsAndKeepsNodeMeans) {
-  // Kings and blocked pawns: with HistoryKeyLength 0, king routes that
-  // commute share a node from the fourth ply.
+TEST(Lc5SearchTest, PuctDagDrainsOverTranspositions) {
+  // Kings and blocked pawns: with HistoryKeyLength 0, 1. Kg1 Kb8 2. Kg2 and
+  // 1. Kh2 Kb8 2. Kg2 commute to the same node at the third ply.
   auto settings = TestSettings();
   PositionHistory history;
   history.Reset(Position::FromFen("k7/p7/P7/8/8/8/8/7K w - - 0 1"));
+  PositionHistory parent = history;
+  parent.Append(Move::White({kFileH, kRank1}, {kFileG, kRank1}));
+  parent.Append(parent.Last().GetBoard().GenerateLegalMoves()[0]);
+  PositionHistory shared = parent;
+  shared.Append(Move::White({kFileG, kRank1}, {kFileG, kRank2}));
+  const NodeKey parent_key = MakeNodeKey(parent, 0);
+  const NodeKey shared_key = MakeNodeKey(shared, 0);
   const VisitOrigin root{.key = MakeNodeKey(history, 0),
                          .history = std::move(history),
                          .backup_prefix = {}};
@@ -765,57 +753,29 @@ TEST(Lc5SearchTest, PuctDagDrainsAndKeepsNodeMeans) {
     SCOPED_TRACE(threads);
     settings.threads = threads;
     settings.max_active_visits = 16;
-    PolicyEngine<PuctDag> engine(TestParams(), /*history_key_length=*/0);
-    auto& graph = engine.graph();
+    auto engine = MakeTestEngine("puct-dag", /*sticky_endgames=*/false,
+                                 /*history_key_length=*/0);
     ControlledBackend backend;
     RecordingResponder responder;
     constexpr int64_t kNodes = 2000;
-    SearchSession session(&engine, &backend, &responder, settings,
+    SearchSession session(engine.get(), &backend, &responder, settings,
                           TestTimeManagement(), root, GoParams{.nodes = kNodes},
                           std::chrono::steady_clock::now());
     session.Start();
     session.Wait();
-    ExpectDrained(session, graph);
+    ExpectDrained(session);
     ExpectFinalOutput(responder, kNodes);
     ExpectLegalBestmove(responder, root);
-    const auto node = graph.SnapshotNode(root.key);
-    ASSERT_TRUE(node);
-    EXPECT_EQ(node->stats.visits, static_cast<uint64_t>(kNodes));
-    // A node's visits are its own sample plus its edges' visits, whose cached
-    // values its mean weighs.
-    GameGraph<PuctDag>::EvictCursor cursor;
-    const auto snapshot = graph.FindEvictableNodes(&cursor, graph.Size(), 1.0);
-    ASSERT_EQ(snapshot.size(), graph.Size());
-    std::unordered_map<uint64_t, const Node<PuctDag>*> nodes;
-    for (const auto& [key, n] : snapshot) {
-      nodes[key.hash] = &n;
-      EXPECT_LE(std::abs(n.stats.Q()), 1.0f);
-      if (n.terminal != TerminalKind::kNonTerminal) continue;
-      uint32_t edge_visits = 0;
-      for (const auto& tried : n.tried) edge_visits += tried.stats.visits;
-      EXPECT_EQ(n.stats.visits, 1 + edge_visits);
-    }
-    // Transpositions: some node is the child of more than one visited edge.
-    std::unordered_map<uint64_t, int> parents;
-    std::unordered_set<uint64_t> seen{root.key.hash};
-    std::vector<PositionHistory> pending{root.history};
-    while (!pending.empty()) {
-      const PositionHistory parent = std::move(pending.back());
-      pending.pop_back();
-      const auto it = nodes.find(MakeNodeKey(parent, 0).hash);
-      if (it == nodes.end()) continue;
-      const auto& n = *it->second;
-      for (size_t i = 0; i < n.tried.size(); ++i) {
-        if (n.tried[i].stats.visits == 0) continue;
-        PositionHistory child = parent;
-        child.Append(n.edges[i].move);
-        const uint64_t key = MakeNodeKey(child, 0).hash;
-        ++parents[key];
-        if (seen.insert(key).second) pending.push_back(std::move(child));
-      }
-    }
-    EXPECT_TRUE(std::any_of(parents.begin(), parents.end(),
-                            [](const auto& p) { return p.second > 1; }));
+    const RootStats stats = engine->GetRootStats(root.key);
+    ASSERT_TRUE(stats.materialized);
+    EXPECT_EQ(stats.visits, static_cast<uint64_t>(kNodes));
+    const RootStats parent_stats = engine->GetRootStats(parent_key);
+    const RootStats shared_stats = engine->GetRootStats(shared_key);
+    ASSERT_TRUE(parent_stats.materialized);
+    ASSERT_TRUE(shared_stats.materialized);
+    // In a tree a child has at most 1 + parent.best_edge_visits visits; here
+    // `shared` also receives visits via 1. Kh2 Kb8 2. Kg2.
+    EXPECT_GT(shared_stats.visits, 1 + parent_stats.best_edge_visits);
   }
 }
 
@@ -825,20 +785,17 @@ TEST(Lc5SearchTest, StickyEndgamesPlaysMateAndStopsEarly) {
   const Move mate = Move::White(Square(kFileD, kRank1), Square(kFileD, kRank8));
   for (const bool sticky : {false, true}) {
     SCOPED_TRACE(sticky);
-    auto params = TestParams();
-    params.sticky_endgames = sticky;
-    PolicyEngine<PuctAveraging> engine(params);
-    auto& graph = engine.graph();
+    auto engine = MakeTestEngine("puct", sticky);
     ControlledBackend backend;
     RecordingResponder responder;
     // Without the option the search runs to the limit, so keep it small.
     const int nodes = sticky ? 1'000'000 : 500;
-    SearchSession session(&engine, &backend, &responder, TestSettings(),
+    SearchSession session(engine.get(), &backend, &responder, TestSettings(),
                           TestTimeManagement(), root, GoParams{.nodes = nodes},
                           std::chrono::steady_clock::now());
     session.Start();
     session.Wait();
-    ExpectDrained(session, graph);
+    ExpectDrained(session);
     ExpectFinalOutput(responder, nodes);
     const auto& final = responder.thinking.back();
     if (sticky) {
@@ -857,42 +814,49 @@ TEST(Lc5SearchTest, StickyEndgamesPlaysMateAndStopsEarly) {
 }
 
 TEST(Lc5SearchTest, TwoFoldDrawBacksUpToRoot) {
-  // Path: nodes 0..3, then a two-fold leaf with update_node = false.
+  // Path: 4 materialized nodes, then a skipped leaf with update_node = false.
   constexpr size_t kNodes = 4;
-  const Move move = Move::White(Square(kFileA, kRank2), Square(kFileA, kRank3));
   const VisitValue draw{.q = 0.0f, .d = 1.0f, .m = 0.0f};
-  PolicyEngine<PuctAveraging> engine(TestParams());
-  auto& graph = engine.graph();
-  Visit visit;
+  auto engine = MakeTestEngine();
+  std::vector<VisitOrigin> origins;
+  VisitOrigin cur = Origin();
   for (size_t i = 0; i < kNodes; ++i) {
-    const NodeKey key{100 + i};
-    graph.InsertNode(key, {.leaf = {.q = 0.5f, .d = 0.0f, .m = 10.0f},
-                           .moves = {move},
-                           .priors = {1.0f}});
-    ASSERT_EQ(graph.SelectAndReserveEdge(key, TestParams()).status,
-              SelectResult::kEdgeSelected);
-    visit.path.push_back(
-        {.key = key, .selected_move = move, .update_node = true});
+    const Move move = cur.history.Last().GetBoard().GenerateLegalMoves()[0];
+    engine->CompleteMaterialization(cur.key,
+                                    {.leaf = {.q = 0.5f, .d = 0.0f, .m = 10.0f},
+                                     .moves = {move},
+                                     .priors = {1.0f}});
+    origins.push_back(cur);
+    cur.history.Append(move);
+    cur.key = MakeNodeKey(cur.history, 7);
   }
-  visit.path.push_back({.key = NodeKey{200}});
-  visit.result = draw;
   Metrics metrics;
-  engine.BackupVisit(visit, metrics);
+  Visit visit;
+  visit.origin = origins.front();
+  visit.history = origins.front().history;
+  visit.current_key = origins.front().key;
+  ASSERT_EQ(engine->DescendVisit(visit, metrics),
+            VisitEngine::DescendResult::kUnmaterializedLeaf);
+  ASSERT_EQ(visit.path.size(), kNodes + 1);
+  EXPECT_FALSE(visit.path.back().update_node);
+  visit.result = draw;
+  engine->BackupVisit(visit, metrics);
 
   for (size_t i = 0; i < kNodes; ++i) {
     SCOPED_TRACE(i);
-    const auto node = graph.SnapshotNode(NodeKey{100 + i});
-    ASSERT_TRUE(node);
-    const float m = static_cast<float>(kNodes - i);
-    EXPECT_EQ(node->stats.visits, 2u);
-    EXPECT_FLOAT_EQ(node->stats.Q(), 0.25f);
-    EXPECT_FLOAT_EQ(node->stats.D(), 0.5f);
-    EXPECT_FLOAT_EQ(node->stats.M(), (10.0f + m) / 2);
-    EXPECT_EQ(TriedAt(*node, 0).in_flight, 0u);
-    EXPECT_FLOAT_EQ(TriedAt(*node, 0).stats.Q(), 0.0f);
-    EXPECT_FLOAT_EQ(TriedAt(*node, 0).stats.D(), 1.0f);
-    EXPECT_FLOAT_EQ(TriedAt(*node, 0).stats.M(), m);
+    const RootStats stats = engine->GetRootStats(origins[i].key);
+    ASSERT_TRUE(stats.materialized);
+    EXPECT_EQ(stats.visits, 2u);
+    EXPECT_EQ(stats.best_edge_visits, 1u);
+    ThinkingInfo info;
+    engine->FillThinkingInfo(origins[i], info);
+    ASSERT_TRUE(info.score.has_value());
+    EXPECT_EQ(*info.score, CentipawnsFromQ(0.25f));
+    ASSERT_TRUE(info.wdl.has_value());
+    EXPECT_EQ(info.wdl->d, 500);
   }
+  InstallStore<RecordingStore>(*engine);
+  EXPECT_EQ(engine->EvictToStore(kNodes, NodeKey{~0ull}, metrics), kNodes);
 }
 
 TEST(Lc5SearchTest, TwoFoldDrawsFromRealCyclesDrain) {
@@ -900,23 +864,22 @@ TEST(Lc5SearchTest, TwoFoldDrawsFromRealCyclesDrain) {
   const auto root = Origin("k7/p7/P7/8/8/8/8/7K w - - 0 1");
   for (const int threads : {1, 2}) {
     SCOPED_TRACE(threads);
-    PolicyEngine<PuctAveraging> engine(TestParams());
-    auto& graph = engine.graph();
+    auto engine = MakeTestEngine();
     ControlledBackend backend;
     RecordingResponder responder;
     constexpr int64_t kNodes = 2000;
-    SearchSession session(&engine, &backend, &responder,
+    SearchSession session(engine.get(), &backend, &responder,
                           TestSettings(threads, 16), TestTimeManagement(), root,
                           GoParams{.nodes = kNodes},
                           std::chrono::steady_clock::now());
     session.Start();
     session.Wait();
-    ExpectDrained(session, graph);
+    ExpectDrained(session);
     ExpectFinalOutput(responder, kNodes);
     EXPECT_GT(session.metrics().two_fold_visits.load(), 0u);
-    const auto node = graph.SnapshotNode(root.key);
-    ASSERT_TRUE(node);
-    EXPECT_EQ(node->stats.visits, static_cast<uint64_t>(kNodes));
+    const RootStats stats = engine->GetRootStats(root.key);
+    ASSERT_TRUE(stats.materialized);
+    EXPECT_EQ(stats.visits, static_cast<uint64_t>(kNodes));
   }
 }
 
@@ -941,20 +904,19 @@ TEST(Lc5SearchTest, TerminalOwnerAndWaitersNeverEvaluate) {
     for (const bool with_store : {false, true}) {
       SCOPED_TRACE(test.fen);
       SCOPED_TRACE(with_store);
-      PolicyEngine<PuctAveraging> engine(TestParams());
-      auto& graph = engine.graph();
-      if (with_store) InstallStore<MemoryNodeStore>(engine);
+      auto engine = MakeTestEngine();
+      if (with_store) InstallStore<MemoryNodeStore>(*engine);
       ControlledBackend backend;
       RecordingResponder responder;
       const auto root = Origin(test.fen);
-      SearchSession session(&engine, &backend, &responder, TestSettings(),
+      SearchSession session(engine.get(), &backend, &responder, TestSettings(),
                             TestTimeManagement(), root, GoParams{.nodes = 4},
                             std::chrono::steady_clock::now());
       for (int i = 0; i < 4; ++i)
         ASSERT_TRUE(SearchSessionTestPeer::AdmitVisit(session, root));
       session.Start();
       session.Wait();
-      ExpectDrained(session, graph);
+      ExpectDrained(session);
       ExpectFinalOutput(responder, 4);
       EXPECT_EQ(responder.bestmoves[0].bestmove,
                 Move::WhitePromotion(kSquareH1, kSquareH1, kQueen));
@@ -965,12 +927,10 @@ TEST(Lc5SearchTest, TerminalOwnerAndWaitersNeverEvaluate) {
                 with_store ? 3u : 0u);
       EXPECT_EQ(session.metrics().terminal_visits.load(), 4u);
       EXPECT_EQ(session.metrics().visits_resumed.load(), 0u);
-      auto node = graph.SnapshotNode(root.key);
-      ASSERT_TRUE(node);
-      EXPECT_EQ(node->terminal, test.kind);
-      EXPECT_EQ(node->stats.visits, 4u);
-      EXPECT_FLOAT_EQ(node->stats.Q(), test.q);
-      EXPECT_FLOAT_EQ(node->stats.D(), test.d);
+      const RootStats stats = engine->GetRootStats(root.key);
+      ASSERT_TRUE(stats.materialized);
+      EXPECT_EQ(stats.edges, 0u);
+      EXPECT_EQ(stats.visits, 4u);
       const auto& final = responder.thinking.back();
       ASSERT_TRUE(final.score.has_value());
       EXPECT_EQ(*final.score,
@@ -987,15 +947,14 @@ TEST(Lc5SearchTest, ImmediateAndMixedResultsKeepJobStorageAlive) {
   for (const auto cache : {ControlledBackend::Cache::kAll,
                            ControlledBackend::Cache::kAlternating}) {
     SCOPED_TRACE(static_cast<int>(cache));
-    PolicyEngine<PuctAveraging> engine(TestParams());
-    auto& graph = engine.graph();
+    auto engine = MakeTestEngine();
     ControlledBackend backend(cache);
     RecordingResponder responder;
     const auto root = Origin();
     const auto moves = root.history.Last().GetBoard().GenerateLegalMoves();
-    graph.InsertNode(
+    engine->CompleteMaterialization(
         root.key, {.moves = {moves[0], moves[1]}, .priors = {0.5f, 0.5f}});
-    SearchSession session(&engine, &backend, &responder, TestSettings(),
+    SearchSession session(engine.get(), &backend, &responder, TestSettings(),
                           TestTimeManagement(), root, GoParams{.nodes = 4},
                           std::chrono::steady_clock::now());
     std::vector<VisitOrigin> origins;
@@ -1009,7 +968,7 @@ TEST(Lc5SearchTest, ImmediateAndMixedResultsKeepJobStorageAlive) {
     EXPECT_FALSE(SearchSessionTestPeer::AdmitVisit(session, root));
     session.Start();
     session.Wait();
-    ExpectDrained(session, graph);
+    ExpectDrained(session);
     ExpectFinalOutput(responder, 5);
     const bool all = cache == ControlledBackend::Cache::kAll;
     EXPECT_EQ(backend.inputs.load(), 4u);
@@ -1017,14 +976,17 @@ TEST(Lc5SearchTest, ImmediateAndMixedResultsKeepJobStorageAlive) {
     EXPECT_EQ(session.metrics().cache_hits.load(), all ? 4u : 2u);
     EXPECT_EQ(session.metrics().nn_evaluations.load(), all ? 0u : 2u);
     for (const auto& origin : origins) {
-      const auto node = graph.SnapshotNode(origin.key);
-      ASSERT_TRUE(node);
-      EXPECT_EQ(node->stats.visits, 1u);
-      EXPECT_FLOAT_EQ(node->stats.Q(), 0.25f);
-      EXPECT_FLOAT_EQ(node->stats.D(), 0.5f);
-      EXPECT_FLOAT_EQ(node->stats.M(), 3.0f);
-      for (const auto& edge : node->edges)
-        EXPECT_EQ(edge.prior, PackedPrior(1.0f / node->edges.size()));
+      const RootStats stats = engine->GetRootStats(origin.key);
+      ASSERT_TRUE(stats.materialized);
+      EXPECT_EQ(stats.visits, 1u);
+      EXPECT_EQ(stats.edges,
+                origin.history.Last().GetBoard().GenerateLegalMoves().size());
+      ThinkingInfo info;
+      engine->FillThinkingInfo(origin, info);
+      ASSERT_TRUE(info.score.has_value());
+      EXPECT_EQ(*info.score, CentipawnsFromQ(0.25f));
+      ASSERT_TRUE(info.wdl.has_value());
+      EXPECT_EQ(info.wdl->d, 500);
     }
   }
 }
@@ -1032,20 +994,20 @@ TEST(Lc5SearchTest, ImmediateAndMixedResultsKeepJobStorageAlive) {
 TEST(Lc5SearchTest, BlockedBackendStopAndAbortDrainReservations) {
   for (const bool abort : {false, true}) {
     SCOPED_TRACE(abort);
-    PolicyEngine<PuctAveraging> engine(TestParams());
-    auto& graph = engine.graph();
-    auto& store = InstallStore<RecordingStore>(engine);
+    auto engine = MakeTestEngine();
+    auto& store = InstallStore<RecordingStore>(*engine);
     ControlledBackend backend(ControlledBackend::Cache::kNone, true);
     RecordingResponder responder;
     const auto root = Origin();
     const auto moves = root.history.Last().GetBoard().GenerateLegalMoves();
     // All visits reserve the same root edge and share the child
     // materialization.
-    graph.InsertNode(root.key, {.moves = {moves[0]}, .priors = {1.0f}});
+    engine->CompleteMaterialization(root.key,
+                                    {.moves = {moves[0]}, .priors = {1.0f}});
     auto child = root;
     child.history.Append(moves[0]);
     child.key = MakeNodeKey(child.history, 7);
-    SearchSession session(&engine, &backend, &responder, TestSettings(),
+    SearchSession session(engine.get(), &backend, &responder, TestSettings(),
                           TestTimeManagement(), root,
                           GoParams{.nodes = 4, .infinite = true},
                           std::chrono::steady_clock::now());
@@ -1060,7 +1022,6 @@ TEST(Lc5SearchTest, BlockedBackendStopAndAbortDrainReservations) {
       session.Wait();
       FAIL() << "Backend computation was not reached";
     }
-    EXPECT_EQ(TriedAt(*graph.SnapshotNode(root.key), 0).in_flight, 4u);
     EXPECT_EQ(session.metrics().materialization_waiters.load(), 3u);
     if (abort)
       session.Abort();
@@ -1075,7 +1036,7 @@ TEST(Lc5SearchTest, BlockedBackendStopAndAbortDrainReservations) {
     EXPECT_EQ(responder.bestmove_count.load(), abort ? 0u : 1u);
     backend.Release();
     session.Wait();
-    ExpectDrained(session, graph);
+    ExpectDrained(session);
     // The evaluation was authorized before stop, so the owner backs up when
     // it returns. The waiters would select below the child and cancel.
     EXPECT_EQ(session.metrics().visits_admitted.load(), 4u);
@@ -1085,71 +1046,73 @@ TEST(Lc5SearchTest, BlockedBackendStopAndAbortDrainReservations) {
     // Evaluations are not stored; only evicted nodes are.
     EXPECT_EQ(store.stored, 0u);
     // The setup install plus the owner's late backup.
-    const auto root_node = graph.SnapshotNode(root.key);
-    EXPECT_EQ(root_node->stats.visits, 2u);
-    EXPECT_EQ(TriedAt(*root_node, 0).stats.visits, 1u);
-    EXPECT_EQ(TriedAt(*root_node, 0).in_flight, 0u);
+    const RootStats root_stats = engine->GetRootStats(root.key);
+    EXPECT_EQ(root_stats.visits, 2u);
+    EXPECT_EQ(root_stats.best_edge_visits, 1u);
     if (abort) {
       EXPECT_TRUE(responder.bestmoves.empty());
-      EXPECT_TRUE(std::none_of(responder.thinking.begin(),
-                               responder.thinking.end(),
-                               [](const ThinkingInfo& info) {
-                                 return info.comment.ends_with(" final");
-                               }));
+      EXPECT_TRUE(
+          absl::c_none_of(responder.thinking, [](const ThinkingInfo& info) {
+            return info.comment.ends_with(" final");
+          }));
     } else {
       ExpectFinalOutput(responder, 1);
     }
+    // Every reservation was released, so both nodes can be evicted.
+    Metrics evict_metrics;
+    EXPECT_EQ(engine->EvictToStore(engine->GetGraphSize(), NodeKey{~0ull},
+                                   evict_metrics),
+              2u);
   }
 }
 
 TEST(Lc5SearchTest, SavedGraphRestoresWithStatisticsInFreshGraph) {
   ControlledBackend backend;
   const auto root = Origin();
-  PolicyEngine<PuctAveraging> saved_engine(TestParams());
+  auto saved_engine = MakeTestEngine();
+  auto& saved_store = InstallStore<RecordingStore>(*saved_engine);
   {
-    auto& saved_store = InstallStore<RecordingStore>(saved_engine);
     RecordingResponder responder;
-    SearchSession session(&saved_engine, &backend, &responder, TestSettings(),
-                          TestTimeManagement(), root, GoParams{.nodes = 3},
+    SearchSession session(saved_engine.get(), &backend, &responder,
+                          TestSettings(), TestTimeManagement(), root,
+                          GoParams{.nodes = 3},
                           std::chrono::steady_clock::now());
     session.Start();
     session.Wait();
-    ExpectDrained(session, saved_engine.graph());
+    ExpectDrained(session);
     EXPECT_EQ(saved_store.stored, 0u);
   }
+  const RootStats saved = saved_engine->GetRootStats(root.key);
+  ASSERT_EQ(saved.visits, 3u);
+  const size_t saved_size = saved_engine->GetGraphSize();
+  Metrics evict_metrics;
+  ASSERT_EQ(
+      saved_engine->EvictToStore(saved_size, NodeKey{~0ull}, evict_metrics),
+      saved_size);
+
   // A fresh graph restores the root with its statistics instead of
   // evaluating it, and the new visit goes below it.
-  PolicyEngine<PuctAveraging> engine(TestParams());
-  auto& graph = engine.graph();
-  auto& store = InstallStore<RecordingStore>(engine);
-  SeedStore(saved_engine.graph(), store);
-  EXPECT_EQ(store.entries.size(), saved_engine.graph().Size());
-  const auto saved = *saved_engine.graph().SnapshotNode(root.key);
-  ASSERT_EQ(saved.stats.visits, 3u);
+  auto engine = MakeTestEngine();
+  auto& store = InstallStore<RecordingStore>(*engine);
+  store.entries = saved_store.entries;
+  EXPECT_EQ(store.entries.size(), saved_size);
   const size_t evaluated = backend.inputs.load();
 
   RecordingResponder responder;
-  SearchSession session(&engine, &backend, &responder, TestSettings(),
+  SearchSession session(engine.get(), &backend, &responder, TestSettings(),
                         TestTimeManagement(), root, GoParams{.nodes = 1},
                         std::chrono::steady_clock::now());
   session.Start();
   session.Wait();
-  ExpectDrained(session, graph);
+  ExpectDrained(session);
   ExpectFinalOutput(responder, 1);
   EXPECT_GE(session.metrics().node_store_hits.load(), 1u);
   EXPECT_GE(session.metrics().nodes_restored.load(), 1u);
   EXPECT_EQ(session.metrics().restores_rejected.load(), 0u);
-  const auto node = graph.SnapshotNode(root.key);
-  ASSERT_TRUE(node);
-  EXPECT_EQ(node->stats.visits, saved.stats.visits + 1);
-  ASSERT_EQ(node->edges.size(), saved.edges.size());
-  for (size_t i = 0; i < node->edges.size(); ++i) {
-    EXPECT_EQ(node->edges[i].move, saved.edges[i].move);
-    EXPECT_EQ(node->edges[i].prior, saved.edges[i].prior);
-  }
-  uint64_t edge_visits = 0;
-  for (const auto& tried : node->tried) edge_visits += tried.stats.visits;
-  EXPECT_EQ(edge_visits, node->stats.visits - 1);
+  const RootStats stats = engine->GetRootStats(root.key);
+  ASSERT_TRUE(stats.materialized);
+  EXPECT_EQ(stats.visits, saved.visits + 1);
+  EXPECT_EQ(stats.edges, saved.edges);
   // Saved nodes are restored too; the visit ends at the first node that was
   // never materialized, which is the only new evaluation.
   EXPECT_EQ(backend.inputs.load(), evaluated + 1);
@@ -1159,14 +1122,13 @@ TEST(Lc5SearchTest, RootBootstrapFlushesDependencyWithoutWaitingForTimer) {
   // A positive one-minute delay cannot be the reason this bootstrap flushes.
   for (const int delay : {0, 60000}) {
     SCOPED_TRACE(delay);
-    PolicyEngine<PuctAveraging> engine(TestParams());
-    auto& graph = engine.graph();
+    auto engine = MakeTestEngine();
     ControlledBackend backend(ControlledBackend::Cache::kNone, true);
     RecordingResponder responder;
     const auto root = Origin();
     auto settings = TestSettings(4);
     settings.max_batch_delay_ms = delay;
-    SearchSession session(&engine, &backend, &responder, settings,
+    SearchSession session(engine.get(), &backend, &responder, settings,
                           TestTimeManagement(), root, GoParams{.nodes = 1},
                           std::chrono::steady_clock::now());
     session.Start();
@@ -1185,7 +1147,7 @@ TEST(Lc5SearchTest, RootBootstrapFlushesDependencyWithoutWaitingForTimer) {
     backend.Release();
     session.Wait();
     ASSERT_TRUE(entered) << "Root bootstrap depended on the collection timer";
-    ExpectDrained(session, graph);
+    ExpectDrained(session);
     ExpectFinalOutput(responder, 1);
     EXPECT_EQ(backend.batch_sizes, (std::vector<size_t>{1}));
   }
@@ -1194,17 +1156,16 @@ TEST(Lc5SearchTest, RootBootstrapFlushesDependencyWithoutWaitingForTimer) {
 TEST(Lc5SearchTest, CollectionFlushesWhileAnotherWorkerIsBlockedInStore) {
   for (const int delay : {0, 1}) {
     SCOPED_TRACE(delay);
-    PolicyEngine<PuctAveraging> engine(TestParams());
-    auto& graph = engine.graph();
+    auto engine = MakeTestEngine();
     // First load misses; the other worker's load remains executing. With a
     // positive delay it prevents dependency-starvation detection, so the
     // collector must actually time out. Zero must flush without that timer.
-    auto& store = InstallStore<BlockingStore>(engine, 2, false);
+    auto& store = InstallStore<BlockingStore>(*engine, 2, false);
     ControlledBackend backend(ControlledBackend::Cache::kNone, true);
     RecordingResponder responder;
     const auto root = Origin();
     const auto moves = root.history.Last().GetBoard().GenerateLegalMoves();
-    graph.InsertNode(
+    engine->CompleteMaterialization(
         root.key, {.moves = {moves[0], moves[1]}, .priors = {0.5f, 0.5f}});
     auto first = root;
     first.history.Append(moves[0]);
@@ -1214,7 +1175,7 @@ TEST(Lc5SearchTest, CollectionFlushesWhileAnotherWorkerIsBlockedInStore) {
     second.key = MakeNodeKey(second.history, 7);
     auto settings = TestSettings(2, 2);
     settings.max_batch_delay_ms = delay;
-    SearchSession session(&engine, &backend, &responder, settings,
+    SearchSession session(engine.get(), &backend, &responder, settings,
                           TestTimeManagement(), root, GoParams{.nodes = 2},
                           std::chrono::steady_clock::now());
     ASSERT_TRUE(SearchSessionTestPeer::AdmitVisit(session, first));
@@ -1242,7 +1203,7 @@ TEST(Lc5SearchTest, CollectionFlushesWhileAnotherWorkerIsBlockedInStore) {
     ASSERT_TRUE(computing)
         << "Collection depended on the blocked store returning";
     ASSERT_TRUE(responding);
-    ExpectDrained(session, graph);
+    ExpectDrained(session);
     ExpectFinalOutput(responder, 1);
     // The computed evaluation backs up; the other store miss is cancelled.
     EXPECT_EQ(session.metrics().visits_completed.load(), 1u);
@@ -1254,9 +1215,8 @@ TEST(Lc5SearchTest, CollectionFlushesWhileAnotherWorkerIsBlockedInStore) {
 }
 
 TEST(Lc5SearchTest, PositiveDelayCollectsAnotherWorkersStoreMissIntoSameBatch) {
-  PolicyEngine<PuctAveraging> engine(TestParams());
-  auto& graph = engine.graph();
-  auto& store = InstallStore<BlockingStore>(engine, 2, false);
+  auto engine = MakeTestEngine();
+  auto& store = InstallStore<BlockingStore>(*engine, 2, false);
   ControlledBackend backend(ControlledBackend::Cache::kNone, true);
   RecordingResponder responder;
   const auto root = Origin();
@@ -1266,7 +1226,7 @@ TEST(Lc5SearchTest, PositiveDelayCollectsAnotherWorkersStoreMissIntoSameBatch) {
   auto settings = TestSettings(2, 2);
   settings.minibatch_size = 2;
   settings.max_batch_delay_ms = 60000;
-  SearchSession session(&engine, &backend, &responder, settings,
+  SearchSession session(engine.get(), &backend, &responder, settings,
                         TestTimeManagement(), root, GoParams{.nodes = 2},
                         std::chrono::steady_clock::now());
   ASSERT_TRUE(SearchSessionTestPeer::AdmitVisit(session, root));
@@ -1286,7 +1246,7 @@ TEST(Lc5SearchTest, PositiveDelayCollectsAnotherWorkersStoreMissIntoSameBatch) {
   ASSERT_TRUE(loading);
   ASSERT_TRUE(first_input);
   ASSERT_TRUE(computing);
-  ExpectDrained(session, graph);
+  ExpectDrained(session);
   ExpectFinalOutput(responder, 2);
   EXPECT_EQ(backend.batch_sizes, (std::vector<size_t>{2}));
   EXPECT_EQ(session.metrics().evaluation_batches.load(), 1u);
@@ -1308,23 +1268,23 @@ TEST(Lc5SearchTest, MultiworkerMixedCacheResultsRespectBatchAndItemLimits) {
     SCOPED_TRACE(test.batch_size);
     for (const int delay : {0, 10}) {
       SCOPED_TRACE(delay);
-      PolicyEngine<PuctAveraging> engine(TestParams());
-      auto& graph = engine.graph();
+      auto engine = MakeTestEngine();
       ControlledBackend backend(ControlledBackend::Cache::kAlternating, true,
                                 test.batch_size, test.evaluators);
       RecordingResponder responder;
       const auto root = Origin();
       const auto moves = root.history.Last().GetBoard().GenerateLegalMoves();
       ASSERT_EQ(moves.size(), 20u);
-      graph.InsertNode(
+      engine->CompleteMaterialization(
           root.key, {.moves = {moves[0], moves[1]}, .priors = {0.5f, 0.5f}});
       auto settings = TestSettings(4, test.capacity);
       settings.eval_threads = test.evaluators;
       settings.minibatch_size = test.batch_size;
       settings.max_batch_delay_ms = delay;
-      SearchSession session(
-          &engine, &backend, &responder, settings, TestTimeManagement(), root,
-          GoParams{.nodes = test.capacity}, std::chrono::steady_clock::now());
+      SearchSession session(engine.get(), &backend, &responder, settings,
+                            TestTimeManagement(), root,
+                            GoParams{.nodes = test.capacity},
+                            std::chrono::steady_clock::now());
       std::vector<VisitOrigin> origins;
       // Pre-admission gives every worker independent leaves before submission.
       // Target 4 stresses the in-flight limits with one-item jobs; targets
@@ -1354,7 +1314,7 @@ TEST(Lc5SearchTest, MultiworkerMixedCacheResultsRespectBatchAndItemLimits) {
       backend.Release();
       session.Wait();
       ASSERT_TRUE(computing);
-      ExpectDrained(session, graph);
+      ExpectDrained(session);
       ExpectFinalOutput(responder, 1 + test.capacity);
       EXPECT_EQ(backend.evaluator_ids.size(),
                 static_cast<size_t>(test.evaluators));
@@ -1366,7 +1326,7 @@ TEST(Lc5SearchTest, MultiworkerMixedCacheResultsRespectBatchAndItemLimits) {
       EXPECT_EQ(session.metrics().visits_cancelled.load(), 0u);
       EXPECT_LE(session.metrics().active_visits_high_water.load(),
                 test.capacity);
-      EXPECT_EQ(graph.Size(), 1u + test.capacity);
+      EXPECT_EQ(engine->GetGraphSize(), 1u + test.capacity);
       const size_t job_size = (test.batch_size + 3) / 4;
       const size_t max_jobs =
           std::min<size_t>(16, 2 * test.batch_size / job_size);
@@ -1382,14 +1342,17 @@ TEST(Lc5SearchTest, MultiworkerMixedCacheResultsRespectBatchAndItemLimits) {
       }
       EXPECT_EQ(evaluated, test.capacity / 2);
       for (const auto& origin : origins) {
-        const auto node = graph.SnapshotNode(origin.key);
-        ASSERT_TRUE(node);
-        EXPECT_EQ(node->stats.visits, 1u);
-        EXPECT_FLOAT_EQ(node->stats.Q(), 0.25f);
-        EXPECT_FLOAT_EQ(node->stats.D(), 0.5f);
-        EXPECT_FLOAT_EQ(node->stats.M(), 3.0f);
-        for (const auto& edge : node->edges)
-          EXPECT_EQ(edge.prior, PackedPrior(1.0f / node->edges.size()));
+        const RootStats stats = engine->GetRootStats(origin.key);
+        ASSERT_TRUE(stats.materialized);
+        EXPECT_EQ(stats.visits, 1u);
+        EXPECT_EQ(stats.edges,
+                  origin.history.Last().GetBoard().GenerateLegalMoves().size());
+        ThinkingInfo info;
+        engine->FillThinkingInfo(origin, info);
+        ASSERT_TRUE(info.score.has_value());
+        EXPECT_EQ(*info.score, CentipawnsFromQ(0.25f));
+        ASSERT_TRUE(info.wdl.has_value());
+        EXPECT_EQ(info.wdl->d, 500);
       }
     }
   }
@@ -1400,30 +1363,33 @@ TEST(Lc5SearchTest, BlockedStoreLoadsDrainAfterStopOrAbort) {
     for (const bool abort : {false, true}) {
       SCOPED_TRACE(hit);
       SCOPED_TRACE(abort);
-      PolicyEngine<PuctAveraging> engine(TestParams());
-      auto& graph = engine.graph();
-      auto& store = InstallStore<BlockingStore>(engine);
+      auto engine = MakeTestEngine();
+      auto& store = InstallStore<BlockingStore>(*engine);
       ControlledBackend backend(ControlledBackend::Cache::kAll);
       RecordingResponder responder;
       const auto root = Origin();
       const auto move = root.history.Last().GetBoard().GenerateLegalMoves()[0];
-      graph.InsertNode(root.key, {.moves = {move}, .priors = {1.0f}});
+      engine->CompleteMaterialization(root.key,
+                                      {.moves = {move}, .priors = {1.0f}});
       auto child = root;
       child.history.Append(move);
       child.key = MakeNodeKey(child.history, 7);
       if (hit) {
-        // Uniform priors, so edge order is by move encoding.
+        auto donor = MakeTestEngine();
+        auto& donor_store = InstallStore<RecordingStore>(*donor);
         auto legal = child.history.Last().GetBoard().GenerateLegalMoves();
-        std::ranges::sort(legal, {}, &Move::raw_data);
-        Node<PuctAveraging> stored{
-            .stats = {.visits = 1, .q = 0.75f, .d = 0.25f, .m = 7.0f}};
-        for (const Move legal_move : legal) {
-          stored.edges.push_back(
-              {.move = legal_move, .prior = 1.0f / legal.size()});
-        }
-        store.recording.entries.emplace(child.key, SerializeNode(stored));
+        absl::c_sort(
+            legal, [](Move a, Move b) { return a.raw_data() < b.raw_data(); });
+        donor->CompleteMaterialization(
+            child.key,
+            {.leaf = {.q = 0.75f, .d = 0.25f, .m = 7.0f},
+             .moves = {legal.begin(), legal.end()},
+             .priors = std::vector<float>(legal.size(), 1.0f / legal.size())});
+        Metrics evict_metrics;
+        ASSERT_EQ(donor->EvictToStore(1, root.key, evict_metrics), 1u);
+        store.recording.entries = donor_store.entries;
       }
-      SearchSession session(&engine, &backend, &responder, TestSettings(),
+      SearchSession session(engine.get(), &backend, &responder, TestSettings(),
                             TestTimeManagement(), root,
                             GoParams{.nodes = 4, .infinite = true},
                             std::chrono::steady_clock::now());
@@ -1432,7 +1398,6 @@ TEST(Lc5SearchTest, BlockedStoreLoadsDrainAfterStopOrAbort) {
       session.Start();
       const bool loading = store.load.WaitForArrival();
       if (loading) {
-        EXPECT_EQ(TriedAt(*graph.SnapshotNode(root.key), 0).in_flight, 4u);
         EXPECT_EQ(session.metrics().materialization_waiters.load(), 3u);
         EXPECT_EQ(backend.inputs.load(), 0u);
       }
@@ -1448,7 +1413,7 @@ TEST(Lc5SearchTest, BlockedStoreLoadsDrainAfterStopOrAbort) {
       store.Release();
       session.Wait();
       ASSERT_TRUE(loading);
-      ExpectDrained(session, graph);
+      ExpectDrained(session);
       // A load already running at stop completes: on a hit, the node is
       // restored, but a restored node has nothing new to back up, so the
       // owner and the waiters all cancel. A miss is never evaluated.
@@ -1462,22 +1427,24 @@ TEST(Lc5SearchTest, BlockedStoreLoadsDrainAfterStopOrAbort) {
       EXPECT_EQ(backend.inputs.load(), 0u);
       EXPECT_EQ(backend.computes.load(), 0u);
       EXPECT_EQ(store.recording.entries.contains(child.key), hit);
-      EXPECT_EQ(graph.SnapshotNode(child.key).has_value(), hit);
+      EXPECT_EQ(engine->ContainsNode(child.key), hit);
       if (hit) {
-        const auto restored = graph.SnapshotNode(child.key);
-        EXPECT_EQ(restored->stats.visits, 1u);
-        EXPECT_FLOAT_EQ(restored->stats.Q(), 0.75f);
+        EXPECT_EQ(engine->GetRootStats(child.key).visits, 1u);
+        ThinkingInfo info;
+        engine->FillThinkingInfo(child, info);
+        ASSERT_TRUE(info.score.has_value());
+        EXPECT_EQ(*info.score, CentipawnsFromQ(0.75f));
       }
       // Only the setup install.
-      EXPECT_EQ(graph.SnapshotNode(root.key)->stats.visits, 1u);
-      EXPECT_EQ(TriedAt(*graph.SnapshotNode(root.key), 0).stats.visits, 0u);
+      const RootStats root_stats = engine->GetRootStats(root.key);
+      EXPECT_EQ(root_stats.visits, 1u);
+      EXPECT_EQ(root_stats.best_edge_visits, 0u);
       if (abort) {
         EXPECT_TRUE(responder.bestmoves.empty());
-        EXPECT_TRUE(std::none_of(responder.thinking.begin(),
-                                 responder.thinking.end(),
-                                 [](const ThinkingInfo& info) {
-                                   return info.comment.ends_with(" final");
-                                 }));
+        EXPECT_TRUE(
+            absl::c_none_of(responder.thinking, [](const ThinkingInfo& info) {
+              return info.comment.ends_with(" final");
+            }));
       } else {
         ExpectFinalOutput(responder, 1);
       }
@@ -1503,17 +1470,17 @@ std::vector<VisitOrigin> AdmitChildren(SearchSession& session,
 TEST(Lc5SearchTest, QueuedBacklogCannotComputeAgainAfterStop) {
   for (const int evaluators : {1, 3}) {
     SCOPED_TRACE(evaluators);
-    PolicyEngine<PuctAveraging> engine(TestParams());
-    auto& graph = engine.graph();
+    auto engine = MakeTestEngine();
     ControlledBackend backend(ControlledBackend::Cache::kNone, true, 4,
                               evaluators);
     RecordingResponder responder;
     const auto root = Origin();
     const auto moves = root.history.Last().GetBoard().GenerateLegalMoves();
-    graph.InsertNode(root.key, {.moves = {moves[0]}, .priors = {1.0f}});
+    engine->CompleteMaterialization(root.key,
+                                    {.moves = {moves[0]}, .priors = {1.0f}});
     auto settings = TestSettings(4, 20);
     settings.eval_threads = evaluators;
-    SearchSession session(&engine, &backend, &responder, settings,
+    SearchSession session(engine.get(), &backend, &responder, settings,
                           TestTimeManagement(), root, GoParams{.nodes = 20},
                           std::chrono::steady_clock::now());
     AdmitChildren(session, root, 20);
@@ -1534,28 +1501,28 @@ TEST(Lc5SearchTest, QueuedBacklogCannotComputeAgainAfterStop) {
     for (const auto& [id, calls] : backend.calls_by_evaluator)
       EXPECT_EQ(calls, 1u);
     EXPECT_EQ(backend.inputs.load(), 4u * evaluators);
-    EXPECT_EQ(graph.Size(), 1u + 4u * evaluators);
+    EXPECT_EQ(engine->GetGraphSize(), 1u + 4u * evaluators);
     // Authorized batches back up their visits; the queued backlog cancels.
     EXPECT_EQ(session.metrics().visits_completed.load(), 4u * evaluators);
-    ExpectDrained(session, graph);
+    ExpectDrained(session);
     ExpectLegalBestmove(responder, root);
   }
 }
 
 TEST(Lc5SearchTest, AuthorizedEvaluationsBackUpToRootAfterStop) {
-  PolicyEngine<PuctAveraging> engine(TestParams());
-  auto& graph = engine.graph();
+  auto engine = MakeTestEngine();
   ControlledBackend backend(ControlledBackend::Cache::kNone, true);
   RecordingResponder responder;
   const auto root = Origin();
   // Uniform priors, so edge order is by move encoding.
   auto legal = root.history.Last().GetBoard().GenerateLegalMoves();
-  std::ranges::sort(legal, {}, &Move::raw_data);
-  graph.InsertNode(
+  absl::c_sort(legal,
+               [](Move a, Move b) { return a.raw_data() < b.raw_data(); });
+  engine->CompleteMaterialization(
       root.key,
       {.moves = {legal.begin(), legal.end()},
        .priors = std::vector<float>(legal.size(), 1.0f / legal.size())});
-  SearchSession session(&engine, &backend, &responder, TestSettings(4, 20),
+  SearchSession session(engine.get(), &backend, &responder, TestSettings(4, 20),
                         TestTimeManagement(), root, GoParams{.nodes = 20},
                         std::chrono::steady_clock::now());
   for (int i = 0; i < 20; ++i)
@@ -1571,32 +1538,30 @@ TEST(Lc5SearchTest, AuthorizedEvaluationsBackUpToRootAfterStop) {
   session.Wait();
   ASSERT_TRUE(computing);
   ASSERT_TRUE(responding);
-  ExpectDrained(session, graph);
+  ExpectDrained(session);
   EXPECT_EQ(backend.computes.load(), 1u);
   EXPECT_EQ(backend.inputs.load(), 4u);
   // Each computed materialization's owner backs up through the root after stop.
   EXPECT_EQ(session.metrics().visits_completed.load(), 4u);
-  const auto node = graph.SnapshotNode(root.key);
-  ASSERT_TRUE(node);
-  EXPECT_EQ(node->stats.visits, 5u);
-  uint64_t edge_visits = 0;
-  for (const auto& tried : node->tried) edge_visits += tried.stats.visits;
-  EXPECT_EQ(edge_visits, 4u);
+  const RootStats stats = engine->GetRootStats(root.key);
+  ASSERT_TRUE(stats.materialized);
+  EXPECT_EQ(stats.visits, 5u);
+  EXPECT_GE(stats.best_edge_visits, 1u);
   ExpectFinalOutput(responder, 21);
 }
 
 TEST(Lc5SearchTest, StopDuringAddInputKeepsOnlyImmediateResults) {
-  PolicyEngine<PuctAveraging> engine(TestParams());
-  auto& graph = engine.graph();
+  auto engine = MakeTestEngine();
   ControlledBackend backend(ControlledBackend::Cache::kAlternating, true, 8);
   backend.blocked_input = 2;
   RecordingResponder responder;
   const auto root = Origin();
   const auto moves = root.history.Last().GetBoard().GenerateLegalMoves();
-  graph.InsertNode(root.key, {.moves = {moves[0]}, .priors = {1.0f}});
+  engine->CompleteMaterialization(root.key,
+                                  {.moves = {moves[0]}, .priors = {1.0f}});
   auto settings = TestSettings(1, 4);
   settings.minibatch_size = 8;
-  SearchSession session(&engine, &backend, &responder, settings,
+  SearchSession session(engine.get(), &backend, &responder, settings,
                         TestTimeManagement(), root, GoParams{.nodes = 4},
                         std::chrono::steady_clock::now());
   const auto origins = AdmitChildren(session, root, 4);
@@ -1613,32 +1578,33 @@ TEST(Lc5SearchTest, StopDuringAddInputKeepsOnlyImmediateResults) {
   ASSERT_TRUE(responding);
   EXPECT_EQ(backend.inputs.load(), 2u);
   EXPECT_EQ(backend.computes.load(), 0u);
-  EXPECT_EQ(graph.Size(), 2u);
-  auto hit = graph.SnapshotNode(origins[0].key);
-  ASSERT_TRUE(hit);
+  EXPECT_EQ(engine->GetGraphSize(), 2u);
+  const RootStats hit = engine->GetRootStats(origins[0].key);
+  ASSERT_TRUE(hit.materialized);
   // The install counted the leaf; its owner completes with nothing above it.
-  EXPECT_EQ(hit->stats.visits, 1u);
+  EXPECT_EQ(hit.visits, 1u);
   EXPECT_EQ(session.metrics().visits_completed.load(), 1u);
   EXPECT_EQ(session.metrics().visits_cancelled.load(), 3u);
-  EXPECT_FLOAT_EQ(hit->stats.Q(), backend.q);
-  for (const auto& edge : hit->edges)
-    EXPECT_EQ(edge.prior, PackedPrior(1.0f / hit->edges.size()));
+  ThinkingInfo info;
+  engine->FillThinkingInfo(origins[0], info);
+  ASSERT_TRUE(info.score.has_value());
+  EXPECT_EQ(*info.score, CentipawnsFromQ(backend.q));
   for (size_t i = 1; i < origins.size(); ++i)
-    EXPECT_FALSE(graph.SnapshotNode(origins[i].key));
-  ExpectDrained(session, graph);
+    EXPECT_FALSE(engine->ContainsNode(origins[i].key));
+  ExpectDrained(session);
 }
 
 TEST(Lc5SearchTest, NonfittingJobStaysQueuedAndIsCancelledAfterStop) {
-  PolicyEngine<PuctAveraging> engine(TestParams());
-  auto& graph = engine.graph();
+  auto engine = MakeTestEngine();
   ControlledBackend backend(ControlledBackend::Cache::kNone, true, 5);
   RecordingResponder responder;
   const auto root = Origin();
   const auto moves = root.history.Last().GetBoard().GenerateLegalMoves();
-  graph.InsertNode(root.key, {.moves = {moves[0]}, .priors = {1.0f}});
+  engine->CompleteMaterialization(root.key,
+                                  {.moves = {moves[0]}, .priors = {1.0f}});
   auto settings = TestSettings(1, 6);
   settings.minibatch_size = 5;
-  SearchSession session(&engine, &backend, &responder, settings,
+  SearchSession session(engine.get(), &backend, &responder, settings,
                         TestTimeManagement(), root, GoParams{.nodes = 6},
                         std::chrono::steady_clock::now());
   const auto origins = AdmitChildren(session, root, 6);
@@ -1655,19 +1621,18 @@ TEST(Lc5SearchTest, NonfittingJobStaysQueuedAndIsCancelledAfterStop) {
   EXPECT_EQ(backend.batch_sizes, (std::vector<size_t>{4}));
   EXPECT_EQ(backend.inputs.load(), 4u);
   EXPECT_EQ(backend.computes.load(), 1u);
-  EXPECT_EQ(graph.Size(), 5u);
+  EXPECT_EQ(engine->GetGraphSize(), 5u);
   for (size_t i = 4; i < origins.size(); ++i)
-    EXPECT_FALSE(graph.SnapshotNode(origins[i].key));
-  ExpectDrained(session, graph);
+    EXPECT_FALSE(engine->ContainsNode(origins[i].key));
+  ExpectDrained(session);
 }
 
 TEST(Lc5SearchTest, AbortOverridesRepeatedStopBeforeCommitment) {
-  PolicyEngine<PuctAveraging> engine(TestParams());
-  auto& graph = engine.graph();
+  auto engine = MakeTestEngine();
   ControlledBackend backend;
   RecordingResponder responder;
   const auto root = Origin();
-  SearchSession session(&engine, &backend, &responder, TestSettings(),
+  SearchSession session(engine.get(), &backend, &responder, TestSettings(),
                         TestTimeManagement(), root, GoParams{.nodes = 4},
                         std::chrono::steady_clock::now());
   AdmitChildren(session, root, 4);
@@ -1678,30 +1643,29 @@ TEST(Lc5SearchTest, AbortOverridesRepeatedStopBeforeCommitment) {
   session.Abort();
   session.Start();
   session.Wait();
-  ExpectDrained(session, graph);
+  ExpectDrained(session);
   EXPECT_TRUE(responder.bestmoves.empty());
   EXPECT_TRUE(responder.thinking.empty());
   EXPECT_EQ(backend.inputs.load(), 0u);
   EXPECT_EQ(backend.computes.load(), 0u);
-  EXPECT_EQ(graph.Size(), 0u);
+  EXPECT_EQ(engine->GetGraphSize(), 0u);
 }
 
 TEST(Lc5SearchTest, BlockedEvictionDoesNotDelayPartialBatch) {
-  PolicyEngine<PuctAveraging> engine(TestParams());
-  auto& graph = engine.graph();
-  auto& store = InstallStore<BlockingStore>(engine);
+  auto engine = MakeTestEngine();
+  auto& store = InstallStore<BlockingStore>(*engine);
   ControlledBackend backend(ControlledBackend::Cache::kNone, true);
   RecordingResponder responder;
   const auto root = Origin();
   const auto legal = root.history.Last().GetBoard().GenerateLegalMoves();
   // As in RespondsBeforeBlockedEvictionDrains: the sibling is evicted while
   // the one visit evaluates the first edge's child.
-  graph.InsertNode(
+  engine->CompleteMaterialization(
       root.key, {.moves = {legal[0], legal[1]}, .priors = {0.9f, 0.1f}});
   auto sibling = root;
   sibling.history.Append(legal[1]);
   sibling.key = MakeNodeKey(sibling.history, 7);
-  graph.InsertNode(
+  engine->CompleteMaterialization(
       sibling.key,
       {.leaf = {.q = 0.5f, .d = 0.0f, .m = 0.0f}, .moves = {}, .priors = {}});
   auto settings = TestSettings(1, 1);
@@ -1709,7 +1673,7 @@ TEST(Lc5SearchTest, BlockedEvictionDoesNotDelayPartialBatch) {
   settings.eval_threads = 2;
   // The one-item batch can only flush on starvation, not at the deadline.
   settings.max_batch_delay_ms = 60'000;
-  SearchSession session(&engine, &backend, &responder, settings,
+  SearchSession session(engine.get(), &backend, &responder, settings,
                         TestTimeManagement(), root, GoParams{.nodes = 1},
                         std::chrono::steady_clock::now());
   session.Start();
@@ -1723,27 +1687,26 @@ TEST(Lc5SearchTest, BlockedEvictionDoesNotDelayPartialBatch) {
   session.Wait();
   ASSERT_TRUE(persisting);
   EXPECT_TRUE(computing);
-  ExpectDrained(session, graph);
+  ExpectDrained(session);
   EXPECT_EQ(session.metrics().partial_starvation_flushes.load(), 1u);
   EXPECT_EQ(session.metrics().partial_timeout_flushes.load(), 0u);
 }
 
 TEST(Lc5SearchTest, RespondsBeforeBlockedEvictionDrains) {
-  PolicyEngine<PuctAveraging> engine(TestParams());
-  auto& graph = engine.graph();
-  auto& store = InstallStore<BlockingStore>(engine, 0);
+  auto engine = MakeTestEngine();
+  auto& store = InstallStore<BlockingStore>(*engine, 0);
   ControlledBackend backend(ControlledBackend::Cache::kNone, true);
   RecordingResponder responder;
   const auto root = Origin();
   const auto legal = root.history.Last().GetBoard().GenerateLegalMoves();
   // The one visit takes the first edge and blocks in the backend; the
   // sibling below the second edge is the node to evict.
-  graph.InsertNode(
+  engine->CompleteMaterialization(
       root.key, {.moves = {legal[0], legal[1]}, .priors = {0.9f, 0.1f}});
   auto sibling = root;
   sibling.history.Append(legal[1]);
   sibling.key = MakeNodeKey(sibling.history, 7);
-  graph.InsertNode(
+  engine->CompleteMaterialization(
       sibling.key,
       {.leaf = {.q = 0.5f, .d = 0.0f, .m = 0.0f}, .moves = {}, .priors = {}});
   auto settings = TestSettings(1, 1);
@@ -1751,7 +1714,7 @@ TEST(Lc5SearchTest, RespondsBeforeBlockedEvictionDrains) {
   // Store threads come one per eval thread. With only one, the visit's store
   // load could queue behind the blocked eviction and never reach the backend.
   settings.eval_threads = 2;
-  SearchSession session(&engine, &backend, &responder, settings,
+  SearchSession session(engine.get(), &backend, &responder, settings,
                         TestTimeManagement(), root, GoParams{.nodes = 1},
                         std::chrono::steady_clock::now());
   session.Start();
@@ -1766,32 +1729,31 @@ TEST(Lc5SearchTest, RespondsBeforeBlockedEvictionDrains) {
   ASSERT_TRUE(persisting);
   ASSERT_TRUE(computing);
   ASSERT_TRUE(responding);
-  ExpectDrained(session, graph);
+  ExpectDrained(session);
   ExpectFinalOutput(responder, 1);
   // Stored before it was erased.
   EXPECT_EQ(session.metrics().nodes_evicted.load(), 1u);
   EXPECT_TRUE(store.recording.entries.contains(sibling.key));
-  EXPECT_FALSE(graph.SnapshotNode(sibling.key));
-  EXPECT_TRUE(graph.SnapshotNode(root.key));
+  EXPECT_FALSE(engine->ContainsNode(sibling.key));
+  EXPECT_TRUE(engine->ContainsNode(root.key));
 }
 
 TEST(Lc5SearchTest, EvictionKeepsGraphSmallAndLosesNoVisits) {
   for (const int threads : {1, 3}) {
     SCOPED_TRACE(threads);
-    PolicyEngine<PuctAveraging> engine(TestParams());
-    auto& graph = engine.graph();
-    auto& store = InstallStore<MemoryNodeStore>(engine);
+    auto engine = MakeTestEngine();
+    auto& store = InstallStore<MemoryNodeStore>(*engine);
     ControlledBackend backend;
     RecordingResponder responder;
     const auto root = Origin();
     auto settings = TestSettings(threads, 8);
     settings.graph_node_limit = 32;
-    SearchSession session(&engine, &backend, &responder, settings,
+    SearchSession session(engine.get(), &backend, &responder, settings,
                           TestTimeManagement(), root, GoParams{.nodes = 3000},
                           std::chrono::steady_clock::now());
     session.Start();
     session.Wait();
-    ExpectDrained(session, graph);
+    ExpectDrained(session);
     ExpectFinalOutput(responder, 3000);
     const auto& m = session.metrics();
     EXPECT_EQ(m.visits_completed.load(), 3000u);
@@ -1799,38 +1761,35 @@ TEST(Lc5SearchTest, EvictionKeepsGraphSmallAndLosesNoVisits) {
     EXPECT_GT(m.nodes_restored.load(), 0u);
     EXPECT_EQ(m.restores_rejected.load(), 0u);
     // Every completed visit reached the root, which is never evicted.
-    const auto node = graph.SnapshotNode(root.key);
-    ASSERT_TRUE(node);
-    EXPECT_EQ(node->stats.visits, m.visits_completed.load());
-    uint64_t edge_visits = 0;
-    for (const auto& tried : node->tried) edge_visits += tried.stats.visits;
-    EXPECT_EQ(edge_visits, node->stats.visits - 1);
+    const RootStats stats = engine->GetRootStats(root.key);
+    ASSERT_TRUE(stats.materialized);
+    EXPECT_EQ(stats.visits, m.visits_completed.load());
+    EXPECT_GT(stats.best_edge_visits, 0u);
     // Far fewer nodes than visits stay in RAM; every evicted one is stored.
-    EXPECT_LT(graph.Size(), 3000u / 4);
+    EXPECT_LT(engine->GetGraphSize(), 3000u / 4);
     EXPECT_GE(store.Size(), m.nodes_evicted.load() - m.nodes_restored.load());
   }
 }
 
 TEST(Lc5SearchTest, SingleNodeSearchPlaysTopPriorMove) {
-  PolicyEngine<PuctAveraging> engine(TestParams());
-  auto& graph = engine.graph();
+  auto engine = MakeTestEngine();
   ControlledBackend backend;
   RecordingResponder responder;
   // Black to move, so the PV move is flipped back for UCI.
   const auto root =
       Origin("rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1");
-  SearchSession session(&engine, &backend, &responder, TestSettings(),
+  SearchSession session(engine.get(), &backend, &responder, TestSettings(),
                         TestTimeManagement(), root, GoParams{.nodes = 1},
                         std::chrono::steady_clock::now());
   session.Start();
   session.Wait();
-  ExpectDrained(session, graph);
+  ExpectDrained(session);
   ExpectFinalOutput(responder, 1);
-  const auto node = graph.SnapshotNode(root.key);
-  ASSERT_TRUE(node);
-  ASSERT_FALSE(node->edges.empty());
-  for (const auto& tried : node->tried) EXPECT_EQ(tried.stats.visits, 0u);
-  Move expected = node->edges[0].move;
+  const RootStats stats = engine->GetRootStats(root.key);
+  ASSERT_TRUE(stats.materialized);
+  ASSERT_GT(stats.edges, 0u);
+  EXPECT_EQ(stats.best_edge_visits, 0u);
+  Move expected = stats.best_move;
   expected.Flip();
   ASSERT_EQ(responder.thinking.back().pv.size(), 1u);
   EXPECT_EQ(responder.thinking.back().pv[0], expected);
@@ -1838,28 +1797,27 @@ TEST(Lc5SearchTest, SingleNodeSearchPlaysTopPriorMove) {
 }
 
 TEST(Lc5SearchTest, FreshRootStoppedBeforeStartStillEvaluatesRootOnce) {
-  PolicyEngine<PuctAveraging> engine(TestParams());
-  auto& graph = engine.graph();
+  auto engine = MakeTestEngine();
   ControlledBackend backend;
   RecordingResponder responder;
   const auto root = Origin();
-  SearchSession session(&engine, &backend, &responder, TestSettings(),
+  SearchSession session(engine.get(), &backend, &responder, TestSettings(),
                         TestTimeManagement(), root, GoParams{},
                         std::chrono::steady_clock::now());
   ASSERT_TRUE(SearchSessionTestPeer::AdmitVisit(session, root));
   session.Stop();
   session.Start();
   session.Wait();
-  ExpectDrained(session, graph);
+  ExpectDrained(session);
   ExpectFinalOutput(responder, 1);
   ExpectLegalBestmove(responder, root);
   EXPECT_EQ(backend.inputs.load(), 1u);
   EXPECT_EQ(backend.computes.load(), 1u);
-  EXPECT_EQ(graph.Size(), 1u);
-  const auto node = graph.SnapshotNode(root.key);
-  ASSERT_TRUE(node);
-  ASSERT_FALSE(node->edges.empty());
-  EXPECT_EQ(responder.bestmoves[0].bestmove, node->edges[0].move);
+  EXPECT_EQ(engine->GetGraphSize(), 1u);
+  const RootStats stats = engine->GetRootStats(root.key);
+  ASSERT_TRUE(stats.materialized);
+  ASSERT_GT(stats.edges, 0u);
+  EXPECT_EQ(responder.bestmoves[0].bestmove, stats.best_move);
 }
 
 TEST(Lc5SearchTest, EnginePreservesExplicitMovetimeAndInfinitePrecedence) {
@@ -1931,8 +1889,7 @@ TEST(Lc5SearchTest, EngineRetainsGraphAcrossSearchesAndResetsForNewGame) {
 }
 
 TEST(Lc5SearchTest, ThinkingInfoEmittedOnDepthSeldepthAndBestMoveChanges) {
-  PolicyEngine<PuctAveraging> engine(TestParams());
-  auto& graph = engine.graph();
+  auto engine = MakeTestEngine();
   ControlledBackend backend(ControlledBackend::Cache::kAll);
   RecordingResponder responder;
   const auto root = Origin();
@@ -1943,13 +1900,14 @@ TEST(Lc5SearchTest, ThinkingInfoEmittedOnDepthSeldepthAndBestMoveChanges) {
   // Equal priors break ties to m0 first, and keep m1 ahead once m0 gets one bad
   // evaluation instead of m0's higher prior reclaiming the lead before the
   // 10ms controller poll.
-  graph.InsertNode(root.key, {.moves = {m0, m1}, .priors = {0.5f, 0.5f}});
+  engine->CompleteMaterialization(root.key,
+                                  {.moves = {m0, m1}, .priors = {0.5f, 0.5f}});
 
   // Pause at input 2 before Fill() so visit 1's backup is reported first, then
   // switch q so visit 2 flips the root's best move well before the 1s timer.
   backend.q = 0.8f;
   backend.blocked_input = 2;
-  SearchSession session(&engine, &backend, &responder, TestSettings(1, 1),
+  SearchSession session(engine.get(), &backend, &responder, TestSettings(1, 1),
                         TestTimeManagement(), root, GoParams{.infinite = true},
                         std::chrono::steady_clock::now());
   session.Start();
@@ -1973,16 +1931,16 @@ TEST(Lc5SearchTest, ThinkingInfoEmittedOnDepthSeldepthAndBestMoveChanges) {
 
   session.Stop();
   session.Wait();
-  ExpectDrained(session, graph);
+  ExpectDrained(session);
   ASSERT_GE(responder.thinking.size(), 3u);
   EXPECT_GE(responder.thinking[0].depth, 0);
   EXPECT_GE(responder.thinking[0].seldepth, 1);
   EXPECT_EQ(responder.thinking[0].pv.front(), m0);
-  EXPECT_TRUE(std::any_of(responder.thinking.begin(),
-                          responder.thinking.end() - 1,
-                          [&](const ThinkingInfo& info) {
-                            return !info.pv.empty() && info.pv.front() == m1;
-                          }));
+  EXPECT_TRUE(absl::c_any_of(absl::MakeConstSpan(responder.thinking)
+                                 .subspan(0, responder.thinking.size() - 1),
+                             [&](const ThinkingInfo& info) {
+                               return !info.pv.empty() && info.pv.front() == m1;
+                             }));
   EXPECT_EQ(responder.bestmoves[0].bestmove, m1);
 }
 

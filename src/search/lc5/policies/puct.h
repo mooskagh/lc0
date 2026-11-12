@@ -36,13 +36,12 @@
 #include <cstdint>
 #include <optional>
 #include <span>
-#include <string_view>
 #include <tuple>
 
 #include "chess/callbacks.h"
-#include "search/lc5/graph/graph.h"
+#include "neural/backend.h"
+#include "search/lc5/graph/node.h"
 #include "search/lc5/graph/value.h"
-#include "search/lc5/policies/policy_engine.h"
 #include "utils/optionsdict.h"
 #include "utils/optionsparser.h"
 
@@ -93,10 +92,10 @@ ThinkingInfo::WDL WdlFromValue(float q, float d);
 int CentipawnsFromQ(float q);
 
 // PUCT selection, move choice, bounds and reporting over ValueStats nodes and
-// edges. `Self` supplies kName and ApplyMessage: how a message changes the node
-// and the edge it came through, and what the parent receives. Nodes and edges
-// keep value means and bounds, and the message is a value and bounds from the
-// side to move at the node.
+// edges. `Self` supplies kName and BackupThroughNode: how a backup updates the
+// node and the edge it came through, and what the parent receives. Nodes and
+// edges keep value means and bounds, and BackupValue holds a value and bounds
+// from the side to move at the node.
 template <typename Self>
 struct PuctPolicy {
   using Params = PuctParams;
@@ -105,26 +104,34 @@ struct PuctPolicy {
   // parent's.
   using NodeStats = ValueStats;
   using EdgeStats = ValueStats;
-  struct Message {
+  struct BackupValue {
     VisitValue value;
     GameResultBounds bounds = {};
   };
 
-  // Sent to seed a newly installed node and to start backprop from a leaf;
-  // `exact` (non-repetition terminals, proven nodes) sets proven bounds.
-  static Message MakeLeafMessage(const VisitValue& value, bool exact) {
+  // Seeds a newly materialized node's statistics and bounds from `eval`.
+  static void InitNodeStats(Node<Self>& node, const NodeEval& eval) {
+    node.stats.Add(eval.leaf);
+    if (IsExact(eval.terminal)) {
+      node.stats.bounds = GameResultBounds::Exact(eval.leaf.q, eval.leaf.m);
+    }
+  }
+
+  // Starts backprop from a leaf; `exact` (non-repetition terminals, proven
+  // nodes) sets proven bounds.
+  static BackupValue MakeLeafBackup(const VisitValue& value, bool exact) {
     return {value, exact ? GameResultBounds::Exact(value.q, value.m)
                          : GameResultBounds{}};
   }
   // Sent to the parent during backprop when skipping a node update (an
   // in-search repetition leaf, or a leaf already counted at install).
-  static Message MakeSkipMessage(const Message& message) {
-    return {message.value.Parent(), message.bounds.Parent()};
+  static BackupValue MakeSkipBackup(const BackupValue& backup) {
+    return {backup.value.Parent(), backup.bounds.Parent()};
   }
   // Sent to the parent during backprop when a node is missing from the graph
   // (evicted before backup): forwards the flipped value without bounds.
-  static Message MakeStaleMessage(const Message& message) {
-    return {message.value.Parent(), GameResultBounds{}};
+  static BackupValue MakeStaleBackup(const BackupValue& backup) {
+    return {backup.value.Parent(), GameResultBounds{}};
   }
 
   // The edge index to visit next; `node` is materialized, non-terminal, with
@@ -166,24 +173,6 @@ struct PuctPolicy {
     }
   }
 };
-
-// PUCT over running averages: an edge averages the values of the visits that
-// went through it, and a node those of all visits to it.
-struct PuctAveraging : PuctPolicy<PuctAveraging> {
-  static constexpr std::string_view kName = "puct";
-
-  // Folds `message` into the node and, if given, the edge the visit took, and
-  // returns what the parent receives: the value and the node's own bounds.
-  static Message ApplyMessage(Node<PuctAveraging>& node,
-                              TriedEdge<PuctAveraging>* edge,
-                              const Message& message) {
-    node.stats.Add(message.value);
-    if (edge) edge->stats.Add(message.value);
-    UpdateBounds(node, edge, message.bounds);
-    return {message.value.Parent(), node.stats.bounds.Parent()};
-  }
-};
-static_assert(sizeof(TriedEdge<PuctAveraging>) <= 24);
 
 template <typename Self>
 size_t PuctPolicy<Self>::PickEdgeToVisit(const Node<Self>& node,

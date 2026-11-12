@@ -29,15 +29,27 @@
 
 #include <gtest/gtest.h>
 
-#include "search/lc5/policies/puct_dag.h"
+#include <memory>
+#include <string>
+#include <string_view>
+#include <tuple>
+#include <utility>
+#include <vector>
+
+#include "chess/bitboard.h"
+#include "chess/board.h"
+#include "chess/position.h"
 #include "search/lc5/policies/registry.h"
+#include "search/lc5/settings.h"
 #include "search/lc5/visit_engine.h"
 
 namespace lczero::lc5 {
 namespace {
 
-using Node = lc5::Node<PuctAveraging>;
-using Tried = TriedEdge<PuctAveraging>;
+struct TestPolicy : PuctPolicy<TestPolicy> {};
+
+using Node = lc5::Node<TestPolicy>;
+using Tried = TriedEdge<TestPolicy>;
 
 Move M(File from, File to) {
   return Move::White(Square(from, kRank2), Square(to, kRank3));
@@ -63,7 +75,7 @@ BackendAttributes MakeAttributes(bool has_mlh) {
 // A backend with a moves-left head.
 const BackendAttributes kMlh = MakeAttributes(true);
 
-PuctAveraging::Params TestParams() {
+PuctParams TestParams() {
   return {.cpuct = 1.0f,
           .cpuct_base = 100.0f,
           .cpuct_factor = 0.0f,
@@ -71,13 +83,37 @@ PuctAveraging::Params TestParams() {
           .fpu_value = 0.0f};
 }
 
+std::unique_ptr<VisitEngine> MakeConfiguredEngine(
+    std::string_view name, bool sticky_endgames = false) {
+  OptionsParser parser;
+  Settings::Populate(&parser);
+  PopulatePolicyOptions(&parser);
+  parser.SetUciOption("CPuct", "1");
+  parser.SetUciOption("CPuctBase", "100");
+  parser.SetUciOption("CPuctFactor", "0");
+  parser.SetUciOption("FpuStrategy", "absolute");
+  parser.SetUciOption("FpuValue", "0");
+  parser.SetUciOption("MovesLeft", "false");
+  parser.SetUciOption("StickyEndgames", sticky_endgames ? "true" : "false");
+  auto engine = MakeVisitEngine(name);
+  engine->Configure(parser.GetOptionsDict(), kMlh);
+  return engine;
+}
+
+VisitOrigin StartOrigin() {
+  PositionHistory history;
+  history.Reset(Position::FromFen(ChessBoard::kStartposFen));
+  return {.key = MakeNodeKey(history, 7),
+          .history = std::move(history),
+          .backup_prefix = {}};
+}
+
 TEST(Lc5PuctTest, OptionDefaultsMatchParams) {
   OptionsParser parser;
   PopulatePolicyOptions(&parser);
   EXPECT_EQ(PolicyName(parser.GetOptionsDict()), "puct");
-  const auto params =
-      PuctAveraging::Params::FromOptions(parser.GetOptionsDict(), kMlh);
-  const PuctAveraging::Params defaults;
+  const auto params = PuctParams::FromOptions(parser.GetOptionsDict(), kMlh);
+  const PuctParams defaults;
   EXPECT_EQ(params.cpuct, defaults.cpuct);
   EXPECT_EQ(params.cpuct_base, defaults.cpuct_base);
   EXPECT_EQ(params.cpuct_factor, defaults.cpuct_factor);
@@ -103,19 +139,18 @@ TEST(Lc5PuctTest, OptionsReachParams) {
   parser.SetUciOption("MovesLeft", "true");
   parser.SetUciOption("MovesLeftSlope", "0.01");
   parser.SetUciOption("StickyEndgames", "true");
-  const auto params =
-      PuctAveraging::Params::FromOptions(parser.GetOptionsDict(), kMlh);
+  const auto params = PuctParams::FromOptions(parser.GetOptionsDict(), kMlh);
   EXPECT_EQ(params.cpuct, 3.0f);
   EXPECT_EQ(params.fpu_strategy, FpuStrategy::kAbsolute);
   EXPECT_TRUE(params.moves_left.enabled);
   EXPECT_EQ(params.moves_left.slope, 0.01f);
   EXPECT_TRUE(params.sticky_endgames);
   // Without a moves-left head the option has no effect.
-  EXPECT_FALSE(PuctAveraging::Params::FromOptions(parser.GetOptionsDict(),
-                                                  MakeAttributes(false))
-                   .moves_left.enabled);
+  EXPECT_FALSE(
+      PuctParams::FromOptions(parser.GetOptionsDict(), MakeAttributes(false))
+          .moves_left.enabled);
   parser.SetUciOption("MovesLeft", "false");
-  EXPECT_FALSE(PuctAveraging::Params::FromOptions(parser.GetOptionsDict(), kMlh)
+  EXPECT_FALSE(PuctParams::FromOptions(parser.GetOptionsDict(), kMlh)
                    .moves_left.enabled);
 }
 
@@ -123,7 +158,7 @@ TEST(Lc5PuctTest, UnstartedNodePicksTopPrior) {
   const Node node{.stats = {.visits = 1},
                   .edges = {MakeEdge(kFileA, 0.5f), MakeEdge(kFileB, 0.3f),
                             MakeEdge(kFileC, 0.2f)}};
-  EXPECT_EQ(PuctAveraging::PickEdgeToVisit(node, TestParams()), 0u);
+  EXPECT_EQ(TestPolicy::PickEdgeToVisit(node, TestParams()), 0u);
 }
 
 TEST(Lc5PuctTest, FirstUntriedEdgeCompetesWithTriedOnes) {
@@ -134,7 +169,7 @@ TEST(Lc5PuctTest, FirstUntriedEdgeCompetesWithTriedOnes) {
                               MakeEdge(kFileC, 0.2f)},
                     .tried = {MakeTried(1, q)}};
     // The tried edge scores q + 0.25 and the first untried one 0.3.
-    EXPECT_EQ(PuctAveraging::PickEdgeToVisit(node, TestParams()),
+    EXPECT_EQ(TestPolicy::PickEdgeToVisit(node, TestParams()),
               q > 0.05f ? 0u : 1u);
   }
 }
@@ -144,7 +179,7 @@ TEST(Lc5PuctTest, InFlightEdgeLosesUrgency) {
             .edges = {MakeEdge(kFileA, 0.5f), MakeEdge(kFileB, 0.3f)},
             .tried = {Tried{.in_flight = 1}}};
   // Edge A scores 0.5 / 2 with one visit in flight; edge B scores 0.3.
-  EXPECT_EQ(PuctAveraging::PickEdgeToVisit(node, TestParams()), 1u);
+  EXPECT_EQ(TestPolicy::PickEdgeToVisit(node, TestParams()), 1u);
 }
 
 TEST(Lc5PuctTest, InFlightCountsInTotals) {
@@ -156,7 +191,7 @@ TEST(Lc5PuctTest, InFlightCountsInTotals) {
   // Started totals: sqrt(N) = 2, edge A scores 0.25 + 0.5 * 2 / 5 = 0.45 and
   // edge B 0.3 * 2 = 0.6. (Counting only completed visits, sqrt(N) = 1 would
   // pick A: 0.35 against 0.3.)
-  EXPECT_EQ(PuctAveraging::PickEdgeToVisit(node, TestParams()), 1u);
+  EXPECT_EQ(TestPolicy::PickEdgeToVisit(node, TestParams()), 1u);
 }
 
 TEST(Lc5PuctTest, MovesLeftPrefersShorterWinsAndLongerLosses) {
@@ -170,7 +205,7 @@ TEST(Lc5PuctTest, MovesLeftPrefersShorterWinsAndLongerLosses) {
         .stats = {.visits = 3, .q = node_q, .m = 20.0f},
         .edges = {MakeEdge(kFileA, 0.5f), MakeEdge(kFileB, 0.5f)},
         .tried = {MakeTried(1, edge_q, 31.0f), MakeTried(1, edge_q, 11.0f)}};
-    return PuctAveraging::PickEdgeToVisit(node, params);
+    return TestPolicy::PickEdgeToVisit(node, params);
   };
   // Edge |Q| 0.9 is (0.9 - 0.8) / 0.2 = 0.5 above the threshold, so the
   // scaling is 1.6521 * 0.5 - 0.6521 * 0.25 = 0.663. The slope gives
@@ -183,48 +218,6 @@ TEST(Lc5PuctTest, MovesLeftPrefersShorterWinsAndLongerLosses) {
   EXPECT_EQ(select(0.5f, 0.9f), 0u);
   params.moves_left.enabled = false;
   EXPECT_EQ(select(0.9f, 0.9f), 0u);
-}
-
-TEST(Lc5PuctTest, ApplyMessageAveragesAndFlipsForParent) {
-  Node node{.stats = {.visits = 1, .q = 0.5f, .d = 0.5f, .m = 2.0f},
-            .edges = {MakeEdge(kFileA, 1.0f)},
-            .tried = {Tried{}}};
-  const PuctAveraging::Message message{
-      .value = {.q = -0.5f, .d = 0.25f, .m = 4.0f}};
-  const auto up = PuctAveraging::ApplyMessage(node, &node.tried[0], message);
-  const auto& edge = node.tried[0].stats;
-  EXPECT_EQ(node.stats.visits, 2u);
-  EXPECT_FLOAT_EQ(node.stats.Q(), 0.0f);
-  EXPECT_FLOAT_EQ(node.stats.D(), 0.375f);
-  EXPECT_FLOAT_EQ(node.stats.M(), 3.0f);
-  EXPECT_EQ(edge.visits, 1u);
-  EXPECT_FLOAT_EQ(edge.Q(), -0.5f);
-  EXPECT_FLOAT_EQ(up.value.q, 0.5f);
-  EXPECT_FLOAT_EQ(up.value.d, 0.25f);
-  EXPECT_FLOAT_EQ(up.value.m, 5.0f);
-  EXPECT_EQ(up.bounds, GameResultBounds{});
-
-  PuctAveraging::ApplyMessage(node, nullptr, message);
-  EXPECT_EQ(node.stats.visits, 3u);
-  EXPECT_EQ(edge.visits, 1u);
-  const auto skipped = PuctAveraging::MakeSkipMessage(message);
-  EXPECT_FLOAT_EQ(skipped.value.q, 0.5f);
-  EXPECT_FLOAT_EQ(skipped.value.m, 5.0f);
-}
-
-TEST(Lc5PuctTest, MakeCurrentMessageSendsNodeMeanAndBoundsFlipped) {
-  lc5::Node<PuctDag> node{.stats = {.visits = 4,
-                                    .q = 0.25f,
-                                    .d = 0.5f,
-                                    .m = 6.0f,
-                                    .bounds = {.lower = 0, .upper = 1}},
-                          .edges = {MakeEdge(kFileA, 1.0f)},
-                          .tried = {TriedEdge<PuctDag>{}}};
-  const auto up = PuctDag::MakeCurrentMessage(node);
-  EXPECT_FLOAT_EQ(up.value.q, -0.25f);
-  EXPECT_FLOAT_EQ(up.value.d, 0.5f);
-  EXPECT_FLOAT_EQ(up.value.m, 7.0f);
-  EXPECT_EQ(up.bounds, (GameResultBounds{.lower = -1, .upper = 0}));
 }
 
 // A node with `edges` edges, of which the first ones are tried with one visit
@@ -252,19 +245,22 @@ GameResultBounds WithPlies(GameResultBounds bounds, uint8_t plies) {
 TEST(Lc5PuctTest, TerminalLossProvesParentWin) {
   // The child is checkmated: its install leaf is exact.
   Node child{.terminal = TerminalKind::kCheckmate};
-  const auto leaf = PuctAveraging::MakeLeafMessage(
-      TerminalValue(TerminalKind::kCheckmate), true);
-  const auto from_child = PuctAveraging::ApplyMessage(child, nullptr, leaf);
+  TestPolicy::InitNodeStats(child,
+                            {.terminal = TerminalKind::kCheckmate,
+                             .leaf = TerminalValue(TerminalKind::kCheckmate),
+                             .moves = {},
+                             .priors = {}});
+  EXPECT_EQ(child.stats.visits, 1u);
   EXPECT_EQ(child.stats.bounds, kLoss);
-  EXPECT_EQ(from_child.bounds, WithPlies(kWin, 1));
+  const GameResultBounds from_child = child.stats.bounds.Parent();
+  EXPECT_EQ(from_child, WithPlies(kWin, 1));
 
   // A parent with an untried edge left is still proven by one win.
   Node parent = MakeBoundedNode(2, {GameResultBounds{}});
-  const auto up =
-      PuctAveraging::ApplyMessage(parent, &parent.tried[0], from_child);
+  TestPolicy::UpdateBounds(parent, &parent.tried[0], from_child);
   EXPECT_EQ(parent.tried[0].stats.bounds, WithPlies(kWin, 1));
   EXPECT_EQ(parent.stats.bounds, WithPlies(kWin, 1));
-  EXPECT_EQ(up.bounds, WithPlies(kLoss, 2));
+  EXPECT_EQ(parent.stats.bounds.Parent(), WithPlies(kLoss, 2));
 }
 
 TEST(Lc5PuctTest, NodeProvesBoundsFromItsEdges) {
@@ -273,9 +269,7 @@ TEST(Lc5PuctTest, NodeProvesBoundsFromItsEdges) {
     Node node = MakeBoundedNode(edges, bounds);
     const GameResultBounds last = node.tried.back().stats.bounds;
     node.tried.back().stats.bounds = {};
-    PuctAveraging::ApplyMessage(
-        node, &node.tried.back(),
-        {.value = {.q = static_cast<float>(last.lower)}, .bounds = last});
+    TestPolicy::UpdateBounds(node, &node.tried.back(), last);
     return node.stats.bounds;
   };
   // All edges lose: the node loses, by the longest one.
@@ -295,14 +289,13 @@ TEST(Lc5PuctTest, NodeProvesBoundsFromItsEdges) {
 }
 
 TEST(Lc5PuctTest, StaleDropsBoundsAndSkipKeepsThem) {
-  const PuctAveraging::Message message{.value = {.q = -1.0f}, .bounds = kLoss};
-  EXPECT_EQ(PuctAveraging::MakeSkipMessage(message).bounds, WithPlies(kWin, 1));
-  EXPECT_EQ(PuctAveraging::MakeStaleMessage(message).bounds,
-            GameResultBounds{});
-  EXPECT_FLOAT_EQ(PuctAveraging::MakeStaleMessage(message).value.q, 1.0f);
+  const TestPolicy::BackupValue backup{.value = {.q = -1.0f}, .bounds = kLoss};
+  EXPECT_EQ(TestPolicy::MakeSkipBackup(backup).bounds, WithPlies(kWin, 1));
+  EXPECT_EQ(TestPolicy::MakeStaleBackup(backup).bounds, GameResultBounds{});
+  EXPECT_FLOAT_EQ(TestPolicy::MakeStaleBackup(backup).value.q, 1.0f);
   // Only exact leaves are proven.
-  EXPECT_EQ(PuctAveraging::MakeLeafMessage({.d = 1.0f}, true).bounds, kDraw);
-  EXPECT_EQ(PuctAveraging::MakeLeafMessage({.d = 1.0f}, false).bounds,
+  EXPECT_EQ(TestPolicy::MakeLeafBackup({.d = 1.0f}, true).bounds, kDraw);
+  EXPECT_EQ(TestPolicy::MakeLeafBackup({.d = 1.0f}, false).bounds,
             GameResultBounds{});
 }
 
@@ -314,9 +307,9 @@ TEST(Lc5PuctTest, StickySelectionUsesBounds) {
   node.edges[1].prior = 0.1f;
   node.tried[0].stats.q = 0.5f;
   node.tried[1].stats.q = 0.0f;
-  EXPECT_EQ(PuctAveraging::PickEdgeToVisit(node, params), 0u);
+  EXPECT_EQ(TestPolicy::PickEdgeToVisit(node, params), 0u);
   params.sticky_endgames = true;
-  EXPECT_EQ(PuctAveraging::PickEdgeToVisit(node, params), 1u);
+  EXPECT_EQ(TestPolicy::PickEdgeToVisit(node, params), 1u);
 
   // Edge B's Q -0.5 is clamped to its lower bound 0, which beats A's -0.1
   // (equal priors and visits, so U ties).
@@ -324,9 +317,9 @@ TEST(Lc5PuctTest, StickySelectionUsesBounds) {
       2, {GameResultBounds{}, GameResultBounds{.lower = 0, .upper = 1}});
   node.tried[0].stats.q = -0.1f;
   node.tried[1].stats.q = -0.5f;
-  EXPECT_EQ(PuctAveraging::PickEdgeToVisit(node, params), 1u);
+  EXPECT_EQ(TestPolicy::PickEdgeToVisit(node, params), 1u);
   params.sticky_endgames = false;
-  EXPECT_EQ(PuctAveraging::PickEdgeToVisit(node, params), 0u);
+  EXPECT_EQ(TestPolicy::PickEdgeToVisit(node, params), 0u);
 }
 
 TEST(Lc5PuctTest, StickyGetBestMovePrefersShortWinsAndLongLosses) {
@@ -335,62 +328,62 @@ TEST(Lc5PuctTest, StickyGetBestMovePrefersShortWinsAndLongLosses) {
   // A proven win with fewer visits beats a more-visited unknown edge.
   Node node = MakeBoundedNode(2, {GameResultBounds{}, WithPlies(kWin, 5)});
   node.tried[0].stats.visits = 10;
-  EXPECT_EQ(PuctAveraging::GetBestMove(node, params), node.edges[1].move);
-  EXPECT_EQ(PuctAveraging::GetBestMove(node, TestParams()), node.edges[0].move);
+  EXPECT_EQ(TestPolicy::GetBestMove(node, params), node.edges[1].move);
+  EXPECT_EQ(TestPolicy::GetBestMove(node, TestParams()), node.edges[0].move);
   // Of two proven wins, the shorter one.
   node = MakeBoundedNode(2, {WithPlies(kWin, 5), WithPlies(kWin, 3)});
   node.tried[0].stats.visits = 10;
-  EXPECT_EQ(PuctAveraging::GetBestMove(node, params), node.edges[1].move);
+  EXPECT_EQ(TestPolicy::GetBestMove(node, params), node.edges[1].move);
   // A proven loss is chosen only if all edges lose; then the longest.
   node = MakeBoundedNode(2, {WithPlies(kLoss, 1), GameResultBounds{}});
   node.tried[0].stats.visits = 10;
-  EXPECT_EQ(PuctAveraging::GetBestMove(node, params), node.edges[1].move);
+  EXPECT_EQ(TestPolicy::GetBestMove(node, params), node.edges[1].move);
   node = MakeBoundedNode(2, {WithPlies(kLoss, 1)});
   node.tried[0].stats.visits = 10;
-  EXPECT_EQ(PuctAveraging::GetBestMove(node, params), node.edges[1].move);
+  EXPECT_EQ(TestPolicy::GetBestMove(node, params), node.edges[1].move);
   node = MakeBoundedNode(2, {WithPlies(kLoss, 1), WithPlies(kLoss, 3)});
   node.tried[0].stats.visits = 10;
-  EXPECT_EQ(PuctAveraging::GetBestMove(node, params), node.edges[1].move);
+  EXPECT_EQ(TestPolicy::GetBestMove(node, params), node.edges[1].move);
 }
 
 TEST(Lc5PuctTest, GetProvenNodeValueNeedsStickyEndgames) {
   auto params = TestParams();
   Node node = MakeBoundedNode(1, {WithPlies(kWin, 3)});
   node.stats.bounds = WithPlies(kWin, 3);
-  EXPECT_EQ(PuctAveraging::GetProvenNodeValue(node, params), std::nullopt);
-  EXPECT_FALSE(PuctAveraging::IsNodeDecided(node, params));
+  EXPECT_EQ(TestPolicy::GetProvenNodeValue(node, params), std::nullopt);
+  EXPECT_FALSE(TestPolicy::IsNodeDecided(node, params));
   params.sticky_endgames = true;
-  const auto value = PuctAveraging::GetProvenNodeValue(node, params);
+  const auto value = TestPolicy::GetProvenNodeValue(node, params);
   ASSERT_TRUE(value);
   EXPECT_EQ(value->q, 1.0f);
   EXPECT_EQ(value->d, 0.0f);
   EXPECT_EQ(value->m, 3.0f);
-  EXPECT_TRUE(PuctAveraging::IsNodeDecided(node, params));
+  EXPECT_TRUE(TestPolicy::IsNodeDecided(node, params));
   node.stats.bounds = {.lower = 0, .upper = 1};
-  EXPECT_EQ(PuctAveraging::GetProvenNodeValue(node, params), std::nullopt);
+  EXPECT_EQ(TestPolicy::GetProvenNodeValue(node, params), std::nullopt);
 }
 
 TEST(Lc5PuctTest, GetBestMoveRanksVisitsThenQThenPrior) {
   Node node{.edges = {MakeEdge(kFileA, 0.5f), MakeEdge(kFileB, 0.3f),
                       MakeEdge(kFileC, 0.2f)}};
   // With no visits yet, falls back to the highest-prior edge.
-  EXPECT_EQ(PuctAveraging::GetBestMove(node, TestParams()), node.edges[0].move);
+  EXPECT_EQ(TestPolicy::GetBestMove(node, TestParams()), node.edges[0].move);
   node.tried = {Tried{.in_flight = 1}};
-  EXPECT_EQ(PuctAveraging::GetBestMove(node, TestParams()), node.edges[0].move);
+  EXPECT_EQ(TestPolicy::GetBestMove(node, TestParams()), node.edges[0].move);
 
   // Tried edges without a visit don't beat a visited edge.
   node.tried = {Tried{.in_flight = 1}, Tried{}, MakeTried(1, -0.9f)};
-  EXPECT_EQ(PuctAveraging::GetBestMove(node, TestParams()), node.edges[2].move);
+  EXPECT_EQ(TestPolicy::GetBestMove(node, TestParams()), node.edges[2].move);
 
   node.tried[1].stats = {.visits = 2, .q = -0.5f};
   node.tried[2].stats = {.visits = 2, .q = 0.1f};
-  EXPECT_EQ(PuctAveraging::GetBestMove(node, TestParams()), node.edges[2].move);
+  EXPECT_EQ(TestPolicy::GetBestMove(node, TestParams()), node.edges[2].move);
 
   node.tried[1].stats.q = 0.1f;
-  EXPECT_EQ(PuctAveraging::GetBestMove(node, TestParams()), node.edges[1].move);
+  EXPECT_EQ(TestPolicy::GetBestMove(node, TestParams()), node.edges[1].move);
 
   node.tried[0].stats = {.visits = 3, .q = -1.0f};
-  EXPECT_EQ(PuctAveraging::GetBestMove(node, TestParams()), node.edges[0].move);
+  EXPECT_EQ(TestPolicy::GetBestMove(node, TestParams()), node.edges[0].move);
 }
 
 TEST(Lc5PuctTest, WdlFromValueInvariantsAndEdgeCases) {
@@ -439,7 +432,7 @@ TEST(Lc5PuctTest, WdlFromValueInvariantsAndEdgeCases) {
 
 TEST(Lc5PuctTest, FillThinkingInfoNeedsVisits) {
   const auto describe = [](ValueStats stats, ThinkingInfo& info) {
-    PuctAveraging::FillThinkingInfo(Node{.stats = stats}, TestParams(), info);
+    TestPolicy::FillThinkingInfo(Node{.stats = stats}, TestParams(), info);
   };
   ThinkingInfo info;
   describe({}, info);
@@ -465,7 +458,7 @@ TEST(Lc5PuctTest, FillThinkingInfoShowsProvenMates) {
   params.sticky_endgames = true;
   const auto describe = [&](GameResultBounds bounds) {
     ThinkingInfo info;
-    PuctAveraging::FillThinkingInfo(
+    TestPolicy::FillThinkingInfo(
         Node{.stats = {.visits = 2,
                        .q = static_cast<float>(bounds.lower),
                        .bounds = bounds}},
@@ -497,105 +490,132 @@ TEST(Lc5PuctTest, PoliciesShareThePuctOptions) {
   parser.SetUciOption("Lc5Policy", "puct-dag");
   parser.SetUciOption("CPuct", "3");
   EXPECT_EQ(PolicyName(parser.GetOptionsDict()), "puct-dag");
-  EXPECT_EQ(PuctDag::Params::FromOptions(parser.GetOptionsDict(), kMlh).cpuct,
-            3.0f);
+  EXPECT_EQ(PuctParams::FromOptions(parser.GetOptionsDict(), kMlh).cpuct, 3.0f);
   EXPECT_EQ(MakeVisitEngine("puct")->GetName(), "puct");
   EXPECT_EQ(MakeVisitEngine("puct-dag")->GetName(), "puct-dag");
 }
 
-using DagNode = lc5::Node<PuctDag>;
-using DagTried = TriedEdge<PuctDag>;
+Visit MakeVisit(const VisitOrigin& origin) {
+  Visit visit;
+  visit.origin = origin;
+  visit.history = origin.history;
+  visit.current_key = origin.key;
+  visit.path = origin.backup_prefix;
+  return visit;
+}
 
-TEST(Lc5PuctTest, DagEdgesCacheTheChildValue) {
-  DagNode node{.edges = {MakeEdge(kFileA, 0.5f), MakeEdge(kFileB, 0.5f)},
-               .tried = {DagTried{}, DagTried{}}};
-  const VisitValue leaf{.q = 0.2f, .d = 0.4f, .m = 10.0f};
-  PuctDag::ApplyMessage(node, nullptr, PuctDag::MakeLeafMessage(leaf, false));
-  EXPECT_EQ(node.stats.visits, 1u);
-  EXPECT_FLOAT_EQ(node.stats.Q(), 0.2f);
+TEST(Lc5PuctTest, PuctAveragesWhileDagReplacesEdgeValue) {
+  // Edge A gets 3 visits at +0.8 (child -0.8), then a 4th visit bringing +0.2
+  // (child -0.2). With N = 4, sqrt(N) = 2: A scores q + 0.5 * 2 / 5 = q + 0.2
+  // and untried B scores 0.3 * 2 = 0.6.
+  // "puct" averages A to 0.65 (0.85 > 0.6, root mean 0.68); "puct-dag" replaces
+  // A with 0.2 (0.4 < 0.6, root mean (0.8 + 4 * 0.2) / 5 = 0.32).
+  const VisitOrigin root = StartOrigin();
+  const Move move_a = M(kFileA, kFileA);
+  const Move move_b = M(kFileB, kFileB);
+  Metrics metrics;
 
-  // Visits through the edges with changing child values, in the edge frame.
-  struct Step {
-    size_t edge;
-    VisitValue value;
-  };
-  const Step steps[] = {
-      {0, {.q = 0.5f, .d = 0.3f, .m = 8.0f}},
-      {1, {.q = -0.4f, .d = 0.6f, .m = 12.0f}},
-      {0, {.q = 0.1f, .d = 0.2f, .m = 7.0f}},
-      {0, {.q = -0.7f, .d = 0.1f, .m = 6.0f}},
-      {1, {.q = 0.9f, .d = 0.05f, .m = 3.0f}},
-      {1, {.q = 0.3f, .d = 0.5f, .m = 9.0f}},
-  };
-  for (const Step& step : steps) {
-    const uint32_t before = node.tried[step.edge].stats.visits;
-    const auto up = PuctDag::ApplyMessage(node, &node.tried[step.edge],
-                                          {.value = step.value});
-    const ValueStats& edge = node.tried[step.edge].stats;
-    EXPECT_EQ(edge.visits, before + 1);
-    EXPECT_EQ(edge.Q(), step.value.q);
-    EXPECT_EQ(edge.D(), step.value.d);
-    EXPECT_EQ(edge.M(), step.value.m);
-    // The node is its own sample plus each edge's cached value, weighted by
-    // the edge's visits.
-    float visits = 1.0f, q = leaf.q, d = leaf.d, m = leaf.m;
-    for (const DagTried& tried : node.tried) {
-      visits += tried.stats.visits;
-      q += tried.stats.visits * tried.stats.Q();
-      d += tried.stats.visits * tried.stats.D();
-      m += tried.stats.visits * tried.stats.M();
+  const auto run = [&](std::string_view name) {
+    auto engine = MakeConfiguredEngine(name);
+    EXPECT_TRUE(
+        engine->CompleteMaterialization(root.key, {.leaf = {.q = 0.8f},
+                                                   .moves = {move_a, move_b},
+                                                   .priors = {0.5f, 0.3f}}));
+    for (const float child_q : {-0.8f, -0.8f, -0.8f, -0.2f}) {
+      Visit visit = MakeVisit(root);
+      EXPECT_EQ(engine->DescendVisit(visit, metrics),
+                VisitEngine::DescendResult::kUnmaterializedLeaf);
+      EXPECT_EQ(visit.path.front().selected_move, move_a);
+      visit.result = {.q = child_q};
+      engine->BackupVisit(visit, metrics);
     }
-    EXPECT_EQ(node.stats.visits, static_cast<uint32_t>(visits));
-    EXPECT_NEAR(node.stats.Q(), q / visits, 1e-5f);
-    EXPECT_NEAR(node.stats.D(), d / visits, 1e-5f);
-    EXPECT_NEAR(node.stats.M(), m / visits, 1e-4f);
-    const auto current = PuctDag::MakeCurrentMessage(node);
-    EXPECT_EQ(up.value.q, current.value.q);
-    EXPECT_EQ(up.value.d, current.value.d);
-    EXPECT_EQ(up.value.m, current.value.m);
-    EXPECT_EQ(up.bounds, current.bounds);
+    Visit next = MakeVisit(root);
+    EXPECT_EQ(engine->DescendVisit(next, metrics),
+              VisitEngine::DescendResult::kUnmaterializedLeaf);
+    const Move selected = *next.path.front().selected_move;
+    engine->CancelVisit(next);
+    ThinkingInfo info;
+    engine->FillThinkingInfo(root, info);
+    return std::pair(selected, info.score.value_or(0));
+  };
+
+  EXPECT_EQ(run("puct"), std::pair(move_a, CentipawnsFromQ(0.68f)));
+  EXPECT_EQ(run("puct-dag"), std::pair(move_b, CentipawnsFromQ(0.32f)));
+}
+
+TEST(Lc5PuctTest, DagForwardsSharedChildMeanToParent) {
+  const VisitOrigin root = StartOrigin();
+  const Move move_a = M(kFileA, kFileA);
+  VisitOrigin child = root;
+  child.history.Append(move_a);
+  child.key = MakeNodeKey(child.history, 7);
+  const Move reply = child.history.Last().GetBoard().GenerateLegalMoves()[0];
+  Metrics metrics;
+
+  const auto run = [&](std::string_view name) {
+    auto engine = MakeConfiguredEngine(name);
+    EXPECT_TRUE(engine->CompleteMaterialization(
+        root.key, {.leaf = {.q = 0.0f}, .moves = {move_a}, .priors = {1.0f}}));
+    // Child starts at -0.8 (which is +0.8 for root) via its own evaluation,
+    // representing knowledge learned without traversing root's edge.
+    EXPECT_TRUE(engine->CompleteMaterialization(
+        child.key, {.leaf = {.q = -0.8f}, .moves = {reply}, .priors = {1.0f}}));
+    // A visit from root goes through child to an unmaterialized grandchild
+    // whose leaf sample is 0.0.
+    Visit visit = MakeVisit(root);
+    EXPECT_EQ(engine->DescendVisit(visit, metrics),
+              VisitEngine::DescendResult::kUnmaterializedLeaf);
+    EXPECT_EQ(visit.path.size(), 3u);
+    visit.result = {.q = 0.0f};
+    engine->BackupVisit(visit, metrics);
+    ThinkingInfo info;
+    engine->FillThinkingInfo(root, info);
+    return info.score.value_or(0);
+  };
+
+  // "puct" forwards only the 0.0 grandchild sample; "puct-dag" forwards child's
+  // current mean (-0.4 -> +0.4 at root, so root mean is +0.2).
+  EXPECT_EQ(run("puct"), 0);
+  EXPECT_EQ(run("puct-dag"), CentipawnsFromQ(0.2f));
+}
+
+TEST(Lc5PuctTest, BothPoliciesProveWinFromCheckmateChild) {
+  const VisitOrigin root = StartOrigin();
+  const Move move_a = M(kFileA, kFileA);
+  const Move move_b = M(kFileB, kFileB);
+  VisitOrigin child = root;
+  child.history.Append(move_a);
+  child.key = MakeNodeKey(child.history, 7);
+  Metrics metrics;
+
+  for (const std::string_view name : {"puct", "puct-dag"}) {
+    SCOPED_TRACE(name);
+    auto engine = MakeConfiguredEngine(name, /*sticky_endgames=*/true);
+    EXPECT_TRUE(engine->CompleteMaterialization(
+        root.key, {.moves = {move_a, move_b}, .priors = {0.5f, 0.5f}}));
+    EXPECT_TRUE(engine->CompleteMaterialization(
+        child.key, {.terminal = TerminalKind::kCheckmate,
+                    .leaf = TerminalValue(TerminalKind::kCheckmate),
+                    .moves = {},
+                    .priors = {}}));
+    Visit visit = MakeVisit(root);
+    EXPECT_EQ(engine->DescendVisit(visit, metrics),
+              VisitEngine::DescendResult::kValuedLeaf);
+    engine->BackupVisit(visit, metrics);
+    const RootStats stats = engine->GetRootStats(root.key);
+    EXPECT_TRUE(stats.decided);
+    EXPECT_EQ(stats.best_move, move_a);
+    ThinkingInfo info;
+    engine->FillThinkingInfo(root, info);
+    EXPECT_EQ(info.mate, 1);
   }
-}
-
-TEST(Lc5PuctTest, DagApplyMessageReplacesTheEdgeValue) {
-  // Edge A has 3 visits at 0.8; a fourth visit brings 0.2. With N = 4, sqrt(N)
-  // = 2: A scores q + 0.5 * 2 / 5 = q + 0.2 and the untried B 0.3 * 2 = 0.6.
-  // Averaging gives A q = 0.65 (0.85 > 0.6); replacing gives 0.2 (0.4 < 0.6).
-  Node node{.stats = {.visits = 4, .q = 0.8f},
-            .edges = {MakeEdge(kFileA, 0.5f), MakeEdge(kFileB, 0.3f)},
-            .tried = {MakeTried(3, 0.8f)}};
-  DagNode dag{.stats = {.visits = 4, .q = 0.8f},
-              .edges = {MakeEdge(kFileA, 0.5f), MakeEdge(kFileB, 0.3f)},
-              .tried = {DagTried{.stats = {.visits = 3, .q = 0.8f}}}};
-  const VisitValue from_child{.q = 0.2f};
-  PuctAveraging::ApplyMessage(node, &node.tried[0], {.value = from_child});
-  PuctDag::ApplyMessage(dag, &dag.tried[0], {.value = from_child});
-  EXPECT_EQ(PuctAveraging::PickEdgeToVisit(node, TestParams()), 0u);
-  EXPECT_EQ(PuctDag::PickEdgeToVisit(dag, TestParams()), 1u);
-}
-
-TEST(Lc5PuctTest, DagTerminalLossProvesParentWin) {
-  DagNode child{.terminal = TerminalKind::kCheckmate};
-  const auto from_child = PuctDag::ApplyMessage(
-      child, nullptr,
-      PuctDag::MakeLeafMessage(TerminalValue(TerminalKind::kCheckmate), true));
-  EXPECT_EQ(child.stats.bounds, kLoss);
-  EXPECT_EQ(from_child.bounds, WithPlies(kWin, 1));
-  EXPECT_FLOAT_EQ(from_child.value.q, 1.0f);
-
-  DagNode parent{.stats = {.visits = 1},
-                 .edges = {MakeEdge(kFileA, 0.5f), MakeEdge(kFileB, 0.5f)},
-                 .tried = {DagTried{}}};
-  const auto up = PuctDag::ApplyMessage(parent, &parent.tried[0], from_child);
-  EXPECT_EQ(parent.tried[0].stats.bounds, WithPlies(kWin, 1));
-  EXPECT_EQ(parent.stats.bounds, WithPlies(kWin, 1));
-  EXPECT_EQ(up.bounds, WithPlies(kLoss, 2));
 }
 
 }  // namespace
 }  // namespace lczero::lc5
 
 int main(int argc, char** argv) {
+  lczero::InitializeMagicBitboards();
   testing::InitGoogleTest(&argc, argv);
   return RUN_ALL_TESTS();
 }

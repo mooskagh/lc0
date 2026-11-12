@@ -32,8 +32,6 @@
 #include <string>
 #include <vector>
 
-#include "search/lc5/policies/policy_engine.h"
-#include "search/lc5/policies/registry.h"
 #include "utils/fastmath.h"
 
 namespace lczero::lc5 {
@@ -164,8 +162,5 @@ ThinkingInfo::WDL WdlFromValue(float q, float d) {
 int CentipawnsFromQ(float q) {
   return static_cast<int>(90 * std::tan(1.5637541897 * q));
 }
-
-// The default policy.
-REGISTER_LC5_POLICY(PuctAveraging, 100)
 
 }  // namespace lczero::lc5

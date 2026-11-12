@@ -46,17 +46,27 @@ Move M(File from, File to) {
   return Move::White(Square(from, kRank2), Square(to, kRank3));
 }
 
-using Graph = GameGraph<PuctAveraging>;
-static_assert(sizeof(Node<PuctAveraging>) == 64);
+struct TestPolicy : PuctPolicy<TestPolicy> {
+  static BackupValue BackupThroughNode(Node<TestPolicy>& node,
+                                       TriedEdge<TestPolicy>* edge,
+                                       const BackupValue& backup) {
+    node.stats.Add(backup.value);
+    if (edge) edge->stats.Add(backup.value);
+    UpdateBounds(node, edge, backup.bounds);
+    return {backup.value.Parent(), node.stats.bounds.Parent()};
+  }
+};
+
+using Graph = GameGraph<TestPolicy>;
+static_assert(sizeof(Node<TestPolicy>) == 64);
 
 // The statistics of edge `i`; an untried edge has none, so it reads as empty.
-const TriedEdge<PuctAveraging>& TriedAt(const Node<PuctAveraging>& node,
-                                        size_t i) {
-  static const TriedEdge<PuctAveraging> kUntried;
+const TriedEdge<TestPolicy>& TriedAt(const Node<TestPolicy>& node, size_t i) {
+  static const TriedEdge<TestPolicy> kUntried;
   return i < node.tried.size() ? node.tried[i] : kUntried;
 }
 
-PuctAveraging::Params TestParams() {
+TestPolicy::Params TestParams() {
   return {.cpuct = 1.0f,
           .cpuct_base = 100.0f,
           .cpuct_factor = 0.0f,
@@ -131,7 +141,7 @@ TEST(Lc5GraphTest, DuplicatePublicationDoesNotDisturbExistingNode) {
   EXPECT_TRUE(graph.ContainsNode(key));
   ASSERT_EQ(graph.SelectAndReserveEdge(key, TestParams()).status,
             SelectResult::kEdgeSelected);
-  ASSERT_TRUE(graph.UpdateNode(key, {0.25f, 0.5f, 3.0f}, move));
+  ASSERT_TRUE(graph.BackupThroughNode(key, {0.25f, 0.5f, 3.0f}, move));
   ASSERT_EQ(graph.SelectAndReserveEdge(key, TestParams()).status,
             SelectResult::kEdgeSelected);
   // Duplicate publications are rejected and must not disturb statistics or
@@ -177,10 +187,9 @@ TEST(Lc5GraphTest, SelectionReservesMaterializedEdge) {
 TEST(Lc5GraphTest, SelectionReportsMaterializedTerminalKind) {
   Graph graph;
   const NodeKey key{123};
-  graph.InsertNode(
-      key,
-      NodeEval{
-          .terminal = TerminalKind::kCheckmate, .moves = {}, .priors = {}});
+  graph.InsertNode(key, NodeEval{.terminal = TerminalKind::kCheckmate,
+                                 .moves = {},
+                                 .priors = {}});
   const auto node = graph.SnapshotNode(key);
   ASSERT_TRUE(node);
   EXPECT_EQ(node->terminal, TerminalKind::kCheckmate);
@@ -195,22 +204,20 @@ TEST(Lc5GraphTest, ProvenBoundsGoUpAndStopSelectionWhenAsked) {
   const NodeKey child{2};
   const Move move = M(kFileA, kFileA);
   graph.InsertNode(parent, {.moves = {move}, .priors = {1.0f}});
-  graph.InsertNode(
-      child, {.terminal = TerminalKind::kCheckmate,
-              .leaf = TerminalValue(TerminalKind::kCheckmate),
-              .moves = {},
-              .priors = {}});
+  graph.InsertNode(child, {.terminal = TerminalKind::kCheckmate,
+                           .leaf = TerminalValue(TerminalKind::kCheckmate),
+                           .moves = {},
+                           .priors = {}});
   // The install proves the checkmate; the leaf's own backup keeps it.
   ASSERT_EQ(graph.SelectAndReserveEdge(parent, TestParams()).move, move);
-  const auto from_child =
-      graph.UpdateNode(child,
-                       PuctAveraging::MakeLeafMessage(
-                           TerminalValue(TerminalKind::kCheckmate), true),
-                       std::nullopt);
+  const auto from_child = graph.BackupThroughNode(
+      child,
+      TestPolicy::MakeLeafBackup(TerminalValue(TerminalKind::kCheckmate), true),
+      std::nullopt);
   ASSERT_TRUE(from_child);
   EXPECT_EQ(from_child->bounds,
             (GameResultBounds{.lower = 1, .upper = 1, .plies = 1}));
-  const auto up = graph.UpdateNode(parent, *from_child, move);
+  const auto up = graph.BackupThroughNode(parent, *from_child, move);
   ASSERT_TRUE(up);
   EXPECT_EQ(up->bounds,
             (GameResultBounds{.lower = -1, .upper = -1, .plies = 2}));
@@ -331,7 +338,7 @@ TEST(Lc5GraphTest, BackupCommitsNodeAndOptionalEdgeSums) {
   NodeKey key{456};
   Move move = M(kFileA, kFileA);
   graph.InsertNode(key, {.moves = {move}, .priors = {1.0f}});
-  auto result = graph.UpdateNode(key, {0.25f, 0.5f, 3.0f}, std::nullopt);
+  auto result = graph.BackupThroughNode(key, {0.25f, 0.5f, 3.0f}, std::nullopt);
   EXPECT_TRUE(result);
   auto node = graph.SnapshotNode(key);
   ASSERT_TRUE(node);
@@ -342,7 +349,7 @@ TEST(Lc5GraphTest, BackupCommitsNodeAndOptionalEdgeSums) {
   EXPECT_EQ(TriedAt(*node, 0).stats.visits, 0u);
   ASSERT_EQ(graph.SelectAndReserveEdge(key, TestParams()).status,
             SelectResult::kEdgeSelected);
-  result = graph.UpdateNode(key, {-0.5f, 0.25f, 4.0f}, move);
+  result = graph.BackupThroughNode(key, {-0.5f, 0.25f, 4.0f}, move);
   ASSERT_TRUE(result);
   EXPECT_FLOAT_EQ(result->value.q, 0.5f);
   EXPECT_FLOAT_EQ(result->value.d, 0.25f);
@@ -363,7 +370,7 @@ TEST(Lc5GraphTest, BackupCommitsNodeAndOptionalEdgeSums) {
 TEST(Lc5GraphTest, BackupRejectsMissingNodes) {
   Graph graph;
   NodeKey key{456};
-  auto result = graph.UpdateNode(key, {0.25f, 0.5f, 3.0f}, std::nullopt);
+  auto result = graph.BackupThroughNode(key, {0.25f, 0.5f, 3.0f}, std::nullopt);
   EXPECT_FALSE(result);
   EXPECT_FALSE(graph.SnapshotNode(key));
 }
@@ -381,7 +388,7 @@ TEST(Lc5GraphTest, ReservationsAreExactAndCancellationDoesNotCommit) {
   EXPECT_EQ(selection1.move, first);
   EXPECT_EQ(selection2.move, second);
   graph.ReleaseEdge(key, first);
-  EXPECT_TRUE(graph.UpdateNode(key, {{0.4f, 0.2f, 2.0f}}, second));
+  EXPECT_TRUE(graph.BackupThroughNode(key, {{0.4f, 0.2f, 2.0f}}, second));
   auto node = graph.SnapshotNode(key);
   ASSERT_TRUE(node);
   EXPECT_EQ(TriedAt(*node, 0).stats.visits, 0u);
@@ -410,8 +417,8 @@ TEST(Lc5GraphTest, TriedPrefixGrowsInPriorOrder) {
     const auto selection = graph.SelectAndReserveEdge(key, params);
     EXPECT_EQ(selection.move, eval.moves[i]);
     EXPECT_EQ(graph.SnapshotNode(key)->tried.size(), i + 1);
-    graph.UpdateNode(key, {}, selection.move);
-    graph.UpdateNode(key, {}, std::nullopt);
+    graph.BackupThroughNode(key, {}, selection.move);
+    graph.BackupThroughNode(key, {}, std::nullopt);
     EXPECT_EQ(graph.SnapshotNode(key)->tried.size(), i + 1);
   }
   EXPECT_EQ(graph.SelectAndReserveEdge(key, params).move, eval.moves[0]);
@@ -446,7 +453,7 @@ TEST(Lc5GraphTest, FirstUntriedEdgeCompetesWithTriedOnes) {
     graph.InsertNode(key, eval);
     const auto params = TestParams();
     ASSERT_EQ(graph.SelectAndReserveEdge(key, params).move, eval.moves[0]);
-    graph.UpdateNode(key, {q, 0.0f, 0.0f}, eval.moves[0]);
+    graph.BackupThroughNode(key, {q, 0.0f, 0.0f}, eval.moves[0]);
     // The tried edge scores q + 0.25 and the first untried one 0.3.
     const bool tried_wins = q > 0.05f;
     EXPECT_EQ(graph.SelectAndReserveEdge(key, params).move,
@@ -470,7 +477,7 @@ TEST(Lc5GraphTest, ReselectionMovesOnlyTheWaitersReservation) {
   graph.InsertNode(good, eval);
   ASSERT_EQ(graph.SelectAndReserveEdge(good, params).move, a);
   ASSERT_EQ(graph.SelectAndReserveEdge(good, params).move, a);
-  graph.UpdateNode(good, {.value = {.q = 0.9f}}, a);
+  graph.BackupThroughNode(good, {.value = {.q = 0.9f}}, a);
   EXPECT_EQ(graph.ReselectAndReserveEdge(good, a, params), a);
   auto node = graph.SnapshotNode(good);
   EXPECT_EQ(node->tried.size(), 1u);
@@ -483,7 +490,7 @@ TEST(Lc5GraphTest, ReselectionMovesOnlyTheWaitersReservation) {
   graph.InsertNode(bad, eval);
   ASSERT_EQ(graph.SelectAndReserveEdge(bad, params).move, a);
   ASSERT_EQ(graph.SelectAndReserveEdge(bad, params).move, a);
-  graph.UpdateNode(bad, {.value = {.q = -0.9f}}, a);
+  graph.BackupThroughNode(bad, {.value = {.q = -0.9f}}, a);
   EXPECT_EQ(graph.ReselectAndReserveEdge(bad, a, params), b);
   node = graph.SnapshotNode(bad);
   EXPECT_EQ(node->tried.size(), 2u);
@@ -501,7 +508,7 @@ TEST(Lc5GraphTest, IncomingParentsKeepIndependentEdgeStatistics) {
   graph.InsertNode(NodeKey{2}, eval);
   auto params = TestParams();
   graph.SelectAndReserveEdge(NodeKey{1}, params);
-  graph.UpdateNode(NodeKey{1}, {}, move);
+  graph.BackupThroughNode(NodeKey{1}, {}, move);
   EXPECT_EQ(TriedAt(*graph.SnapshotNode(NodeKey{1}), 0).stats.visits, 1u);
   EXPECT_EQ(TriedAt(*graph.SnapshotNode(NodeKey{2}), 0).stats.visits, 0u);
 }
@@ -516,10 +523,10 @@ Graph::Node BackedUpNode(Graph& graph, NodeKey key) {
   for (int i = 0; i < 2; ++i) {
     const auto selected = graph.SelectAndReserveEdge(key, params);
     EXPECT_EQ(selected.status, SelectResult::kEdgeSelected);
-    graph.UpdateNode(key,
-                     PuctAveraging::MakeLeafMessage(
-                         {.q = -0.75f, .d = 0.25f, .m = 3.0f}, i == 0),
-                     selected.move);
+    graph.BackupThroughNode(key,
+                            TestPolicy::MakeLeafBackup(
+                                {.q = -0.75f, .d = 0.25f, .m = 3.0f}, i == 0),
+                            selected.move);
   }
   return *graph.SnapshotNode(key);
 }
@@ -551,9 +558,8 @@ TEST(Lc5GraphTest, RestoreKeepsStatisticsUnderANewVersion) {
   EXPECT_EQ(node->tried[0].stats.visits, original.tried[0].stats.visits);
   // A stale eviction for the old version is rejected.
   EXPECT_FALSE(graph.EraseNode(key, original.version));
-  EXPECT_TRUE(graph.UpdateNode(
-      key,
-      PuctAveraging::MakeLeafMessage({.q = 0.0f, .d = 1.0f, .m = 0.0f}, false),
+  EXPECT_TRUE(graph.BackupThroughNode(
+      key, TestPolicy::MakeLeafBackup({.q = 0.0f, .d = 1.0f, .m = 0.0f}, false),
       std::nullopt));
   EXPECT_EQ(graph.SnapshotNode(key)->stats.visits, original.stats.visits + 1);
 }
@@ -564,9 +570,8 @@ TEST(Lc5GraphTest, EraseNodeRefusesAfterAnyChange) {
   const auto params = TestParams();
   auto node = BackedUpNode(graph, key);
   // A backup.
-  graph.UpdateNode(
-      key,
-      PuctAveraging::MakeLeafMessage({.q = 0.0f, .d = 1.0f, .m = 0.0f}, false),
+  graph.BackupThroughNode(
+      key, TestPolicy::MakeLeafBackup({.q = 0.0f, .d = 1.0f, .m = 0.0f}, false),
       std::nullopt);
   EXPECT_FALSE(graph.EraseNode(key, node.version));
   // A reservation, which also makes the node not evictable.
@@ -626,10 +631,10 @@ TEST(Lc5GraphTest, FindEvictableNodesPreferFewVisits) {
     graph.InsertNode(keys[i], {.moves = {M(kFileA, kFileA)}, .priors = {1.0f}});
     for (size_t visit = 0; visit < 3 - i % 3 + (i == 3 ? 5 : 0); ++visit) {
       const auto selected = graph.SelectAndReserveEdge(keys[i], params);
-      graph.UpdateNode(keys[i],
-                       PuctAveraging::MakeLeafMessage(
-                           {.q = 0.0f, .d = 1.0f, .m = 0.0f}, false),
-                       selected.move);
+      graph.BackupThroughNode(
+          keys[i],
+          TestPolicy::MakeLeafBackup({.q = 0.0f, .d = 1.0f, .m = 0.0f}, false),
+          selected.move);
     }
   }
   Graph::EvictCursor cursor;
@@ -684,7 +689,9 @@ TEST(Lc5GraphTest, FindEvictableNodesStreamsWindowsAndAlternatesShards) {
       ASSERT_LT(s, 2u);
       EXPECT_TRUE(seen[s].insert(key).second);
       if (seen[s].size() == (s == 0 ? kShard0Count : kShard1Count)) {
-        if (s == 0) EXPECT_TRUE(seen[0].contains(NodeKey{0}));
+        if (s == 0) {
+          EXPECT_TRUE(seen[0].contains(NodeKey{0}));
+        }
         seen[s].clear();
         ++revolutions[s];
       }

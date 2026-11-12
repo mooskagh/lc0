@@ -48,8 +48,8 @@
 namespace lczero::lc5 {
 
 // Search over a GameGraph it owns, with node and edge statistics, selection
-// and backup supplied by the policy P (see PuctPolicy and PuctAveraging in
-// puct.h for the interface).
+// and backup supplied by the policy P (see PuctPolicy in puct.h for the
+// interface).
 template <typename P>
 class PolicyEngine final : public VisitEngine {
  public:
@@ -249,23 +249,23 @@ VisitEngine::ResumeAction PolicyEngine<P>::ResumeVisit(Visit& visit,
 
 template <typename P>
 void PolicyEngine<P>::BackupVisit(const Visit& visit, Metrics& metrics) {
-  typename P::Message message =
-      P::MakeLeafMessage(visit.result, visit.result_exact);
+  typename P::BackupValue backup =
+      P::MakeLeafBackup(visit.result, visit.result_exact);
   for (size_t i = visit.path.size(); i-- > 0;) {
     const PathStep& step = visit.path[i];
     // An in-search repetition leaf has no graph node, and an installed leaf
-    // took its value at install; the parent receives the skipped-node message.
+    // took its value at install; the parent receives the skipped-node backup.
     if (!step.update_node) {
-      message = P::MakeSkipMessage(message);
+      backup = P::MakeSkipBackup(backup);
       continue;
     }
     // The leaf commits only its node value; ancestors complete their edges.
     const auto move =
         i + 1 < visit.path.size() ? step.selected_move : std::nullopt;
-    const auto to_parent = graph_.UpdateNode(step.key, message, move);
+    const auto to_parent = graph_.BackupThroughNode(step.key, backup, move);
     metrics.backup_node_steps.fetch_add(1);
     // A missing node is skipped.
-    message = to_parent ? *to_parent : P::MakeStaleMessage(message);
+    backup = to_parent ? *to_parent : P::MakeStaleBackup(backup);
   }
 }
 

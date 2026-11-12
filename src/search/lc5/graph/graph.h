@@ -69,14 +69,14 @@ struct SelectResult {
 
 // Sharded map from NodeKey to materialized node search state and outgoing
 // edges. Edges do not point to children; callers derive child keys from their
-// own history. The policy P owns the node and edge statistics, how a message
+// own history. The policy P owns the node and edge statistics, how a backup
 // updates them and how an edge is selected.
 template <typename P>
 class GameGraph {
  public:
   using Node = lc5::Node<P>;
   using Tried = TriedEdge<P>;
-  using Message = typename P::Message;
+  using BackupValue = typename P::BackupValue;
 
   static constexpr size_t kShardCount = 1024;
   static constexpr size_t kEvictWindow = 4096;
@@ -115,9 +115,9 @@ class GameGraph {
                               const typename P::Params& params);
 
   // Updates the node (and `move`'s edge with in_flight -= 1, if given); returns
-  // the message to the parent, or nullopt if the node is absent.
-  std::optional<Message> UpdateNode(NodeKey key, Message message,
-                                    std::optional<Move> move);
+  // the backup value for the parent, or nullopt if the node is absent.
+  std::optional<BackupValue> BackupThroughNode(NodeKey key, BackupValue backup,
+                                               std::optional<Move> move);
 
   // Releases an edge reservation (in_flight -= 1) without committing a visit.
   void ReleaseEdge(NodeKey key, Move move);
@@ -233,8 +233,7 @@ bool GameGraph<P>::InsertNode(NodeKey key, const NodeEval& eval) {
     node.edges.push_back({.move = eval.moves[i], .prior = eval.priors[i]});
   }
   assert(absl::c_is_sorted(node.edges, PreferOnTie));
-  P::ApplyMessage(node, nullptr,
-                  P::MakeLeafMessage(eval.leaf, IsExact(eval.terminal)));
+  P::InitNodeStats(node, eval);
   return true;
 }
 
@@ -282,8 +281,8 @@ Move GameGraph<P>::ReselectAndReserveEdge(NodeKey key, Move move,
 }
 
 template <typename P>
-std::optional<typename P::Message> GameGraph<P>::UpdateNode(
-    NodeKey key, Message message, std::optional<Move> move) {
+std::optional<typename P::BackupValue> GameGraph<P>::BackupThroughNode(
+    NodeKey key, BackupValue backup, std::optional<Move> move) {
   auto& shard = ShardFor(key);
   absl::MutexLock lock(shard.mutex);
   Node* node = FindOrNull(shard.nodes, key);
@@ -298,7 +297,7 @@ std::optional<typename P::Message> GameGraph<P>::UpdateNode(
     edge = &node->tried[index];
   }
   node->version = ++shard.version;
-  return P::ApplyMessage(*node, edge, message);
+  return P::BackupThroughNode(*node, edge, backup);
 }
 
 template <typename P>

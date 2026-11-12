@@ -68,7 +68,7 @@ struct ValueStats {
   float q = 0.0f;
   float d = 0.0f;
   float m = 0.0f;
-  // Maintained by the policy from the messages; Add leaves them alone.
+  // Maintained by the policy during backup; Add leaves them alone.
   GameResultBounds bounds{};
 
   float Q() const { return q; }

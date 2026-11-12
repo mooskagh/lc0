@@ -36,36 +36,35 @@
 namespace lczero::lc5 {
 namespace {
 
+struct TestPolicy : PuctPolicy<TestPolicy> {};
+
 Move M(File from, File to) {
   return Move::White(Square(from, kRank2), Square(to, kRank3));
 }
 
 // A node with two of its three edges tried, active reservations, visits and
 // proven bounds.
-Node<PuctAveraging> SampleNode() {
-  Node<PuctAveraging> node{
-      .version = 7,
-      .in_flight = 2,
-      .edges = {{.move = M(kFileA, kFileA), .prior = 0.5f},
-                {.move = M(kFileB, kFileB), .prior = 0.3f},
-                {.move = M(kFileC, kFileC), .prior = 0.2f}},
-      .tried = {{.in_flight = 1}, {.in_flight = 1}}};
-  PuctAveraging::ApplyMessage(node, nullptr,
-                              PuctAveraging::MakeLeafMessage(
-                                  {.q = 0.5f, .d = 0.25f, .m = 6.0f}, false));
-  PuctAveraging::ApplyMessage(node, &node.tried[0],
-                              PuctAveraging::MakeLeafMessage(
-                                  {.q = -0.75f, .d = 0.25f, .m = 3.0f}, true));
-  PuctAveraging::ApplyMessage(node, &node.tried[1],
-                              PuctAveraging::MakeLeafMessage(
-                                  {.q = -0.75f, .d = 0.25f, .m = 3.0f}, false));
+Node<TestPolicy> SampleNode() {
+  Node<TestPolicy> node{.version = 7,
+                        .in_flight = 2,
+                        .edges = {{.move = M(kFileA, kFileA), .prior = 0.5f},
+                                  {.move = M(kFileB, kFileB), .prior = 0.3f},
+                                  {.move = M(kFileC, kFileC), .prior = 0.2f}},
+                        .tried = {{.in_flight = 1}, {.in_flight = 1}}};
+  node.stats.Add({.q = 0.5f, .d = 0.25f, .m = 6.0f});
+  node.stats.Add({.q = -0.75f, .d = 0.25f, .m = 3.0f});
+  node.tried[0].stats.Add({.q = -0.75f, .d = 0.25f, .m = 3.0f});
+  TestPolicy::UpdateBounds(node, &node.tried[0],
+                           GameResultBounds::Exact(-0.75f, 3.0f));
+  node.stats.Add({.q = -0.75f, .d = 0.25f, .m = 3.0f});
+  node.tried[1].stats.Add({.q = -0.75f, .d = 0.25f, .m = 3.0f});
   return node;
 }
 
 TEST(Lc5NodeSerializationTest, RoundTripKeepsStatisticsAndEdges) {
   const auto node = SampleNode();
   ASSERT_EQ(node.tried.size(), 2u);
-  const auto deserialized = DeserializeNode<PuctAveraging>(SerializeNode(node));
+  const auto deserialized = DeserializeNode<TestPolicy>(SerializeNode(node));
   EXPECT_EQ(deserialized.version, 0u);
   EXPECT_EQ(deserialized.in_flight, 0u);
   EXPECT_EQ(deserialized.terminal, node.terminal);
@@ -90,13 +89,13 @@ TEST(Lc5NodeSerializationTest, RoundTripKeepsStatisticsAndEdges) {
   EXPECT_TRUE(deserialized.tried[0].stats.bounds.Proven());
 
   // A terminal node has no edges.
-  Node<PuctAveraging> terminal_node{.terminal = TerminalKind::kCheckmate};
-  PuctAveraging::ApplyMessage(
-      terminal_node, nullptr,
-      PuctAveraging::MakeLeafMessage(TerminalValue(TerminalKind::kCheckmate),
-                                     true));
+  Node<TestPolicy> terminal_node{.terminal = TerminalKind::kCheckmate};
+  const VisitValue loss = TerminalValue(TerminalKind::kCheckmate);
+  terminal_node.stats.Add(loss);
+  TestPolicy::UpdateBounds(terminal_node, nullptr,
+                           GameResultBounds::Exact(loss.q, loss.m));
   const auto terminal =
-      DeserializeNode<PuctAveraging>(SerializeNode(terminal_node));
+      DeserializeNode<TestPolicy>(SerializeNode(terminal_node));
   EXPECT_EQ(terminal.terminal, TerminalKind::kCheckmate);
   EXPECT_TRUE(terminal.edges.empty());
   EXPECT_TRUE(terminal.tried.empty());
