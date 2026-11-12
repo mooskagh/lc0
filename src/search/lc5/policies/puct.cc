@@ -82,31 +82,6 @@ const OptionId kStickyEndgames{
 
 }  // namespace
 
-ThinkingInfo::WDL WdlFromValue(float q, float d) {
-  d = std::clamp(d, 0.0f, 1.0f);
-  const int draw = static_cast<int>(d * 1000.0f);
-  const int win = static_cast<int>((1.0f - d + q) * 500.0f);
-  return {std::clamp(win, 0, 1000), draw,
-          std::clamp(1000 - win - draw, 0, 1000)};
-}
-
-int CentipawnsFromQ(float q) {
-  return static_cast<int>(90 * std::tan(1.5637541897 * q));
-}
-
-float PuctParams::MovesLeft::Utility(float child_m, float node_m,
-                                     float q) const {
-  const float m =
-      std::clamp(slope * (child_m - node_m), -max_effect, max_effect) *
-      FastSign(-q);
-  float abs_q = std::abs(q);
-  if (threshold > 0.0f && threshold < 1.0f) {
-    abs_q = std::max(0.0f, abs_q - threshold) / (1.0f - threshold);
-  }
-  return m * (constant_factor + scaled_factor * abs_q +
-              quadratic_factor * abs_q * abs_q);
-}
-
 void PuctParams::Populate(OptionsParser* options) {
   const PuctParams defaults;
   options->Add<FloatOption>(kCpuct, 0.0f, 100.0f) = defaults.cpuct;
@@ -153,6 +128,41 @@ PuctParams PuctParams::FromOptions(const OptionsDict& options,
            .scaled_factor = options.Get<float>(kMovesLeftScaledFactor),
            .quadratic_factor = options.Get<float>(kMovesLeftQuadraticFactor)},
       .sticky_endgames = options.Get<bool>(kStickyEndgames)};
+}
+
+float PuctParams::MovesLeft::Utility(float child_m, float node_m,
+                                     float q) const {
+  const float m =
+      std::clamp(slope * (child_m - node_m), -max_effect, max_effect) *
+      FastSign(-q);
+  float abs_q = std::abs(q);
+  if (threshold > 0.0f && threshold < 1.0f) {
+    abs_q = std::max(0.0f, abs_q - threshold) / (1.0f - threshold);
+  }
+  return m * (constant_factor + scaled_factor * abs_q +
+              quadratic_factor * abs_q * abs_q);
+}
+
+ThinkingInfo::WDL WdlFromValue(float q, float d) {
+  q = std::clamp(q, -1.0f, 1.0f);
+  d = std::clamp(d, 0.0f, 1.0f);
+  int w = std::max(0, static_cast<int>(std::lround(500.0 * (1.0 + q - d))));
+  int l = std::max(0, static_cast<int>(std::lround(500.0 * (1.0 - q - d))));
+  int draw = 1000 - w - l;
+  if (draw < 0) {
+    // Both w and l landed on .5 and rounded up (w + l == 1001); round to even.
+    if (w % 2 != 0) {
+      --w;
+    } else {
+      --l;
+    }
+    draw = 0;
+  }
+  return {w, draw, l};
+}
+
+int CentipawnsFromQ(float q) {
+  return static_cast<int>(90 * std::tan(1.5637541897 * q));
 }
 
 // The default policy.

@@ -393,6 +393,50 @@ TEST(Lc5PuctTest, GetBestMoveRanksVisitsThenQThenPrior) {
   EXPECT_EQ(PuctAveraging::GetBestMove(node, TestParams()), node.edges[0].move);
 }
 
+TEST(Lc5PuctTest, WdlFromValueInvariantsAndEdgeCases) {
+  const auto check = [](float q, float d) {
+    const auto wdl = WdlFromValue(q, d);
+    EXPECT_GE(wdl.w, 0);
+    EXPECT_LE(wdl.w, 1000);
+    EXPECT_GE(wdl.d, 0);
+    EXPECT_LE(wdl.d, 1000);
+    EXPECT_GE(wdl.l, 0);
+    EXPECT_LE(wdl.l, 1000);
+    EXPECT_EQ(wdl.w + wdl.d + wdl.l, 1000);
+    const auto flipped = WdlFromValue(-q, d);
+    EXPECT_EQ(wdl.w, flipped.l);
+    EXPECT_EQ(wdl.d, flipped.d);
+    EXPECT_EQ(wdl.l, flipped.w);
+    return std::tuple(wdl.w, wdl.d, wdl.l);
+  };
+
+  // High-draw edge case: q > 0 should not flip to L > W by truncation.
+  EXPECT_EQ(check(0.0005f, 0.999f), std::tuple(1, 999, 0));
+  EXPECT_EQ(check(-0.0005f, 0.999f), std::tuple(0, 999, 1));
+
+  // Float representation slightly below integer (0.29f * 1000 < 290) and
+  // odd-draw equal positions (0.375 -> 375 permille) keep W == L.
+  EXPECT_EQ(check(0.0f, 0.29f), std::tuple(355, 290, 355));
+  EXPECT_EQ(check(0.0f, 0.375f), std::tuple(313, 374, 313));
+  check(0.0f, 0.003f);
+
+  // Exact .5 ties on both W and L when d == 0 (562.5 + 437.5).
+  EXPECT_EQ(check(0.125f, 0.0f), std::tuple(562, 0, 438));
+
+  // Out-of-simplex / out-of-range float drift still stays in [0, 1000] and
+  // sums to 1000.
+  EXPECT_EQ(check(0.003f, 0.999f), std::tuple(2, 998, 0));
+  EXPECT_EQ(check(-0.003f, 0.999f), std::tuple(0, 998, 2));
+  EXPECT_EQ(check(0.002f, 1.0f), std::tuple(1, 999, 0));
+  EXPECT_EQ(check(1.5f, -0.1f), std::tuple(1000, 0, 0));
+
+  for (int qi = -120; qi <= 120; ++qi) {
+    for (int di = -10; di <= 110; ++di) {
+      check(qi * 0.01f, di * 0.01f);
+    }
+  }
+}
+
 TEST(Lc5PuctTest, FillThinkingInfoNeedsVisits) {
   const auto describe = [](ValueStats stats, ThinkingInfo& info) {
     PuctAveraging::FillThinkingInfo(Node{.stats = stats}, TestParams(), info);
