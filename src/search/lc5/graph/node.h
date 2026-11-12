@@ -55,6 +55,8 @@ struct TriedEdge {
   uint16_t in_flight = 0;  // Virtual loss; bounded by kMaxActiveVisitsLimit.
   static_assert(kMaxActiveVisitsLimit <=
                 std::numeric_limits<decltype(in_flight)>::max());
+
+  uint32_t VisitsStarted() const { return stats.visits + in_flight; }
 };
 
 // Tie-break order for edges: descending prior, then ascending move encoding.

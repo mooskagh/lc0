@@ -34,6 +34,7 @@
 
 #include "search/lc5/policies/policy_engine.h"
 #include "search/lc5/policies/registry.h"
+#include "utils/fastmath.h"
 
 namespace lczero::lc5 {
 namespace {
@@ -91,6 +92,19 @@ ThinkingInfo::WDL WdlFromValue(float q, float d) {
 
 int CentipawnsFromQ(float q) {
   return static_cast<int>(90 * std::tan(1.5637541897 * q));
+}
+
+float PuctParams::MovesLeft::Utility(float child_m, float node_m,
+                                     float q) const {
+  const float m =
+      std::clamp(slope * (child_m - node_m), -max_effect, max_effect) *
+      FastSign(-q);
+  float abs_q = std::abs(q);
+  if (threshold > 0.0f && threshold < 1.0f) {
+    abs_q = std::max(0.0f, abs_q - threshold) / (1.0f - threshold);
+  }
+  return m * (constant_factor + scaled_factor * abs_q +
+              quadratic_factor * abs_q * abs_q);
 }
 
 void PuctParams::Populate(OptionsParser* options) {

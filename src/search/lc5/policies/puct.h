@@ -40,7 +40,6 @@
 #include "search/lc5/graph/graph.h"
 #include "search/lc5/graph/value.h"
 #include "search/lc5/policies/policy_engine.h"
-#include "utils/fastmath.h"
 #include "utils/optionsdict.h"
 #include "utils/optionsparser.h"
 
@@ -66,6 +65,14 @@ struct PuctParams {
     float constant_factor = 0.0f;
     float scaled_factor = 1.6521f;
     float quadratic_factor = -0.6521f;
+
+    bool ActiveAt(float node_q) const {
+      return enabled && std::abs(node_q) > threshold;
+    }
+    // A bonus for a winning edge whose child has fewer moves left than the
+    // node, or a losing one whose child has more; scaled by the edge's |Q|
+    // above `threshold`.
+    float Utility(float child_m, float node_m, float q) const;
   };
   MovesLeft moves_left = {};
   // Use proven bounds in selection, the move choice, early stopping and
@@ -181,76 +188,64 @@ static_assert(sizeof(TriedEdge<PuctAveraging>) <= 24);
 template <typename Self>
 size_t PuctPolicy<Self>::PickEdgeToVisit(const Node<Self>& node,
                                          const Params& params) {
-  const auto started = [](const TriedEdge<Self>& tried) {
-    return tried.stats.visits + tried.in_flight;
-  };
+  assert(!node.edges.empty());
+  const NodeStats& stats = node.stats;
+
   // Started visits (completed plus in flight) count in the parent's totals,
   // sqrt(N) and the FPU visited policy, as well as in the edge's own U.
   // Only tried edges have been started, so the sums only need that prefix.
-  uint64_t children_started = 0;
+  uint64_t children_visits_started = 0;
   float visited_policy = 0.0f;
   for (size_t i = 0; i < node.tried.size(); ++i) {
-    const uint32_t n = started(node.tried[i]);
-    children_started += n;
+    const uint32_t n = node.tried[i].VisitsStarted();
+    children_visits_started += n;
     if (n > 0) visited_policy += node.edges[i].prior;
   }
+
   const float cpuct =
       params.cpuct +
       params.cpuct_factor *
-          std::log((node.stats.visits + params.cpuct_base) / params.cpuct_base);
-  const float scale =
-      std::sqrt(static_cast<float>(std::max<uint64_t>(1, children_started)));
+          std::log((stats.visits + params.cpuct_base) / params.cpuct_base);
+  const float puct_mult =
+      cpuct * std::sqrt(static_cast<float>(
+                  std::max<uint64_t>(1, children_visits_started)));
   const float fpu =
       params.fpu_strategy == FpuStrategy::kAbsolute
           ? params.fpu_value
-          : node.stats.Q() - params.fpu_value * std::sqrt(visited_policy);
-  const auto& ml = params.moves_left;
-  // The moves-left utility applies only in clearly decided nodes.
-  const bool use_m = ml.enabled && std::abs(node.stats.Q()) > ml.threshold;
-  // A bonus for a winning edge whose child has fewer moves left than the node,
-  // or a losing one whose child has more; scaled by the edge's |Q| above the
-  // threshold.
-  const auto m_utility = [&](const TriedEdge<Self>& tried, float q) {
+          : stats.Q() - params.fpu_value * std::sqrt(visited_policy);
+  const bool use_m = params.moves_left.ActiveAt(stats.Q());
+
+  // With StickyEndgames, a proven edge scores its exact value without a
+  // moves-left term, and an unproven one stays within its bounds.
+  const auto utility = [&](const TriedEdge<Self>& tried) -> float {
+    if (tried.stats.visits == 0) return fpu;
+    const GameResultBounds& bounds = tried.stats.bounds;
+    if (params.sticky_endgames && bounds.Proven()) return bounds.lower;
+    const float q =
+        params.sticky_endgames
+            ? std::clamp<float>(tried.stats.Q(), bounds.lower, bounds.upper)
+            : tried.stats.Q();
     // The edge's M is one ply longer than the child's.
-    const float m_diff = tried.stats.M() - 1.0f - node.stats.M();
-    const float m =
-        std::clamp(ml.slope * m_diff, -ml.max_effect, ml.max_effect) *
-        FastSign(-q);
-    if (ml.threshold > 0.0f && ml.threshold < 1.0f) {
-      q = std::max(0.0f, std::abs(q) - ml.threshold) / (1.0f - ml.threshold);
-    }
-    return m * (ml.constant_factor + ml.scaled_factor * std::abs(q) +
-                ml.quadratic_factor * q * q);
+    return use_m ? q + params.moves_left.Utility(tried.stats.M() - 1.0f,
+                                                 stats.M(), q)
+                 : q;
   };
+
+  // Untried edges get neither bounds nor a moves-left term, so they share one
+  // score apart from the prior.
   const auto score = [&](size_t i) {
-    const bool is_tried = i < node.tried.size();
-    const bool has_visits = is_tried && node.tried[i].stats.visits;
-    float q = has_visits ? node.tried[i].stats.Q() : fpu;
-    // With StickyEndgames, a proven edge scores its exact value without a
-    // moves-left term, and an unproven one stays within its bounds. Untried
-    // edges get neither, nor a moves-left term, so they still share one score
-    // apart from the prior.
-    if (has_visits && params.sticky_endgames) {
-      const GameResultBounds& bounds = node.tried[i].stats.bounds;
-      if (bounds.Proven()) {
-        q = bounds.lower;
-      } else {
-        q = std::clamp<float>(q, bounds.lower, bounds.upper);
-        if (use_m) q += m_utility(node.tried[i], q);
-      }
-    } else if (has_visits && use_m) {
-      q += m_utility(node.tried[i], q);
-    }
-    const uint32_t n = is_tried ? started(node.tried[i]) : 0u;
-    return q + cpuct * node.edges[i].prior * scale / (1.0f + n);
+    const float prior = node.edges[i].prior;
+    if (i >= node.tried.size()) return fpu + puct_mult * prior;
+    const auto& tried = node.tried[i];
+    return utility(tried) + puct_mult * prior / (1.0f + tried.VisitsStarted());
   };
-  const auto pick_best = [&](size_t end) {
+
+  const auto pick_best = [&](size_t count) {
     size_t best = 0;
     float best_score = score(0);
-    for (size_t i = 1; i < end; ++i) {
-      const float s = score(i);
+    for (size_t i = 1; i < count; ++i) {
       // Ties keep the lower index, which PreferOnTie prefers.
-      if (s > best_score) {
+      if (const float s = score(i); s > best_score) {
         best = i;
         best_score = s;
       }
@@ -260,10 +255,10 @@ size_t PuctPolicy<Self>::PickEdgeToVisit(const Node<Self>& node,
 
   // Untried edges share the FPU and are sorted by PreferOnTie, so the first
   // one beats or ties all later ones and wins the tie.
-  const size_t best_index =
+  const size_t best =
       pick_best(std::min(node.tried.size() + 1, node.edges.size()));
-  assert(pick_best(node.edges.size()) == best_index);
-  return best_index;
+  assert(pick_best(node.edges.size()) == best);
+  return best;
 }
 
 template <typename Self>
