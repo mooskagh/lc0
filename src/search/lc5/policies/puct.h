@@ -167,18 +167,41 @@ struct PuctPolicy {
   // The node's bounds from its edges' bounds, which are in the node's frame.
   // An untried edge is unknown.
   static GameResultBounds ComputeBoundsFromEdges(const Node<Self>& node);
+  // Tightens `cur` monotonically with `incoming`, returning whether `cur`
+  // changed. Lagging concurrent, 2-fold skip, or evicted stale backups carry
+  // looser `{-1, 1}` bounds and must never un-prove an already proven bound.
+  static bool TightenBounds(GameResultBounds& cur,
+                            const GameResultBounds& incoming) {
+    const int8_t lower = std::max(cur.lower, incoming.lower);
+    const int8_t upper = std::min(cur.upper, incoming.upper);
+    if (lower > upper) return false;
+    uint8_t plies = 0;
+    if (lower == upper) {
+      if (cur.Proven() && incoming.Proven()) {
+        plies = std::min(cur.plies, incoming.plies);
+      } else if (cur.Proven()) {
+        plies = cur.plies;
+      } else if (incoming.Proven()) {
+        plies = incoming.plies;
+      }
+    }
+    const GameResultBounds updated{
+        .lower = lower, .upper = upper, .plies = plies};
+    if (cur == updated) return false;
+    cur = updated;
+    return true;
+  }
   // Sets the bounds after an update with `bounds` from the edge (or, without
   // an edge, the node's own leaf): a terminal's bounds are its leaf's, and a
-  // non-terminal node's follow from its edges'.
+  // non-terminal node's follow from its edges'. Both tighten monotonically.
   static void UpdateBounds(Node<Self>& node, TriedEdge<Self>* edge,
                            const GameResultBounds& bounds) {
     if (node.edges.empty()) {
       // A terminal's bounds are its own leaf's.
-      node.stats.bounds = bounds;
-    } else if (edge && edge->stats.bounds != bounds) {
+      TightenBounds(node.stats.bounds, bounds);
+    } else if (edge && TightenBounds(edge->stats.bounds, bounds)) {
       // Bounds rarely change, so the node is recomputed only then. A
       // node-only update (the leaf's own value) leaves them alone.
-      edge->stats.bounds = bounds;
       node.stats.bounds = ComputeBoundsFromEdges(node);
     }
   }
@@ -255,17 +278,36 @@ size_t PuctPolicy<Self>::PickEdgeToVisit(const Node<Self>& node,
            best_move_visits - edge_visits > remaining_root_visits;
   };
 
+  const auto is_proven_loss = [&](size_t i) {
+    return params.sticky_endgames && i < node.tried.size() &&
+           node.tried[i].stats.visits > 0 &&
+           node.tried[i].stats.bounds.upper == -1;
+  };
+
+  // Skip proven losses whenever any non-losing (including untried or
+  // in-flight) candidate exists, even if unclamped reduction FPU falls below -1.
   const auto pick_best = [&](size_t count) {
-    std::optional<size_t> best;
-    float best_score = 0.0f;
-    for (size_t i = 0; i < count; ++i) {
-      if (is_pruned(i)) continue;
+    std::optional<size_t> best_non_loss;
+    float best_non_loss_score = 0.0f;
+    std::optional<size_t> best_loss;
+    float best_loss_score = 0.0f;
+    const auto consider = [&](std::optional<size_t>& best, float& best_score,
+                              size_t i) {
       // Ties keep the lower index, which PreferOnTie prefers.
       if (const float s = score(i); !best || s > best_score) {
         best = i;
         best_score = s;
       }
+    };
+    for (size_t i = 0; i < count; ++i) {
+      if (is_pruned(i)) continue;
+      if (is_proven_loss(i)) {
+        if (!best_non_loss) consider(best_loss, best_loss_score, i);
+      } else {
+        consider(best_non_loss, best_non_loss_score, i);
+      }
     }
+    const std::optional<size_t> best = best_non_loss ? best_non_loss : best_loss;
     assert(best.has_value());
     return *best;
   };
@@ -300,7 +342,11 @@ size_t PuctPolicy<Self>::BestEdgeIndex(const Node<Self>& node,
             : ValueStats{};
     const int outcome =
         params.sticky_endgames && s.bounds.Proven() ? s.bounds.lower : 0;
-    return std::tuple(outcome, -outcome * s.bounds.plies, s.visits, s.Q());
+    const float q =
+        params.sticky_endgames
+            ? std::clamp<float>(s.Q(), s.bounds.lower, s.bounds.upper)
+            : s.Q();
+    return std::tuple(outcome, -outcome * s.bounds.plies, s.visits, q);
   };
   // Untried edges share empty stats and are sorted by PreferOnTie, so the first
   // one ties all later ones and wins the tie.

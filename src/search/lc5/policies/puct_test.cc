@@ -711,6 +711,191 @@ TEST(Lc5PuctTest, PolicyEnginePrunesOnlyAtOrigin) {
   engine->CancelVisit(unpruned);
 }
 
+TEST(Lc5PuctTest, StickySelectionSkipsProvenLossesUnlessAllLose) {
+  PuctParams params = TestParams();
+  params.fpu_strategy = FpuStrategy::kReduction;
+  params.fpu_value = 0.33f;
+  params.sticky_endgames = true;
+
+  // With unclamped reduction FPU below -1.0, a proven-loss edge's score
+  // (-1 + U > -1) would beat unvisited/untried alternatives without skipping.
+  Node node;
+  node.edges = {MakeEdge(kFileA, 0.5f), MakeEdge(kFileB, 0.49f),
+                MakeEdge(kFileC, 0.01f)};
+  node.tried = {
+      {.stats = {.visits = 10,
+                 .q = -1.0f,
+                 .bounds = {.lower = -1, .upper = -1, .plies = 13}}},
+      {.in_flight = 4}};
+  node.stats = {.visits = 20, .q = -0.95f};
+
+  // Edge 1 has visits == 0 and in_flight == 4 -> non-loss, beats proven-loss 0
+  // and outscores low-prior untried edge 2.
+  EXPECT_EQ(TestPolicy::PickEdgeToVisit(node, params), 1u);
+
+  // Without sticky_endgames, raw PUCT prefers edge 0 despite its loss bounds.
+  PuctParams non_sticky = params;
+  non_sticky.sticky_endgames = false;
+  EXPECT_EQ(TestPolicy::PickEdgeToVisit(node, non_sticky), 0u);
+
+  // If edge 1 also proves a loss, untried edge 2 beats both proven losses.
+  node.tried[1] = {.stats = {.visits = 10,
+                             .q = -1.0f,
+                             .bounds = {.lower = -1, .upper = -1, .plies = 9}}};
+  EXPECT_EQ(TestPolicy::PickEdgeToVisit(node, params), 2u);
+
+  // A tried proven draw beats proven losses.
+  node.tried.push_back(
+      {.stats = {.visits = 1,
+                 .q = 0.0f,
+                 .bounds = {.lower = 0, .upper = 0, .plies = 0}}});
+  EXPECT_EQ(TestPolicy::PickEdgeToVisit(node, params), 2u);
+
+  // If every edge is a proven loss, fall back to the highest-scoring loss and
+  // still obey root remaining-visit pruning (longest resistance = best move).
+  node.tried[2] = {
+      .stats = {.visits = 11,
+                .q = -1.0f,
+                .bounds = {.lower = -1, .upper = -1, .plies = 15}}};
+  EXPECT_EQ(TestPolicy::PickEdgeToVisit(node, params), 0u);
+  EXPECT_EQ(TestPolicy::PickEdgeToVisit(node, params, 0), 2u);
+}
+
+TEST(Lc5PuctTest, BestEdgeIndexClampsProvenDrawQ) {
+  Node node;
+  node.edges = {MakeEdge(kFileA, 0.5f), MakeEdge(kFileB, 0.5f)};
+  node.tried = {
+      {.stats = {.visits = 5,
+                 .q = 0.4f,
+                 .bounds = {.lower = 0, .upper = 0, .plies = 0}}},
+      {.stats = {.visits = 5, .q = 0.1f}}};
+
+  PuctParams params = TestParams();
+  params.sticky_endgames = true;
+  // Proven draw clamps edge 0 Q to 0.0, so equal-visit edge 1 (+0.1) wins.
+  EXPECT_EQ(TestPolicy::BestEdgeIndex(node, params), 1u);
+
+  params.sticky_endgames = false;
+  EXPECT_EQ(TestPolicy::BestEdgeIndex(node, params), 0u);
+}
+
+TEST(Lc5PuctTest, UpdateBoundsRemainsMonotonicUnderStaleBackups) {
+  // Non-terminal node: proven win / loss / draw bounds resist stale {-1, 1}.
+  Node node;
+  node.edges = {MakeEdge(kFileA, 0.6f), MakeEdge(kFileB, 0.4f)};
+  node.tried = {{}, {}};
+
+  TestPolicy::UpdateBounds(node, &node.tried[0],
+                           {.lower = 1, .upper = 1, .plies = 5});
+  EXPECT_EQ(node.stats.bounds,
+            (GameResultBounds{.lower = 1, .upper = 1, .plies = 5}));
+
+  TestPolicy::UpdateBounds(node, &node.tried[0], GameResultBounds{});
+  EXPECT_EQ(node.tried[0].stats.bounds,
+            (GameResultBounds{.lower = 1, .upper = 1, .plies = 5}));
+  EXPECT_EQ(node.stats.bounds,
+            (GameResultBounds{.lower = 1, .upper = 1, .plies = 5}));
+
+  // Shorter win still tightens, while a lagging longer win is ignored.
+  TestPolicy::UpdateBounds(node, &node.tried[0],
+                           {.lower = 1, .upper = 1, .plies = 3});
+  TestPolicy::UpdateBounds(node, &node.tried[0],
+                           {.lower = 1, .upper = 1, .plies = 7});
+  EXPECT_EQ(node.tried[0].stats.bounds,
+            (GameResultBounds{.lower = 1, .upper = 1, .plies = 3}));
+
+  // Losing parent keeps longest resistance across edges and ignores stale.
+  Node losing;
+  losing.edges = {MakeEdge(kFileA, 0.6f), MakeEdge(kFileB, 0.4f)};
+  losing.tried = {{}, {}};
+  TestPolicy::UpdateBounds(losing, &losing.tried[0],
+                           {.lower = -1, .upper = -1, .plies = 6});
+  TestPolicy::UpdateBounds(losing, &losing.tried[1],
+                           {.lower = -1, .upper = -1, .plies = 4});
+  EXPECT_EQ(losing.stats.bounds,
+            (GameResultBounds{.lower = -1, .upper = -1, .plies = 6}));
+  TestPolicy::UpdateBounds(losing, &losing.tried[1], GameResultBounds{});
+  EXPECT_EQ(losing.tried[1].stats.bounds,
+            (GameResultBounds{.lower = -1, .upper = -1, .plies = 4}));
+  EXPECT_EQ(losing.stats.bounds,
+            (GameResultBounds{.lower = -1, .upper = -1, .plies = 6}));
+
+  // Opposite half-bounds narrow cleanly to a proven draw, then stay proven.
+  Node partial;
+  partial.edges = {MakeEdge(kFileA, 1.0f)};
+  partial.tried = {{}};
+  TestPolicy::UpdateBounds(partial, &partial.tried[0],
+                           {.lower = -1, .upper = 0, .plies = 0});
+  TestPolicy::UpdateBounds(partial, &partial.tried[0],
+                           {.lower = 0, .upper = 1, .plies = 0});
+  TestPolicy::UpdateBounds(partial, &partial.tried[0], GameResultBounds{});
+  EXPECT_EQ(partial.tried[0].stats.bounds,
+            (GameResultBounds{.lower = 0, .upper = 0, .plies = 0}));
+  EXPECT_EQ(partial.stats.bounds,
+            (GameResultBounds{.lower = 0, .upper = 0, .plies = 0}));
+
+  // Terminal node ignores stale unproven backups.
+  Node terminal;
+  TestPolicy::UpdateBounds(terminal, nullptr,
+                           {.lower = -1, .upper = -1, .plies = 0});
+  TestPolicy::UpdateBounds(terminal, nullptr, GameResultBounds{});
+  EXPECT_EQ(terminal.stats.bounds,
+            (GameResultBounds{.lower = -1, .upper = -1, .plies = 0}));
+}
+
+TEST(Lc5PuctTest, LaggingVisitDoesNotUnproveEdgeInEngine) {
+  const VisitOrigin root = StartOrigin();
+  const auto root_moves = root.history.Last().GetBoard().GenerateLegalMoves();
+  const Move m0 = root_moves[0];
+  const Move m1 = root_moves[1];
+  VisitOrigin child = root;
+  child.history.Append(m0);
+  child.key = MakeNodeKey(child.history, 7);
+  const Move reply = child.history.Last().GetBoard().GenerateLegalMoves()[0];
+  VisitOrigin grandchild = child;
+  grandchild.history.Append(reply);
+  grandchild.key = MakeNodeKey(grandchild.history, 7);
+
+  auto engine = MakeConfiguredEngine("puct-dag", /*sticky_endgames=*/true);
+  ASSERT_TRUE(engine->CompleteMaterialization(
+      root.key, {.moves = {m0, m1}, .priors = {0.9f, 0.1f}}));
+  ASSERT_TRUE(engine->CompleteMaterialization(
+      child.key, {.moves = {reply}, .priors = {1.0f}}));
+
+  // First visit stops at unmaterialized `grandchild` before it is proved.
+  Metrics metrics;
+  Visit lagging = MakeVisit(root);
+  ASSERT_EQ(engine->DescendVisit(lagging, metrics),
+            VisitEngine::DescendResult::kUnmaterializedLeaf);
+  ASSERT_EQ(lagging.path.size(), 3u);
+  ASSERT_EQ(lagging.path[0].selected_move, m0);
+
+  // Grandchild materializes as a checkmate terminal; a second visit still
+  // prefers m0 (0.9 / 2 > 0.1) and proves child (win in 1) and m0 (loss in 2).
+  ASSERT_TRUE(engine->CompleteMaterialization(
+      grandchild.key, {.terminal = TerminalKind::kCheckmate,
+                       .leaf = TerminalValue(TerminalKind::kCheckmate),
+                       .moves = {},
+                       .priors = {}}));
+  Visit proving = MakeVisit(root);
+  ASSERT_EQ(engine->DescendVisit(proving, metrics),
+            VisitEngine::DescendResult::kValuedLeaf);
+  ASSERT_EQ(proving.path[0].selected_move, m0);
+  engine->BackupVisit(proving, metrics);
+
+  // Now the lagging visit finishes without terminal bounds (e.g. a concurrent
+  // 2-fold or NN leaf). `child` and `m0` must stay proven, so the next visit
+  // avoids `m0` and picks `m1`.
+  lagging.result = {.q = 0.0f};
+  engine->BackupVisit(lagging, metrics);
+
+  Visit next = MakeVisit(root);
+  EXPECT_EQ(engine->DescendVisit(next, metrics),
+            VisitEngine::DescendResult::kUnmaterializedLeaf);
+  EXPECT_EQ(next.path[0].selected_move, m1);
+  engine->CancelVisit(next);
+}
+
 }  // namespace
 }  // namespace lczero::lc5
 
