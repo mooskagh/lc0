@@ -118,7 +118,7 @@ class PolicyEngine final : public VisitEngine {
 
   GameGraph<P> graph_;
   typename P::Params params_{};
-  int history_key_length_ = 7;  // Preceding positions hashed into a NodeKey.
+  int history_key_length_ = 1;  // Preceding positions hashed into a NodeKey.
   std::atomic<uint64_t> root_remaining_visits_{
       std::numeric_limits<uint64_t>::max()};
   std::unique_ptr<NodeStore> store_;
@@ -150,15 +150,18 @@ VisitEngine::DescendResult PolicyEngine<P>::DescendVisit(Visit& visit,
     step.update_node = selection.status != SelectResult::kNodeMissing;
     switch (selection.status) {
       case SelectResult::kNodeMissing:
+        visit.result_path_dependent = false;
         return DescendResult::kUnmaterializedLeaf;
       case SelectResult::kNodeTerminal:
         visit.result = TerminalValue(selection.terminal);
         visit.result_exact = IsExact(selection.terminal);
+        visit.result_path_dependent = false;
         metrics.terminal_visits.fetch_add(1);
         return DescendResult::kValuedLeaf;
       case SelectResult::kNodeProven:
         visit.result = selection.value;
         visit.result_exact = true;
+        visit.result_path_dependent = false;
         metrics.proven_visits.fetch_add(1);
         return DescendResult::kValuedLeaf;
       case SelectResult::kEdgeSelected:
@@ -173,7 +176,8 @@ VisitEngine::DescendResult PolicyEngine<P>::DescendVisit(Visit& visit,
 template <typename P>
 void PolicyEngine<P>::BackupVisit(const Visit& visit, Metrics& metrics) {
   assert(visit.path.empty() || !visit.path.back().selected_move);
-  auto backup = P::MakeLeafBackup(visit.result, visit.result_exact);
+  auto backup = P::MakeLeafBackup(visit.result, visit.result_exact,
+                                  visit.result_path_dependent);
   for (auto it = visit.path.rbegin(); it != visit.path.rend(); ++it) {
     // Skip repetition leaves and leaves already counted at installation.
     if (!it->update_node) {
@@ -315,6 +319,7 @@ VisitEngine::ResumeAction PolicyEngine<P>::FollowEdge(Visit& visit, Move move,
     RaiseHighWater(metrics.max_selected_depth, visit.path.size());
     visit.result = TerminalValue(TerminalKind::kRepetition);
     visit.result_exact = false;
+    visit.result_path_dependent = true;
     metrics.terminal_visits.fetch_add(1);
     metrics.two_fold_visits.fetch_add(1);
     return ResumeAction::kBackup;

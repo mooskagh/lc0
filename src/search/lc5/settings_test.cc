@@ -50,7 +50,7 @@ TEST(Lc5SettingsTest, DefaultsResolveAgainstBackend) {
   EXPECT_EQ(resolved.minibatch_size, 64);
   EXPECT_EQ(resolved.max_active_visits, 320);
   EXPECT_FLOAT_EQ(resolved.active_visits_ratio, 0.25f);
-  EXPECT_EQ(settings.history_key_length(), 7);
+  EXPECT_EQ(settings.history_key_length(), 1);
 }
 
 TEST(Lc5SettingsTest, ResolvesLargeBatchMaxActiveVisits) {

@@ -56,7 +56,6 @@ static_assert(sizeof(Node<PuctAveraging>) == 64);
 
 }  // namespace
 
-// The default policy.
 REGISTER_LC5_POLICY(PuctAveraging, 100)
 
 }  // namespace lczero::lc5

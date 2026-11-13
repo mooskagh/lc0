@@ -76,6 +76,9 @@ struct Visit {
   VisitValue result;
   // `result` is exact: a terminal other than a repetition, or a proven node.
   bool result_exact = false;
+  // `result` depends on the search path (an in-search two-fold repetition), so
+  // DAG policies must not treat it as the child node's intrinsic value.
+  bool result_path_dependent = false;
 };
 
 }  // namespace lczero::lc5

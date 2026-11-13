@@ -77,7 +77,7 @@ void Settings::Populate(OptionsParser* options) {
   // Backend maximum is only known when a run starts; Resolve validates it.
   options->Add<IntOption>(kMinibatchSize, 0, 1000000) = 0;
   options->Add<IntOption>(kMaxActiveVisits, 0, kMaxActiveVisitsLimit) = 0;
-  options->Add<IntOption>(kHistoryKeyLength, 0, 7) = 7;
+  options->Add<IntOption>(kHistoryKeyLength, 0, 7) = 1;
   options->Add<IntOption>(kMaxBatchDelay, 0, 100) = 2;
   options->Add<FloatOption>(kActiveVisitsRatio, 0.0f, 100.0f) = 0.25f;
   options->Add<IntOption>(kGraphNodeLimit, 0, 2'000'000'000) = 0;

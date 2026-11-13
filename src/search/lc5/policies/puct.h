@@ -108,6 +108,9 @@ struct PuctPolicy {
   struct BackupValue {
     VisitValue value;
     GameResultBounds bounds = {};
+    // True for path-dependent leaves (in-search 2-fold draws) so DAG policies
+    // fold them as a single sample rather than replacing cached edge stats.
+    bool path_dependent = false;
   };
 
   // Seeds a newly materialized node's statistics and bounds from `eval`.
@@ -120,19 +123,23 @@ struct PuctPolicy {
 
   // Starts backprop from a leaf; `exact` (non-repetition terminals, proven
   // nodes) sets proven bounds.
-  static BackupValue MakeLeafBackup(const VisitValue& value, bool exact) {
-    return {value, exact ? GameResultBounds::Exact(value.q, value.m)
-                         : GameResultBounds{}};
+  static BackupValue MakeLeafBackup(const VisitValue& value, bool exact,
+                                    bool path_dependent = false) {
+    return {value,
+            exact ? GameResultBounds::Exact(value.q, value.m)
+                  : GameResultBounds{},
+            path_dependent};
   }
   // Sent to the parent during backprop when skipping a node update (an
   // in-search repetition leaf, or a leaf already counted at install).
   static BackupValue MakeSkipBackup(const BackupValue& backup) {
-    return {backup.value.Parent(), backup.bounds.Parent()};
+    return {backup.value.Parent(), backup.bounds.Parent(),
+            backup.path_dependent};
   }
   // Sent to the parent during backprop when a node is missing from the graph
   // (evicted before backup): forwards the flipped value without bounds.
   static BackupValue MakeStaleBackup(const BackupValue& backup) {
-    return {backup.value.Parent(), GameResultBounds{}};
+    return {backup.value.Parent(), GameResultBounds{}, backup.path_dependent};
   }
 
   // The edge index to visit next; `node` is materialized, non-terminal, with

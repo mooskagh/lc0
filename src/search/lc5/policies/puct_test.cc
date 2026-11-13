@@ -32,6 +32,7 @@
 #include <memory>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <tuple>
 #include <utility>
 #include <vector>
@@ -84,8 +85,9 @@ PuctParams TestParams() {
           .sticky_endgames = false};
 }
 
-std::unique_ptr<VisitEngine> MakeConfiguredEngine(
-    std::string_view name, bool sticky_endgames = false) {
+std::unique_ptr<VisitEngine> MakeConfiguredEngine(std::string_view name,
+                                                  bool sticky_endgames = false,
+                                                  int history_key_length = 7) {
   OptionsParser parser;
   Settings::Populate(&parser);
   PopulatePolicyOptions(&parser);
@@ -96,6 +98,7 @@ std::unique_ptr<VisitEngine> MakeConfiguredEngine(
   parser.SetUciOption("FpuValue", "0");
   parser.SetUciOption("MovesLeft", "false");
   parser.SetUciOption("StickyEndgames", sticky_endgames ? "true" : "false");
+  parser.SetUciOption("HistoryKeyLength", std::to_string(history_key_length));
   auto engine = MakeVisitEngine(name);
   engine->Configure(parser.GetOptionsDict(), kMlh);
   return engine;
@@ -112,7 +115,7 @@ VisitOrigin StartOrigin() {
 TEST(Lc5PuctTest, OptionDefaultsMatchParams) {
   OptionsParser parser;
   PopulatePolicyOptions(&parser);
-  EXPECT_EQ(PolicyName(parser.GetOptionsDict()), "puct");
+  EXPECT_EQ(PolicyName(parser.GetOptionsDict()), "puct-dag");
   const auto params = PuctParams::FromOptions(parser.GetOptionsDict(), kMlh);
   const PuctParams defaults;
   EXPECT_EQ(params.cpuct, defaults.cpuct);
@@ -894,6 +897,143 @@ TEST(Lc5PuctTest, LaggingVisitDoesNotUnproveEdgeInEngine) {
             VisitEngine::DescendResult::kUnmaterializedLeaf);
   EXPECT_EQ(next.path[0].selected_move, m1);
   engine->CancelVisit(next);
+}
+
+TEST(Lc5PuctTest, DagPreservesEdgeHistoryOnRealTwoFoldRepetition) {
+  // Cycle: p0 (Kh1, Ka8) -> Kh1g1 -> p1 (Kg1, Ka8) -> Ka8b8 ->
+  //        p2 (Kg1, Kb8) -> Kg1h1 -> p3 (Kh1, Kb8) -> Kb8a8 -> p0 (2-fold).
+  const auto origin_at = [](std::string_view fen) {
+    PositionHistory history;
+    history.Reset(Position::FromFen(fen));
+    return VisitOrigin{.key = MakeNodeKey(history, /*history_key_length=*/0),
+                       .history = std::move(history),
+                       .backup_prefix = {}};
+  };
+  const VisitOrigin p0 = origin_at("k7/8/8/8/8/8/8/7K w - - 0 1");
+  const Move kh1g1 = Move::White({kFileH, kRank1}, {kFileG, kRank1});
+  const Move ka8b8 = Move::White({kFileA, kRank1}, {kFileB, kRank1});
+  const Move kg1h1 = Move::White({kFileG, kRank1}, {kFileH, kRank1});
+  const Move kb8a8 = Move::White({kFileB, kRank1}, {kFileA, kRank1});
+  const Move kb8c8 = Move::White({kFileB, kRank1}, {kFileC, kRank1});
+
+  VisitOrigin p1 = p0;
+  p1.history.Append(kh1g1);
+  p1.key = MakeNodeKey(p1.history, 0);
+  VisitOrigin p2 = p1;
+  p2.history.Append(ka8b8);
+  p2.key = MakeNodeKey(p2.history, 0);
+  VisitOrigin p3 = p2;
+  p3.history.Append(kg1h1);
+  p3.key = MakeNodeKey(p3.history, 0);
+
+  auto engine = MakeConfiguredEngine("puct-dag", /*sticky_endgames=*/true,
+                                     /*history_key_length=*/0);
+  Metrics metrics;
+  ASSERT_TRUE(engine->CompleteMaterialization(
+      p0.key, {.leaf = {.q = 0.0f}, .moves = {kh1g1}, .priors = {1.0f}}));
+  ASSERT_TRUE(engine->CompleteMaterialization(
+      p1.key, {.leaf = {.q = 0.0f}, .moves = {ka8b8}, .priors = {1.0f}}));
+  ASSERT_TRUE(engine->CompleteMaterialization(
+      p2.key, {.leaf = {.q = 0.0f}, .moves = {kg1h1}, .priors = {1.0f}}));
+  ASSERT_TRUE(engine->CompleteMaterialization(
+      p3.key,
+      {.leaf = {.q = 0.0f}, .moves = {kb8a8, kb8c8}, .priors = {0.9f, 0.1f}}));
+
+  // Give p3 -> kb8a8 10 non-repeating visits returning +0.8 to p3 (-0.8 leaf).
+  for (int i = 0; i < 10; ++i) {
+    Visit v = MakeVisit(p3);
+    ASSERT_EQ(engine->DescendVisit(v, metrics),
+              VisitEngine::DescendResult::kUnmaterializedLeaf);
+    ASSERT_EQ(v.path.front().selected_move, kb8a8);
+    v.result = {.q = -0.8f};
+    engine->BackupVisit(v, metrics);
+  }
+  // A single 2-fold visit through p0 -> p1 -> p2 -> p3 -> kb8a8 must fold 0.0
+  // into p3's 10 prior visits ((10 * 0.8 + 0.0) / 11) rather than wiping them.
+  Visit rep = MakeVisit(p0);
+  ASSERT_EQ(engine->DescendVisit(rep, metrics),
+            VisitEngine::DescendResult::kValuedLeaf);
+  ASSERT_EQ(metrics.two_fold_visits.load(), 1u);
+  engine->BackupVisit(rep, metrics);
+
+  // p3 has 1 leaf (0.0) + 10 non-repeating (+0.8) + 1 2-fold (0.0) = 8.0 / 12.
+  ThinkingInfo info;
+  engine->FillThinkingInfo(p3, info);
+  ASSERT_TRUE(info.score);
+  EXPECT_EQ(*info.score, CentipawnsFromQ(8.0f / 12.0f));
+  EXPECT_EQ(engine->GetRootStats(p3.key).best_move, kb8a8);
+
+  // A subsequent non-repeating visit on p3 -> kb8a8 (-0.8 leaf -> +0.8 at p3)
+  // restores the cached edge mean to +0.8 and preserves the exact sum
+  // invariant: (0.0 + 12 * 0.8) / 13.
+  Visit fresh = MakeVisit(p3);
+  ASSERT_EQ(engine->DescendVisit(fresh, metrics),
+            VisitEngine::DescendResult::kUnmaterializedLeaf);
+  ASSERT_EQ(fresh.path.front().selected_move, kb8a8);
+  fresh.result = {.q = -0.8f};
+  engine->BackupVisit(fresh, metrics);
+
+  info = {};
+  engine->FillThinkingInfo(p3, info);
+  ASSERT_TRUE(info.score);
+  EXPECT_EQ(*info.score, CentipawnsFromQ(9.6f / 13.0f));
+}
+
+TEST(Lc5PuctTest, DagConcurrentBackupsRemainConsistent) {
+  const VisitOrigin root = StartOrigin();
+  const Move m_root = M(kFileA, kFileA);
+  VisitOrigin child = root;
+  child.history.Append(m_root);
+  child.key = MakeNodeKey(child.history, 7);
+
+  std::vector<Move> moves;
+  std::vector<float> priors;
+  for (File f :
+       {kFileA, kFileB, kFileC, kFileD, kFileE, kFileF, kFileG, kFileH}) {
+    moves.push_back(M(f, kFileA));
+    priors.push_back(1.0f / 8.0f);
+  }
+
+  auto engine = MakeConfiguredEngine("puct-dag", /*sticky_endgames=*/false);
+  Metrics metrics;
+  ASSERT_TRUE(engine->CompleteMaterialization(
+      root.key, {.leaf = {.q = 0.0f}, .moves = {m_root}, .priors = {1.0f}}));
+  ASSERT_TRUE(engine->CompleteMaterialization(
+      child.key, {.leaf = {.q = 0.0f}, .moves = moves, .priors = priors}));
+
+  constexpr int kThreads = 8;
+  constexpr int kIters = 1000;
+  std::vector<std::thread> threads;
+  for (int t = 0; t < kThreads; ++t) {
+    threads.emplace_back([&, t]() {
+      for (int i = 0; i < kIters; ++i) {
+        Visit v = MakeVisit(root);
+        auto res = engine->DescendVisit(v, metrics);
+        if (res == VisitEngine::DescendResult::kUnmaterializedLeaf) {
+          v.result = {.q = ((v.path.size() + t + i) % 2 == 0) ? 0.8f : -0.8f};
+          while (!engine->CompleteMaterialization(
+              v.current_key,
+              {.leaf = v.result, .moves = moves, .priors = priors})) {
+            if (engine->ResumeVisit(v, metrics) ==
+                VisitEngine::ResumeAction::kBackup) {
+              break;
+            }
+            res = engine->DescendVisit(v, metrics);
+            if (res == VisitEngine::DescendResult::kValuedLeaf) break;
+          }
+        }
+        engine->BackupVisit(v, metrics);
+      }
+    });
+  }
+  for (auto& th : threads) th.join();
+
+  ThinkingInfo root_info, child_info;
+  engine->FillThinkingInfo(root, root_info);
+  engine->FillThinkingInfo(child, child_info);
+  ASSERT_TRUE(root_info.score);
+  ASSERT_TRUE(child_info.score);
+  EXPECT_NEAR(*root_info.score, -(*child_info.score), 2);
 }
 
 }  // namespace
