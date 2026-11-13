@@ -34,6 +34,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <optional>
 #include <span>
 #include <tuple>
@@ -135,8 +136,11 @@ struct PuctPolicy {
   }
 
   // The edge index to visit next; `node` is materialized, non-terminal, with
-  // edges.
-  static size_t PickEdgeToVisit(const Node<Self>& node, const Params& params);
+  // edges. When `remaining_root_visits < UINT64_MAX`, skips non-best edges that
+  // cannot overtake the current best edge's visit count within that budget.
+  static size_t PickEdgeToVisit(
+      const Node<Self>& node, const Params& params,
+      uint64_t remaining_root_visits = std::numeric_limits<uint64_t>::max());
   // The exact value of a proven node, which a visit backs up instead of
   // descending; nullopt if the node is not proven or StickyEndgames is off.
   static std::optional<VisitValue> GetProvenNodeValue(const Node<Self>& node,
@@ -148,10 +152,13 @@ struct PuctPolicy {
     return params.sticky_endgames && node.stats.bounds.Proven() &&
            node.stats.bounds.lower == 1;
   }
-  // The PV and bestmove move (`node` has edges): most visits, then best Q,
-  // then PreferOnTie. With StickyEndgames, a proven win comes first (shortest
-  // first) and a proven loss last (longest first).
-  static Move GetBestMove(const Node<Self>& node, const Params& params);
+  // Index of the PV and bestmove edge (`node` has edges): most visits, then
+  // best Q, then PreferOnTie. With StickyEndgames, a proven win comes first
+  // (shortest first) and a proven loss last (longest first).
+  static size_t BestEdgeIndex(const Node<Self>& node, const Params& params);
+  static Move GetBestMove(const Node<Self>& node, const Params& params) {
+    return node.edges[BestEdgeIndex(node, params)].move;
+  }
   // Fills the score and WDL of `info` if the node has visits; with
   // StickyEndgames, a proven win or loss as a mate score instead.
   static void FillThinkingInfo(const Node<Self>& node, const Params& params,
@@ -179,7 +186,8 @@ struct PuctPolicy {
 
 template <typename Self>
 size_t PuctPolicy<Self>::PickEdgeToVisit(const Node<Self>& node,
-                                         const Params& params) {
+                                         const Params& params,
+                                         uint64_t remaining_root_visits) {
   assert(!node.edges.empty());
   const NodeStats& stats = node.stats;
 
@@ -232,17 +240,34 @@ size_t PuctPolicy<Self>::PickEdgeToVisit(const Node<Self>& node,
     return utility(tried) + puct_mult * prior / (1.0f + tried.VisitsStarted());
   };
 
+  const bool prune =
+      remaining_root_visits < std::numeric_limits<uint64_t>::max();
+  const size_t best_move_idx = prune ? BestEdgeIndex(node, params) : 0;
+  const uint64_t best_move_visits =
+      prune && best_move_idx < node.tried.size()
+          ? node.tried[best_move_idx].stats.visits
+          : 0;
+  const auto is_pruned = [&](size_t i) {
+    if (!prune || i == best_move_idx || best_move_visits == 0) return false;
+    const uint64_t edge_visits =
+        i < node.tried.size() ? node.tried[i].stats.visits : 0;
+    return best_move_visits > edge_visits &&
+           best_move_visits - edge_visits > remaining_root_visits;
+  };
+
   const auto pick_best = [&](size_t count) {
-    size_t best = 0;
-    float best_score = score(0);
-    for (size_t i = 1; i < count; ++i) {
+    std::optional<size_t> best;
+    float best_score = 0.0f;
+    for (size_t i = 0; i < count; ++i) {
+      if (is_pruned(i)) continue;
       // Ties keep the lower index, which PreferOnTie prefers.
-      if (const float s = score(i); s > best_score) {
+      if (const float s = score(i); !best || s > best_score) {
         best = i;
         best_score = s;
       }
     }
-    return best;
+    assert(best.has_value());
+    return *best;
   };
 
   // Untried edges share the FPU and are sorted by PreferOnTie, so the first
@@ -264,14 +289,15 @@ std::optional<VisitValue> PuctPolicy<Self>::GetProvenNodeValue(
 }
 
 template <typename Self>
-Move PuctPolicy<Self>::GetBestMove(const Node<Self>& node,
-                                   const Params& params) {
+size_t PuctPolicy<Self>::BestEdgeIndex(const Node<Self>& node,
+                                       const Params& params) {
   assert(!node.edges.empty());
   const auto rank = [&](const LegalEdge& edge) {
     const size_t i = &edge - node.edges.data();
-    const EdgeStats s = i < node.tried.size() && node.tried[i].stats.visits > 0
-                            ? node.tried[i].stats
-                            : EdgeStats{};
+    const ValueStats s =
+        i < node.tried.size() && node.tried[i].stats.visits > 0
+            ? static_cast<const ValueStats&>(node.tried[i].stats)
+            : ValueStats{};
     const int outcome =
         params.sticky_endgames && s.bounds.Proven() ? s.bounds.lower : 0;
     return std::tuple(outcome, -outcome * s.bounds.plies, s.visits, s.Q());
@@ -280,11 +306,10 @@ Move PuctPolicy<Self>::GetBestMove(const Node<Self>& node,
   // one ties all later ones and wins the tie.
   const std::span candidates(
       node.edges.data(), std::min(node.tried.size() + 1, node.edges.size()));
-  return absl::c_max_element(candidates,
-                             [&](const LegalEdge& a, const LegalEdge& b) {
-                               return rank(a) < rank(b);
-                             })
-      ->move;
+  const auto best = absl::c_max_element(
+      candidates,
+      [&](const LegalEdge& a, const LegalEdge& b) { return rank(a) < rank(b); });
+  return static_cast<size_t>(best - candidates.begin());
 }
 
 template <typename Self>

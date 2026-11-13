@@ -92,6 +92,10 @@ class VisitEngine {
   virtual void FillThinkingInfo(const VisitOrigin& root,
                                 ThinkingInfo& info) const = 0;
   virtual RootStats GetRootStats(NodeKey root) const = 0;
+  // Sets an upper bound on how many additional root visits can still fit in
+  // the current search budget (used for per-move root smart pruning).
+  // UINT64_MAX disables per-move pruning.
+  virtual void SetRootRemainingVisits(uint64_t) {}
 
   // Node lifecycle for the materialization machinery.
   virtual bool ContainsNode(NodeKey key) const = 0;

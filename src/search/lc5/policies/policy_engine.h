@@ -31,9 +31,11 @@
 #include <absl/synchronization/mutex.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <span>
@@ -62,8 +64,13 @@ class PolicyEngine final : public VisitEngine {
   void Clear() override {
     graph_.Clear();
     if (store_) store_->Clear();
+    root_remaining_visits_.store(std::numeric_limits<uint64_t>::max(),
+                                 std::memory_order_relaxed);
     absl::MutexLock lock(evict_mutex_);
     evict_cursor_ = {};
+  }
+  void SetRootRemainingVisits(uint64_t remaining_visits) override {
+    root_remaining_visits_.store(remaining_visits, std::memory_order_relaxed);
   }
 
   DescendResult DescendVisit(Visit& visit, Metrics& metrics) override;
@@ -112,6 +119,8 @@ class PolicyEngine final : public VisitEngine {
   GameGraph<P> graph_;
   typename P::Params params_{};
   int history_key_length_ = 7;  // Preceding positions hashed into a NodeKey.
+  std::atomic<uint64_t> root_remaining_visits_{
+      std::numeric_limits<uint64_t>::max()};
   std::unique_ptr<NodeStore> store_;
   absl::Mutex evict_mutex_;
   // Rolling cursor so eviction scans spread across all shards.
@@ -130,8 +139,14 @@ VisitEngine::DescendResult PolicyEngine<P>::DescendVisit(Visit& visit,
     metrics.selection_node_steps.fetch_add(1);
     RaiseHighWater(metrics.max_selected_depth, visit.path.size());
     // Keep selecting at the origin even when proven so its PV still deepens.
+    const bool below_origin = IsBelowOrigin(visit);
+    const uint64_t remaining_root_visits =
+        below_origin
+            ? std::numeric_limits<uint64_t>::max()
+            : root_remaining_visits_.load(std::memory_order_relaxed);
     const SelectResult selection = graph_.SelectAndReserveEdge(
-        visit.current_key, params_, /*stop_at_proven=*/IsBelowOrigin(visit));
+        visit.current_key, params_, /*stop_at_proven=*/below_origin,
+        remaining_root_visits);
     step.update_node = selection.status != SelectResult::kNodeMissing;
     switch (selection.status) {
       case SelectResult::kNodeMissing:
@@ -185,9 +200,15 @@ VisitEngine::ResumeAction PolicyEngine<P>::ResumeVisit(Visit& visit,
   // At the origin there is no parent edge to reselect.
   if (!IsBelowOrigin(visit)) return ResumeAction::kDescend;
   const PathStep& parent = visit.path[visit.path.size() - 2];
+  const bool parent_is_origin =
+      visit.path.size() == visit.origin.backup_prefix.size() + 2;
+  const uint64_t remaining_root_visits =
+      parent_is_origin
+          ? root_remaining_visits_.load(std::memory_order_relaxed)
+          : std::numeric_limits<uint64_t>::max();
   // The leaf's owner has already backed up, so the parent edge holds its value.
-  const Move reselected =
-      graph_.ReselectAndReserveEdge(parent.key, *parent.selected_move, params_);
+  const Move reselected = graph_.ReselectAndReserveEdge(
+      parent.key, *parent.selected_move, params_, remaining_root_visits);
   if (reselected == *parent.selected_move) return ResumeAction::kDescend;
   metrics.visits_reselected.fetch_add(1);
   visit.path.pop_back();

@@ -38,6 +38,7 @@
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <optional>
 #include <utility>
 #include <vector>
@@ -105,14 +106,17 @@ class GameGraph {
 
   // Selects and reserves an edge (in_flight += 1), or reports why the node
   // cannot be selected from (missing, terminal, or proven if `stop_at_proven`).
-  SelectResult SelectAndReserveEdge(NodeKey key,
-                                    const typename P::Params& params,
-                                    bool stop_at_proven = false);
+  // `remaining_root_visits < UINT64_MAX` prunes hopeless edges at the root.
+  SelectResult SelectAndReserveEdge(
+      NodeKey key, const typename P::Params& params,
+      bool stop_at_proven = false,
+      uint64_t remaining_root_visits = std::numeric_limits<uint64_t>::max());
 
   // Releases `move` (in_flight -= 1) and selects and reserves an edge
   // (in_flight += 1); returns the selected move.
-  Move ReselectAndReserveEdge(NodeKey key, Move move,
-                              const typename P::Params& params);
+  Move ReselectAndReserveEdge(
+      NodeKey key, Move move, const typename P::Params& params,
+      uint64_t remaining_root_visits = std::numeric_limits<uint64_t>::max());
 
   // Updates the node (and `move`'s edge with in_flight -= 1, if given); returns
   // the backup value for the parent, or nullopt if the node is absent.
@@ -252,7 +256,8 @@ bool GameGraph<P>::InsertNode(NodeKey key, Node restored) {
 
 template <typename P>
 SelectResult GameGraph<P>::SelectAndReserveEdge(
-    NodeKey key, const typename P::Params& params, bool stop_at_proven) {
+    NodeKey key, const typename P::Params& params, bool stop_at_proven,
+    uint64_t remaining_root_visits) {
   auto& shard = ShardFor(key);
   absl::MutexLock lock(shard.mutex);
   Node* node = FindOrNull(shard.nodes, key);
@@ -266,18 +271,21 @@ SelectResult GameGraph<P>::SelectAndReserveEdge(
     }
   }
   return {.status = SelectResult::kEdgeSelected,
-          .move = ReserveEdgeLocked(shard, *node,
-                                    P::PickEdgeToVisit(*node, params))};
+          .move = ReserveEdgeLocked(
+              shard, *node,
+              P::PickEdgeToVisit(*node, params, remaining_root_visits))};
 }
 
 template <typename P>
 Move GameGraph<P>::ReselectAndReserveEdge(NodeKey key, Move move,
-                                          const typename P::Params& params) {
+                                          const typename P::Params& params,
+                                          uint64_t remaining_root_visits) {
   auto& shard = ShardFor(key);
   absl::MutexLock lock(shard.mutex);
   Node& node = FindOrAssert(shard.nodes, key);
   ReleaseEdgeLocked(shard, node, GetEdgeIndex(node, move));
-  return ReserveEdgeLocked(shard, node, P::PickEdgeToVisit(node, params));
+  return ReserveEdgeLocked(
+      shard, node, P::PickEdgeToVisit(node, params, remaining_root_visits));
 }
 
 template <typename P>

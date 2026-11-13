@@ -616,6 +616,101 @@ TEST(Lc5PuctTest, BothPoliciesProveWinFromCheckmateChild) {
   }
 }
 
+TEST(Lc5PuctTest, PickEdgeToVisitPrunesHopelessRootMoves) {
+  Node node;
+  node.edges = {MakeEdge(kFileA, 0.1f), MakeEdge(kFileB, 0.2f),
+                MakeEdge(kFileC, 0.9f), MakeEdge(kFileD, 0.95f)};
+  // Edge 0 is best (100 visits), edge 1 is runner-up (80 visits), edge 2 has
+  // 10 visits with high prior/Q, and edge 3 is untried with highest prior.
+  node.tried = {MakeTried(100, 0.1f), MakeTried(80, 0.2f), MakeTried(10, 0.5f)};
+  node.stats = {.visits = 191, .q = 0.1f};
+  const PuctParams params = TestParams();
+
+  // Unbounded: untried edge 3 (highest prior, FPU=0.0, huge U) wins.
+  EXPECT_EQ(TestPolicy::PickEdgeToVisit(node, params), 3u);
+  // With 25 remaining visits: edge 3 (gap 100 > 25) and edge 2 (gap 90 > 25)
+  // cannot catch edge 0, while edge 1 (gap 20 <= 25) still can and wins PUCT.
+  EXPECT_EQ(TestPolicy::PickEdgeToVisit(node, params, 25), 1u);
+  // With 10 remaining visits: edge 1 (gap 20 > 10) is also pruned -> edge 0.
+  EXPECT_EQ(TestPolicy::PickEdgeToVisit(node, params, 10), 0u);
+  EXPECT_EQ(TestPolicy::PickEdgeToVisit(node, params, 0), 0u);
+
+  // If no edge has completed visits yet (only in-flight), remaining=0 does not
+  // prune.
+  Node zero_node;
+  zero_node.edges = {MakeEdge(kFileA, 0.6f), MakeEdge(kFileB, 0.4f)};
+  zero_node.tried = {{.in_flight = 1}};
+  EXPECT_EQ(TestPolicy::PickEdgeToVisit(zero_node, params, 0), 1u);
+}
+
+TEST(Lc5PuctTest, PolicyEnginePrunesOnlyAtOrigin) {
+  const VisitOrigin root = StartOrigin();
+  const auto root_moves = root.history.Last().GetBoard().GenerateLegalMoves();
+  ASSERT_GE(root_moves.size(), 2u);
+  const Move m0 = root_moves[0];
+  const Move m1 = root_moves[1];
+  VisitOrigin child = root;
+  child.history.Append(m0);
+  child.key = MakeNodeKey(child.history, 7);
+  const auto child_moves = child.history.Last().GetBoard().GenerateLegalMoves();
+  ASSERT_GE(child_moves.size(), 2u);
+  const Move c0 = child_moves[0];
+  const Move c1 = child_moves[1];
+
+  auto engine = MakeConfiguredEngine("puct");
+  // LegalEdges must be sorted by prior descending (`m1` first with 0.6f).
+  ASSERT_TRUE(engine->CompleteMaterialization(
+      root.key, {.moves = {m1, m0}, .priors = {0.6f, 0.4f}}));
+  ASSERT_TRUE(engine->CompleteMaterialization(
+      child.key, {.moves = {c0, c1}, .priors = {0.76f, 0.24f}}));
+
+  // Visit 0 picks m1 (higher prior); make it q = -0.35 at root so visits 1..3
+  // go through m0 -> c0, after which PUCT prefers m1 at root and c1 at child.
+  Metrics metrics;
+  {
+    Visit visit = MakeVisit(root);
+    ASSERT_EQ(engine->DescendVisit(visit, metrics),
+              VisitEngine::DescendResult::kUnmaterializedLeaf);
+    ASSERT_EQ(visit.path.size(), 2u);
+    ASSERT_EQ(visit.path[0].selected_move, m1);
+    visit.result = {.q = 0.35f};
+    engine->BackupVisit(visit, metrics);
+  }
+  for (int i = 0; i < 3; ++i) {
+    Visit visit = MakeVisit(root);
+    ASSERT_EQ(engine->DescendVisit(visit, metrics),
+              VisitEngine::DescendResult::kUnmaterializedLeaf);
+    ASSERT_EQ(visit.path.size(), 3u);
+    ASSERT_EQ(visit.path[0].selected_move, m0);
+    ASSERT_EQ(visit.path[1].selected_move, c0);
+    visit.result = {.q = 0.0f};
+    engine->BackupVisit(visit, metrics);
+  }
+  const RootStats before = engine->GetRootStats(root.key);
+  ASSERT_EQ(before.best_move, m0);
+  ASSERT_EQ(before.best_edge_visits, 3u);
+  ASSERT_EQ(before.second_edge_visits, 1u);
+
+  // With remaining=1, root gap (3 - 1 = 2 > 1) prunes m1, while below-origin
+  // child gap (3 - 0 = 3 > 1) is NOT pruned so PUCT picks c1.
+  engine->SetRootRemainingVisits(1);
+  Visit pruned = MakeVisit(root);
+  EXPECT_EQ(engine->DescendVisit(pruned, metrics),
+            VisitEngine::DescendResult::kUnmaterializedLeaf);
+  ASSERT_EQ(pruned.path.size(), 3u);
+  EXPECT_EQ(pruned.path[0].selected_move, m0);
+  EXPECT_EQ(pruned.path[1].selected_move, c1);
+  engine->CancelVisit(pruned);
+
+  // Unbounded: root picks m1 again because its PUCT U term beats m0.
+  engine->SetRootRemainingVisits(std::numeric_limits<uint64_t>::max());
+  Visit unpruned = MakeVisit(root);
+  EXPECT_EQ(engine->DescendVisit(unpruned, metrics),
+            VisitEngine::DescendResult::kUnmaterializedLeaf);
+  EXPECT_EQ(unpruned.path[0].selected_move, m1);
+  engine->CancelVisit(unpruned);
+}
+
 }  // namespace
 }  // namespace lczero::lc5
 
