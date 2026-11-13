@@ -27,13 +27,17 @@
 
 #include "search/lc5/session/visit_worker.h"
 
+#include <absl/algorithm/container.h>
 #include <absl/synchronization/mutex.h>
 
 #include <algorithm>
+#include <array>
 #include <cassert>
 #include <chrono>
+#include <span>
 #include <utility>
 
+#include "search/lc5/graph/node.h"
 #include "search/lc5/graph/prior.h"
 #include "utils/math.h"
 
@@ -67,17 +71,18 @@ NodeEval DetectTerminal(const PositionHistory& history) {
 // by descending prior, ties by move encoding. Sorting the rounded values keeps
 // the order the graph relies on even when rounding makes two priors equal.
 void SortByPrior(NodeEval& eval) {
-  std::vector<std::pair<float, Move>> edges;
-  edges.reserve(eval.moves.size());
-  for (size_t i = 0; i < eval.moves.size(); ++i) {
-    edges.emplace_back(PackedPrior(eval.priors[i]), eval.moves[i]);
+  constexpr size_t kMaxLegalMoves = 256;
+  const size_t count = eval.moves.size();
+  assert(count <= kMaxLegalMoves);
+  std::array<LegalEdge, kMaxLegalMoves> edges;
+  for (size_t i = 0; i < count; ++i) {
+    edges[i] = {.move = eval.moves[i], .prior = PackedPrior(eval.priors[i])};
   }
-  std::ranges::sort(edges, [](const auto& a, const auto& b) {
-    if (a.first != b.first) return a.first > b.first;
-    return a.second.raw_data() < b.second.raw_data();
-  });
-  for (size_t i = 0; i < edges.size(); ++i) {
-    std::tie(eval.priors[i], eval.moves[i]) = edges[i];
+  auto slice = std::span(edges).first(count);
+  absl::c_sort(slice, PreferOnTie);
+  for (size_t i = 0; i < count; ++i) {
+    eval.priors[i] = edges[i].prior;
+    eval.moves[i] = edges[i].move;
   }
 }
 
@@ -362,6 +367,21 @@ void VisitWorker::PrepareMaterialization(Materialization materialization) {
                             std::move(materialization.eval));
     return;
   }
+  if (auto cached = context_.backend.GetCachedEvaluation(EvalPosition{
+          .pos = materialization.history.GetPositions(),
+          .legal_moves = materialization.eval.moves});
+      cached && cached->p.size() == materialization.eval.moves.size()) {
+    materialization.eval.leaf.q = cached->q;
+    materialization.eval.leaf.d = cached->d;
+    materialization.eval.leaf.m = cached->m;
+    materialization.eval.priors = std::move(cached->p);
+    SortByPrior(materialization.eval);
+    context_.metrics.eval_requests.fetch_add(1);
+    context_.metrics.cache_hits.fetch_add(1);
+    CompleteMaterialization(materialization.id,
+                            std::move(materialization.eval));
+    return;
+  }
   materialization.eval.priors.resize(materialization.eval.moves.size());
   materialization.state = Materialization::State::kPending;
   context_.metrics.eval_requests.fetch_add(1);
@@ -514,7 +534,10 @@ std::unique_ptr<AsyncJob> VisitWorker::BuildJob() {
   if (!queued_loads_.empty()) {
     job->kind = AsyncJob::Kind::kLoad;
     MoveFront(queued_loads_, job->materializations, limit);
-  } else if (!queued_evals_.empty()) {
+  } else if (!queued_evals_.empty() &&
+             (queued_evals_.size() >= std::min<size_t>(limit, 512) ||
+              IsStopping() ||
+              (ready_visits_.empty() && local_wakeups_.empty()))) {
     job->kind = AsyncJob::Kind::kEval;
     MoveFront(queued_evals_, job->materializations, limit);
   } else {

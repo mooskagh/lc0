@@ -36,6 +36,7 @@
 #include <thread>
 #include <vector>
 
+#include "neural/backend.h"
 #include "search/lc5/metrics.h"
 #include "search/lc5/session/evaluator.h"
 #include "search/lc5/session/materialization_table.h"
@@ -59,6 +60,7 @@ class VisitWorker {
   // What a visit worker shares with the rest of the session.
   struct Context {
     VisitEngine& engine;
+    Backend& backend;
     const Settings::Resolved& settings;
     const VisitOrigin& root;
     VisitPool& visits;

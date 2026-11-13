@@ -29,10 +29,19 @@
 
 #include <absl/synchronization/mutex.h>
 
+#include <algorithm>
 #include <chrono>
 #include <utility>
 
+#include "neural/memcache.h"
+
 namespace lczero::lc5 {
+namespace {
+
+constexpr size_t kMinPrefetchBatchTarget = 256;
+constexpr size_t kMaxPrefetchPerBatch = 512;
+
+}  // namespace
 
 Evaluator::Evaluator(const Context& context)
     : context_(context), producing_workers_(context.inboxes.size()) {}
@@ -80,15 +89,23 @@ void Evaluator::Run() {
 
 Evaluator::Batch Evaluator::CollectBatch(std::unique_ptr<AsyncJob> job) {
   const size_t target = context_.settings.minibatch_size;
-  const auto deadline =
-      context_.settings.max_batch_delay_ms == 0
-          ? std::chrono::steady_clock::time_point::max()
-          : job->queued_at +
-                std::chrono::milliseconds(context_.settings.max_batch_delay_ms);
+  const auto deadline_for = [&](const AsyncJob& first) {
+    return context_.settings.max_batch_delay_ms == 0
+               ? std::chrono::steady_clock::time_point::max()
+               : first.queued_at +
+                     std::chrono::milliseconds(
+                         context_.settings.max_batch_delay_ms);
+  };
+  auto deadline = deadline_for(*job);
   Batch batch{.computation = context_.backend.CreateComputation()};
   for (;;) {
-    AddJobToBatch(*batch.computation, *job);
-    batch.jobs.push_back(std::move(job));
+    if (AddJobToBatch(*batch.computation, *job)) {
+      if (batch.jobs.empty()) deadline = deadline_for(*job);
+      batch.jobs.push_back(std::move(job));
+    } else {
+      jobs_in_collection_.fetch_sub(1);
+      ReturnJobToWorker(std::move(job));
+    }
     const size_t used = batch.computation->UsedBatchSize();
     if (used >= target || IsStopping()) break;
     // A whole job's size bounds its uncached inputs and must fit before
@@ -119,7 +136,8 @@ Evaluator::Batch Evaluator::CollectBatch(std::unique_ptr<AsyncJob> job) {
   return batch;
 }
 
-void Evaluator::AddJobToBatch(BackendComputation& computation, AsyncJob& job) {
+bool Evaluator::AddJobToBatch(BackendComputation& computation, AsyncJob& job) {
+  bool enqueued = false;
   for (auto& materialization : job.materializations) {
     if (IsStopping()) break;
     auto& eval = materialization.eval;
@@ -135,12 +153,67 @@ void Evaluator::AddJobToBatch(BackendComputation& computation, AsyncJob& job) {
       context_.metrics.cache_hits.fetch_add(1);
     } else {
       materialization.state = Materialization::State::kQueued;
+      enqueued = true;
     }
+  }
+  return enqueued;
+}
+
+void Evaluator::PrefetchChildren(Batch& batch,
+                                 std::deque<PositionHistory>& histories,
+                                 std::deque<MoveList>& moves) {
+  if (dynamic_cast<CachingBackend*>(&context_.backend) == nullptr) return;
+  const size_t target = context_.settings.minibatch_size;
+  const size_t used = batch.computation->UsedBatchSize();
+  if (target < kMinPrefetchBatchTarget || used == 0 || used >= target / 2) {
+    return;
+  }
+  const size_t budget = std::min(target - used, kMaxPrefetchPerBatch);
+  size_t prefetched = 0;
+  size_t child_index = 0;
+  for (;;) {
+    bool any_parent_had_child = false;
+    for (const auto& job : batch.jobs) {
+      for (const auto& materialization : job->materializations) {
+        if (IsStopping() || prefetched >= budget) return;
+        if (materialization.state != Materialization::State::kQueued) continue;
+        if (child_index >= materialization.eval.moves.size()) continue;
+        any_parent_had_child = true;
+        auto& child_history = histories.emplace_back(materialization.history);
+        child_history.Append(materialization.eval.moves[child_index]);
+        if (context_.backend.GetCachedEvaluation(
+                EvalPosition{.pos = child_history.GetPositions(),
+                             .legal_moves = {}})) {
+          histories.pop_back();
+          continue;
+        }
+        auto child_moves =
+            child_history.Last().GetBoard().GenerateLegalMoves();
+        if (child_moves.empty()) {
+          histories.pop_back();
+          continue;
+        }
+        auto& stored_moves = moves.emplace_back(std::move(child_moves));
+        if (batch.computation->AddInput(
+                EvalPosition{.pos = child_history.GetPositions(),
+                             .legal_moves = stored_moves},
+                EvalResultPtr{}) == BackendComputation::FETCHED_IMMEDIATELY) {
+          moves.pop_back();
+          histories.pop_back();
+          continue;
+        }
+        ++prefetched;
+      }
+    }
+    if (!any_parent_had_child) break;
+    ++child_index;
   }
 }
 
 void Evaluator::EvaluateBatch(Batch batch) {
   const size_t used = batch.computation->UsedBatchSize();
+  std::deque<PositionHistory> prefetch_histories;
+  std::deque<MoveList> prefetch_moves;
   if (used > 0 && !IsStopping()) {
     if (used < static_cast<size_t>(context_.settings.minibatch_size)) {
       (batch.timed_out ? context_.metrics.partial_timeout_flushes
@@ -149,6 +222,7 @@ void Evaluator::EvaluateBatch(Batch batch) {
     }
     context_.metrics.evaluation_batches.fetch_add(1);
     context_.metrics.nn_evaluations.fetch_add(used);
+    PrefetchChildren(batch, prefetch_histories, prefetch_moves);
     batch.computation->ComputeBlocking();
     for (auto& job : batch.jobs) {
       for (auto& materialization : job->materializations) {

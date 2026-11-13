@@ -29,11 +29,13 @@
 
 #include <atomic>
 #include <cstddef>
+#include <deque>
 #include <memory>
 #include <span>
 #include <thread>
 #include <vector>
 
+#include "chess/position.h"
 #include "neural/backend.h"
 #include "search/lc5/metrics.h"
 #include "search/lc5/session/messages.h"
@@ -90,7 +92,10 @@ class Evaluator {
   void Run();
   // Takes `first` and more queued jobs while they fit the minibatch.
   Batch CollectBatch(std::unique_ptr<AsyncJob> first);
-  void AddJobToBatch(BackendComputation& computation, AsyncJob& job);
+  // Returns true if any item in `job` was enqueued for NN computation.
+  bool AddJobToBatch(BackendComputation& computation, AsyncJob& job);
+  void PrefetchChildren(Batch& batch, std::deque<PositionHistory>& histories,
+                        std::deque<MoveList>& moves);
   void EvaluateBatch(Batch batch);
   void ReturnJobToWorker(std::unique_ptr<AsyncJob> job);
 

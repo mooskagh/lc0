@@ -110,6 +110,7 @@ SearchSession::SearchSession(VisitEngine* engine, Backend* backend,
                   .inboxes = inboxes_,
                   .jobs_in_flight = jobs_in_flight_}) {
   const VisitWorker::Context context{.engine = *engine_,
+                                     .backend = *backend_,
                                      .settings = settings_,
                                      .root = root_,
                                      .visits = visit_pool_,

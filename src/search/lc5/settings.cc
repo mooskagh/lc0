@@ -123,10 +123,10 @@ Settings::Resolved Settings::Resolve(const BackendAttributes& backend) const {
             : std::min(hardware, std::max(2, 4 * resolved.eval_threads));
   }
   if (resolved.max_active_visits == 0) {
-    // Visits in flight dilute small searches, so keep only enough to fill
-    // the evaluators.
+    // Keep enough capacity for in-flight evaluator batches plus next-batch
+    // gathering while evaluators run.
     resolved.max_active_visits =
-        std::clamp(3 * resolved.eval_threads * resolved.minibatch_size / 2, 256,
+        std::clamp(5 * resolved.eval_threads * resolved.minibatch_size / 2, 256,
                    kMaxActiveVisitsLimit);
   }
   if (resolved.max_active_visits < resolved.eval_threads) {
