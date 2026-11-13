@@ -77,6 +77,7 @@ void Lc5Engine::NewGame() {
   game_start_.reset();
   root_history_.reset();
   saved_time_ms_ = 0;
+  time_state_ = TimeManager::State{};
   first_move_of_game_ = true;
 }
 
@@ -86,7 +87,10 @@ void Lc5Engine::StartClock() {
 
 void Lc5Engine::StartSearch(const GoParams& params) {
   AbortAndWait();
-  if (session_) saved_time_ms_ += session_->unused_time_ms();
+  if (session_) {
+    saved_time_ms_ += session_->unused_time_ms();
+    time_state_ = session_->next_time_state();
+  }
   session_.reset();
   if (!backend_) throw Exception("Lc5 requires a backend");
   if (!root_history_) throw Exception("Lc5 position was not set");
@@ -119,9 +123,18 @@ void Lc5Engine::StartSearch(const GoParams& params) {
   time_config.game_ply = root_history_->Last().GetGamePly();
   time_config.first_move_of_game =
       is_clock_move ? std::exchange(first_move_of_game_, false) : false;
-  session_ = std::make_unique<SearchSession>(
-      visit_engine_.get(), backend_, uci_responder_, resolved, time_config,
-      std::move(root), params, start, std::exchange(saved_time_ms_, 0));
+  if (time_config.alphazero_time_pct != TimeManager::kDefaultAlphaZeroTimePct) {
+    session_ = std::make_unique<SearchSession>(
+        visit_engine_.get(), backend_, uci_responder_, resolved, time_config,
+        std::move(root), params, start, std::exchange(saved_time_ms_, 0));
+  } else {
+    saved_time_ms_ = 0;
+    const uint64_t reused_root_visits =
+        visit_engine_->GetRootStats(root.key).visits;
+    session_ = std::make_unique<SearchSession>(
+        visit_engine_.get(), backend_, uci_responder_, resolved, time_config,
+        std::move(root), params, start, time_state_, reused_root_visits);
+  }
   session_->Start();
 }
 

@@ -34,6 +34,7 @@
 #include "chess/gamestate.h"
 #include "search/lc5/policies/registry.h"
 #include "search/lc5/session/search_session.h"
+#include "search/lc5/time_manager.h"
 #include "search/lc5/visit_engine.h"
 #include "search/search.h"
 
@@ -74,8 +75,10 @@ class Lc5Engine final : public SearchBase {
   std::optional<PositionHistory> root_history_;
   // When the clock for the next search started, if StartClock was called.
   std::optional<std::chrono::steady_clock::time_point> clock_start_;
-  // Time a previous search left unused by stopping early.
+  // Time a previous search left unused by stopping early (custom pct mode).
   int64_t saved_time_ms_ = 0;
+  // Cross-move smooth time management state; reset in NewGame().
+  TimeManager::State time_state_{};
   // Whether the next timed clock move is the first move of the game.
   bool first_move_of_game_ = true;
 };

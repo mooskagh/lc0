@@ -31,6 +31,7 @@
 #include <chrono>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <thread>
 #include <vector>
 
@@ -62,6 +63,13 @@ class SearchSession {
                 GoParams go_params,
                 std::chrono::steady_clock::time_point start_time,
                 int64_t saved_ms = 0);
+  SearchSession(VisitEngine* engine, Backend* backend, UciResponder* responder,
+                Settings::Resolved settings,
+                TimeManager::Config time_management, VisitOrigin root,
+                GoParams go_params,
+                std::chrono::steady_clock::time_point start_time,
+                TimeManager::State time_state,
+                uint64_t reused_root_visits = 0);
   ~SearchSession();
 
   void Start();  // Spawns the threads and returns; later calls do nothing.
@@ -72,9 +80,18 @@ class SearchSession {
   const Metrics& metrics() const { return metrics_; }
   // Time to save for the next move (TimeManager::UnusedMs at stop).
   int64_t unused_time_ms() const { return unused_time_ms_.load(); }
+  // Updated smooth time state recorded when the search stops; call after Wait().
+  TimeManager::State next_time_state() const { return next_time_state_; }
 
  private:
   friend class SearchSessionTestPeer;
+  SearchSession(VisitEngine* engine, Backend* backend, UciResponder* responder,
+                Settings::Resolved settings,
+                TimeManager::Config time_management, VisitOrigin root,
+                GoParams go_params,
+                std::chrono::steady_clock::time_point start_time,
+                std::optional<TimeManager::State> time_state,
+                uint64_t reused_root_visits, int64_t saved_ms);
 
   // Thread bodies; each runs until its thread exits. Start() spawns them.
   void RunControllerWorker();
@@ -82,7 +99,12 @@ class SearchSession {
 
   // Search: stop, output and shutdown.
   bool IsStopping() const { return limiter_.IsStopping(); }
-  bool ShouldStop(std::chrono::steady_clock::time_point now) const;
+  bool UpdateCrisisState(const RootStats& root,
+                         std::chrono::steady_clock::time_point now);
+  bool PollControllerStops(std::chrono::steady_clock::time_point now);
+  bool ShouldStop(const RootStats& root,
+                  std::chrono::steady_clock::time_point now, bool in_crisis,
+                  bool time_expired) const;
   uint64_t ComputeRootRemainingVisits(
       std::chrono::steady_clock::time_point now) const;
   void MaybeOutputInfo(std::chrono::steady_clock::time_point now,
@@ -115,7 +137,7 @@ class SearchSession {
   const Settings::Resolved settings_;
   const VisitOrigin root_;
   const std::chrono::steady_clock::time_point start_time_;
-  const TimeManager time_manager_;
+  TimeManager time_manager_;
   // Not in infinite or ponder searches: a decided root or smart pruning may
   // stop the search before its limits.
   const bool may_stop_early_;
@@ -127,10 +149,19 @@ class SearchSession {
   std::atomic<bool> aborted_{false};
   std::atomic<bool> finished_{false};
   std::atomic<int64_t> unused_time_ms_{0};
+  TimeManager::State next_time_state_{};
   ControllerSignal controller_signal_;
   int last_depth_ = 0;
   int last_seldepth_ = 0;
   Move last_best_move_{};
+  // Controller-thread crisis tracking (root overtaking / late best-move flip).
+  bool seen_best_move_ = false;
+  Move observed_best_move_{};
+  std::chrono::steady_clock::time_point trend_sample_time_{};
+  uint64_t trend_sample_best_visits_ = 0;
+  uint64_t trend_sample_second_visits_ = 0;
+  bool crisis_overtaking_ = false;
+  std::optional<std::chrono::steady_clock::time_point> last_flip_time_;
 
   // Visits, materializations and counters.
   VisitPool visit_pool_;

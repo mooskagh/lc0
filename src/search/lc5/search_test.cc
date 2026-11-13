@@ -114,6 +114,19 @@ class SearchSessionTestPeer {
       std::chrono::steady_clock::time_point now) {
     return session.ComputeRootRemainingVisits(now);
   }
+  static bool PollControllerStops(
+      SearchSession& session, std::chrono::steady_clock::time_point now) {
+    return session.PollControllerStops(now);
+  }
+  static uint64_t NodeLimit(const SearchSession& session) {
+    return session.limiter_.node_limit();
+  }
+  static const TimeManager::State& EngineTimeState(const Lc5Engine& engine) {
+    return engine.time_state_;
+  }
+  static const SearchSession* EngineSession(const Lc5Engine& engine) {
+    return engine.session_.get();
+  }
   static void ExpectDrained(const Lc5Engine& engine) {
     ASSERT_TRUE(engine.session_);
     ASSERT_TRUE(engine.session_->IsFinished());
@@ -2332,9 +2345,10 @@ TEST(Lc5SearchTest, ControllerUpdatesAndResetsRootRemainingVisits) {
     session.Start();
     ASSERT_TRUE(backend.input.WaitForArrival());
 
-    // Live controller thread pushes `node_remaining` during the 80ms warmup,
-    // then transitions to the finite `EstimatedRemainingVisits` time bound.
-    ASSERT_TRUE(recording_engine.WaitForUpdateInRange(999000u, kUnlimited));
+    // Live controller thread immediately pushes the finite prior-blended
+    // `EstimatedRemainingVisits` time bound (no 80ms warmup blind window),
+    // which then decays below 10k as visits stall on the blocked backend.
+    ASSERT_TRUE(recording_engine.WaitForUpdateInRange(15000u, 150000u));
     ASSERT_TRUE(recording_engine.WaitForUpdateInRange(0u, 10000u));
 
     session.Stop();
@@ -2346,6 +2360,248 @@ TEST(Lc5SearchTest, ControllerUpdatesAndResetsRootRemainingVisits) {
   const auto updates = recording_engine.SnapshotUpdates();
   ASSERT_FALSE(updates.empty());
   EXPECT_EQ(updates.back(), kUnlimited);
+}
+
+TEST(Lc5SearchTest, PollControllerStopsExtendsPiggybankOnlyDuringCrisis) {
+  class ControllableRootEngine final : public VisitEngine {
+   public:
+    explicit ControllableRootEngine(std::unique_ptr<VisitEngine> inner)
+        : inner_(std::move(inner)) {}
+    std::string_view GetName() const override { return inner_->GetName(); }
+    void Configure(const OptionsDict& options,
+                   const BackendAttributes& backend) override {
+      inner_->Configure(options, backend);
+    }
+    void Clear() override { inner_->Clear(); }
+    DescendResult DescendVisit(Visit& visit, Metrics& metrics) override {
+      return inner_->DescendVisit(visit, metrics);
+    }
+    void BackupVisit(const Visit& visit, Metrics& metrics) override {
+      inner_->BackupVisit(visit, metrics);
+    }
+    void CancelVisit(const Visit& visit) override {
+      inner_->CancelVisit(visit);
+    }
+    ResumeAction ResumeVisit(Visit& visit, Metrics& metrics) override {
+      return inner_->ResumeVisit(visit, metrics);
+    }
+    void FillThinkingInfo(const VisitOrigin& origin,
+                          ThinkingInfo& info) const override {
+      inner_->FillThinkingInfo(origin, info);
+    }
+    RootStats GetRootStats(NodeKey /*root_key*/) const override {
+      return override_root_;
+    }
+    void SetRootRemainingVisits(uint64_t remaining_visits) override {
+      inner_->SetRootRemainingVisits(remaining_visits);
+    }
+    bool ContainsNode(NodeKey key) const override {
+      return inner_->ContainsNode(key);
+    }
+    bool CompleteMaterialization(NodeKey key, const NodeEval& eval) override {
+      return inner_->CompleteMaterialization(key, eval);
+    }
+    size_t GetGraphSize() const override { return inner_->GetGraphSize(); }
+    void SetStore(std::unique_ptr<NodeStore> store) override {
+      inner_->SetStore(std::move(store));
+    }
+    bool HasStore() const override { return inner_->HasStore(); }
+    std::vector<std::optional<std::vector<uint8_t>>> ReadFromStore(
+        std::span<const NodeKey> keys) override {
+      return inner_->ReadFromStore(keys);
+    }
+    bool RestoreFromRecord(NodeKey key,
+                           std::span<const uint8_t> record) override {
+      return inner_->RestoreFromRecord(key, record);
+    }
+    size_t EvictToStore(size_t max, NodeKey keep, Metrics& metrics) override {
+      return inner_->EvictToStore(max, keep, metrics);
+    }
+
+    RootStats override_root_{};
+
+   private:
+    std::unique_ptr<VisitEngine> inner_;
+  };
+
+  ControlledBackend backend;
+  RecordingResponder responder;
+  const auto root = Origin();
+  const auto t0 = std::chrono::steady_clock::now();
+  const GoParams params{.wtime = 8000, .winc = 80};
+  TimeManager::Config tm = TestTimeManagement();
+  tm.smart_pruning_factor = 1.33f;
+
+  TimeManager::State state;
+  state.nps = 40000.0f;
+  state.nps_is_reliable = true;
+  state.piggybank_ms = 600.0f;
+  state.first_timed_move = false;
+
+  const TimeManager ref_tm(tm, params, false, t0, state, 0);
+  ASSERT_TRUE(ref_tm.HasCrisisBudget());
+  const auto base_deadline = *ref_tm.base_deadline();
+  const auto crisis_deadline = *ref_tm.crisis_deadline();
+  const Move move_e2e4 =
+      Move::White(Square(kFileE, kRank2), Square(kFileE, kRank4));
+  const Move move_d2d4 =
+      Move::White(Square(kFileD, kRank2), Square(kFileD, kRank4));
+
+  // 1. Calm position past base_deadline stops cleanly and caps NodeLimit to 1.
+  {
+    ControllableRootEngine engine(MakeTestEngine());
+    engine.override_root_ = {.materialized = true,
+                             .visits = 1100,
+                             .edges = 2,
+                             .best_edge_visits = 1000,
+                             .second_edge_visits = 100,
+                             .best_move = move_e2e4,
+                             .decided = false};
+    SearchSession session(&engine, &backend, &responder, TestSettings(), tm,
+                          root, params, t0, state, 0);
+    EXPECT_FALSE(SearchSessionTestPeer::PollControllerStops(
+        session, t0 + std::chrono::milliseconds(10)));
+    EXPECT_TRUE(SearchSessionTestPeer::PollControllerStops(
+        session, base_deadline + std::chrono::milliseconds(1)));
+    EXPECT_EQ(SearchSessionTestPeer::NodeLimit(session), 1u);
+  }
+
+  // 2. Close top-2 split holds off CapNodeLimit(1) past base_deadline and
+  // stops promptly if crisis resolves before crisis_deadline.
+  {
+    ControllableRootEngine engine(MakeTestEngine());
+    engine.override_root_ = {.materialized = true,
+                             .visits = 1800,
+                             .edges = 2,
+                             .best_edge_visits = 1000,
+                             .second_edge_visits = 800,
+                             .best_move = move_e2e4,
+                             .decided = false};
+    SearchSession session(&engine, &backend, &responder, TestSettings(), tm,
+                          root, params, t0, state, 0);
+    EXPECT_FALSE(SearchSessionTestPeer::PollControllerStops(
+        session, t0 + std::chrono::milliseconds(10)));
+    const auto in_crisis_time = base_deadline + std::chrono::milliseconds(10);
+    EXPECT_FALSE(
+        SearchSessionTestPeer::PollControllerStops(session, in_crisis_time));
+    EXPECT_NE(SearchSessionTestPeer::NodeLimit(session), 1u);
+    const uint64_t rem =
+        SearchSessionTestPeer::ComputeRootRemainingVisits(session,
+                                                          in_crisis_time);
+    EXPECT_GT(rem, 0u);
+    EXPECT_LT(rem, std::numeric_limits<uint64_t>::max());
+
+    // Once the split resolves, controller stops on the next tick.
+    engine.override_root_.second_edge_visits = 200;
+    EXPECT_TRUE(SearchSessionTestPeer::PollControllerStops(
+        session, base_deadline + std::chrono::milliseconds(20)));
+    EXPECT_EQ(SearchSessionTestPeer::NodeLimit(session), 1u);
+  }
+
+  // 3. Runner-up overtaking trend triggers crisis even when below 75% split,
+  // and crisis still hard-stops at crisis_deadline.
+  {
+    ControllableRootEngine engine(MakeTestEngine());
+    engine.override_root_ = {.materialized = true,
+                             .visits = 1550,
+                             .edges = 2,
+                             .best_edge_visits = 1000,
+                             .second_edge_visits = 550,
+                             .best_move = move_e2e4,
+                             .decided = false};
+    SearchSession session(&engine, &backend, &responder, TestSettings(), tm,
+                          root, params, t0, state, 0);
+    EXPECT_FALSE(SearchSessionTestPeer::PollControllerStops(
+        session, t0 + std::chrono::milliseconds(10)));
+    engine.override_root_.best_edge_visits = 1010;
+    engine.override_root_.second_edge_visits = 650;
+    EXPECT_FALSE(SearchSessionTestPeer::PollControllerStops(
+        session, t0 + std::chrono::milliseconds(30)));
+    // Wait gap with no new completed visits preserves active overtaking crisis,
+    // and continued runner-up surge extends past base_deadline without hitting
+    // CapNodeLimit(1).
+    EXPECT_FALSE(SearchSessionTestPeer::PollControllerStops(
+        session, base_deadline + std::chrono::milliseconds(10)));
+    EXPECT_NE(SearchSessionTestPeer::NodeLimit(session), 1u);
+    engine.override_root_.best_edge_visits = 1015;
+    engine.override_root_.second_edge_visits = 720;
+    EXPECT_FALSE(SearchSessionTestPeer::PollControllerStops(
+        session, base_deadline + std::chrono::milliseconds(30)));
+    EXPECT_NE(SearchSessionTestPeer::NodeLimit(session), 1u);
+    EXPECT_TRUE(
+        SearchSessionTestPeer::PollControllerStops(session, crisis_deadline));
+    EXPECT_EQ(SearchSessionTestPeer::NodeLimit(session), 1u);
+  }
+
+  // 4. Late best-move flip after half base budget sustains crisis past base.
+  {
+    ControllableRootEngine engine(MakeTestEngine());
+    engine.override_root_ = {.materialized = true,
+                             .visits = 1500,
+                             .edges = 2,
+                             .best_edge_visits = 1000,
+                             .second_edge_visits = 500,
+                             .best_move = move_e2e4,
+                             .decided = false};
+    SearchSession session(&engine, &backend, &responder, TestSettings(), tm,
+                          root, params, t0, state, 0);
+    EXPECT_FALSE(SearchSessionTestPeer::PollControllerStops(
+        session, t0 + std::chrono::milliseconds(10)));
+    engine.override_root_.best_move = move_d2d4;
+    EXPECT_FALSE(SearchSessionTestPeer::PollControllerStops(
+        session, base_deadline - std::chrono::milliseconds(5)));
+    EXPECT_FALSE(SearchSessionTestPeer::PollControllerStops(
+        session, base_deadline + std::chrono::milliseconds(10)));
+    EXPECT_NE(SearchSessionTestPeer::NodeLimit(session), 1u);
+  }
+}
+
+TEST(Lc5SearchTest, EngineTracksSmoothTimeStateAndResetsOnNewGame) {
+  OptionsParser parser;
+  Settings::Populate(&parser);
+  PopulatePolicyOptions(&parser);
+  parser.SetUciOption("Threads", "1");
+  parser.SetUciOption("EvalThreads", "1");
+  parser.SetUciOption("MaxActiveVisits", "1");
+  ControlledBackend backend;
+  RecordingResponder responder;
+  Lc5Engine engine(&responder, &parser.GetOptionsDict());
+  engine.SetBackend(&backend);
+
+  const auto startpos = Position::FromFen(ChessBoard::kStartposFen);
+  engine.SetPosition({.startpos = startpos, .moves = {}});
+  engine.StartClock();
+  std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  engine.StartSearch(GoParams{.wtime = 8000, .winc = 80, .nodes = 4});
+  engine.WaitSearch();
+  SearchSessionTestPeer::ExpectDrained(engine);
+
+  ASSERT_NE(SearchSessionTestPeer::EngineSession(engine), nullptr);
+  const TimeManager::State move1_state =
+      SearchSessionTestPeer::EngineSession(engine)->next_time_state();
+  EXPECT_FALSE(move1_state.first_timed_move);
+  EXPECT_TRUE(move1_state.nps_is_reliable);
+  EXPECT_GT(move1_state.piggybank_ms, 0.0f);
+  EXPECT_GE(move1_state.last_move_total_nodes, 4u);
+
+  const Move reply =
+      Move::White(Square(kFileE, kRank2), Square(kFileE, kRank4));
+  engine.SetPosition({.startpos = startpos, .moves = {reply}});
+  engine.StartClock();
+  std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  engine.StartSearch(GoParams{.btime = 8000, .binc = 80, .nodes = 4});
+  engine.WaitSearch();
+  SearchSessionTestPeer::ExpectDrained(engine);
+
+  // Move 2 ingested Move 1's finalized time state before running.
+  EXPECT_FALSE(SearchSessionTestPeer::EngineTimeState(engine).first_timed_move);
+  EXPECT_TRUE(SearchSessionTestPeer::EngineTimeState(engine).nps_is_reliable);
+
+  engine.NewGame();
+  EXPECT_TRUE(SearchSessionTestPeer::EngineTimeState(engine).first_timed_move);
+  EXPECT_FALSE(SearchSessionTestPeer::EngineTimeState(engine).nps_is_reliable);
+  EXPECT_FLOAT_EQ(SearchSessionTestPeer::EngineTimeState(engine).piggybank_ms,
+                  0.0f);
 }
 
 }  // namespace

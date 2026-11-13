@@ -89,18 +89,48 @@ SearchSession::SearchSession(VisitEngine* engine, Backend* backend,
                              VisitOrigin root, GoParams go_params,
                              steady_clock::time_point start_time,
                              int64_t saved_ms)
+    : SearchSession(engine, backend, responder, settings, time_management,
+                    std::move(root), go_params, start_time, std::nullopt, 0,
+                    saved_ms) {}
+
+SearchSession::SearchSession(VisitEngine* engine, Backend* backend,
+                             UciResponder* responder,
+                             Settings::Resolved settings,
+                             TimeManager::Config time_management,
+                             VisitOrigin root, GoParams go_params,
+                             steady_clock::time_point start_time,
+                             TimeManager::State time_state,
+                             uint64_t reused_root_visits)
+    : SearchSession(engine, backend, responder, settings, time_management,
+                    std::move(root), go_params, start_time, time_state,
+                    reused_root_visits, 0) {}
+
+SearchSession::SearchSession(VisitEngine* engine, Backend* backend,
+                             UciResponder* responder,
+                             Settings::Resolved settings,
+                             TimeManager::Config time_management,
+                             VisitOrigin root, GoParams go_params,
+                             steady_clock::time_point start_time,
+                             std::optional<TimeManager::State> time_state,
+                             uint64_t reused_root_visits, int64_t saved_ms)
     : engine_(engine),
       backend_(backend),
       responder_(responder),
       settings_(settings),
       root_(std::move(root)),
       start_time_(start_time),
-      time_manager_(time_management, go_params,
-                    root_.history.Last().IsBlackToMove(), start_time_,
-                    saved_ms),
+      time_manager_(
+          time_state
+              ? TimeManager(time_management, go_params,
+                            root_.history.Last().IsBlackToMove(), start_time_,
+                            *time_state, reused_root_visits)
+              : TimeManager(time_management, go_params,
+                            root_.history.Last().IsBlackToMove(), start_time_,
+                            saved_ms)),
       may_stop_early_(!go_params.infinite && !go_params.ponder),
       smart_pruning_enabled_(may_stop_early_ &&
                              time_management.smart_pruning_factor > 0.0f),
+      next_time_state_(time_state.value_or(TimeManager::State{})),
       visit_pool_(settings_.max_active_visits),
       limiter_(MakeLimiterConfig(settings_, go_params,
                                  engine_->GetRootStats(root_.key)),
@@ -183,11 +213,7 @@ void SearchSession::RunControllerWorker() {
     const uint64_t generation = controller_signal_.generation();
     const auto now = steady_clock::now();
 
-    if (!IsStopping() &&
-        (stop_requested_.load() || time_manager_.ShouldStop(now))) {
-      limiter_.CapNodeLimit(1);
-    }
-    if (!IsStopping() && ShouldStop(now)) limiter_.Stop();
+    PollControllerStops(now);
     SendEvictionJob();
     engine_->SetRootRemainingVisits(ComputeRootRemainingVisits(now));
     if (!IsStopping()) MaybeOutputInfo(now, next_info);
@@ -223,10 +249,84 @@ void SearchSession::MaybeOutputInfo(steady_clock::time_point now,
   next_info = now + kInfoInterval;
 }
 
-bool SearchSession::ShouldStop(steady_clock::time_point now) const {
+bool SearchSession::UpdateCrisisState(const RootStats& root,
+                                      steady_clock::time_point now) {
+  constexpr auto kTrendSampleInterval = std::chrono::milliseconds(15);
+  constexpr auto kLateFlipCrisisDuration = std::chrono::milliseconds(150);
+
+  if (!may_stop_early_ || !time_manager_.HasCrisisBudget() ||
+      !root.materialized || root.edges <= 1 || root.decided) {
+    return false;
+  }
+
+  if (!seen_best_move_) {
+    seen_best_move_ = true;
+    observed_best_move_ = root.best_move;
+    trend_sample_time_ = now;
+    trend_sample_best_visits_ = root.best_edge_visits;
+    trend_sample_second_visits_ = root.second_edge_visits;
+  } else if (root.best_move != observed_best_move_) {
+    observed_best_move_ = root.best_move;
+    trend_sample_time_ = now;
+    trend_sample_best_visits_ = root.best_edge_visits;
+    trend_sample_second_visits_ = root.second_edge_visits;
+    crisis_overtaking_ = false;
+    if (time_manager_.PastHalfBaseBudget(now)) {
+      last_flip_time_ = now;
+    }
+  } else if (now - trend_sample_time_ >= kTrendSampleInterval) {
+    if (root.best_edge_visits >= trend_sample_best_visits_ &&
+        root.second_edge_visits >= trend_sample_second_visits_) {
+      const uint64_t d_best =
+          root.best_edge_visits - trend_sample_best_visits_;
+      const uint64_t d_second =
+          root.second_edge_visits - trend_sample_second_visits_;
+      if (d_best > 0 || d_second > 0) {
+        crisis_overtaking_ =
+            d_second > d_best &&
+            root.second_edge_visits * 2 >= root.best_edge_visits;
+        trend_sample_time_ = now;
+        trend_sample_best_visits_ = root.best_edge_visits;
+        trend_sample_second_visits_ = root.second_edge_visits;
+      }
+    } else {
+      crisis_overtaking_ = false;
+      trend_sample_time_ = now;
+      trend_sample_best_visits_ = root.best_edge_visits;
+      trend_sample_second_visits_ = root.second_edge_visits;
+    }
+  }
+
+  const bool close_split =
+      root.best_edge_visits > 0 &&
+      root.second_edge_visits * 4 >= root.best_edge_visits * 3;
+  const bool late_flip =
+      last_flip_time_ && (now - *last_flip_time_) <= kLateFlipCrisisDuration;
+  return close_split || crisis_overtaking_ || late_flip;
+}
+
+bool SearchSession::PollControllerStops(steady_clock::time_point now) {
+  if (IsStopping()) return false;
   const RootStats root = engine_->GetRootStats(root_.key);
+  const bool in_crisis = UpdateCrisisState(root, now);
+  time_manager_.SetCrisisActive(in_crisis, now);
+
+  const bool time_expired = time_manager_.ShouldStop(now, in_crisis);
+  if (stop_requested_.load() || time_expired) {
+    limiter_.CapNodeLimit(1);
+  }
+  if (ShouldStop(root, now, in_crisis, time_expired)) {
+    limiter_.Stop();
+    return true;
+  }
+  return false;
+}
+
+bool SearchSession::ShouldStop(const RootStats& root,
+                               steady_clock::time_point now, bool in_crisis,
+                               bool time_expired) const {
   if (!root.materialized) return false;
-  if (stop_requested_.load() || time_manager_.ShouldStop(now) ||
+  if (stop_requested_.load() || time_expired ||
       metrics_.visits_completed.load() >= limiter_.node_limit()) {
     return true;
   }
@@ -235,9 +335,11 @@ bool SearchSession::ShouldStop(steady_clock::time_point now) const {
     return true;
   }
   // The runner-up can't catch up within the remaining budget.
+  const uint64_t visit_gap = root.best_edge_visits > root.second_edge_visits
+                                 ? root.best_edge_visits - root.second_edge_visits
+                                 : 0;
   return !time_manager_.CanAffordVisits(
-      root.best_edge_visits - root.second_edge_visits,
-      metrics_.visits_completed.load(), now);
+      visit_gap, metrics_.visits_completed.load(), now, in_crisis);
 }
 
 uint64_t SearchSession::ComputeRootRemainingVisits(
@@ -256,16 +358,23 @@ steady_clock::time_point SearchSession::NextWakeup(
     steady_clock::time_point now, steady_clock::time_point next_info) const {
   if (IsStopping()) return steady_clock::time_point::max();
   auto wake_at = std::min(next_info, now + kControllerInterval);
-  if (const auto deadline = time_manager_.deadline();
+  if (const auto deadline = time_manager_.base_deadline();
       deadline && *deadline > now) {
     wake_at = std::min(wake_at, *deadline);
+  } else if (const auto crisis_deadline = time_manager_.crisis_deadline();
+             crisis_deadline && *crisis_deadline > now) {
+    wake_at = std::min(wake_at, *crisis_deadline);
   }
   return wake_at;
 }
 
 void SearchSession::RespondBestMove() {
   // The search ends here as far as the clock is concerned.
-  unused_time_ms_.store(time_manager_.UnusedMs(steady_clock::now()));
+  const auto stop_time = steady_clock::now();
+  unused_time_ms_.store(time_manager_.UnusedMs(stop_time));
+  next_time_state_ = time_manager_.FinalizeState(
+      stop_time, metrics_.visits_completed.load(),
+      engine_->GetRootStats(root_.key).visits);
   // Capture once, without waiting for any executor or eviction. Abort can
   // suppress this response before it is sent.
   if (!aborted_.load()) {
