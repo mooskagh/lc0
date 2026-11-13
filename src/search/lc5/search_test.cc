@@ -26,6 +26,7 @@
 */
 
 #include <absl/algorithm/container.h>
+#include <absl/cleanup/cleanup.h>
 #include <gtest/gtest.h>
 
 #include <algorithm>
@@ -2081,6 +2082,8 @@ TEST(Lc5SearchTest, EvaluatorReturnsPureCachedJobsWithoutWaitingForBatch) {
   SearchSession session(engine.get(), &backend, &responder, settings,
                         TestTimeManagement(), root, GoParams{.infinite = true},
                         std::chrono::steady_clock::now());
+  // Release before ~SearchSession() so failed assertions cannot deadlock Wait().
+  absl::Cleanup release_compute = [&] { backend.ReleaseCompute(); };
   session.Start();
   ASSERT_TRUE(backend.WaitForMissInput());
   // Wait for the second move's cached job to return and complete visits while

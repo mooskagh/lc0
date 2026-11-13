@@ -95,6 +95,13 @@ void MoveFront(std::deque<T>& from, std::vector<T>& to, size_t limit) {
   }
 }
 
+// Holds an active producer token across empty -> non-empty inbox signal
+// transitions so Evaluator::IsStarved() waits for sleeping peers to wake.
+void NoteInboxSignalLocked(WorkerInbox& inbox, Evaluator& evaluator)
+    ABSL_EXCLUSIVE_LOCKS_REQUIRED(inbox.mutex) {
+  if (!inbox.HasPendingSignalLocked()) evaluator.OnProducerActive();
+}
+
 }  // namespace
 
 VisitWorker::VisitWorker(size_t worker_id, const Context& context)
@@ -131,6 +138,7 @@ void VisitWorker::WakeAdmissionWaiters() {
   for (size_t index : context_.limiter.TakeWorkersToWake()) {
     auto& inbox = context_.inboxes[index];
     absl::MutexLock lock(inbox.mutex);
+    NoteInboxSignalLocked(inbox, context_.evaluator);
     inbox.admission_ready = true;
   }
 }
@@ -140,6 +148,7 @@ void VisitWorker::SendVisitWakeups(size_t to, std::vector<VisitWakeup>& batch) {
   {
     auto& inbox = context_.inboxes[to];
     absl::MutexLock lock(inbox.mutex);
+    NoteInboxSignalLocked(inbox, context_.evaluator);
     inbox.wakeups.insert(inbox.wakeups.end(), batch.begin(), batch.end());
   }
   batch.clear();
@@ -232,8 +241,10 @@ void VisitWorker::ProcessInbox() {
   std::vector<VisitWakeup> wakeups;
   std::vector<std::unique_ptr<AsyncJob>> completions;
   bool admission_ready;
+  bool had_pending_signal;
   {
     absl::MutexLock lock(inbox_.mutex);
+    had_pending_signal = inbox_.HasPendingSignalLocked();
     wakeups.swap(inbox_.wakeups);
     completions.swap(inbox_.completions);
     admission_ready = std::exchange(inbox_.admission_ready, false);
@@ -245,6 +256,9 @@ void VisitWorker::ProcessInbox() {
     // Mark not drained while processing swapped-out inbox items.
     if (drained_.exchange(false)) notify_controller_ = true;
   }
+  // Drop the inbox-signal producer token only after ReportProducingStatus(true)
+  // so producing_workers_ stays non-zero across the cross-thread handoff.
+  if (had_pending_signal) context_.evaluator.OnProducerBlocked();
   for (const auto& wakeup : wakeups) ResumeVisit(wakeup);
   for (auto& job : completions) FinishJob(std::move(job));
   for (const auto& wakeup : local_wakeups_) ResumeVisit(wakeup);

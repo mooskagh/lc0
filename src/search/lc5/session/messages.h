@@ -129,6 +129,12 @@ struct WorkerInbox {
     shutdown = true;
   }
 
+  // True while unread cross-thread wakeups or admission signals are queued
+  // and covered by the inbox's pending producer token.
+  bool HasPendingSignalLocked() const ABSL_SHARED_LOCKS_REQUIRED(mutex) {
+    return !wakeups.empty() || admission_ready;
+  }
+
   absl::Mutex mutex;
   // Wakeups for visits owned by this worker.
   std::vector<VisitWakeup> wakeups ABSL_GUARDED_BY(mutex);
