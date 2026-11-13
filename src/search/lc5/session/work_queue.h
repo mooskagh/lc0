@@ -59,6 +59,17 @@ class WorkQueue {
     mutex_.Await(absl::Condition(this, &WorkQueue::ReadyLocked));
     return TakeFrontLocked(value);
   }
+  // Blocks until closed, or an item is available while `allow_start()` holds.
+  template <typename AllowStart>
+  bool PopWhen(T* value, AllowStart&& allow_start) {
+    absl::MutexLock lock(mutex_);
+    const auto ready = [&] {
+      mutex_.AssertReaderHeld();
+      return closed_ || (!queue_.empty() && allow_start());
+    };
+    mutex_.Await(absl::Condition(&ready));
+    return TakeFrontLocked(value);
+  }
   template <typename Accept>
   bool TryPopIf(T* value, Accept&& accept) {
     absl::MutexLock lock(mutex_);

@@ -29,13 +29,11 @@
 
 #include <atomic>
 #include <cstddef>
-#include <deque>
 #include <memory>
 #include <span>
 #include <thread>
 #include <vector>
 
-#include "chess/position.h"
 #include "neural/backend.h"
 #include "search/lc5/metrics.h"
 #include "search/lc5/session/messages.h"
@@ -94,14 +92,15 @@ class Evaluator {
   Batch CollectBatch(std::unique_ptr<AsyncJob> first);
   // Returns true if any item in `job` was enqueued for NN computation.
   bool AddJobToBatch(BackendComputation& computation, AsyncJob& job);
-  void PrefetchChildren(Batch& batch, std::deque<PositionHistory>& histories,
-                        std::deque<MoveList>& moves);
   void EvaluateBatch(Batch batch);
   void ReturnJobToWorker(std::unique_ptr<AsyncJob> job);
 
   // Predicates.
   bool IsStopping() const { return context_.limiter.IsStopping(); }
   bool IsStarved() const;
+  // Flushes a partial >= half-full batch without sleeping for the batch delay
+  // when multiple evaluators are configured and no computation is running.
+  bool ShouldFlushForIdleBackend(size_t used) const;
 
   const Context context_;
 
@@ -111,6 +110,10 @@ class Evaluator {
   // remaining jobs and producers are blocked, further collection depends on
   // flushing at least one computation.
   std::atomic<size_t> jobs_in_collection_{0};
+  // Collectors actively accumulating a batch after CreateComputation().
+  std::atomic<size_t> waiting_collectors_{0};
+  // Computations currently executing inside ComputeBlocking().
+  std::atomic<size_t> batches_computing_{0};
   // Visit workers that are producing.
   std::atomic<size_t> producing_workers_;
 

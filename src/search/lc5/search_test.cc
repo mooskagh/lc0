@@ -42,7 +42,6 @@
 #include <unordered_set>
 #include <vector>
 
-#include "neural/memcache.h"
 #include "search/lc5/engine.h"
 #include "search/lc5/policies/puct.h"
 #include "search/lc5/policies/registry.h"
@@ -2097,111 +2096,179 @@ TEST(Lc5SearchTest, EvaluatorReturnsPureCachedJobsWithoutWaitingForBatch) {
   ExpectDrained(session);
 }
 
-TEST(Lc5SearchTest, SmallBatchPrefetchesChildrenIntoMemCache) {
-  class MockCachingBackend final : public CachingBackend {
+TEST(Lc5SearchTest, IdleBackendFlushesHalfBatchForParallelEvaluators) {
+  class StagedBackend final : public Backend {
    public:
     BackendAttributes GetAttributes() const override {
       return {.has_mlh = true,
               .has_wdl = true,
-              .runs_on_cpu = true,
+              .runs_on_cpu = false,
               .suggested_num_search_threads = 1,
-              .recommended_batch_size = 256,
-              .maximum_batch_size = 256};
-    }
-    void ClearCache() override {
-      std::lock_guard lock(mutex_);
-      cache_.clear();
-    }
-    void SetCacheSize(size_t) override {}
-    std::optional<EvalResult> GetCachedEvaluation(
-        const EvalPosition& pos) override {
-      std::lock_guard lock(mutex_);
-      const auto it = cache_.find(pos.pos.back().Hash());
-      if (it == cache_.end()) return std::nullopt;
-      if (!pos.legal_moves.empty() &&
-          it->second.p.size() != pos.legal_moves.size()) {
-        return std::nullopt;
-      }
-      return it->second;
+              .recommended_batch_size = 4,
+              .maximum_batch_size = 4};
     }
     std::unique_ptr<BackendComputation> CreateComputation() override {
       return std::make_unique<Computation>(*this);
     }
-    std::atomic<size_t> inputs{0};
+    bool WaitForInputs(size_t count) {
+      std::unique_lock lock(mutex_);
+      return cv_.wait_for(lock, std::chrono::seconds(5),
+                          [&] { return inputs_ >= count || released_; }) &&
+             inputs_ >= count;
+    }
+    bool WaitForComputeStarted(size_t count) {
+      std::unique_lock lock(mutex_);
+      return cv_.wait_for(
+                 lock, std::chrono::seconds(5),
+                 [&] { return computes_started_ >= count || released_; }) &&
+             computes_started_ >= count;
+    }
+    size_t computes_started() {
+      std::lock_guard lock(mutex_);
+      return computes_started_;
+    }
+    void ReleaseBatch1() {
+      {
+        std::lock_guard lock(mutex_);
+        release_batch1_ = true;
+      }
+      cv_.notify_all();
+    }
+    void ReleaseAll() {
+      {
+        std::lock_guard lock(mutex_);
+        release_batch1_ = true;
+        released_ = true;
+      }
+      cv_.notify_all();
+    }
+    std::vector<size_t> batch_sizes;
 
    private:
     class Computation final : public BackendComputation {
      public:
-      explicit Computation(MockCachingBackend& backend) : backend_(backend) {}
+      explicit Computation(StagedBackend& backend) : backend_(backend) {}
       size_t UsedBatchSize() const override { return pending_.size(); }
-      AddInputResult AddInput(const EvalPosition& pos,
+      AddInputResult AddInput(const EvalPosition&,
                               EvalResultPtr result) override {
-        backend_.inputs.fetch_add(1);
-        pending_.push_back(
-            {.hash = pos.pos.back().Hash(),
-             .moves = pos.legal_moves.size(),
-             .result = result});
+        pending_.push_back(result);
+        {
+          std::lock_guard lock(backend_.mutex_);
+          ++backend_.inputs_;
+        }
+        backend_.cv_.notify_all();
         return ENQUEUED_FOR_EVAL;
       }
       void ComputeBlocking() override {
-        for (const auto& item : pending_) {
-          EvalResult cached{.q = 0.2f, .d = 0.4f, .m = 3.0f, .p = {}};
-          cached.p.assign(item.moves, 1.0f / item.moves);
-          if (item.result.q) *item.result.q = cached.q;
-          if (item.result.d) *item.result.d = cached.d;
-          if (item.result.m) *item.result.m = cached.m;
-          if (!item.result.p.empty()) {
-            std::copy(cached.p.begin(), cached.p.end(), item.result.p.begin());
+        size_t batch_index = 0;
+        {
+          std::unique_lock lock(backend_.mutex_);
+          batch_index = ++backend_.computes_started_;
+          backend_.batch_sizes.push_back(pending_.size());
+          backend_.cv_.notify_all();
+          if (batch_index == 1) {
+            backend_.cv_.wait(lock, [&] { return backend_.release_batch1_; });
+          } else {
+            backend_.cv_.wait(lock, [&] { return backend_.released_; });
           }
-          std::lock_guard lock(backend_.mutex_);
-          backend_.cache_[item.hash] = std::move(cached);
+        }
+        for (const auto& result : pending_) {
+          if (result.q) *result.q = 0.25f;
+          if (result.d) *result.d = 0.5f;
+          if (result.m) *result.m = 3.0f;
+          std::fill(result.p.begin(), result.p.end(), 1.0f / result.p.size());
         }
       }
 
      private:
-      struct Item {
-        uint64_t hash;
-        size_t moves;
-        EvalResultPtr result;
-      };
-      MockCachingBackend& backend_;
-      std::vector<Item> pending_;
+      StagedBackend& backend_;
+      std::vector<EvalResultPtr> pending_;
     };
 
     std::mutex mutex_;
-    std::unordered_map<uint64_t, EvalResult> cache_;
+    std::condition_variable cv_;
+    size_t inputs_ = 0;
+    size_t computes_started_ = 0;
+    bool release_batch1_ = false;
+    bool released_ = false;
   };
 
-  MockCachingBackend backend;
+  class StagedStore final : public NodeStore {
+   public:
+    explicit StagedStore(StagedBackend& backend) : backend_(backend) {}
+    std::vector<std::optional<std::vector<uint8_t>>> LoadBatch(
+        std::span<const NodeKey> keys) override {
+      const size_t call = calls_.fetch_add(1);
+      if (call == 1) {
+        backend_.WaitForInputs(1);
+      } else if (call == 2) {
+        backend_.WaitForComputeStarted(1);
+      } else if (call == 3) {
+        backend_.WaitForInputs(3);
+      } else if (call == 4) {
+        load5.ArriveAndWait();
+      }
+      return std::vector<std::optional<std::vector<uint8_t>>>(keys.size());
+    }
+    void StoreBatch(std::span<const StoredNode>) override {}
+    void EraseBatch(std::span<const NodeKey>) override {}
+    void Clear() override {}
+    OperationBarrier load5;
+
+   private:
+    StagedBackend& backend_;
+    std::atomic<size_t> calls_{0};
+  };
+
   auto engine = MakeTestEngine();
+  StagedBackend backend;
+  auto& store = InstallStore<StagedStore>(*engine, backend);
   RecordingResponder responder;
   const auto root = Origin();
-  auto settings = TestSettings(1, 256);
-  settings.minibatch_size = 256;
+  const auto moves = root.history.Last().GetBoard().GenerateLegalMoves();
+  ASSERT_GE(moves.size(), 5u);
+  engine->CompleteMaterialization(
+      root.key, {.moves = {moves[0], moves[1], moves[2], moves[3], moves[4]},
+                 .priors = {0.2f, 0.2f, 0.2f, 0.2f, 0.2f}});
 
-  // A 1-node search evaluates root (1 slot) and prefetches its 20 children.
-  {
-    SearchSession session(engine.get(), &backend, &responder, settings,
-                          TestTimeManagement(), root, GoParams{.nodes = 1},
-                          std::chrono::steady_clock::now());
-    session.Start();
-    session.Wait();
-    ExpectDrained(session);
-    EXPECT_EQ(backend.inputs.load(), 21u);
-    EXPECT_EQ(session.metrics().nn_evaluations.load(), 1u);
+  auto settings = TestSettings(1, 5);
+  settings.eval_threads = 2;
+  settings.minibatch_size = 4;
+  settings.max_batch_delay_ms = 60'000;
+  SearchSession session(engine.get(), &backend, &responder, settings,
+                        TestTimeManagement(), root, GoParams{.nodes = 5},
+                        std::chrono::steady_clock::now());
+  for (size_t i = 0; i < 5; ++i) {
+    auto child = root;
+    child.history.Append(moves[i]);
+    child.key = MakeNodeKey(child.history, 7);
+    ASSERT_TRUE(SearchSessionTestPeer::AdmitVisit(session, child));
   }
 
-  // Subsequent visits to root's children hit the cache synchronously.
-  {
-    SearchSession session(engine.get(), &backend, &responder, settings,
-                          TestTimeManagement(), root, GoParams{.nodes = 20},
-                          std::chrono::steady_clock::now());
-    session.Start();
-    session.Wait();
-    ExpectDrained(session);
-    EXPECT_GE(session.metrics().cache_hits.load(), 20u);
-    EXPECT_EQ(session.metrics().evaluation_batches.load(), 0u);
-  }
+  session.Start();
+  // Batch 1 reaches half-batch (2) with idle backend and flushes immediately.
+  const bool batch1 = backend.WaitForComputeStarted(1);
+  // Batch 2 accumulates 2 inputs while Batch 1 is computing and load 5 blocks
+  // starvation, so Batch 2 stays queued until Batch 1 completes.
+  const bool inputs4 = backend.WaitForInputs(4);
+  const bool load5_blocked = store.load5.WaitForArrival();
+  const size_t computes_before_release = backend.computes_started();
+  backend.ReleaseBatch1();
+  const bool batch2 = backend.WaitForComputeStarted(2);
+
+  session.Stop();
+  store.load5.Release();
+  backend.ReleaseAll();
+  session.Wait();
+
+  ASSERT_TRUE(batch1);
+  ASSERT_TRUE(inputs4);
+  ASSERT_TRUE(load5_blocked);
+  EXPECT_EQ(computes_before_release, 1u);
+  ASSERT_TRUE(batch2);
+  ExpectDrained(session);
+  EXPECT_EQ(backend.batch_sizes, (std::vector<size_t>{2, 2}));
+  EXPECT_EQ(session.metrics().partial_timeout_flushes.load(), 0u);
 }
 
 TEST(Lc5SearchTest, ControllerUpdatesAndResetsRootRemainingVisits) {

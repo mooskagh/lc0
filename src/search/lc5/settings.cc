@@ -108,8 +108,12 @@ Settings::Resolved Settings::Resolve(const BackendAttributes& backend) const {
     throw Exception("Lc5 MinibatchSize exceeds backend maximum batch size");
   }
   if (resolved.eval_threads == 0) {
-    resolved.eval_threads =
-        std::clamp(backend.suggested_num_search_threads, 1, 128);
+    // Non-CPU backends benefit from overlapping CPU plane encoding / cache
+    // work on a second evaluator thread even when suggested threads is 1.
+    const int suggested = backend.runs_on_cpu
+                              ? backend.suggested_num_search_threads
+                              : std::max(2, backend.suggested_num_search_threads);
+    resolved.eval_threads = std::clamp(suggested, 1, 128);
   }
   if (resolved.minibatch_size == 0) {
     resolved.minibatch_size =
@@ -125,9 +129,10 @@ Settings::Resolved Settings::Resolve(const BackendAttributes& backend) const {
   if (resolved.max_active_visits == 0) {
     // Keep enough capacity for in-flight evaluator batches plus next-batch
     // gathering while evaluators run.
-    resolved.max_active_visits =
-        std::clamp(5 * resolved.eval_threads * resolved.minibatch_size / 2, 256,
-                   kMaxActiveVisitsLimit);
+    const size_t target = 2 * static_cast<size_t>(resolved.eval_threads) *
+                          static_cast<size_t>(resolved.minibatch_size);
+    resolved.max_active_visits = static_cast<int>(std::clamp<size_t>(
+        target, 256, static_cast<size_t>(kMaxActiveVisitsLimit)));
   }
   if (resolved.max_active_visits < resolved.eval_threads) {
     throw Exception(

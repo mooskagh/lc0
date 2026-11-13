@@ -33,13 +33,24 @@
 #include <chrono>
 #include <utility>
 
-#include "neural/memcache.h"
-
 namespace lczero::lc5 {
 namespace {
 
-constexpr size_t kMinPrefetchBatchTarget = 256;
-constexpr size_t kMaxPrefetchPerBatch = 512;
+class ActiveCollectorGuard {
+ public:
+  ActiveCollectorGuard(std::atomic<size_t>& active,
+                       WorkQueue<std::unique_ptr<AsyncJob>>& queue)
+      : active_(active), queue_(queue) {
+    active_.fetch_add(1);
+  }
+  ~ActiveCollectorGuard() {
+    if (active_.fetch_sub(1) == 1) queue_.NotifyPredicateChanged();
+  }
+
+ private:
+  std::atomic<size_t>& active_;
+  WorkQueue<std::unique_ptr<AsyncJob>>& queue_;
+};
 
 }  // namespace
 
@@ -77,7 +88,8 @@ void Evaluator::OnProducerBlocked() {
 
 void Evaluator::Run() {
   std::unique_ptr<AsyncJob> job;
-  while (queued_jobs_.Pop(&job)) {
+  while (queued_jobs_.PopWhen(
+      &job, [&] { return waiting_collectors_.load() == 0; })) {
     if (IsStopping()) {
       ReturnJobToWorker(std::move(job));
       continue;
@@ -98,6 +110,10 @@ Evaluator::Batch Evaluator::CollectBatch(std::unique_ptr<AsyncJob> job) {
   };
   auto deadline = deadline_for(*job);
   Batch batch{.computation = context_.backend.CreateComputation()};
+  // Held after CreateComputation() so backends synchronizing multiple
+  // evaluators at creation still progress, while keeping idle peers from
+  // splitting a partial batch once collection begins.
+  ActiveCollectorGuard collector_guard(waiting_collectors_, queued_jobs_);
   for (;;) {
     if (AddJobToBatch(*batch.computation, *job)) {
       if (batch.jobs.empty()) deadline = deadline_for(*job);
@@ -118,11 +134,16 @@ Evaluator::Batch Evaluator::CollectBatch(std::unique_ptr<AsyncJob> job) {
     if (!queued_jobs_.TryPopIf(&job, fits)) {
       // Immediate-only batches return their jobs instead of waiting on
       // producers that need those cache results. The oldest job's deadline is
-      // absolute; zero disables it, but dependency starvation still flushes.
-      if (used == 0 || IsStopping()) break;
+      // absolute; zero disables it, but dependency starvation or an idle
+      // parallel backend can still flush.
+      if (used == 0 || IsStopping() || ShouldFlushForIdleBackend(used)) break;
       queued_jobs_.NotifyPredicateChanged();
       if (!queued_jobs_.PopUntil(
-              &job, deadline, [&] { return IsStopping() || IsStarved(); },
+              &job, deadline,
+              [&] {
+                return IsStopping() || IsStarved() ||
+                       ShouldFlushForIdleBackend(used);
+              },
               fits)) {
         batch.timed_out = std::chrono::steady_clock::now() >= deadline;
         break;
@@ -159,61 +180,8 @@ bool Evaluator::AddJobToBatch(BackendComputation& computation, AsyncJob& job) {
   return enqueued;
 }
 
-void Evaluator::PrefetchChildren(Batch& batch,
-                                 std::deque<PositionHistory>& histories,
-                                 std::deque<MoveList>& moves) {
-  if (dynamic_cast<CachingBackend*>(&context_.backend) == nullptr) return;
-  const size_t target = context_.settings.minibatch_size;
-  const size_t used = batch.computation->UsedBatchSize();
-  if (target < kMinPrefetchBatchTarget || used == 0 || used >= target / 2) {
-    return;
-  }
-  const size_t budget = std::min(target - used, kMaxPrefetchPerBatch);
-  size_t prefetched = 0;
-  size_t child_index = 0;
-  for (;;) {
-    bool any_parent_had_child = false;
-    for (const auto& job : batch.jobs) {
-      for (const auto& materialization : job->materializations) {
-        if (IsStopping() || prefetched >= budget) return;
-        if (materialization.state != Materialization::State::kQueued) continue;
-        if (child_index >= materialization.eval.moves.size()) continue;
-        any_parent_had_child = true;
-        auto& child_history = histories.emplace_back(materialization.history);
-        child_history.Append(materialization.eval.moves[child_index]);
-        if (context_.backend.GetCachedEvaluation(
-                EvalPosition{.pos = child_history.GetPositions(),
-                             .legal_moves = {}})) {
-          histories.pop_back();
-          continue;
-        }
-        auto child_moves =
-            child_history.Last().GetBoard().GenerateLegalMoves();
-        if (child_moves.empty()) {
-          histories.pop_back();
-          continue;
-        }
-        auto& stored_moves = moves.emplace_back(std::move(child_moves));
-        if (batch.computation->AddInput(
-                EvalPosition{.pos = child_history.GetPositions(),
-                             .legal_moves = stored_moves},
-                EvalResultPtr{}) == BackendComputation::FETCHED_IMMEDIATELY) {
-          moves.pop_back();
-          histories.pop_back();
-          continue;
-        }
-        ++prefetched;
-      }
-    }
-    if (!any_parent_had_child) break;
-    ++child_index;
-  }
-}
-
 void Evaluator::EvaluateBatch(Batch batch) {
   const size_t used = batch.computation->UsedBatchSize();
-  std::deque<PositionHistory> prefetch_histories;
-  std::deque<MoveList> prefetch_moves;
   if (used > 0 && !IsStopping()) {
     if (used < static_cast<size_t>(context_.settings.minibatch_size)) {
       (batch.timed_out ? context_.metrics.partial_timeout_flushes
@@ -222,8 +190,11 @@ void Evaluator::EvaluateBatch(Batch batch) {
     }
     context_.metrics.evaluation_batches.fetch_add(1);
     context_.metrics.nn_evaluations.fetch_add(used);
-    PrefetchChildren(batch, prefetch_histories, prefetch_moves);
+    batches_computing_.fetch_add(1);
     batch.computation->ComputeBlocking();
+    if (batches_computing_.fetch_sub(1) == 1) {
+      queued_jobs_.NotifyPredicateChanged();
+    }
     for (auto& job : batch.jobs) {
       for (auto& materialization : job->materializations) {
         if (materialization.state == Materialization::State::kQueued) {
@@ -247,6 +218,15 @@ bool Evaluator::IsStarved() const {
   // currently blocked producers cannot justify an unbounded wait.
   return context_.settings.max_batch_delay_ms == 0 ||
          context_.jobs_in_flight.load() <= jobs_in_collection_.load();
+}
+
+bool Evaluator::ShouldFlushForIdleBackend(size_t used) const {
+  if (context_.settings.eval_threads < 2 ||
+      context_.settings.max_batch_delay_ms == 0) {
+    return false;
+  }
+  const size_t target = static_cast<size_t>(context_.settings.minibatch_size);
+  return batches_computing_.load() == 0 && used >= target / 2;
 }
 
 void Evaluator::ReturnJobToWorker(std::unique_ptr<AsyncJob> job) {

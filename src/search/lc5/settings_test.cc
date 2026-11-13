@@ -48,7 +48,7 @@ TEST(Lc5SettingsTest, DefaultsResolveAgainstBackend) {
   auto resolved = settings.Resolve(attrs);
   EXPECT_EQ(resolved.eval_threads, 2);
   EXPECT_EQ(resolved.minibatch_size, 64);
-  EXPECT_EQ(resolved.max_active_visits, 320);
+  EXPECT_EQ(resolved.max_active_visits, 256);
   EXPECT_FLOAT_EQ(resolved.active_visits_ratio, 0.25f);
   EXPECT_EQ(settings.history_key_length(), 7);
 }
@@ -64,9 +64,41 @@ TEST(Lc5SettingsTest, ResolvesLargeBatchMaxActiveVisits) {
                           .recommended_batch_size = 4096,
                           .maximum_batch_size = 4096};
   auto resolved = settings.Resolve(attrs);
-  EXPECT_EQ(resolved.eval_threads, 1);
+  EXPECT_EQ(resolved.eval_threads, 2);
   EXPECT_EQ(resolved.minibatch_size, 4096);
-  EXPECT_EQ(resolved.max_active_visits, 10240);
+  EXPECT_EQ(resolved.max_active_visits, 16384);
+}
+
+TEST(Lc5SettingsTest, GpuDefaultsEnableParallelEvaluators) {
+  OptionsParser parser;
+  Settings::Populate(&parser);
+  Settings settings(parser.GetOptionsDict());
+  BackendAttributes attrs{.has_mlh = true,
+                          .has_wdl = true,
+                          .runs_on_cpu = false,
+                          .suggested_num_search_threads = 1,
+                          .recommended_batch_size = 48,
+                          .maximum_batch_size = 256};
+  auto resolved = settings.Resolve(attrs);
+  EXPECT_EQ(resolved.eval_threads, 2);
+  EXPECT_EQ(resolved.minibatch_size, 48);
+  EXPECT_EQ(resolved.max_active_visits, 256);
+}
+
+TEST(Lc5SettingsTest, CpuDefaultsKeepSingleSuggestedEvaluator) {
+  OptionsParser parser;
+  Settings::Populate(&parser);
+  Settings settings(parser.GetOptionsDict());
+  BackendAttributes attrs{.has_mlh = true,
+                          .has_wdl = true,
+                          .runs_on_cpu = true,
+                          .suggested_num_search_threads = 1,
+                          .recommended_batch_size = 64,
+                          .maximum_batch_size = 128};
+  auto resolved = settings.Resolve(attrs);
+  EXPECT_EQ(resolved.eval_threads, 1);
+  EXPECT_EQ(resolved.minibatch_size, 64);
+  EXPECT_EQ(resolved.max_active_visits, 256);
 }
 
 TEST(Lc5SettingsTest, CapsDefaultMaxActiveVisits) {
