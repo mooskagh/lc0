@@ -44,6 +44,11 @@ namespace lczero::lc5 {
 // start (not stopping, node budget left, in-flight limit).
 class VisitLimiter {
  public:
+  // Live visits allowed while the tree is still empty; see GetActiveVisitLimit.
+  static constexpr size_t kMinActiveVisits = 16;
+  // Upper bound on the early-tree minibatch floor passed via Config.
+  static constexpr size_t kMaxMinActiveVisits = 48;
+
   struct Config {
     size_t workers;
     // Admissions allowed in total: the node budget.
@@ -51,9 +56,9 @@ class VisitLimiter {
     // Root visits before the search, for GetActiveVisitLimit.
     uint64_t root_visits_at_start;
     float active_visits_ratio;
+    // Minimum active-visit limit while the tree is still small.
+    size_t min_active_visits = kMinActiveVisits;
   };
-  // Live visits allowed while the tree is still empty; see GetActiveVisitLimit.
-  static constexpr size_t kMinActiveVisits = 16;
 
   VisitLimiter(const Config& config, VisitPool& visits, Metrics& metrics);
   uint64_t node_limit() const { return node_limit_.load(); }

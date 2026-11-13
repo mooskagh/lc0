@@ -68,7 +68,11 @@ VisitLimiter::Config MakeLimiterConfig(const Settings::Resolved& settings,
   return {.workers = static_cast<size_t>(settings.threads),
           .node_limit = GetNodeLimit(go_params, root),
           .root_visits_at_start = root.visits,
-          .active_visits_ratio = settings.active_visits_ratio};
+          .active_visits_ratio = settings.active_visits_ratio,
+          .min_active_visits = std::clamp<size_t>(
+              static_cast<size_t>(std::max(0, settings.minibatch_size)),
+              VisitLimiter::kMinActiveVisits,
+              VisitLimiter::kMaxMinActiveVisits)};
 }
 
 // Always-illegal move ("h1h1q", distinct from Move{} "a1a1") emitted when the

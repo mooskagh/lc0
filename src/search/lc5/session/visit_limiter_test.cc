@@ -85,6 +85,50 @@ TEST(Lc5VisitLimiterTest, FullPoolWakesWaitingWorkersInTurn) {
   EXPECT_TRUE(limiter.TakeWorkersToWake().empty());
 }
 
+TEST(Lc5VisitLimiterTest, ActiveLimitHonorsMinibatchFloorAndScalesWithTree) {
+  VisitPool pool(256);
+  Metrics metrics;
+  VisitLimiter limiter({.workers = 1,
+                        .node_limit = 500,
+                        .root_visits_at_start = 0,
+                        .active_visits_ratio = 0.25f,
+                        .min_active_visits = 48},
+                       pool, metrics);
+  EXPECT_EQ(limiter.GetActiveVisitLimit(), 48u);
+  const auto admitted = limiter.AdmitVisits(0, {}, 60);
+  EXPECT_EQ(admitted.size(), 48u);
+  EXPECT_TRUE(limiter.AdmitVisits(0, {}, 1).empty());
+  for (const auto id : admitted) pool.Release(id);
+
+  metrics.visits_completed.store(100);
+  EXPECT_EQ(limiter.GetActiveVisitLimit(), 48u);
+
+  metrics.visits_completed.store(200);
+  EXPECT_EQ(limiter.GetActiveVisitLimit(), 66u);
+}
+
+TEST(Lc5VisitLimiterTest, ActiveLimitRespectsPoolCapacityAndDefaultFloor) {
+  VisitPool small_pool(32);
+  Metrics metrics;
+  VisitLimiter small_limiter({.workers = 1,
+                              .node_limit = 500,
+                              .root_visits_at_start = 0,
+                              .active_visits_ratio = 0.25f,
+                              .min_active_visits = 48},
+                             small_pool, metrics);
+  EXPECT_EQ(small_limiter.GetActiveVisitLimit(), 32u);
+
+  VisitPool large_pool(256);
+  VisitLimiter default_limiter({.workers = 1,
+                                .node_limit = 500,
+                                .root_visits_at_start = 0,
+                                .active_visits_ratio = 0.25f,
+                                .min_active_visits = 4},
+                               large_pool, metrics);
+  EXPECT_EQ(default_limiter.GetActiveVisitLimit(),
+            VisitLimiter::kMinActiveVisits);
+}
+
 }  // namespace
 }  // namespace lczero::lc5
 

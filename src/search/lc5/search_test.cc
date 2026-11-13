@@ -2418,6 +2418,31 @@ TEST(Lc5SearchTest, ControllerUpdatesAndResetsRootRemainingVisits) {
   EXPECT_EQ(updates.back(), kUnlimited);
 }
 
+TEST(Lc5SearchTest, SearchSessionAdmitsMinibatchFloorOnSmallTree) {
+  for (const int minibatch_size : {48, 256}) {
+    SCOPED_TRACE(minibatch_size);
+    auto engine = MakeTestEngine();
+    ControlledBackend backend(ControlledBackend::Cache::kNone, false,
+                              minibatch_size);
+    RecordingResponder responder;
+    const auto root = Origin();
+    auto settings = TestSettings(1, 256);
+    settings.minibatch_size = minibatch_size;
+    settings.active_visits_ratio = 0.25f;
+    SearchSession session(engine.get(), &backend, &responder, settings,
+                          TestTimeManagement(), root, GoParams{.nodes = 200},
+                          std::chrono::steady_clock::now());
+    for (int i = 0; i < 48; ++i) {
+      ASSERT_TRUE(SearchSessionTestPeer::AdmitVisit(session, root));
+    }
+    EXPECT_FALSE(SearchSessionTestPeer::AdmitVisit(session, root));
+    session.Abort();
+    session.Start();
+    session.Wait();
+    ExpectDrained(session);
+  }
+}
+
 }  // namespace
 }  // namespace lczero::lc5
 

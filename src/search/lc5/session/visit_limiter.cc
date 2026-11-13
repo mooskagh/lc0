@@ -53,9 +53,11 @@ size_t VisitLimiter::GetActiveVisitLimit() const {
   if (config_.active_visits_ratio <= 0.0f) return visits_.capacity();
   const double tree = static_cast<double>(config_.root_visits_at_start +
                                           metrics_.visits_completed.load());
-  return std::min(visits_.capacity(),
-                  kMinActiveVisits +
-                      static_cast<size_t>(tree * config_.active_visits_ratio));
+  const size_t floor = std::max(kMinActiveVisits, config_.min_active_visits);
+  const size_t scaled_limit =
+      kMinActiveVisits +
+      static_cast<size_t>(tree * config_.active_visits_ratio);
+  return std::min(visits_.capacity(), std::max(floor, scaled_limit));
 }
 
 std::vector<VisitId> VisitLimiter::AdmitVisits(size_t worker,
