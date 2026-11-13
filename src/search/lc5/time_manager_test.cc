@@ -68,8 +68,8 @@ void ExpectNoDeadline(const GoParams& params, bool black_to_move) {
 
 TEST(Lc5TimeManagerTest, ComputesBudgetFromActiveClock) {
   GoParams params{.wtime = 10200, .btime = 5200};
-  ExpectDeadline(params, false, 300);
-  ExpectDeadline(params, true, 150);
+  ExpectDeadline(params, false, 194);
+  ExpectDeadline(params, true, 97);
 }
 
 TEST(Lc5TimeManagerTest, TimingConfigurationIsUsed) {
@@ -83,12 +83,12 @@ TEST(Lc5TimeManagerTest, TimingConfigurationIsUsed) {
 
 TEST(Lc5TimeManagerTest, IncludesOnlyActiveSideIncrement) {
   GoParams params{.wtime = 10200, .btime = 5200, .winc = 100, .binc = 200};
-  ExpectDeadline(params, false, 397);
-  ExpectDeadline(params, true, 344);
+  ExpectDeadline(params, false, 292);
+  ExpectDeadline(params, true, 293);
   params.winc = -100;
-  ExpectDeadline(params, false, 300);
+  ExpectDeadline(params, false, 194);
   params.binc = -200;
-  ExpectDeadline(params, true, 150);
+  ExpectDeadline(params, true, 97);
 }
 
 TEST(Lc5TimeManagerTest, HonorsShorterMovesToGoHorizon) {
@@ -99,7 +99,7 @@ TEST(Lc5TimeManagerTest, HonorsShorterMovesToGoHorizon) {
   for (int moves : {0, -1, 100}) {
     SCOPED_TRACE(moves);
     params.movestogo = moves;
-    ExpectDeadline(params, false, 217);
+    ExpectDeadline(params, false, 175);
   }
 }
 
@@ -118,7 +118,7 @@ TEST(Lc5TimeManagerTest, CapsBudgetAndPreservesOverhead) {
 }
 
 TEST(Lc5TimeManagerTest, PreservesPrecisionAndTruncation) {
-  ExpectDeadline(GoParams{.wtime = 10201}, false, 300);
+  ExpectDeadline(GoParams{.wtime = 10201}, false, 194);
   ExpectDeadline(GoParams{.wtime = 4201, .winc = 101, .movestogo = 4}, false,
                  1076);
   // 3.1f must be promoted directly to long double, not rounded to 3.1.
@@ -214,7 +214,7 @@ TEST(Lc5TimeManagerTest, NodeParametersDoNotAffectTimePolicy) {
   for (int nodes : {-1, 0, 1, 1000}) {
     SCOPED_TRACE(nodes);
     ExpectNoDeadline(GoParams{.nodes = nodes}, false);
-    ExpectDeadline(GoParams{.wtime = 10200, .nodes = nodes}, false, 300);
+    ExpectDeadline(GoParams{.wtime = 10200, .nodes = nodes}, false, 194);
     ExpectDeadline(GoParams{.nodes = nodes, .movetime = 500}, false, 300);
     ExpectNoDeadline(GoParams{.wtime = 0, .nodes = nodes, .infinite = true},
                      false);
@@ -235,14 +235,29 @@ TEST(Lc5TimeManagerTest, SuppliedStartTimeChargesPreparation) {
 }
 
 TEST(Lc5TimeManagerTest, SavedTimeExtendsOnlyClockBudgets) {
-  // 3% of 10000 + 400 saved.
-  ExpectDeadline(GoParams{.wtime = 10200}, false, 300);
+  // (10000 - 400) / 51.5 + 400 = 586.
+  ExpectDeadline(GoParams{.wtime = 10200}, false, 194);
   const TimeManager manager(kConfig, GoParams{.wtime = 10200}, false, kStart,
                             400);
-  EXPECT_EQ(manager.deadline(), kStart + milliseconds(700));
+  EXPECT_EQ(manager.deadline(), kStart + milliseconds(586));
   const TimeManager movetime(kConfig, GoParams{.movetime = 700}, false, kStart,
                              400);
   EXPECT_EQ(movetime.deadline(), kStart + milliseconds(500));
+  // Explicit AlphaZeroTimePct preserves flat percentage + saved time.
+  const TimeManager custom(
+      {.move_overhead_ms = 200, .alphazero_time_pct = 25.0f},
+      GoParams{.wtime = 10200}, false, kStart, 400);
+  EXPECT_EQ(custom.deadline(), kStart + milliseconds(2900));
+}
+
+TEST(Lc5TimeManagerTest, SavedTimeTapersBelowLowClockThreshold) {
+  // Usable = 750 ms (half of 1500 ms threshold), so half of saved_ms (200 ms)
+  // is spent immediately and the remaining 550 ms is split over 51.5 moves.
+  const TimeManager low(kConfig, GoParams{.wtime = 950}, false, kStart, 400);
+  EXPECT_EQ(low.deadline(), kStart + milliseconds(210));
+  // Capped at usable when remaining is near overhead.
+  const TimeManager tiny(kConfig, GoParams{.wtime = 500}, false, kStart, 1000);
+  EXPECT_EQ(tiny.deadline(), kStart + milliseconds(201));
 }
 
 TEST(Lc5TimeManagerTest, SavedTimeIsKeptWithoutClockBudget) {
@@ -257,13 +272,13 @@ TEST(Lc5TimeManagerTest, SavedTimeIsKeptWithoutClockBudget) {
 }
 
 TEST(Lc5TimeManagerTest, UnusedTimeIsRestOfClockBudget) {
-  // Budget 300 + 400 saved.
+  // Budget 186 + 400 saved = 586.
   const TimeManager manager(kConfig, GoParams{.wtime = 10200}, false, kStart,
                             400);
-  EXPECT_EQ(manager.UnusedMs(kStart), 700);
-  EXPECT_EQ(manager.UnusedMs(kStart + milliseconds(650)), 50);
+  EXPECT_EQ(manager.UnusedMs(kStart), 586);
+  EXPECT_EQ(manager.UnusedMs(kStart + milliseconds(550)), 36);
+  EXPECT_EQ(manager.UnusedMs(kStart + milliseconds(586)), 0);
   EXPECT_EQ(manager.UnusedMs(kStart + milliseconds(700)), 0);
-  EXPECT_EQ(manager.UnusedMs(kStart + milliseconds(800)), 0);
 }
 
 TEST(Lc5TimeManagerTest, AnyVisitsAffordableWithoutEstimate) {
@@ -281,20 +296,81 @@ TEST(Lc5TimeManagerTest, AnyVisitsAffordableWithoutEstimate) {
   EXPECT_TRUE(manager.CanAffordVisits(1'000'000, 1000, now));
 }
 
-TEST(Lc5TimeManagerTest, AffordableVisitsFollowRateAndFactor) {
+TEST(Lc5TimeManagerTest, AffordableVisitsFollowWarmupRateAndFactor) {
   TimeManager::Config config = kConfig;
+  config.alphazero_time_pct = 10.0f;
   config.smart_pruning_factor = 2.0f;
-  // Budget 300 ms; at 100 ms, 1000 visits leave 2000 more, 1000 after the
-  // factor.
+  // Budget 1000 ms.
   const TimeManager manager(config, GoParams{.wtime = 10200}, false, kStart);
-  const auto now = kStart + milliseconds(100);
-  EXPECT_TRUE(manager.CanAffordVisits(1000, 1000, now));
-  EXPECT_FALSE(manager.CanAffordVisits(1001, 1000, now));
-  // The rate isn't trusted before 100 visits, nor with no time elapsed.
-  EXPECT_TRUE(manager.CanAffordVisits(1'000'000, 99, now));
-  EXPECT_FALSE(
-      manager.CanAffordVisits(1'000'000, 100, kStart + milliseconds(1)));
-  EXPECT_TRUE(manager.CanAffordVisits(1'000'000, 1000, kStart));
+  // Visits == 0 must not start the warmup timer.
+  EXPECT_TRUE(manager.CanAffordVisits(1'000'000, 0, kStart));
+  EXPECT_TRUE(manager.CanAffordVisits(1'000'000, 0, kStart + milliseconds(50)));
+  // First completed visit starts the 80 ms warmup window.
+  const auto first_eval = kStart + milliseconds(100);
+  EXPECT_TRUE(manager.CanAffordVisits(1'000'000, 1, first_eval));
+  EXPECT_TRUE(
+      manager.CanAffordVisits(1'000'000, 200, first_eval + milliseconds(79)));
+  // At 80 ms after first_eval (remaining 820 ms), 600 + 200 tolerance visits
+  // yield 8200 more visits, or 4100 after the factor of 2.
+  const auto after_warmup = first_eval + milliseconds(80);
+  EXPECT_TRUE(manager.CanAffordVisits(4100, 600, after_warmup));
+  EXPECT_FALSE(manager.CanAffordVisits(4101, 600, after_warmup));
+  // At or past the deadline, only 0 visits are affordable.
+  EXPECT_TRUE(manager.CanAffordVisits(0, 600, kStart + milliseconds(1000)));
+  EXPECT_FALSE(manager.CanAffordVisits(1, 600, kStart + milliseconds(1000)));
+}
+
+TEST(Lc5TimeManagerTest, LogLogisticCurveScalesWithGamePly) {
+  auto budget_at = [](int ply) {
+    TimeManager::Config config = kConfig;
+    config.game_ply = ply;
+    const TimeManager manager(config, GoParams{.wtime = 7000}, false, kStart);
+    return std::chrono::duration_cast<milliseconds>(*manager.deadline() -
+                                                    kStart)
+        .count();
+  };
+  const int64_t ply0 = budget_at(0);
+  const int64_t ply40 = budget_at(40);
+  const int64_t ply80 = budget_at(80);
+  const int64_t ply120 = budget_at(120);
+  const int64_t ply140 = budget_at(140);
+  EXPECT_EQ(ply0, 132);
+  EXPECT_GT(ply40, ply0);
+  EXPECT_GT(ply80, ply40);
+  EXPECT_EQ(ply120, 544);
+  EXPECT_EQ(ply140, 544);
+  // Negative ply is clamped to 0.
+  EXPECT_EQ(budget_at(-5), ply0);
+}
+
+TEST(Lc5TimeManagerTest, FirstMoveBonusInvestsExtraOpeningTime) {
+  auto budget = [](int ply, bool first_move, int64_t saved_ms = 0) {
+    TimeManager::Config config = kConfig;
+    config.game_ply = ply;
+    config.first_move_of_game = first_move;
+    const TimeManager manager(config, GoParams{.wtime = 7000}, false, kStart,
+                              saved_ms);
+    return std::chrono::duration_cast<milliseconds>(*manager.deadline() -
+                                                    kStart)
+        .count();
+  };
+  // At ply 0: 1 + 1.0 = 2.0x multiplier (6800 / 51.5 * 2.0 = 264 ms).
+  EXPECT_EQ(budget(0, true), 264);
+  // At ply 12 (typical UHO opening): 6800 / 45.5 * 2.0 = 298 ms.
+  EXPECT_EQ(budget(12, false), 149);
+  EXPECT_EQ(budget(12, true), 298);
+  // Single-move budget is capped at 8% of usable (544 ms) even with bonus.
+  EXPECT_EQ(budget(120, true), 544);
+  // Saved time is added after the first-move multiplier, not multiplied.
+  EXPECT_EQ(budget(0, true, 500), 744);
+}
+
+TEST(Lc5TimeManagerTest, ExplicitAlphaZeroTimePctIgnoresCurveAndBonus) {
+  TimeManager::Config config{.move_overhead_ms = 200,
+                             .alphazero_time_pct = 5.0f,
+                             .game_ply = 80,
+                             .first_move_of_game = true};
+  ExpectDeadline(GoParams{.wtime = 10200}, false, 500, config);
 }
 
 }  // namespace

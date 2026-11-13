@@ -76,6 +76,8 @@ class Lc5Engine final : public SearchBase {
   std::optional<std::chrono::steady_clock::time_point> clock_start_;
   // Time a previous search left unused by stopping early.
   int64_t saved_time_ms_ = 0;
+  // Whether the next timed clock move is the first move of the game.
+  bool first_move_of_game_ = true;
 };
 
 }  // namespace lczero::lc5

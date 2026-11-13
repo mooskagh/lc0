@@ -45,6 +45,11 @@ class TimeManager {
     // Remaining visits are divided by this when deciding whether the best
     // root move can still be overtaken; 0 disables early stopping.
     float smart_pruning_factor = 1.33f;
+    // Current position's game ply (0 at startpos), used for the move horizon.
+    int game_ply = 0;
+    // Whether this is the first timed move of the game (invests extra time
+    // to populate the persistent search graph).
+    bool first_move_of_game = false;
   };
   using Clock = std::chrono::steady_clock;
 
@@ -72,6 +77,9 @@ class TimeManager {
   // The budget was allocated from the clock (not movetime, ponder, infinite).
   bool clock_budget_ = false;
   float smart_pruning_factor_ = 0.0f;
+  // First time a completed visit was observed; smart pruning waits for a
+  // warmup window after this point before trusting the visit rate.
+  mutable std::optional<Clock::time_point> first_eval_time_;
 };
 
 }  // namespace lc5

@@ -77,6 +77,7 @@ void Lc5Engine::NewGame() {
   game_start_.reset();
   root_history_.reset();
   saved_time_ms_ = 0;
+  first_move_of_game_ = true;
 }
 
 void Lc5Engine::StartClock() {
@@ -110,10 +111,17 @@ void Lc5Engine::StartSearch(const GoParams& params) {
       .backup_prefix = {}};
   const auto start = clock_start_.value_or(std::chrono::steady_clock::now());
   clock_start_.reset();
+  const bool is_clock_move =
+      !params.ponder && !params.infinite && !params.movetime &&
+      (root_history_->Last().IsBlackToMove() ? params.btime : params.wtime)
+          .has_value();
+  TimeManager::Config time_config = settings.time_management();
+  time_config.game_ply = root_history_->Last().GetGamePly();
+  time_config.first_move_of_game =
+      is_clock_move ? std::exchange(first_move_of_game_, false) : false;
   session_ = std::make_unique<SearchSession>(
-      visit_engine_.get(), backend_, uci_responder_, resolved,
-      settings.time_management(), std::move(root), params, start,
-      std::exchange(saved_time_ms_, 0));
+      visit_engine_.get(), backend_, uci_responder_, resolved, time_config,
+      std::move(root), params, start, std::exchange(saved_time_ms_, 0));
   session_->Start();
 }
 
