@@ -1,20 +1,50 @@
 project(
   'abseil-cpp',
   'cpp',
-  version: '20240722.0',
+  meson_version: '>=0.49.0',
+  version: '20250814.1',
   license: 'Apache-2.0',
-  default_options: [
-    'cpp_std=c++17',
-  ],
 )
+
+override_cpp = 'cpp_std=c++17'
 
 cpp = meson.get_compiler('cpp')
 
-flags = cpp.get_supported_arguments('/DNOMINMAX', '-Wno-sign-compare', '-Wno-gcc-compat')
-add_project_arguments(flags, language: 'cpp')
+flags = cpp.get_supported_arguments(
+  '/DNOMINMAX',
+  '-Wcast-qual',
+  '-Wconversion-null',
+  '-Wmissing-declarations',
+  '-Wno-comma',
+  '-Wno-conversion',
+  '-Wno-double-promotion',
+  '-Wno-float-promotion',
+  '-Wno-format-literal',
+  '-Wno-gcc-compat',
+  '-Wno-old-style-cast',
+  '-Wno-packed',
+  '-Wno-padded',
+  '-Wno-pedantic',
+  '-Wno-range-loop-analysis',
+  '-Wno-sign-compare',
+  '-Woverlength-strings',
+  '-Wpointer-arith',
+  '-Wswitch-enums',
+  '-Wunused-local-typedefs',
+  '-Wunused-result',
+  '-Wvarargs',
+  '-Wvla',
+  '-Wwrite-strings',
+)
+
+add_project_arguments(
+  flags,
+  language: 'cpp',
+)
 
 arch_cpp_flags = []
 hw_cpp_flags = []
+unscaled_cycleclock_flag = []
 if host_machine.cpu_family() == 'x86_64'
   hw_cpp_flags += ['-maes', '-msse4.1']
 elif host_machine.cpu_family() == 'aarch64' and cpp.sizeof('void*') == 8
@@ -29,14 +59,20 @@ elif host_machine.cpu_family() == 'ppc' or host_machine.cpu_family() == 'ppc64'
        return 0;
     }'''
   if not cpp.compiles(timebase_check)
-    arch_cpp_flags += ['-DABSL_USE_UNSCALED_CYCLECLOCK=0']
+    unscaled_cycleclock_flag += ['-DABSL_USE_UNSCALED_CYCLECLOCK=0']
   endif
 endif
-arch_flags = cpp.get_supported_arguments(arch_cpp_flags)
+arch_flags = cpp.get_supported_arguments(arch_cpp_flags) + unscaled_cycleclock_flag
 hw_flags = cpp.get_supported_arguments(hw_cpp_flags)
 
-libatomic = dependency('', required: false)
-if cpp.get_argument_syntax() != 'msvc' and not cpp.links('int main(){__sync_synchronize();}', name: 'atomic builtins')
+libatomic = dependency(
+  '',
+  required: false,
+)
+if cpp.get_argument_syntax() != 'msvc' and not cpp.links(
+  'int main(){__sync_synchronize();}',
+  name: 'atomic builtins',
+)
   libatomic = cpp.find_library('atomic')
 endif
 
@@ -65,6 +101,7 @@ absl_base_headers = files(
   'absl/base/config.h',
   'absl/base/const_init.h',
   'absl/base/dynamic_annotations.h',
+  'absl/base/fast_type_id.h',
   'absl/base/internal/atomic_hook.h',
   'absl/base/internal/atomic_hook_test_helper.h',
   'absl/base/internal/cycleclock.h',
@@ -75,15 +112,10 @@ absl_base_headers = files(
   'absl/base/internal/errno_saver.h',
   'absl/base/internal/exception_safety_testing.h',
   'absl/base/internal/exception_testing.h',
-  'absl/base/internal/fast_type_id.h',
   'absl/base/internal/hide_ptr.h',
   'absl/base/internal/identity.h',
-  'absl/base/internal/inline_variable.h',
-  'absl/base/internal/inline_variable_testing.h',
-  'absl/base/internal/invoke.h',
   'absl/base/internal/low_level_alloc.h',
   'absl/base/internal/low_level_scheduling.h',
-  'absl/base/internal/nullability_impl.h',
   'absl/base/internal/per_thread_tls.h',
   'absl/base/internal/poison.h',
   'absl/base/internal/pretty_function.h',
@@ -129,11 +161,11 @@ absl_container_sources = files(
 absl_container_headers = files(
   'absl/container/btree_map.h',
   'absl/container/btree_set.h',
-  'absl/container/hash_container_defaults.h',
   'absl/container/btree_test.h',
   'absl/container/fixed_array.h',
   'absl/container/flat_hash_map.h',
   'absl/container/flat_hash_set.h',
+  'absl/container/hash_container_defaults.h',
   'absl/container/inlined_vector.h',
   'absl/container/internal/btree.h',
   'absl/container/internal/btree_container.h',
@@ -200,11 +232,11 @@ absl_debugging_sources = files(
   'absl/debugging/internal/elf_mem_image.cc',
   'absl/debugging/internal/examine_stack.cc',
   'absl/debugging/internal/stack_consumption.cc',
+  'absl/debugging/internal/utf8_for_code_point.cc',
   'absl/debugging/internal/vdso_support.cc',
   'absl/debugging/leak_check.cc',
   'absl/debugging/stacktrace.cc',
   'absl/debugging/symbolize.cc',
-  'absl/debugging/internal/utf8_for_code_point.cc',
 )
 absl_debugging_headers = files(
   'absl/debugging/failure_signal_handler.h',
@@ -241,8 +273,8 @@ absl_debugging_headers = files(
 
 absl_flags_sources = files(
   'absl/flags/commandlineflag.cc',
-  'absl/flags/internal/flag.cc',
   'absl/flags/internal/commandlineflag.cc',
+  'absl/flags/internal/flag.cc',
   'absl/flags/internal/flag.cc',
   'absl/flags/internal/private_handle_accessor.cc',
   'absl/flags/internal/program_name.cc',
@@ -257,8 +289,8 @@ absl_flags_headers = files(
   'absl/flags/commandlineflag.h',
   'absl/flags/config.h',
   'absl/flags/declare.h',
-  'absl/flags/internal/flag.h',
   'absl/flags/internal/commandlineflag.h',
+  'absl/flags/internal/flag.h',
   'absl/flags/internal/flag.h',
   'absl/flags/internal/parse.h',
   'absl/flags/internal/path_util.h',
@@ -277,14 +309,12 @@ absl_flags_headers = files(
 absl_hash_sources = files(
   'absl/hash/internal/city.cc',
   'absl/hash/internal/hash.cc',
-  'absl/hash/internal/low_level_hash.cc',
 )
 absl_hash_headers = files(
   'absl/hash/hash.h',
   'absl/hash/hash_testing.h',
   'absl/hash/internal/city.h',
   'absl/hash/internal/hash.h',
-  'absl/hash/internal/low_level_hash.h',
   'absl/hash/internal/spy_hash_state.h',
 )
 
@@ -302,6 +332,7 @@ absl_log_sources = files(
   'absl/log/internal/log_sink_set.cc',
   'absl/log/internal/nullguard.cc',
   'absl/log/internal/proto.cc',
+  'absl/log/internal/structured_proto.cc',
   'absl/log/internal/vlog_config.cc',
   'absl/log/log_entry.cc',
   'absl/log/log_sink.cc',
@@ -319,8 +350,8 @@ absl_log_headers = files(
   'absl/log/internal/check_op.h',
   'absl/log/internal/conditions.h',
   'absl/log/internal/config.h',
-  'absl/log/internal/fnmatch.h',
   'absl/log/internal/flags.h',
+  'absl/log/internal/fnmatch.h',
   'absl/log/internal/globals.h',
   'absl/log/internal/log_format.h',
   'absl/log/internal/log_impl.h',
@@ -331,6 +362,7 @@ absl_log_headers = files(
   'absl/log/internal/proto.h',
   'absl/log/internal/strip.h',
   'absl/log/internal/structured.h',
+  'absl/log/internal/structured_proto.h',
   'absl/log/internal/test_actions.h',
   'absl/log/internal/test_helpers.h',
   'absl/log/internal/test_matchers.h',
@@ -345,9 +377,7 @@ absl_log_headers = files(
   'absl/log/structured.h',
 )
 
-absl_numeric_sources = files(
-  'absl/numeric/int128.cc',
-)
+absl_numeric_sources = files('absl/numeric/int128.cc')
 absl_numeric_headers = files(
   'absl/numeric/bits.h',
   'absl/numeric/int128.h',
@@ -371,7 +401,7 @@ absl_random_sources = files(
   'absl/random/discrete_distribution.cc',
   'absl/random/gaussian_distribution.cc',
   'absl/random/internal/chi_square.cc',
-  'absl/random/internal/pool_urbg.cc',
+  'absl/random/internal/entropy_pool.cc',
   'absl/random/internal/randen.cc',
   'absl/random/internal/randen_detect.cc',
   'absl/random/internal/randen_hwaes.cc',
@@ -392,6 +422,7 @@ absl_random_headers = files(
   'absl/random/internal/chi_square.h',
   'absl/random/internal/distribution_caller.h',
   'absl/random/internal/distribution_test_util.h',
+  'absl/random/internal/entropy_pool.h',
   'absl/random/internal/explicit_seed_seq.h',
   'absl/random/internal/fast_uniform_bits.h',
   'absl/random/internal/fastmath.h',
@@ -403,7 +434,6 @@ absl_random_headers = files(
   'absl/random/internal/nonsecure_base.h',
   'absl/random/internal/pcg_engine.h',
   'absl/random/internal/platform.h',
-  'absl/random/internal/pool_urbg.h',
   'absl/random/internal/randen.h',
   'absl/random/internal/randen_detect.h',
   'absl/random/internal/randen_engine.h',
@@ -447,7 +477,6 @@ absl_strings_sources = files(
   'absl/strings/charconv.cc',
   'absl/strings/cord.cc',
   'absl/strings/cord_analysis.cc',
-  'absl/strings/cord_buffer.cc',
   'absl/strings/escaping.cc',
   'absl/strings/internal/charconv_bigint.cc',
   'absl/strings/internal/charconv_parse.cc',
@@ -611,20 +640,11 @@ absl_time_headers = files(
   'absl/time/time.h',
 )
 
-absl_types_sources = files(
-  'absl/types/bad_any_cast.cc',
-  'absl/types/bad_optional_access.cc',
-  'absl/types/bad_variant_access.cc',
-)
+absl_types_sources = files()
 absl_types_headers = files(
   'absl/types/any.h',
-  'absl/types/bad_any_cast.h',
-  'absl/types/bad_optional_access.h',
-  'absl/types/bad_variant_access.h',
   'absl/types/compare.h',
-  'absl/types/internal/optional.h',
   'absl/types/internal/span.h',
-  'absl/types/internal/variant.h',
   'absl/types/optional.h',
   'absl/types/span.h',
   'absl/types/variant.h',
@@ -635,6 +655,7 @@ absl_base_lib = static_library(
   'absl_base',
   absl_base_sources,
   include_directories: absl_include_dir,
+  override_options: override_cpp,
   cpp_args: arch_flags,
   dependencies: [dependency('threads'), libatomic],
 )
@@ -643,27 +664,29 @@ absl_hash_lib = static_library(
   'absl_hash',
   absl_hash_sources,
   include_directories: absl_include_dir,
+  override_options: override_cpp,
 )
 
 absl_numeric_lib = static_library(
   'absl_numeric',
   absl_numeric_sources,
   include_directories: absl_include_dir,
+  override_options: override_cpp,
 )
 
 absl_profiling_lib = static_library(
   'absl_profiling',
   absl_profiling_sources,
   include_directories: absl_include_dir,
+  override_options: override_cpp,
 )
 
 absl_crc_lib = static_library(
   'absl_crc',
   absl_crc_sources,
   include_directories: absl_include_dir,
-  link_with: [
-    absl_base_lib,
-  ],
+  override_options: override_cpp,
+  link_with: [absl_base_lib],
   dependencies: libatomic,
 )
 
@@ -671,22 +694,16 @@ absl_strings_lib = static_library(
   'absl_strings',
   absl_strings_sources,
   include_directories: absl_include_dir,
-  link_with: [
-    absl_base_lib,
-    absl_crc_lib,
-    absl_numeric_lib,
-    absl_profiling_lib,
-  ],
+  override_options: override_cpp,
+  link_with: [absl_base_lib, absl_crc_lib, absl_numeric_lib, absl_profiling_lib],
 )
 
 absl_debugging_lib = static_library(
   'absl_debugging',
   absl_debugging_sources,
   include_directories: absl_include_dir,
-  link_with: [
-    absl_base_lib,
-    absl_strings_lib,
-  ],
+  override_options: override_cpp,
+  link_with: [absl_base_lib, absl_strings_lib],
   dependencies: libatomic,
 )
 
@@ -694,11 +711,9 @@ absl_random_lib = static_library(
   'absl_random',
   absl_random_sources,
   include_directories: absl_include_dir,
+  override_options: override_cpp,
   cpp_args: hw_flags,
-  link_with: [
-    absl_base_lib,
-    absl_strings_lib,
-  ],
+  link_with: [absl_base_lib, absl_strings_lib],
   dependencies: libatomic,
 )
 
@@ -706,36 +721,30 @@ absl_time_lib = static_library(
   'absl_time',
   absl_time_sources,
   include_directories: absl_include_dir,
-  link_with: [
-    absl_base_lib,
-    absl_numeric_lib,
-    absl_strings_lib,
-  ],
+  override_options: override_cpp,
+  link_with: [absl_base_lib, absl_numeric_lib, absl_strings_lib],
   # macOS only, upstream: https://github.com/abseil/abseil-cpp/pull/280
-  dependencies: dependency('appleframeworks', modules: 'CoreFoundation', required: host_machine.system() == 'darwin'),
-)
-
-absl_types_lib = static_library(
-  'absl_types',
-  absl_types_sources,
-  include_directories: absl_include_dir,
+  dependencies: dependency(
+    'appleframeworks',
+    modules: 'CoreFoundation',
+    required: host_machine.system() == 'darwin',
+  ),
 )
 
 absl_synchronization_lib = static_library(
   'absl_synchronization',
   absl_synchronization_sources,
+  cpp_args: unscaled_cycleclock_flag,
   include_directories: absl_include_dir,
-  link_with: [
-    absl_base_lib,
-    absl_debugging_lib,
-    absl_time_lib,
-  ],
+  override_options: override_cpp,
+  link_with: [absl_base_lib, absl_debugging_lib, absl_time_lib],
 )
 
 absl_container_lib = static_library(
   'absl_container',
   absl_container_sources,
   include_directories: absl_include_dir,
+  override_options: override_cpp,
   link_with: [
     absl_base_lib,
     absl_debugging_lib,
@@ -749,6 +758,7 @@ absl_flags_lib = static_library(
   'absl_flags',
   absl_flags_sources,
   include_directories: absl_include_dir,
+  override_options: override_cpp,
   link_with: [
     absl_base_lib,
     absl_container_lib,
@@ -763,21 +773,17 @@ absl_status_lib = static_library(
   'absl_status',
   absl_status_sources,
   include_directories: absl_include_dir,
-  link_with: [
-    absl_base_lib,
-    absl_strings_lib,
-  ],
+  override_options: override_cpp,
+  link_with: [absl_base_lib, absl_strings_lib],
 )
 
 absl_log_lib = static_library(
   'absl_log',
   absl_log_sources,
+  cpp_args: unscaled_cycleclock_flag,
   include_directories: absl_include_dir,
-  link_with: [
-    absl_base_lib,
-    absl_strings_lib,
-    absl_flags_lib,
-  ],
+  override_options: override_cpp,
+  link_with: [absl_base_lib, absl_strings_lib, absl_flags_lib],
   dependencies: libatomic,
 )
 
@@ -805,61 +811,41 @@ absl_profiling_dep = declare_dependency(
 absl_strings_dep = declare_dependency(
   include_directories: absl_include_dir,
   link_with: absl_strings_lib,
-  dependencies: [
-    absl_base_dep,
-    absl_numeric_dep,
-  ],
+  dependencies: [absl_base_dep, absl_numeric_dep],
 )
 
 absl_debugging_dep = declare_dependency(
   include_directories: absl_include_dir,
   link_with: absl_debugging_lib,
-  dependencies: [
-    absl_base_dep,
-    absl_strings_dep,
-  ],
+  dependencies: [absl_base_dep, absl_strings_dep],
 )
 
 absl_random_dep = declare_dependency(
   include_directories: absl_include_dir,
   link_with: absl_random_lib,
-  dependencies: [
-    absl_base_dep,
-    absl_strings_dep,
-  ],
+  dependencies: [absl_base_dep, absl_strings_dep],
 )
 
 absl_crc_dep = declare_dependency(
   include_directories: absl_include_dir,
   link_with: absl_crc_lib,
-  dependencies: [
-    absl_base_dep,
-  ],
+  dependencies: [absl_base_dep],
 )
 
 absl_time_dep = declare_dependency(
   include_directories: absl_include_dir,
   link_with: absl_time_lib,
-  dependencies: [
-    absl_base_dep,
-    absl_numeric_dep,
-    absl_strings_dep,
-  ],
+  dependencies: [absl_base_dep, absl_numeric_dep, absl_strings_dep],
 )
 
 absl_types_dep = declare_dependency(
   include_directories: absl_include_dir,
-  link_with: absl_types_lib,
 )
 
 absl_synchronization_dep = declare_dependency(
   include_directories: absl_include_dir,
   link_with: absl_synchronization_lib,
-  dependencies: [
-    absl_base_dep,
-    absl_debugging_dep,
-    absl_time_dep,
-  ],
+  dependencies: [absl_base_dep, absl_debugging_dep, absl_time_dep],
 )
 
 absl_container_dep = declare_dependency(
@@ -889,18 +875,11 @@ absl_flags_dep = declare_dependency(
 absl_log_dep = declare_dependency(
   include_directories: absl_include_dir,
   link_with: absl_log_lib,
-  dependencies: [
-    absl_base_dep,
-    absl_strings_dep,
-    absl_flags_dep,
-  ],
+  dependencies: [absl_base_dep, absl_strings_dep, absl_flags_dep],
 )
 
 absl_status_dep = declare_dependency(
   include_directories: absl_include_dir,
   link_with: absl_status_lib,
-  dependencies: [
-    absl_base_dep,
-    absl_strings_dep,
-  ],
+  dependencies: [absl_base_dep, absl_strings_dep],
 )

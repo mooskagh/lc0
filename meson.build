@@ -208,13 +208,53 @@ files += [
 
 includes += include_directories('src')
 
-deps += dependency('absl_flat_hash_map', 'absl', modules:['absl::flat_hash_map'],
-                   include_type: 'system',
-                   fallback: ['abseil-cpp', 'absl_container_dep'],
-                   default_options : ['warning_level=0', 'cpp_std=c++20'])
+# 20250814 added absl::Mutex::lock() and reference-taking MutexLock; newer
+# releases deprecate the older spellings. All abseil deps share this floor so
+# they come from the same installation.
+absl_min_version = '>=20250814'
+# Under TSan, use the vendored abseil: absl::Mutex reports its locks to TSan
+# only if abseil itself is built with -fsanitize=thread, and system packages
+# are not. An empty name makes dependency() go straight to the fallback.
+absl_vendored = get_option('b_sanitize').contains('thread')
+absl_flat_hash_map_dep = dependency(
+  absl_vendored ? '' : ['absl_flat_hash_map', 'absl'],
+  modules:['absl::flat_hash_map'],
+  version: absl_min_version,
+  include_type: 'system',
+  fallback: ['abseil-cpp', 'absl_container_dep'],
+  default_options : ['warning_level=0', 'cpp_std=c++20'])
+deps += absl_flat_hash_map_dep
 
 deps += dependency('threads')
 
+### Lc5 Search Algorithm
+
+if get_option('lc5')
+  absl_synchronization_dep = dependency(
+    absl_vendored ? '' : ['absl_synchronization', 'absl'],
+    modules:['absl::synchronization'],
+    version: absl_min_version,
+    include_type: 'system',
+    fallback: ['abseil-cpp', 'absl_synchronization_dep'],
+    default_options : ['warning_level=0', 'cpp_std=c++20'])
+  deps += absl_synchronization_dep
+  files += [
+    'src/search/lc5/engine.cc',
+    'src/search/lc5/metrics.cc',
+    'src/search/lc5/store/memory_node_store.cc',
+    'src/search/lc5/policies/puct.cc',
+    'src/search/lc5/policies/puct_averaging.cc',
+    'src/search/lc5/policies/puct_dag.cc',
+    'src/search/lc5/policies/registry.cc',
+    'src/search/lc5/session/evaluator.cc',
+    'src/search/lc5/session/search_session.cc',
+    'src/search/lc5/session/visit_limiter.cc',
+    'src/search/lc5/session/visit_pool.cc',
+    'src/search/lc5/session/visit_worker.cc',
+    'src/search/lc5/settings.cc',
+    'src/search/lc5/time_manager.cc',
+  ]
+endif
 #############################################################################
 ## Platform specific files
 ############################################################################
@@ -1191,6 +1231,105 @@ if get_option('gtest')
                'src/neural/memcache.cc', pb_files,
     include_directories: includes, link_with: lc0_lib, dependencies: [gtest, gmock]),
     args: '--gtest_output=xml:engine_test.xml', timeout: 90)
+  if get_option('lc5')
+    test('Lc5VisitPool',
+      executable('lc5_visit_test',
+        'src/search/lc5/session/visit_pool_test.cc',
+        'src/search/lc5/session/visit_pool.cc',
+        pb_files,
+        include_directories: includes, link_with: lc0_lib,
+        dependencies: [gtest, absl_flat_hash_map_dep, absl_synchronization_dep]),
+      args: '--gtest_output=xml:lc5_visit_test.xml', timeout: 90)
+
+    test('Lc5MaterializationTable',
+      executable('lc5_materialization_table_test',
+        'src/search/lc5/session/materialization_table_test.cc',
+        pb_files,
+        include_directories: includes, link_with: lc0_lib,
+        dependencies: [gtest, absl_flat_hash_map_dep, absl_synchronization_dep]),
+      args: '--gtest_output=xml:lc5_materialization_table_test.xml', timeout: 90)
+
+    test('Lc5VisitLimiter',
+      executable('lc5_visit_limiter_test',
+        'src/search/lc5/session/visit_limiter_test.cc',
+        'src/search/lc5/session/visit_limiter.cc',
+        'src/search/lc5/session/visit_pool.cc',
+        pb_files,
+        include_directories: includes, link_with: lc0_lib,
+        dependencies: [gtest, absl_flat_hash_map_dep, absl_synchronization_dep]),
+      args: '--gtest_output=xml:lc5_visit_limiter_test.xml', timeout: 90)
+
+    test('Lc5Graph',
+      executable('lc5_graph_test',
+        'src/search/lc5/graph/graph_test.cc',
+        'src/search/lc5/policies/puct.cc',
+        pb_files,
+        include_directories: includes, link_with: lc0_lib,
+        dependencies: [gtest, absl_flat_hash_map_dep, absl_synchronization_dep]),
+      args: '--gtest_output=xml:lc5_graph_test.xml', timeout: 90)
+
+    test('Lc5Search',
+      executable('lc5_search_test',
+        'src/search/lc5/search_test.cc',
+        'src/search/lc5/session/evaluator.cc',
+        'src/search/lc5/session/search_session.cc',
+        'src/search/lc5/session/visit_limiter.cc',
+        'src/search/lc5/session/visit_pool.cc',
+        'src/search/lc5/session/visit_worker.cc',
+        'src/search/lc5/engine.cc',
+        'src/search/lc5/store/memory_node_store.cc',
+        'src/search/lc5/metrics.cc',
+        'src/search/lc5/policies/registry.cc',
+        'src/search/lc5/policies/puct.cc',
+        'src/search/lc5/policies/puct_averaging.cc',
+        'src/search/lc5/policies/puct_dag.cc',
+        'src/search/lc5/settings.cc',
+        'src/search/lc5/time_manager.cc',
+        'src/search/register.cc',
+        pb_files,
+        include_directories: includes, link_with: lc0_lib,
+        dependencies: [gtest, absl_flat_hash_map_dep, absl_synchronization_dep]),
+      args: '--gtest_output=xml:lc5_search_test.xml', timeout: 90)
+
+    test('Lc5TimeManager',
+      executable('lc5_time_manager_test',
+        'src/search/lc5/time_manager_test.cc',
+        'src/search/lc5/time_manager.cc',
+        pb_files,
+        include_directories: includes, link_with: lc0_lib,
+        dependencies: [gtest, absl_flat_hash_map_dep, absl_synchronization_dep]),
+      args: '--gtest_output=xml:lc5_time_manager_test.xml', timeout: 90)
+
+    test('Lc5Settings',
+      executable('lc5_settings_test',
+        'src/search/lc5/settings_test.cc',
+        'src/search/lc5/settings.cc',
+        pb_files,
+        include_directories: includes, link_with: lc0_lib,
+        dependencies: [gtest, absl_flat_hash_map_dep, absl_synchronization_dep]),
+      args: '--gtest_output=xml:lc5_settings_test.xml', timeout: 90)
+
+    test('Lc5Puct',
+      executable('lc5_puct_test',
+        'src/search/lc5/policies/puct_test.cc',
+        'src/search/lc5/policies/puct.cc',
+        'src/search/lc5/policies/puct_averaging.cc',
+        'src/search/lc5/policies/puct_dag.cc',
+        'src/search/lc5/policies/registry.cc',
+        'src/search/lc5/settings.cc',
+        pb_files,
+        include_directories: includes, link_with: lc0_lib,
+        dependencies: [gtest, absl_flat_hash_map_dep, absl_synchronization_dep]),
+      args: '--gtest_output=xml:lc5_puct_test.xml', timeout: 90)
+
+    test('Lc5NodeSerialization',
+      executable('lc5_node_serialization_test',
+        'src/search/lc5/policies/node_serialization_test.cc',
+        pb_files,
+        include_directories: includes, link_with: lc0_lib,
+        dependencies: [gtest, absl_flat_hash_map_dep, absl_synchronization_dep]),
+      args: '--gtest_output=xml:lc5_node_serialization_test.xml', timeout: 90)
+  endif
 endif
 
 

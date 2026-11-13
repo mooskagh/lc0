@@ -1,0 +1,139 @@
+/*
+  This file is part of Leela Chess Zero.
+  Copyright (C) 2026 The LCZero Authors
+
+  Leela Chess is free software: you can redistribute it and/or modify
+  it under the terms of the GNU General Public License as published by
+  the Free Software Foundation, either version 3 of the License, or
+  (at your option) any later version.
+
+  Leela Chess is distributed in the hope that it will be useful,
+  but WITHOUT ANY WARRANTY; without even the implied warranty of
+  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+  GNU General Public License for more details.
+
+  You should have received a copy of the GNU General Public License
+  along with Leela Chess.  If not, see <http://www.gnu.org/licenses/>.
+
+  Additional permission under GNU GPL version 3 section 7
+
+  If you modify this Program, or any covered work, by linking or
+  combining it with NVIDIA Corporation's libraries from the NVIDIA CUDA
+  Toolkit and the NVIDIA CUDA Deep Neural Network library (or a
+  modified version of those libraries), containing parts covered by the
+  terms of the respective license agreement, the licensors of this
+  Program grant you additional permission to convey the resulting work.
+*/
+
+#include "search/lc5/settings.h"
+
+#include <algorithm>
+#include <thread>
+
+#include "search/lc5/graph/graph.h"
+#include "utils/exception.h"
+
+namespace lczero::lc5 {
+namespace {
+
+const OptionId kThreads{"threads", "Threads", "Lc5 visit worker threads."};
+const OptionId kEvalThreads{"eval-threads", "EvalThreads",
+                            "Lc5 concurrent backend evaluators."};
+const OptionId kMinibatchSize{"minibatch-size", "MinibatchSize",
+                              "Lc5 neural evaluation batch target."};
+const OptionId kMaxActiveVisits{"max-active-visits", "MaxActiveVisits",
+                                "Hard bound on live Lc5 logical visits."};
+const OptionId kHistoryKeyLength{
+    "history-key-length", "HistoryKeyLength",
+    "History positions beyond current used in Lc5 keys; shorter keys merge "
+    "more histories into the same graph node."};
+const OptionId kMaxBatchDelay{"max-batch-delay-ms", "MaxBatchDelayMs",
+                              "Maximum Lc5 partial-batch delay in ms."};
+const OptionId kActiveVisitsRatio{
+    "active-visits-ratio", "ActiveVisitsRatio",
+    "Live visits are limited to 16 plus this fraction of the root's visits "
+    "(and to MaxActiveVisits); 0 disables the limit."};
+const OptionId kGraphNodeLimit{
+    "lc5-graph-node-limit", "Lc5GraphNodeLimit",
+    "Lc5 graph nodes kept in RAM. Above it, the nodes with the fewest visits "
+    "move to a node store with their statistics, and come back when a search "
+    "reaches them again. 0 keeps every node in the graph."};
+const OptionId kMoveOverhead{"move-overhead", "MoveOverheadMs",
+                             "Time reserved for communication overhead."};
+const OptionId kAlphazeroTimePct{
+    "alphazero-time-pct", "AlphaZeroTimePct",
+    "Percentage of the remaining clock allocated to each Lc5 move."};
+const OptionId kSmartPruningFactor{
+    "smart-pruning-factor", "SmartPruningFactor",
+    "Stop early once the best root move cannot be overtaken by the remaining "
+    "visits divided by this factor; the unused time is spent on the next "
+    "move. 0 disables it."};
+
+}  // namespace
+
+void Settings::Populate(OptionsParser* options) {
+  options->Add<IntOption>(kThreads, 0, 512) = 0;
+  options->Add<IntOption>(kEvalThreads, 0, 128) = 0;
+  // Backend maximum is only known when a run starts; Resolve validates it.
+  options->Add<IntOption>(kMinibatchSize, 0, 1000000) = 0;
+  options->Add<IntOption>(kMaxActiveVisits, 0, kMaxActiveVisitsLimit) = 0;
+  options->Add<IntOption>(kHistoryKeyLength, 0, 7) = 7;
+  options->Add<IntOption>(kMaxBatchDelay, 0, 100) = 2;
+  options->Add<FloatOption>(kActiveVisitsRatio, 0.0f, 100.0f) = 0.25f;
+  options->Add<IntOption>(kGraphNodeLimit, 0, 2'000'000'000) = 0;
+  options->Add<IntOption>(kMoveOverhead, 0, 100000000) = 200;
+  options->Add<FloatOption>(kAlphazeroTimePct, 0.0f, 100.0f) = 3.0f;
+  options->Add<FloatOption>(kSmartPruningFactor, 0.0f, 10.0f) = 1.33f;
+}
+
+Settings::Settings(const OptionsDict& options)
+    : configured_{.threads = options.Get<int>(kThreads),
+                  .eval_threads = options.Get<int>(kEvalThreads),
+                  .minibatch_size = options.Get<int>(kMinibatchSize),
+                  .max_active_visits = options.Get<int>(kMaxActiveVisits),
+                  .max_batch_delay_ms = options.Get<int>(kMaxBatchDelay),
+                  .active_visits_ratio = options.Get<float>(kActiveVisitsRatio),
+                  .graph_node_limit =
+                      static_cast<size_t>(options.Get<int>(kGraphNodeLimit))},
+      history_key_length_(options.Get<int>(kHistoryKeyLength)),
+      time_management_{
+          .move_overhead_ms = options.Get<int>(kMoveOverhead),
+          .alphazero_time_pct = options.Get<float>(kAlphazeroTimePct),
+          .smart_pruning_factor = options.Get<float>(kSmartPruningFactor)} {}
+
+Settings::Resolved Settings::Resolve(const BackendAttributes& backend) const {
+  Resolved resolved = configured_;
+  const int backend_max = std::max(1, backend.maximum_batch_size);
+  if (resolved.minibatch_size > backend_max) {
+    throw Exception("Lc5 MinibatchSize exceeds backend maximum batch size");
+  }
+  if (resolved.eval_threads == 0) {
+    resolved.eval_threads =
+        std::clamp(backend.suggested_num_search_threads, 1, 128);
+  }
+  if (resolved.minibatch_size == 0) {
+    resolved.minibatch_size =
+        std::clamp(backend.recommended_batch_size, 1, backend_max);
+  }
+  if (resolved.threads == 0) {
+    const int hardware = std::max(1u, std::thread::hardware_concurrency());
+    resolved.threads =
+        backend.runs_on_cpu
+            ? std::max(1, backend.suggested_num_search_threads)
+            : std::min(hardware, std::max(2, 4 * resolved.eval_threads));
+  }
+  if (resolved.max_active_visits == 0) {
+    // Visits in flight dilute small searches, so keep only enough to fill
+    // the evaluators.
+    resolved.max_active_visits =
+        std::clamp(3 * resolved.eval_threads * resolved.minibatch_size / 2, 256,
+                   kMaxActiveVisitsLimit);
+  }
+  if (resolved.max_active_visits < resolved.eval_threads) {
+    throw Exception(
+        "Lc5 MaxActiveVisits must allow at least one visit per evaluator");
+  }
+  return resolved;
+}
+
+}  // namespace lczero::lc5

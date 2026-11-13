@@ -1,0 +1,70 @@
+/*
+  This file is part of Leela Chess Zero.
+  Copyright (C) 2026 The LCZero Authors
+
+  Leela Chess is free software: you can redistribute it and/or modify
+  it under the terms of the GNU General Public License as published by
+  the Free Software Foundation, either version 3 of the License, or
+  (at your option) any later version.
+
+  Leela Chess is distributed in the hope that it will be useful,
+  but WITHOUT ANY WARRANTY; without even the implied warranty of
+  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+  GNU General Public License for more details.
+
+  You should have received a copy of the GNU General Public License
+  along with Leela Chess.  If not, see <http://www.gnu.org/licenses/>.
+
+  Additional permission under GNU GPL version 3 section 7
+
+  If you modify this Program, or any covered work, by linking or
+  combining it with NVIDIA Corporation's libraries from the NVIDIA CUDA
+  Toolkit and the NVIDIA CUDA Deep Neural Network library (or a
+  modified version of those libraries), containing parts covered by the
+  terms of the respective license agreement, the licensors of this
+  Program grant you additional permission to convey the resulting work.
+*/
+
+#pragma once
+
+#include <cstdint>
+#include <vector>
+
+#include "chess/types.h"
+#include "search/lc5/graph/value.h"
+
+namespace lczero::lc5 {
+
+enum class TerminalKind : uint8_t {
+  kNonTerminal,
+  kCheckmate,
+  kStalemate,
+  kRule50,
+  kRepetition,
+  kInsufficientMaterial,
+};
+
+// Value of a terminal position for its side to move.
+inline VisitValue TerminalValue(TerminalKind terminal) {
+  return terminal == TerminalKind::kCheckmate
+             ? VisitValue{.q = -1.0f, .d = 0.0f, .m = 0.0f}
+             : VisitValue{.q = 0.0f, .d = 1.0f, .m = 0.0f};
+}
+
+// Whether a terminal's value holds wherever its node is reached. A
+// repetition depends on the history before the node, so it is not exact.
+inline bool IsExact(TerminalKind terminal) {
+  return terminal != TerminalKind::kNonTerminal &&
+         terminal != TerminalKind::kRepetition;
+}
+
+// Immutable result of evaluating a node: either a terminal kind, or legal moves
+// with priors and the network's leaf value.
+struct NodeEval {
+  TerminalKind terminal = TerminalKind::kNonTerminal;
+  VisitValue leaf{};
+  std::vector<Move> moves;
+  std::vector<float> priors;
+};
+
+}  // namespace lczero::lc5

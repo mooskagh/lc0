@@ -224,6 +224,7 @@ void Engine::SetPosition(const std::string& fen,
 }
 
 void Engine::NewGame() {
+  EnsureSearchStopped();
   if (backend_) backend_->ClearCache();
   search_->NewGame();
   SetPosition(ChessBoard::kStartposFen, {});
@@ -260,6 +261,7 @@ void Engine::RegisterUciResponder(UciResponder* responder) {
 }
 
 void Engine::UnregisterUciResponder(UciResponder* responder) {
+  EnsureSearchStopped();
   uci_forwarder_->Unregister(responder);
 }
 

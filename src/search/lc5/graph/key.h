@@ -1,6 +1,6 @@
 /*
   This file is part of Leela Chess Zero.
-  Copyright (C) 2018 The LCZero Authors
+  Copyright (C) 2026 The LCZero Authors
 
   Leela Chess is free software: you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -27,24 +27,28 @@
 
 #pragma once
 
-#include <memory>
+#include <compare>
+#include <cstdint>
+#include <utility>
 
-namespace lczero {
+#include "chess/position.h"
 
-// Non resizeable array which can contain up to 255 elements.
-template <typename T>
-class SmallArray {
- public:
-  SmallArray() = delete;
-  SmallArray(size_t size) : size_(size), data_(std::make_unique<T[]>(size)) {}
-  SmallArray(SmallArray&&);  // TODO implement when needed
-  T& operator[](int idx) { return data_[idx]; }
-  const T& operator[](int idx) const { return data_[idx]; }
-  int size() const { return size_; }
+namespace lczero::lc5 {
 
- private:
-  unsigned char size_;
-  std::unique_ptr<T[]> data_;
+struct NodeKey {
+  uint64_t hash = 0;
+  auto operator<=>(const NodeKey&) const = default;
+
+  template <typename H>
+  friend H AbslHashValue(H state, const NodeKey& key) {
+    return H::combine(std::move(state), key.hash);
+  }
 };
 
-}  // namespace lczero
+// Keys the last position plus `history_key_length` preceding ones.
+inline NodeKey MakeNodeKey(const PositionHistory& history,
+                           int history_key_length) {
+  return NodeKey{history.HashLast(history_key_length + 1)};
+}
+
+}  // namespace lczero::lc5

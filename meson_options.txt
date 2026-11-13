@@ -255,6 +255,10 @@ option('rescorer',
        value: false,
        description: 'Build rescorer')
 
+option('lc5',
+       type: 'boolean',
+       value: true,
+       description: 'Build Lc5 search algorithm')
 option('default_search',
        type: 'string',
        value: '',

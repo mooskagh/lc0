@@ -20,3 +20,5 @@ xcuserdata
 compile_flags.txt
 .vscode
 .mesonpy*
+.juggler
+docs/
