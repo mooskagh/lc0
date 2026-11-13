@@ -30,6 +30,8 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <cstdint>
+#include <limits>
 
 #include "chess/uciloop.h"
 
@@ -371,6 +373,35 @@ TEST(Lc5TimeManagerTest, ExplicitAlphaZeroTimePctIgnoresCurveAndBonus) {
                              .game_ply = 80,
                              .first_move_of_game = true};
   ExpectDeadline(GoParams{.wtime = 10200}, false, 500, config);
+}
+
+TEST(Lc5TimeManagerTest, EstimatedRemainingVisitsMatchesCanAffordVisits) {
+  constexpr uint64_t kUnlimited = std::numeric_limits<uint64_t>::max();
+  for (const GoParams& params :
+       {GoParams{.wtime = 10200, .ponder = true},
+        GoParams{.wtime = 10200, .infinite = true},
+        GoParams{.wtime = 10200, .movetime = 700}, GoParams{}}) {
+    const TimeManager unlimited(kConfig, params, false, kStart);
+    EXPECT_EQ(
+        unlimited.EstimatedRemainingVisits(1000, kStart + milliseconds(100)),
+        kUnlimited);
+  }
+
+  TimeManager::Config config = kConfig;
+  config.alphazero_time_pct = 10.0f;
+  config.smart_pruning_factor = 2.0f;
+  // Budget 1000 ms.
+  const TimeManager manager(config, GoParams{.wtime = 10200}, false, kStart);
+  EXPECT_EQ(manager.EstimatedRemainingVisits(0, kStart), kUnlimited);
+  const auto first_eval = kStart + milliseconds(100);
+  EXPECT_EQ(manager.EstimatedRemainingVisits(1, first_eval), kUnlimited);
+  EXPECT_EQ(
+      manager.EstimatedRemainingVisits(200, first_eval + milliseconds(79)),
+      kUnlimited);
+  const auto after_warmup = first_eval + milliseconds(80);
+  EXPECT_EQ(manager.EstimatedRemainingVisits(600, after_warmup), 4100);
+  EXPECT_EQ(manager.EstimatedRemainingVisits(600, kStart + milliseconds(1000)),
+            0);
 }
 
 }  // namespace

@@ -62,6 +62,11 @@ class TimeManager {
   bool ShouldStop(Clock::time_point now) const {
     return deadline_ && now >= *deadline_;
   }
+  // Estimated remaining visits before the deadline at the observed visit rate
+  // divided by `smart_pruning_factor_`. Returns `UINT64_MAX` when early
+  // stopping is disabled or still warming up, and `0` at or past `deadline_`.
+  uint64_t EstimatedRemainingVisits(uint64_t visits_done,
+                                    Clock::time_point now) const;
   // Whether `visits` more visits likely fit before the deadline, at the rate of
   // `visits_done` so far over the pruning factor. True if there's no estimate.
   bool CanAffordVisits(uint64_t visits, uint64_t visits_done,

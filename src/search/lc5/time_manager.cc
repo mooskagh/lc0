@@ -29,6 +29,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 
 #include "chess/uciloop.h"
 
@@ -131,22 +132,29 @@ TimeManager::TimeManager(Config config, const GoParams& params,
   deadline_ = start_time + std::chrono::milliseconds(clamped);
 }
 
-bool TimeManager::CanAffordVisits(uint64_t visits, uint64_t visits_done,
-                                  Clock::time_point now) const {
-  if (!clock_budget_ || smart_pruning_factor_ <= 0.0f) return true;
-  if (visits_done == 0) return true;
+uint64_t TimeManager::EstimatedRemainingVisits(uint64_t visits_done,
+                                               Clock::time_point now) const {
+  constexpr uint64_t kUnlimited = std::numeric_limits<uint64_t>::max();
+  if (!clock_budget_ || smart_pruning_factor_ <= 0.0f) return kUnlimited;
+  if (visits_done == 0) return kUnlimited;
   if (!first_eval_time_) {
     first_eval_time_ = now;
-    return true;
+    return kUnlimited;
   }
   const auto elapsed = now - *first_eval_time_;
-  if (elapsed < kSmartPruningTolerance) return true;
-  if (now >= *deadline_) return visits == 0;
+  if (elapsed < kSmartPruningTolerance) return kUnlimited;
+  if (now >= *deadline_) return 0;
   const double rate_visits =
       static_cast<double>(visits_done + kSmartPruningToleranceNodes);
   const double remaining = rate_visits * (*deadline_ - now).count() /
                            elapsed.count() / smart_pruning_factor_;
-  return visits <= remaining;
+  if (remaining >= static_cast<double>(kUnlimited)) return kUnlimited;
+  return static_cast<uint64_t>(std::max(0.0, remaining));
+}
+
+bool TimeManager::CanAffordVisits(uint64_t visits, uint64_t visits_done,
+                                  Clock::time_point now) const {
+  return visits <= EstimatedRemainingVisits(visits_done, now);
 }
 
 int64_t TimeManager::UnusedMs(Clock::time_point stop_time) const {
