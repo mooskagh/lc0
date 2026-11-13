@@ -226,6 +226,7 @@ TEST(Lc5GraphTest, ProvenBoundsGoUpAndStopSelectionWhenAsked) {
 
   // A proven node stops selection only with StickyEndgames and when asked.
   auto params = TestParams();
+  params.sticky_endgames = false;
   const auto select = [&](bool stop_at_proven) {
     const auto selected =
         graph.SelectAndReserveEdge(parent, params, stop_at_proven);

@@ -80,7 +80,8 @@ PuctParams TestParams() {
           .cpuct_base = 100.0f,
           .cpuct_factor = 0.0f,
           .fpu_strategy = FpuStrategy::kAbsolute,
-          .fpu_value = 0.0f};
+          .fpu_value = 0.0f,
+          .sticky_endgames = false};
 }
 
 std::unique_ptr<VisitEngine> MakeConfiguredEngine(
@@ -128,7 +129,7 @@ TEST(Lc5PuctTest, OptionDefaultsMatchParams) {
   EXPECT_EQ(params.moves_left.scaled_factor, defaults.moves_left.scaled_factor);
   EXPECT_EQ(params.moves_left.quadratic_factor,
             defaults.moves_left.quadratic_factor);
-  EXPECT_FALSE(params.sticky_endgames);
+  EXPECT_TRUE(params.sticky_endgames);
 }
 
 TEST(Lc5PuctTest, OptionsReachParams) {
@@ -138,13 +139,13 @@ TEST(Lc5PuctTest, OptionsReachParams) {
   parser.SetUciOption("FpuStrategy", "absolute");
   parser.SetUciOption("MovesLeft", "true");
   parser.SetUciOption("MovesLeftSlope", "0.01");
-  parser.SetUciOption("StickyEndgames", "true");
+  parser.SetUciOption("StickyEndgames", "false");
   const auto params = PuctParams::FromOptions(parser.GetOptionsDict(), kMlh);
   EXPECT_EQ(params.cpuct, 3.0f);
   EXPECT_EQ(params.fpu_strategy, FpuStrategy::kAbsolute);
   EXPECT_TRUE(params.moves_left.enabled);
   EXPECT_EQ(params.moves_left.slope, 0.01f);
-  EXPECT_TRUE(params.sticky_endgames);
+  EXPECT_FALSE(params.sticky_endgames);
   // Without a moves-left head the option has no effect.
   EXPECT_FALSE(
       PuctParams::FromOptions(parser.GetOptionsDict(), MakeAttributes(false))
@@ -359,6 +360,10 @@ TEST(Lc5PuctTest, GetProvenNodeValueNeedsStickyEndgames) {
   EXPECT_EQ(value->d, 0.0f);
   EXPECT_EQ(value->m, 3.0f);
   EXPECT_TRUE(TestPolicy::IsNodeDecided(node, params));
+  node.stats.bounds = WithPlies(kLoss, 2);
+  EXPECT_FALSE(TestPolicy::IsNodeDecided(node, params));
+  node.stats.bounds = kDraw;
+  EXPECT_FALSE(TestPolicy::IsNodeDecided(node, params));
   node.stats.bounds = {.lower = 0, .upper = 1};
   EXPECT_EQ(TestPolicy::GetProvenNodeValue(node, params), std::nullopt);
 }
