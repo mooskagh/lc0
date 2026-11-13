@@ -109,6 +109,11 @@ class SearchSessionTestPeer {
       EXPECT_TRUE(inbox.completions.empty());
     }
   }
+  static uint64_t ComputeRootRemainingVisits(
+      const SearchSession& session,
+      std::chrono::steady_clock::time_point now) {
+    return session.ComputeRootRemainingVisits(now);
+  }
   static void ExpectDrained(const Lc5Engine& engine) {
     ASSERT_TRUE(engine.session_);
     ASSERT_TRUE(engine.session_->IsFinished());
@@ -2197,6 +2202,150 @@ TEST(Lc5SearchTest, SmallBatchPrefetchesChildrenIntoMemCache) {
     EXPECT_GE(session.metrics().cache_hits.load(), 20u);
     EXPECT_EQ(session.metrics().evaluation_batches.load(), 0u);
   }
+}
+
+TEST(Lc5SearchTest, ControllerUpdatesAndResetsRootRemainingVisits) {
+  constexpr uint64_t kUnlimited = std::numeric_limits<uint64_t>::max();
+  auto base_engine = MakeTestEngine();
+  RecordingResponder responder;
+  const auto root = Origin();
+  const auto t0 = std::chrono::steady_clock::now();
+
+  // Disabled for infinite, ponder, and SmartPruningFactor=0.
+  {
+    ControlledBackend backend;
+    TimeManager::Config tm = TestTimeManagement();
+    tm.alphazero_time_pct = 10.0f;
+    tm.smart_pruning_factor = 1.5f;
+    for (const GoParams& params : {GoParams{.wtime = 10200, .ponder = true},
+                                   GoParams{.wtime = 10200, .infinite = true}}) {
+      SearchSession session(base_engine.get(), &backend, &responder,
+                            TestSettings(), tm, root, params, t0);
+      EXPECT_EQ(SearchSessionTestPeer::ComputeRootRemainingVisits(
+                    session, t0 + std::chrono::milliseconds(100)),
+                kUnlimited);
+    }
+
+    tm.smart_pruning_factor = 0.0f;
+    SearchSession no_prune(base_engine.get(), &backend, &responder,
+                           TestSettings(), tm, root, GoParams{.nodes = 10}, t0);
+    EXPECT_EQ(SearchSessionTestPeer::ComputeRootRemainingVisits(
+                  no_prune, t0 + std::chrono::milliseconds(100)),
+              kUnlimited);
+  }
+
+  // Forwarding engine captures every SetRootRemainingVisits update during a
+  // live search and checks cleanup to kUnlimited on Wait().
+  class RecordingEngine final : public VisitEngine {
+   public:
+    explicit RecordingEngine(std::unique_ptr<VisitEngine> inner)
+        : inner_(std::move(inner)) {}
+    std::string_view GetName() const override { return inner_->GetName(); }
+    void Configure(const OptionsDict& options,
+                   const BackendAttributes& backend) override {
+      inner_->Configure(options, backend);
+    }
+    void Clear() override { inner_->Clear(); }
+    DescendResult DescendVisit(Visit& visit, Metrics& metrics) override {
+      return inner_->DescendVisit(visit, metrics);
+    }
+    void BackupVisit(const Visit& visit, Metrics& metrics) override {
+      inner_->BackupVisit(visit, metrics);
+    }
+    void CancelVisit(const Visit& visit) override {
+      inner_->CancelVisit(visit);
+    }
+    ResumeAction ResumeVisit(Visit& visit, Metrics& metrics) override {
+      return inner_->ResumeVisit(visit, metrics);
+    }
+    void FillThinkingInfo(const VisitOrigin& origin,
+                          ThinkingInfo& info) const override {
+      inner_->FillThinkingInfo(origin, info);
+    }
+    RootStats GetRootStats(NodeKey root_key) const override {
+      return inner_->GetRootStats(root_key);
+    }
+    void SetRootRemainingVisits(uint64_t remaining_visits) override {
+      {
+        std::lock_guard lock(mutex_);
+        updates_.push_back(remaining_visits);
+      }
+      cv_.notify_all();
+      inner_->SetRootRemainingVisits(remaining_visits);
+    }
+    bool ContainsNode(NodeKey key) const override {
+      return inner_->ContainsNode(key);
+    }
+    bool CompleteMaterialization(NodeKey key, const NodeEval& eval) override {
+      return inner_->CompleteMaterialization(key, eval);
+    }
+    size_t GetGraphSize() const override { return inner_->GetGraphSize(); }
+    void SetStore(std::unique_ptr<NodeStore> store) override {
+      inner_->SetStore(std::move(store));
+    }
+    bool HasStore() const override { return inner_->HasStore(); }
+    std::vector<std::optional<std::vector<uint8_t>>> ReadFromStore(
+        std::span<const NodeKey> keys) override {
+      return inner_->ReadFromStore(keys);
+    }
+    bool RestoreFromRecord(NodeKey key,
+                           std::span<const uint8_t> record) override {
+      return inner_->RestoreFromRecord(key, record);
+    }
+    size_t EvictToStore(size_t max, NodeKey keep, Metrics& metrics) override {
+      return inner_->EvictToStore(max, keep, metrics);
+    }
+
+    bool WaitForUpdateInRange(uint64_t min_inclusive, uint64_t max_exclusive) {
+      std::unique_lock lock(mutex_);
+      return cv_.wait_for(lock, std::chrono::seconds(5), [&] {
+        return absl::c_any_of(updates_, [&](uint64_t v) {
+          return v >= min_inclusive && v < max_exclusive;
+        });
+      });
+    }
+    std::vector<uint64_t> SnapshotUpdates() const {
+      std::lock_guard lock(mutex_);
+      return updates_;
+    }
+
+   private:
+    std::unique_ptr<VisitEngine> inner_;
+    mutable std::mutex mutex_;
+    std::condition_variable cv_;
+    std::vector<uint64_t> updates_;
+  };
+
+  RecordingEngine recording_engine(MakeTestEngine());
+  {
+    ControlledBackend backend;
+    backend.blocked_input = 2;
+    TimeManager::Config tm = TestTimeManagement();
+    tm.move_overhead_ms = 200;
+    tm.alphazero_time_pct = 10.0f;  // 5000ms budget for wtime=50200.
+    tm.smart_pruning_factor = 1.0f;
+
+    SearchSession session(&recording_engine, &backend, &responder,
+                          TestSettings(1, 1), tm, root,
+                          GoParams{.wtime = 50200, .nodes = 1000000},
+                          std::chrono::steady_clock::now());
+    session.Start();
+    ASSERT_TRUE(backend.input.WaitForArrival());
+
+    // Live controller thread pushes `node_remaining` during the 80ms warmup,
+    // then transitions to the finite `EstimatedRemainingVisits` time bound.
+    ASSERT_TRUE(recording_engine.WaitForUpdateInRange(999000u, kUnlimited));
+    ASSERT_TRUE(recording_engine.WaitForUpdateInRange(0u, 10000u));
+
+    session.Stop();
+    backend.Release();
+    session.Wait();
+    ExpectDrained(session);
+  }
+
+  const auto updates = recording_engine.SnapshotUpdates();
+  ASSERT_FALSE(updates.empty());
+  EXPECT_EQ(updates.back(), kUnlimited);
 }
 
 }  // namespace

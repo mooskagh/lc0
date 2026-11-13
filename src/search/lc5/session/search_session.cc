@@ -32,6 +32,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <utility>
@@ -98,6 +99,8 @@ SearchSession::SearchSession(VisitEngine* engine, Backend* backend,
                     root_.history.Last().IsBlackToMove(), start_time_,
                     saved_ms),
       may_stop_early_(!go_params.infinite && !go_params.ponder),
+      smart_pruning_enabled_(may_stop_early_ &&
+                             time_management.smart_pruning_factor > 0.0f),
       visit_pool_(settings_.max_active_visits),
       limiter_(MakeLimiterConfig(settings_, go_params,
                                  engine_->GetRootStats(root_.key)),
@@ -186,6 +189,7 @@ void SearchSession::RunControllerWorker() {
     }
     if (!IsStopping() && ShouldStop(now)) limiter_.Stop();
     SendEvictionJob();
+    engine_->SetRootRemainingVisits(ComputeRootRemainingVisits(now));
     if (!IsStopping()) MaybeOutputInfo(now, next_info);
     if (IsStopping() && !responded) {
       RespondBestMove();
@@ -197,6 +201,7 @@ void SearchSession::RunControllerWorker() {
 
     controller_signal_.WaitUntil(generation, NextWakeup(now, next_info));
   }
+  engine_->SetRootRemainingVisits(std::numeric_limits<uint64_t>::max());
   JoinThreads();
 }
 
@@ -233,6 +238,18 @@ bool SearchSession::ShouldStop(steady_clock::time_point now) const {
   return !time_manager_.CanAffordVisits(
       root.best_edge_visits - root.second_edge_visits,
       metrics_.visits_completed.load(), now);
+}
+
+uint64_t SearchSession::ComputeRootRemainingVisits(
+    steady_clock::time_point now) const {
+  constexpr uint64_t kUnlimited = std::numeric_limits<uint64_t>::max();
+  if (!smart_pruning_enabled_ || IsStopping()) return kUnlimited;
+  const uint64_t visits_done = metrics_.visits_completed.load();
+  const uint64_t node_limit = limiter_.node_limit();
+  const uint64_t node_remaining =
+      node_limit > visits_done ? node_limit - visits_done : 0;
+  return std::min(node_remaining,
+                  time_manager_.EstimatedRemainingVisits(visits_done, now));
 }
 
 steady_clock::time_point SearchSession::NextWakeup(

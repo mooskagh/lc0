@@ -29,6 +29,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <cstdint>
 #include <memory>
 #include <thread>
 #include <vector>
@@ -82,6 +83,8 @@ class SearchSession {
   // Search: stop, output and shutdown.
   bool IsStopping() const { return limiter_.IsStopping(); }
   bool ShouldStop(std::chrono::steady_clock::time_point now) const;
+  uint64_t ComputeRootRemainingVisits(
+      std::chrono::steady_clock::time_point now) const;
   void MaybeOutputInfo(std::chrono::steady_clock::time_point now,
                        std::chrono::steady_clock::time_point& next_info);
   std::chrono::steady_clock::time_point NextWakeup(
@@ -116,6 +119,7 @@ class SearchSession {
   // Not in infinite or ponder searches: a decided root or smart pruning may
   // stop the search before its limits.
   const bool may_stop_early_;
+  const bool smart_pruning_enabled_;
 
   // Lifecycle and the controller's wakeups.
   std::atomic<bool> started_{false};
