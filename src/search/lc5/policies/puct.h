@@ -79,7 +79,7 @@ struct PuctParams {
   MovesLeft moves_left = {};
   // Use proven bounds in selection, the move choice, early stopping and
   // mate scores. Bounds are tracked either way.
-  bool sticky_endgames = false;
+  bool sticky_endgames = true;
 
   static void Populate(OptionsParser* options);
   // Moves-left stays off if the backend has no moves-left head.
@@ -141,9 +141,12 @@ struct PuctPolicy {
   // descending; nullopt if the node is not proven or StickyEndgames is off.
   static std::optional<VisitValue> GetProvenNodeValue(const Node<Self>& node,
                                                       const Params& params);
-  // Whether the node's result is proven and StickyEndgames is on.
+  // Whether the node has a proven win and StickyEndgames is on. Proven draws
+  // and losses keep searching so losing positions still play longest resistance
+  // and draw bounds do not stop prematurely.
   static bool IsNodeDecided(const Node<Self>& node, const Params& params) {
-    return params.sticky_endgames && node.stats.bounds.Proven();
+    return params.sticky_endgames && node.stats.bounds.Proven() &&
+           node.stats.bounds.lower == 1;
   }
   // The PV and bestmove move (`node` has edges): most visits, then best Q,
   // then PreferOnTie. With StickyEndgames, a proven win comes first (shortest

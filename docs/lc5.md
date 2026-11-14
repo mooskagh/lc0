@@ -177,7 +177,7 @@ earlier (below). `movetime` minus `MoveOverheadMs` is used, as in classic;
 
 **Early stop.** Classic-style smart pruning, checked every 10 ms against the
 session's visit rate (`SmartPruningFactor`, 1.33), for clock budgets only. A root
-with a single legal move, or with `StickyEndgames` a proven root, also stops
+with a single legal move, or with `StickyEndgames` a proven root win, also stops
 the search (checked every 10 ms, also under `go nodes` and `movetime`, but not
 in `infinite` or `ponder`). Whatever stops a clock-budget search, the rest of
 its budget goes to the next move; a search without a clock budget (ponder,
@@ -276,7 +276,7 @@ Options of the `puct` and `puct-dag` policies (they share them):
 | `MovesLeft` | true | Prefer shorter wins and longer losses in clearly decided nodes. Off without a moves-left head. |
 | `MovesLeftMaxEffect`, `MovesLeftThreshold`, `MovesLeftSlope` | 0.0345, 0.8, 0.0027 | Largest bonus, node \|Q\| above which it applies, bonus per ply of M difference. |
 | `MovesLeftConstantFactor`, `MovesLeftScaledFactor`, `MovesLeftQuadraticFactor` | 0, 1.6521, −0.6521 | Bonus scaling: a + b·x + c·x², x = edge \|Q\| above the threshold, rescaled to [0, 1]. |
-| `StickyEndgames` | false | Use proven wins, draws and losses in selection, the bestmove, early stopping and mate scores. Repetition draws are not proven. |
+| `StickyEndgames` | true | Use proven wins, draws and losses in selection, the bestmove, early stopping and mate scores. Repetition draws are not proven. |
 
 ## Policies
 
