@@ -33,7 +33,7 @@
 #include <vector>
 
 #include "chess/position.h"
-#include "search/lc5/graph/graph.h"
+#include "search/lc5/graph/key.h"
 
 namespace lczero::lc5 {
 
@@ -67,22 +67,6 @@ enum class VisitState : uint8_t {
   kWaitingMaterialization,
 };
 
-// Leaf value stored on a Visit once valued for backup.
-struct LeafValue {
-  VisitValue value{};
-  // `value` is exact: a terminal other than a repetition, or a proven node.
-  bool exact = false;
-};
-
-// Outcome supplied to BackupLeaf for a visit paused at kUnmaterializedLeaf.
-struct MaterializedLeaf {
-  VisitValue value{};
-  TerminalKind terminal = TerminalKind::kNonTerminal;
-  // False when InsertNode already counted `value` as the leaf's first visit
-  // (the materialization owner); true for additional visits (terminal waiters).
-  bool count_at_leaf = false;
-};
-
 struct Visit {
   static Visit FromOrigin(const VisitOrigin& origin, VisitId id = {}) {
     return Visit{.id = id,
@@ -90,8 +74,7 @@ struct Visit {
                  .origin = origin,
                  .history = origin.history,
                  .current_key = origin.key,
-                 .path = origin.backup_prefix,
-                 .leaf = std::nullopt};
+                 .path = origin.backup_prefix};
   }
 
   VisitId id;
@@ -100,7 +83,6 @@ struct Visit {
   PositionHistory history;
   NodeKey current_key;
   std::vector<PathStep> path;
-  std::optional<LeafValue> leaf{};
 };
 
 }  // namespace lczero::lc5

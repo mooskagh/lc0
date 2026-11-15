@@ -66,9 +66,9 @@ class PolicyEngine final : public VisitEngine {
 
   DescendResult DescendVisit(Visit& visit, Metrics& metrics,
                              bool reselect_parent = false) override;
-  void BackupVisit(const Visit& visit, Metrics& metrics) override;
-  void BackupLeaf(Visit& visit, const MaterializedLeaf& leaf,
-                  Metrics& metrics) override;
+  void BackupLeaf(Visit& visit, const VisitValue& value, Metrics& metrics,
+                  TerminalKind terminal = TerminalKind::kNonTerminal,
+                  bool count_at_leaf = false) override;
   void CancelVisit(const Visit& visit) override;
   void FillThinkingInfo(const VisitOrigin& root,
                         ThinkingInfo& info) const override;
@@ -95,9 +95,11 @@ class PolicyEngine final : public VisitEngine {
     return visit.path.size() > visit.origin.backup_prefix.size() + 1;
   }
 
-  // Follows `move` from the current node; returns true if that reaches an
-  // in-search two-fold repetition (populating `visit.leaf`), else false.
+  // Follows `move` from the current node; returns true if that reaches and
+  // backs up an in-search two-fold repetition, else false.
   bool FollowEdge(Visit& visit, Move move, Metrics& metrics);
+  void Backup(const Visit& visit, const VisitValue& value, bool exact,
+              Metrics& metrics);
 
   GameGraph<P> graph_;
   typename P::Params params_{};
@@ -112,7 +114,6 @@ template <typename P>
 VisitEngine::DescendResult PolicyEngine<P>::DescendVisit(Visit& visit,
                                                          Metrics& metrics,
                                                          bool reselect_parent) {
-  assert(!visit.leaf.has_value());
   // At the origin there is no parent edge to reselect.
   if (reselect_parent && IsBelowOrigin(visit)) {
     const PathStep& parent = visit.path[visit.path.size() - 2];
@@ -125,7 +126,7 @@ VisitEngine::DescendResult PolicyEngine<P>::DescendVisit(Visit& visit,
       visit.path.pop_back();
       visit.history.Pop();
       if (FollowEdge(visit, reselected, metrics)) {
-        return DescendResult::kValuedLeaf;
+        return DescendResult::kCompleted;
       }
     }
   }
@@ -144,58 +145,37 @@ VisitEngine::DescendResult PolicyEngine<P>::DescendVisit(Visit& visit,
       case SelectResult::kNodeMissing:
         return DescendResult::kUnmaterializedLeaf;
       case SelectResult::kNodeTerminal:
-        visit.leaf = {.value = TerminalValue(selection.terminal),
-                      .exact = IsExact(selection.terminal)};
         metrics.terminal_visits.fetch_add(1);
-        return DescendResult::kValuedLeaf;
+        Backup(visit, TerminalValue(selection.terminal),
+               IsExact(selection.terminal), metrics);
+        return DescendResult::kCompleted;
       case SelectResult::kNodeProven:
-        visit.leaf = {.value = selection.value, .exact = true};
         metrics.proven_visits.fetch_add(1);
-        return DescendResult::kValuedLeaf;
+        Backup(visit, selection.value, /*exact=*/true, metrics);
+        return DescendResult::kCompleted;
       case SelectResult::kEdgeSelected:
         break;
     }
     if (FollowEdge(visit, selection.move, metrics)) {
-      return DescendResult::kValuedLeaf;
+      return DescendResult::kCompleted;
     }
   }
 }
 
 template <typename P>
-void PolicyEngine<P>::BackupVisit(const Visit& visit, Metrics& metrics) {
-  assert(visit.leaf.has_value());
-  assert(visit.path.empty() || !visit.path.back().selected_move);
-  RaiseHighWater(metrics.max_depth, visit.path.size());
-  auto backup = P::MakeLeafBackup(visit.leaf->value, visit.leaf->exact);
-  for (auto it = visit.path.rbegin(); it != visit.path.rend(); ++it) {
-    // Skip repetition leaves and leaves already counted at installation.
-    if (!it->update_node) {
-      backup = P::MakeSkipBackup(backup);
-      continue;
-    }
-    const auto parent_backup =
-        graph_.BackupThroughNode(it->key, backup, it->selected_move);
-    metrics.backup_node_steps.fetch_add(1);
-    backup = parent_backup.value_or(P::MakeStaleBackup(backup));
-  }
-}
-
-template <typename P>
-void PolicyEngine<P>::BackupLeaf(Visit& visit, const MaterializedLeaf& leaf,
-                                 Metrics& metrics) {
-  assert(!visit.leaf.has_value());
+void PolicyEngine<P>::BackupLeaf(Visit& visit, const VisitValue& value,
+                                 Metrics& metrics, TerminalKind terminal,
+                                 bool count_at_leaf) {
   assert(!visit.path.empty() && !visit.path.back().selected_move);
-  visit.path.back().update_node = leaf.count_at_leaf;
-  visit.leaf = {.value = leaf.value, .exact = IsExact(leaf.terminal)};
-  if (leaf.terminal != TerminalKind::kNonTerminal) {
+  visit.path.back().update_node = count_at_leaf;
+  if (terminal != TerminalKind::kNonTerminal) {
     metrics.terminal_visits.fetch_add(1);
   }
-  BackupVisit(visit, metrics);
+  Backup(visit, value, IsExact(terminal), metrics);
 }
 
 template <typename P>
 void PolicyEngine<P>::CancelVisit(const Visit& visit) {
-  assert(!visit.leaf.has_value());
   for (const PathStep& step : visit.path) {
     if (step.selected_move) graph_.ReleaseEdge(step.key, *step.selected_move);
   }
@@ -296,13 +276,32 @@ bool PolicyEngine<P>::FollowEdge(Visit& visit, Move move, Metrics& metrics) {
       search_plies >= pos.GetPliesSincePrevRepetition()) {
     visit.path.push_back({.key = visit.current_key});
     RaiseHighWater(metrics.max_selected_depth, visit.path.size());
-    visit.leaf = {.value = TerminalValue(TerminalKind::kRepetition),
-                  .exact = false};
     metrics.terminal_visits.fetch_add(1);
     metrics.two_fold_visits.fetch_add(1);
+    Backup(visit, TerminalValue(TerminalKind::kRepetition), /*exact=*/false,
+           metrics);
     return true;
   }
   return false;
+}
+
+template <typename P>
+void PolicyEngine<P>::Backup(const Visit& visit, const VisitValue& value,
+                             bool exact, Metrics& metrics) {
+  assert(visit.path.empty() || !visit.path.back().selected_move);
+  RaiseHighWater(metrics.max_depth, visit.path.size());
+  auto backup = P::MakeLeafBackup(value, exact);
+  for (auto it = visit.path.rbegin(); it != visit.path.rend(); ++it) {
+    // Skip repetition leaves and leaves already counted at installation.
+    if (!it->update_node) {
+      backup = P::MakeSkipBackup(backup);
+      continue;
+    }
+    const auto parent_backup =
+        graph_.BackupThroughNode(it->key, backup, it->selected_move);
+    metrics.backup_node_steps.fetch_add(1);
+    backup = parent_backup.value_or(P::MakeStaleBackup(backup));
+  }
 }
 
 }  // namespace lczero::lc5

@@ -34,7 +34,8 @@
 
 #include "chess/callbacks.h"
 #include "neural/backend.h"
-#include "search/lc5/graph/graph.h"
+#include "search/lc5/graph/key.h"
+#include "search/lc5/graph/node_eval.h"
 #include "search/lc5/metrics.h"
 #include "search/lc5/store/node_store.h"
 #include "search/lc5/visit.h"
@@ -72,24 +73,25 @@ class VisitEngine {
   virtual void Clear() = 0;
 
   // Visit lifecycle:
-  // - DescendVisit steps down the graph until it reaches a valued leaf
-  //   (kValuedLeaf -> BackupVisit) or a missing node (kUnmaterializedLeaf ->
-  //   BackupLeaf, CancelVisit, or another DescendVisit once the node is in the
-  //   graph).
+  // - DescendVisit steps down the graph until it backs up an in-graph or
+  //   repetition leaf (kCompleted, releasing all reservations) or pauses at a
+  //   missing node (kUnmaterializedLeaf -> BackupLeaf, CancelVisit, or another
+  //   DescendVisit once the node is in the graph).
   // - With `reselect_parent` set (a waiter waking after the owner backed up a
   //   newly evaluated leaf), DescendVisit first re-runs selection at the parent
   //   edge before descending.
-  enum class DescendResult { kUnmaterializedLeaf, kValuedLeaf };
+  enum class DescendResult { kUnmaterializedLeaf, kCompleted };
   virtual DescendResult DescendVisit(Visit& visit, Metrics& metrics,
                                      bool reselect_parent = false) = 0;
-  // Backs up a visit that reached kValuedLeaf and releases its reservations.
-  virtual void BackupVisit(const Visit& visit, Metrics& metrics) = 0;
-  // Backs up `leaf` for a visit paused at kUnmaterializedLeaf and releases its
-  // reservations.
-  virtual void BackupLeaf(Visit& visit, const MaterializedLeaf& leaf,
-                          Metrics& metrics) = 0;
+  // Backs up `value` for a visit paused at kUnmaterializedLeaf and releases its
+  // reservations. `count_at_leaf` is false when InsertNode already counted
+  // `value` as the leaf's first visit (the owner), and true for terminal
+  // waiters.
+  virtual void BackupLeaf(Visit& visit, const VisitValue& value,
+                          Metrics& metrics,
+                          TerminalKind terminal = TerminalKind::kNonTerminal,
+                          bool count_at_leaf = false) = 0;
   // Releases every edge reservation on visit.path without committing a visit.
-  // Only valid before the visit holds a leaf value.
   virtual void CancelVisit(const Visit& visit) = 0;
 
   // Fills the score, WDL and PV of `info`; the caller fills the rest.

@@ -153,7 +153,8 @@ void VisitWorker::HandleWakeup(const VisitWakeup& wakeup) {
   assert(visit.state == VisitState::kWaitingMaterialization);
   // Even on stop, visits that already have a leaf value to back up may finish.
   if (wakeup.kind == VisitWakeup::Kind::kBackup) {
-    context_.engine.BackupLeaf(visit, wakeup.leaf, context_.metrics);
+    context_.engine.BackupLeaf(visit, wakeup.value, context_.metrics,
+                               wakeup.terminal, wakeup.count_at_leaf);
     FinishVisit(visit, true);
     return;
   }
@@ -254,8 +255,7 @@ void VisitWorker::AdvanceVisit(VisitId id) {
     visit.state = VisitState::kReadyDescend;
     if (context_.engine.DescendVisit(visit, context_.metrics,
                                      reselect_parent) ==
-        VisitEngine::DescendResult::kValuedLeaf) {
-      context_.engine.BackupVisit(visit, context_.metrics);
+        VisitEngine::DescendResult::kCompleted) {
       FinishVisit(visit, true);
       return;
     }
@@ -363,9 +363,9 @@ void VisitWorker::CompleteMaterialization(MaterializationId materialization_id,
   const auto wake = [&](VisitWakeup wakeup, bool owner) {
     if (accepted && (owner || terminal)) {
       wakeup.kind = VisitWakeup::Kind::kBackup;
-      wakeup.leaf = {.value = eval.leaf,
-                     .terminal = eval.terminal,
-                     .count_at_leaf = !owner};
+      wakeup.value = eval.leaf;
+      wakeup.terminal = eval.terminal;
+      wakeup.count_at_leaf = !owner;
     } else {
       wakeup.kind = VisitWakeup::Kind::kReselectAndDescend;
     }

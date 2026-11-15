@@ -516,7 +516,7 @@ TEST(Lc5PuctTest, PuctAveragesWhileDagReplacesEdgeValue) {
       EXPECT_EQ(engine->DescendVisit(visit, metrics),
                 VisitEngine::DescendResult::kUnmaterializedLeaf);
       EXPECT_EQ(visit.path.front().selected_move, move_a);
-      engine->BackupLeaf(visit, {.value = {.q = child_q}}, metrics);
+      engine->BackupLeaf(visit, {.q = child_q}, metrics);
     }
     Visit next = Visit::FromOrigin(root);
     EXPECT_EQ(engine->DescendVisit(next, metrics),
@@ -555,7 +555,7 @@ TEST(Lc5PuctTest, DagForwardsSharedChildMeanToParent) {
     EXPECT_EQ(engine->DescendVisit(visit, metrics),
               VisitEngine::DescendResult::kUnmaterializedLeaf);
     EXPECT_EQ(visit.path.size(), 3u);
-    engine->BackupLeaf(visit, {.value = {.q = 0.0f}}, metrics);
+    engine->BackupLeaf(visit, {.q = 0.0f}, metrics);
     ThinkingInfo info;
     engine->FillThinkingInfo(root, info);
     return info.score.value_or(0);
@@ -588,8 +588,7 @@ TEST(Lc5PuctTest, BothPoliciesProveWinFromCheckmateChild) {
                     .priors = {}}));
     Visit visit = Visit::FromOrigin(root);
     EXPECT_EQ(engine->DescendVisit(visit, metrics),
-              VisitEngine::DescendResult::kValuedLeaf);
-    engine->BackupVisit(visit, metrics);
+              VisitEngine::DescendResult::kCompleted);
     const RootStats stats = engine->GetRootStats(root.key);
     EXPECT_TRUE(stats.decided);
     EXPECT_EQ(stats.best_move, move_a);
@@ -645,17 +644,16 @@ TEST(Lc5PuctTest, ReselectParentKeepsGoodEdgeOrSwitchesIntoTwoFold) {
     ASSERT_TRUE(engine->InsertNode(
         alt_key,
         {.leaf = {.q = child_q}, .moves = {alt_reply}, .priors = {1.0f}}));
-    engine->BackupLeaf(owner, {.value = {.q = child_q}}, metrics);
+    engine->BackupLeaf(owner, {.q = child_q}, metrics);
 
     // Waiter resumes with parent reselection.
     const auto res =
         engine->DescendVisit(waiter, metrics, /*reselect_parent=*/true);
     if (alt_bad_for_parent) {
       // Switches to move_rep, which immediately hits a 2-fold repetition draw.
-      EXPECT_EQ(res, VisitEngine::DescendResult::kValuedLeaf);
+      EXPECT_EQ(res, VisitEngine::DescendResult::kCompleted);
       EXPECT_EQ(metrics.visits_reselected.load(), 1u);
       EXPECT_EQ(metrics.two_fold_visits.load(), 1u);
-      engine->BackupVisit(waiter, metrics);
     } else {
       // Keeps move_alt and descends through alt_key to its unmaterialized
       // child.

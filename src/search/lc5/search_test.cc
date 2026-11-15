@@ -826,7 +826,7 @@ TEST(Lc5SearchTest, TwoFoldDrawBacksUpToRoot) {
             VisitEngine::DescendResult::kUnmaterializedLeaf);
   ASSERT_EQ(visit.path.size(), kNodes + 1);
   EXPECT_FALSE(visit.path.back().update_node);
-  engine->BackupLeaf(visit, {.value = draw}, metrics);
+  engine->BackupLeaf(visit, draw, metrics);
 
   for (size_t i = 0; i < kNodes; ++i) {
     SCOPED_TRACE(i);

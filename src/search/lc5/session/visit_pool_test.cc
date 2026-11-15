@@ -122,8 +122,6 @@ TEST(Lc5VisitPoolTest, InitializesAndResetsVisit) {
     EXPECT_EQ(visit.path[0].key, NodeKey{7});
     EXPECT_TRUE(visit.path[0].update_node);
     EXPECT_FALSE(visit.path[0].selected_move);
-    EXPECT_FALSE(visit.leaf.has_value());
-    visit.leaf = {.value = {1.0f, 0.5f, 3.0f}, .exact = true};
     pool.Release(*id);
     // The slot itself is reset, not only marked free.
     EXPECT_FALSE(visit.id);
@@ -132,7 +130,6 @@ TEST(Lc5VisitPoolTest, InitializesAndResetsVisit) {
     EXPECT_TRUE(visit.origin.backup_prefix.empty());
     EXPECT_EQ(visit.history.GetLength(), 0);
     EXPECT_TRUE(visit.path.empty());
-    EXPECT_FALSE(visit.leaf.has_value());
     EXPECT_EQ(pool.active(), 0u);
   }
 }

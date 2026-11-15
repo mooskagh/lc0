@@ -40,7 +40,6 @@
 
 #include "chess/position.h"
 #include "search/lc5/graph/key.h"
-#include "search/lc5/graph/node.h"
 #include "search/lc5/graph/node_eval.h"
 #include "search/lc5/graph/value.h"
 #include "search/lc5/visit.h"
@@ -58,13 +57,15 @@ struct VisitWakeup {
     kReselectAndDescend,  // Sibling evaluated leaf; reselect at parent,
                           // descend.
     kRestored,            // Node restored from the store; descend below it.
-    kBackup,              // Materialization finished; back up `leaf`.
+    kBackup,              // Materialization finished; back up `value`.
     kCancel,  // Materialization cancelled on stop; cancel the visit.
   };
   VisitId id;     // The visit to continue.
   size_t worker;  // Owning visit worker (the only thread that may mutate it).
   Kind kind = Kind::kReselectAndDescend;
-  MaterializedLeaf leaf{};  // For kBackup.
+  TerminalKind terminal = TerminalKind::kNonTerminal;  // For kBackup.
+  bool count_at_leaf = false;                          // For kBackup.
+  VisitValue value{};                                  // For kBackup.
 };
 
 // Request and result data for populating a single graph node, either from the
