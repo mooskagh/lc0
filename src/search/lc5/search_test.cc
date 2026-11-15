@@ -421,15 +421,6 @@ class BlockingStore final : public NodeStore {
   std::atomic<size_t> load_calls_{0};
 };
 
-// Gives `engine` a new store and returns it.
-template <typename S, typename... Args>
-S& InstallStore(VisitEngine& engine, Args&&... args) {
-  auto store = std::make_unique<S>(std::forward<Args>(args)...);
-  S& result = *store;
-  engine.SetStore(std::move(store));
-  return result;
-}
-
 void ExpectDrained(const SearchSession& session) {
   ASSERT_TRUE(session.IsFinished());
   SearchSessionTestPeer::ExpectDrained(session);
@@ -463,7 +454,7 @@ TEST(Lc5SearchTest, ExpiredTimeBudgetStopsAndDrains) {
        {GoParams{.movetime = 0}, GoParams{.movetime = -1},
         GoParams{.wtime = 0, .btime = 0}, GoParams{.movetime = 60000}}) {
     auto engine = MakeTestEngine();
-    auto& store = InstallStore<RecordingStore>(*engine);
+    RecordingStore store;
     ControlledBackend backend;
     RecordingResponder responder;
     const auto root = Origin();
@@ -471,7 +462,7 @@ TEST(Lc5SearchTest, ExpiredTimeBudgetStopsAndDrains) {
     SearchSession session(
         engine.get(), &backend, &responder, TestSettings(),
         TestTimeManagement(), root, params,
-        std::chrono::steady_clock::now() - std::chrono::minutes(2));
+        std::chrono::steady_clock::now() - std::chrono::minutes(2), 0, &store);
     ASSERT_TRUE(SearchSessionTestPeer::AdmitVisit(session, root));
     session.Start();
     session.Wait();
@@ -487,14 +478,14 @@ TEST(Lc5SearchTest, ExpiredTimeBudgetStopsAndDrains) {
 
 TEST(Lc5SearchTest, AbortSuppressesOutputWithExpiredTimeBudget) {
   auto engine = MakeTestEngine();
-  InstallStore<RecordingStore>(*engine);
+  RecordingStore store;
   ControlledBackend backend;
   RecordingResponder responder;
   const auto root = Origin();
   SearchSession session(
       engine.get(), &backend, &responder, TestSettings(), TestTimeManagement(),
       root, GoParams{.movetime = 0},
-      std::chrono::steady_clock::now() - std::chrono::minutes(2));
+      std::chrono::steady_clock::now() - std::chrono::minutes(2), 0, &store);
   ASSERT_TRUE(SearchSessionTestPeer::AdmitVisit(session, root));
   // Abort before startup so output commitment cannot race the assertion.
   session.Abort();
@@ -702,7 +693,7 @@ TEST(Lc5SearchTest, WaiterReselectsAfterOwnerBackup) {
       SCOPED_TRACE(threads);
       SCOPED_TRACE(child_bad_for_root);
       auto engine = MakeTestEngine();
-      engine->CompleteMaterialization(
+      engine->InsertNode(
           root.key, {.moves = {moves[0], moves[1]}, .priors = {0.8f, 0.2f}});
       ControlledBackend backend;
       // Positive child Q flips to negative on the root's edge.
@@ -822,25 +813,20 @@ TEST(Lc5SearchTest, TwoFoldDrawBacksUpToRoot) {
   VisitOrigin cur = Origin();
   for (size_t i = 0; i < kNodes; ++i) {
     const Move move = cur.history.Last().GetBoard().GenerateLegalMoves()[0];
-    engine->CompleteMaterialization(cur.key,
-                                    {.leaf = {.q = 0.5f, .d = 0.0f, .m = 10.0f},
-                                     .moves = {move},
-                                     .priors = {1.0f}});
+    engine->InsertNode(cur.key, {.leaf = {.q = 0.5f, .d = 0.0f, .m = 10.0f},
+                                 .moves = {move},
+                                 .priors = {1.0f}});
     origins.push_back(cur);
     cur.history.Append(move);
     cur.key = MakeNodeKey(cur.history, 7);
   }
   Metrics metrics;
-  Visit visit;
-  visit.origin = origins.front();
-  visit.history = origins.front().history;
-  visit.current_key = origins.front().key;
+  Visit visit = Visit::FromOrigin(origins.front());
   ASSERT_EQ(engine->DescendVisit(visit, metrics),
             VisitEngine::DescendResult::kUnmaterializedLeaf);
   ASSERT_EQ(visit.path.size(), kNodes + 1);
   EXPECT_FALSE(visit.path.back().update_node);
-  visit.result = draw;
-  engine->BackupVisit(visit, metrics);
+  engine->BackupLeaf(visit, {.value = draw}, metrics);
 
   for (size_t i = 0; i < kNodes; ++i) {
     SCOPED_TRACE(i);
@@ -855,8 +841,9 @@ TEST(Lc5SearchTest, TwoFoldDrawBacksUpToRoot) {
     ASSERT_TRUE(info.wdl.has_value());
     EXPECT_EQ(info.wdl->d, 500);
   }
-  InstallStore<RecordingStore>(*engine);
-  EXPECT_EQ(engine->EvictToStore(kNodes, NodeKey{~0ull}, metrics), kNodes);
+  RecordingStore store;
+  EXPECT_EQ(engine->EvictToStore(store, kNodes, NodeKey{~0ull}, metrics),
+            kNodes);
 }
 
 TEST(Lc5SearchTest, TwoFoldDrawsFromRealCyclesDrain) {
@@ -905,13 +892,14 @@ TEST(Lc5SearchTest, TerminalOwnerAndWaitersNeverEvaluate) {
       SCOPED_TRACE(test.fen);
       SCOPED_TRACE(with_store);
       auto engine = MakeTestEngine();
-      if (with_store) InstallStore<MemoryNodeStore>(*engine);
+      MemoryNodeStore store;
       ControlledBackend backend;
       RecordingResponder responder;
       const auto root = Origin(test.fen);
       SearchSession session(engine.get(), &backend, &responder, TestSettings(),
                             TestTimeManagement(), root, GoParams{.nodes = 4},
-                            std::chrono::steady_clock::now());
+                            std::chrono::steady_clock::now(), 0,
+                            with_store ? &store : nullptr);
       for (int i = 0; i < 4; ++i)
         ASSERT_TRUE(SearchSessionTestPeer::AdmitVisit(session, root));
       session.Start();
@@ -952,8 +940,8 @@ TEST(Lc5SearchTest, ImmediateAndMixedResultsKeepJobStorageAlive) {
     RecordingResponder responder;
     const auto root = Origin();
     const auto moves = root.history.Last().GetBoard().GenerateLegalMoves();
-    engine->CompleteMaterialization(
-        root.key, {.moves = {moves[0], moves[1]}, .priors = {0.5f, 0.5f}});
+    engine->InsertNode(root.key,
+                       {.moves = {moves[0], moves[1]}, .priors = {0.5f, 0.5f}});
     SearchSession session(engine.get(), &backend, &responder, TestSettings(),
                           TestTimeManagement(), root, GoParams{.nodes = 4},
                           std::chrono::steady_clock::now());
@@ -995,22 +983,21 @@ TEST(Lc5SearchTest, BlockedBackendStopAndAbortDrainReservations) {
   for (const bool abort : {false, true}) {
     SCOPED_TRACE(abort);
     auto engine = MakeTestEngine();
-    auto& store = InstallStore<RecordingStore>(*engine);
+    RecordingStore store;
     ControlledBackend backend(ControlledBackend::Cache::kNone, true);
     RecordingResponder responder;
     const auto root = Origin();
     const auto moves = root.history.Last().GetBoard().GenerateLegalMoves();
     // All visits reserve the same root edge and share the child
     // materialization.
-    engine->CompleteMaterialization(root.key,
-                                    {.moves = {moves[0]}, .priors = {1.0f}});
+    engine->InsertNode(root.key, {.moves = {moves[0]}, .priors = {1.0f}});
     auto child = root;
     child.history.Append(moves[0]);
     child.key = MakeNodeKey(child.history, 7);
     SearchSession session(engine.get(), &backend, &responder, TestSettings(),
                           TestTimeManagement(), root,
                           GoParams{.nodes = 4, .infinite = true},
-                          std::chrono::steady_clock::now());
+                          std::chrono::steady_clock::now(), 0, &store);
     for (int i = 0; i < 4; ++i)
       ASSERT_TRUE(SearchSessionTestPeer::AdmitVisit(session, root));
     session.Start();
@@ -1060,8 +1047,8 @@ TEST(Lc5SearchTest, BlockedBackendStopAndAbortDrainReservations) {
     }
     // Every reservation was released, so both nodes can be evicted.
     Metrics evict_metrics;
-    EXPECT_EQ(engine->EvictToStore(engine->GetGraphSize(), NodeKey{~0ull},
-                                   evict_metrics),
+    EXPECT_EQ(engine->EvictToStore(store, engine->GetGraphSize(),
+                                   NodeKey{~0ull}, evict_metrics),
               2u);
   }
 }
@@ -1070,13 +1057,13 @@ TEST(Lc5SearchTest, SavedGraphRestoresWithStatisticsInFreshGraph) {
   ControlledBackend backend;
   const auto root = Origin();
   auto saved_engine = MakeTestEngine();
-  auto& saved_store = InstallStore<RecordingStore>(*saved_engine);
+  RecordingStore saved_store;
   {
     RecordingResponder responder;
     SearchSession session(saved_engine.get(), &backend, &responder,
                           TestSettings(), TestTimeManagement(), root,
                           GoParams{.nodes = 3},
-                          std::chrono::steady_clock::now());
+                          std::chrono::steady_clock::now(), 0, &saved_store);
     session.Start();
     session.Wait();
     ExpectDrained(session);
@@ -1086,14 +1073,14 @@ TEST(Lc5SearchTest, SavedGraphRestoresWithStatisticsInFreshGraph) {
   ASSERT_EQ(saved.visits, 3u);
   const size_t saved_size = saved_engine->GetGraphSize();
   Metrics evict_metrics;
-  ASSERT_EQ(
-      saved_engine->EvictToStore(saved_size, NodeKey{~0ull}, evict_metrics),
-      saved_size);
+  ASSERT_EQ(saved_engine->EvictToStore(saved_store, saved_size, NodeKey{~0ull},
+                                       evict_metrics),
+            saved_size);
 
   // A fresh graph restores the root with its statistics instead of
   // evaluating it, and the new visit goes below it.
   auto engine = MakeTestEngine();
-  auto& store = InstallStore<RecordingStore>(*engine);
+  RecordingStore store;
   store.entries = saved_store.entries;
   EXPECT_EQ(store.entries.size(), saved_size);
   const size_t evaluated = backend.inputs.load();
@@ -1101,7 +1088,7 @@ TEST(Lc5SearchTest, SavedGraphRestoresWithStatisticsInFreshGraph) {
   RecordingResponder responder;
   SearchSession session(engine.get(), &backend, &responder, TestSettings(),
                         TestTimeManagement(), root, GoParams{.nodes = 1},
-                        std::chrono::steady_clock::now());
+                        std::chrono::steady_clock::now(), 0, &store);
   session.Start();
   session.Wait();
   ExpectDrained(session);
@@ -1160,13 +1147,13 @@ TEST(Lc5SearchTest, CollectionFlushesWhileAnotherWorkerIsBlockedInStore) {
     // First load misses; the other worker's load remains executing. With a
     // positive delay it prevents dependency-starvation detection, so the
     // collector must actually time out. Zero must flush without that timer.
-    auto& store = InstallStore<BlockingStore>(*engine, 2, false);
+    BlockingStore store(2, false);
     ControlledBackend backend(ControlledBackend::Cache::kNone, true);
     RecordingResponder responder;
     const auto root = Origin();
     const auto moves = root.history.Last().GetBoard().GenerateLegalMoves();
-    engine->CompleteMaterialization(
-        root.key, {.moves = {moves[0], moves[1]}, .priors = {0.5f, 0.5f}});
+    engine->InsertNode(root.key,
+                       {.moves = {moves[0], moves[1]}, .priors = {0.5f, 0.5f}});
     auto first = root;
     first.history.Append(moves[0]);
     first.key = MakeNodeKey(first.history, 7);
@@ -1177,7 +1164,7 @@ TEST(Lc5SearchTest, CollectionFlushesWhileAnotherWorkerIsBlockedInStore) {
     settings.max_batch_delay_ms = delay;
     SearchSession session(engine.get(), &backend, &responder, settings,
                           TestTimeManagement(), root, GoParams{.nodes = 2},
-                          std::chrono::steady_clock::now());
+                          std::chrono::steady_clock::now(), 0, &store);
     ASSERT_TRUE(SearchSessionTestPeer::AdmitVisit(session, first));
     ASSERT_TRUE(SearchSessionTestPeer::AdmitVisit(session, second));
     session.Start();
@@ -1216,7 +1203,7 @@ TEST(Lc5SearchTest, CollectionFlushesWhileAnotherWorkerIsBlockedInStore) {
 
 TEST(Lc5SearchTest, PositiveDelayCollectsAnotherWorkersStoreMissIntoSameBatch) {
   auto engine = MakeTestEngine();
-  auto& store = InstallStore<BlockingStore>(*engine, 2, false);
+  BlockingStore store(2, false);
   ControlledBackend backend(ControlledBackend::Cache::kNone, true);
   RecordingResponder responder;
   const auto root = Origin();
@@ -1228,7 +1215,7 @@ TEST(Lc5SearchTest, PositiveDelayCollectsAnotherWorkersStoreMissIntoSameBatch) {
   settings.max_batch_delay_ms = 60000;
   SearchSession session(engine.get(), &backend, &responder, settings,
                         TestTimeManagement(), root, GoParams{.nodes = 2},
-                        std::chrono::steady_clock::now());
+                        std::chrono::steady_clock::now(), 0, &store);
   ASSERT_TRUE(SearchSessionTestPeer::AdmitVisit(session, root));
   ASSERT_TRUE(SearchSessionTestPeer::AdmitVisit(session, other));
   session.Start();
@@ -1275,7 +1262,7 @@ TEST(Lc5SearchTest, MultiworkerMixedCacheResultsRespectBatchAndItemLimits) {
       const auto root = Origin();
       const auto moves = root.history.Last().GetBoard().GenerateLegalMoves();
       ASSERT_EQ(moves.size(), 20u);
-      engine->CompleteMaterialization(
+      engine->InsertNode(
           root.key, {.moves = {moves[0], moves[1]}, .priors = {0.5f, 0.5f}});
       auto settings = TestSettings(4, test.capacity);
       settings.eval_threads = test.evaluators;
@@ -1364,35 +1351,35 @@ TEST(Lc5SearchTest, BlockedStoreLoadsDrainAfterStopOrAbort) {
       SCOPED_TRACE(hit);
       SCOPED_TRACE(abort);
       auto engine = MakeTestEngine();
-      auto& store = InstallStore<BlockingStore>(*engine);
+      BlockingStore store;
       ControlledBackend backend(ControlledBackend::Cache::kAll);
       RecordingResponder responder;
       const auto root = Origin();
       const auto move = root.history.Last().GetBoard().GenerateLegalMoves()[0];
-      engine->CompleteMaterialization(root.key,
-                                      {.moves = {move}, .priors = {1.0f}});
+      engine->InsertNode(root.key, {.moves = {move}, .priors = {1.0f}});
       auto child = root;
       child.history.Append(move);
       child.key = MakeNodeKey(child.history, 7);
       if (hit) {
         auto donor = MakeTestEngine();
-        auto& donor_store = InstallStore<RecordingStore>(*donor);
+        RecordingStore donor_store;
         auto legal = child.history.Last().GetBoard().GenerateLegalMoves();
         absl::c_sort(
             legal, [](Move a, Move b) { return a.raw_data() < b.raw_data(); });
-        donor->CompleteMaterialization(
+        donor->InsertNode(
             child.key,
             {.leaf = {.q = 0.75f, .d = 0.25f, .m = 7.0f},
              .moves = {legal.begin(), legal.end()},
              .priors = std::vector<float>(legal.size(), 1.0f / legal.size())});
         Metrics evict_metrics;
-        ASSERT_EQ(donor->EvictToStore(1, root.key, evict_metrics), 1u);
+        ASSERT_EQ(donor->EvictToStore(donor_store, 1, root.key, evict_metrics),
+                  1u);
         store.recording.entries = donor_store.entries;
       }
       SearchSession session(engine.get(), &backend, &responder, TestSettings(),
                             TestTimeManagement(), root,
                             GoParams{.nodes = 4, .infinite = true},
-                            std::chrono::steady_clock::now());
+                            std::chrono::steady_clock::now(), 0, &store);
       for (int i = 0; i < 4; ++i)
         ASSERT_TRUE(SearchSessionTestPeer::AdmitVisit(session, root));
       session.Start();
@@ -1476,8 +1463,7 @@ TEST(Lc5SearchTest, QueuedBacklogCannotComputeAgainAfterStop) {
     RecordingResponder responder;
     const auto root = Origin();
     const auto moves = root.history.Last().GetBoard().GenerateLegalMoves();
-    engine->CompleteMaterialization(root.key,
-                                    {.moves = {moves[0]}, .priors = {1.0f}});
+    engine->InsertNode(root.key, {.moves = {moves[0]}, .priors = {1.0f}});
     auto settings = TestSettings(4, 20);
     settings.eval_threads = evaluators;
     SearchSession session(engine.get(), &backend, &responder, settings,
@@ -1518,10 +1504,9 @@ TEST(Lc5SearchTest, AuthorizedEvaluationsBackUpToRootAfterStop) {
   auto legal = root.history.Last().GetBoard().GenerateLegalMoves();
   absl::c_sort(legal,
                [](Move a, Move b) { return a.raw_data() < b.raw_data(); });
-  engine->CompleteMaterialization(
-      root.key,
-      {.moves = {legal.begin(), legal.end()},
-       .priors = std::vector<float>(legal.size(), 1.0f / legal.size())});
+  engine->InsertNode(root.key, {.moves = {legal.begin(), legal.end()},
+                                .priors = std::vector<float>(
+                                    legal.size(), 1.0f / legal.size())});
   SearchSession session(engine.get(), &backend, &responder, TestSettings(4, 20),
                         TestTimeManagement(), root, GoParams{.nodes = 20},
                         std::chrono::steady_clock::now());
@@ -1557,8 +1542,7 @@ TEST(Lc5SearchTest, StopDuringAddInputKeepsOnlyImmediateResults) {
   RecordingResponder responder;
   const auto root = Origin();
   const auto moves = root.history.Last().GetBoard().GenerateLegalMoves();
-  engine->CompleteMaterialization(root.key,
-                                  {.moves = {moves[0]}, .priors = {1.0f}});
+  engine->InsertNode(root.key, {.moves = {moves[0]}, .priors = {1.0f}});
   auto settings = TestSettings(1, 4);
   settings.minibatch_size = 8;
   SearchSession session(engine.get(), &backend, &responder, settings,
@@ -1600,8 +1584,7 @@ TEST(Lc5SearchTest, NonfittingJobStaysQueuedAndIsCancelledAfterStop) {
   RecordingResponder responder;
   const auto root = Origin();
   const auto moves = root.history.Last().GetBoard().GenerateLegalMoves();
-  engine->CompleteMaterialization(root.key,
-                                  {.moves = {moves[0]}, .priors = {1.0f}});
+  engine->InsertNode(root.key, {.moves = {moves[0]}, .priors = {1.0f}});
   auto settings = TestSettings(1, 6);
   settings.minibatch_size = 5;
   SearchSession session(engine.get(), &backend, &responder, settings,
@@ -1653,19 +1636,19 @@ TEST(Lc5SearchTest, AbortOverridesRepeatedStopBeforeCommitment) {
 
 TEST(Lc5SearchTest, BlockedEvictionDoesNotDelayPartialBatch) {
   auto engine = MakeTestEngine();
-  auto& store = InstallStore<BlockingStore>(*engine);
+  BlockingStore store;
   ControlledBackend backend(ControlledBackend::Cache::kNone, true);
   RecordingResponder responder;
   const auto root = Origin();
   const auto legal = root.history.Last().GetBoard().GenerateLegalMoves();
   // As in RespondsBeforeBlockedEvictionDrains: the sibling is evicted while
   // the one visit evaluates the first edge's child.
-  engine->CompleteMaterialization(
-      root.key, {.moves = {legal[0], legal[1]}, .priors = {0.9f, 0.1f}});
+  engine->InsertNode(root.key,
+                     {.moves = {legal[0], legal[1]}, .priors = {0.9f, 0.1f}});
   auto sibling = root;
   sibling.history.Append(legal[1]);
   sibling.key = MakeNodeKey(sibling.history, 7);
-  engine->CompleteMaterialization(
+  engine->InsertNode(
       sibling.key,
       {.leaf = {.q = 0.5f, .d = 0.0f, .m = 0.0f}, .moves = {}, .priors = {}});
   auto settings = TestSettings(1, 1);
@@ -1675,7 +1658,7 @@ TEST(Lc5SearchTest, BlockedEvictionDoesNotDelayPartialBatch) {
   settings.max_batch_delay_ms = 60'000;
   SearchSession session(engine.get(), &backend, &responder, settings,
                         TestTimeManagement(), root, GoParams{.nodes = 1},
-                        std::chrono::steady_clock::now());
+                        std::chrono::steady_clock::now(), 0, &store);
   session.Start();
   const bool persisting = store.persist.WaitForArrival();
   store.load.Release();
@@ -1694,19 +1677,19 @@ TEST(Lc5SearchTest, BlockedEvictionDoesNotDelayPartialBatch) {
 
 TEST(Lc5SearchTest, RespondsBeforeBlockedEvictionDrains) {
   auto engine = MakeTestEngine();
-  auto& store = InstallStore<BlockingStore>(*engine, 0);
+  BlockingStore store(0);
   ControlledBackend backend(ControlledBackend::Cache::kNone, true);
   RecordingResponder responder;
   const auto root = Origin();
   const auto legal = root.history.Last().GetBoard().GenerateLegalMoves();
   // The one visit takes the first edge and blocks in the backend; the
   // sibling below the second edge is the node to evict.
-  engine->CompleteMaterialization(
-      root.key, {.moves = {legal[0], legal[1]}, .priors = {0.9f, 0.1f}});
+  engine->InsertNode(root.key,
+                     {.moves = {legal[0], legal[1]}, .priors = {0.9f, 0.1f}});
   auto sibling = root;
   sibling.history.Append(legal[1]);
   sibling.key = MakeNodeKey(sibling.history, 7);
-  engine->CompleteMaterialization(
+  engine->InsertNode(
       sibling.key,
       {.leaf = {.q = 0.5f, .d = 0.0f, .m = 0.0f}, .moves = {}, .priors = {}});
   auto settings = TestSettings(1, 1);
@@ -1716,7 +1699,7 @@ TEST(Lc5SearchTest, RespondsBeforeBlockedEvictionDrains) {
   settings.eval_threads = 2;
   SearchSession session(engine.get(), &backend, &responder, settings,
                         TestTimeManagement(), root, GoParams{.nodes = 1},
-                        std::chrono::steady_clock::now());
+                        std::chrono::steady_clock::now(), 0, &store);
   session.Start();
   const bool persisting = store.persist.WaitForArrival();
   const bool computing = backend.WaitForCompute();
@@ -1742,7 +1725,7 @@ TEST(Lc5SearchTest, EvictionKeepsGraphSmallAndLosesNoVisits) {
   for (const int threads : {1, 3}) {
     SCOPED_TRACE(threads);
     auto engine = MakeTestEngine();
-    auto& store = InstallStore<MemoryNodeStore>(*engine);
+    MemoryNodeStore store;
     ControlledBackend backend;
     RecordingResponder responder;
     const auto root = Origin();
@@ -1750,7 +1733,7 @@ TEST(Lc5SearchTest, EvictionKeepsGraphSmallAndLosesNoVisits) {
     settings.graph_node_limit = 32;
     SearchSession session(engine.get(), &backend, &responder, settings,
                           TestTimeManagement(), root, GoParams{.nodes = 3000},
-                          std::chrono::steady_clock::now());
+                          std::chrono::steady_clock::now(), 0, &store);
     session.Start();
     session.Wait();
     ExpectDrained(session);
@@ -1900,8 +1883,7 @@ TEST(Lc5SearchTest, ThinkingInfoEmittedOnDepthSeldepthAndBestMoveChanges) {
   // Equal priors break ties to m0 first, and keep m1 ahead once m0 gets one bad
   // evaluation instead of m0's higher prior reclaiming the lead before the
   // 10ms controller poll.
-  engine->CompleteMaterialization(root.key,
-                                  {.moves = {m0, m1}, .priors = {0.5f, 0.5f}});
+  engine->InsertNode(root.key, {.moves = {m0, m1}, .priors = {0.5f, 0.5f}});
 
   // Pause at input 2 before Fill() so visit 1's backup is reported first, then
   // switch q so visit 2 flips the root's best move well before the 1s timer.

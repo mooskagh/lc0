@@ -59,6 +59,7 @@ class VisitWorker {
   // What a visit worker shares with the rest of the session.
   struct Context {
     VisitEngine& engine;
+    const NodeStore* store = nullptr;
     const Settings::Resolved& settings;
     const VisitOrigin& root;
     VisitPool& visits;
@@ -119,8 +120,7 @@ class VisitWorker {
 
   // Visit steps.
   void AdvanceVisit(VisitId id);
-  void ResumeVisit(const VisitWakeup& wakeup);
-  void BackupVisit(Visit& visit);
+  void HandleWakeup(const VisitWakeup& wakeup);
   void CancelVisit(Visit& visit);
   void FinishVisit(Visit& visit, bool completed);
 

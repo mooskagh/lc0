@@ -34,7 +34,6 @@
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
-#include <memory>
 #include <optional>
 #include <span>
 #include <string_view>
@@ -61,41 +60,32 @@ class PolicyEngine final : public VisitEngine {
   }
   void Clear() override {
     graph_.Clear();
-    if (store_) store_->Clear();
     absl::MutexLock lock(evict_mutex_);
     evict_cursor_ = {};
   }
 
-  DescendResult DescendVisit(Visit& visit, Metrics& metrics) override;
+  DescendResult DescendVisit(Visit& visit, Metrics& metrics,
+                             bool reselect_parent = false) override;
   void BackupVisit(const Visit& visit, Metrics& metrics) override;
+  void BackupLeaf(Visit& visit, const MaterializedLeaf& leaf,
+                  Metrics& metrics) override;
   void CancelVisit(const Visit& visit) override;
-  ResumeAction ResumeVisit(Visit& visit, Metrics& metrics) override;
   void FillThinkingInfo(const VisitOrigin& root,
                         ThinkingInfo& info) const override;
   RootStats GetRootStats(NodeKey root) const override;
 
+  size_t GetGraphSize() const override { return graph_.Size(); }
   bool ContainsNode(NodeKey key) const override {
     return graph_.ContainsNode(key);
   }
-  bool CompleteMaterialization(NodeKey key, const NodeEval& eval) override {
+  bool InsertNode(NodeKey key, const NodeEval& eval) override {
     return graph_.InsertNode(key, eval);
   }
-  size_t GetGraphSize() const override { return graph_.Size(); }
-
-  void SetStore(std::unique_ptr<NodeStore> store) override {
-    store_ = std::move(store);
-  }
-  bool HasStore() const override { return store_ != nullptr; }
-  std::vector<std::optional<std::vector<uint8_t>>> ReadFromStore(
-      std::span<const NodeKey> keys) override {
-    assert(store_);
-    return store_->LoadBatch(keys);
-  }
-  bool RestoreFromRecord(NodeKey key,
-                         std::span<const uint8_t> record) override {
+  bool RestoreNode(NodeKey key, std::span<const uint8_t> record) override {
     return graph_.InsertNode(key, DeserializeNode<P>(record));
   }
-  size_t EvictToStore(size_t max, NodeKey keep, Metrics& metrics) override;
+  size_t EvictToStore(NodeStore& store, size_t max, NodeKey keep,
+                      Metrics& metrics) override;
 
  private:
   static constexpr size_t kMaxPvLength = 256;
@@ -105,14 +95,13 @@ class PolicyEngine final : public VisitEngine {
     return visit.path.size() > visit.origin.backup_prefix.size() + 1;
   }
 
-  // Follows `move` from the current node; returns kBackup if that reaches an
-  // in-search two-fold repetition (setting `visit.result`), else kDescend.
-  ResumeAction FollowEdge(Visit& visit, Move move, Metrics& metrics);
+  // Follows `move` from the current node; returns true if that reaches an
+  // in-search two-fold repetition (populating `visit.leaf`), else false.
+  bool FollowEdge(Visit& visit, Move move, Metrics& metrics);
 
   GameGraph<P> graph_;
   typename P::Params params_{};
   int history_key_length_ = 7;  // Preceding positions hashed into a NodeKey.
-  std::unique_ptr<NodeStore> store_;
   absl::Mutex evict_mutex_;
   // Rolling cursor so eviction scans spread across all shards.
   typename GameGraph<P>::EvictCursor evict_cursor_
@@ -121,7 +110,25 @@ class PolicyEngine final : public VisitEngine {
 
 template <typename P>
 VisitEngine::DescendResult PolicyEngine<P>::DescendVisit(Visit& visit,
-                                                         Metrics& metrics) {
+                                                         Metrics& metrics,
+                                                         bool reselect_parent) {
+  assert(!visit.leaf.has_value());
+  // At the origin there is no parent edge to reselect.
+  if (reselect_parent && IsBelowOrigin(visit)) {
+    const PathStep& parent = visit.path[visit.path.size() - 2];
+    // The leaf's owner has already backed up, so the parent edge holds its
+    // value.
+    const Move reselected = graph_.ReselectAndReserveEdge(
+        parent.key, *parent.selected_move, params_);
+    if (reselected != *parent.selected_move) {
+      metrics.visits_reselected.fetch_add(1);
+      visit.path.pop_back();
+      visit.history.Pop();
+      if (FollowEdge(visit, reselected, metrics)) {
+        return DescendResult::kValuedLeaf;
+      }
+    }
+  }
   for (;;) {
     if (visit.path.empty() || visit.path.back().key != visit.current_key) {
       visit.path.push_back({.key = visit.current_key});
@@ -137,19 +144,18 @@ VisitEngine::DescendResult PolicyEngine<P>::DescendVisit(Visit& visit,
       case SelectResult::kNodeMissing:
         return DescendResult::kUnmaterializedLeaf;
       case SelectResult::kNodeTerminal:
-        visit.result = TerminalValue(selection.terminal);
-        visit.result_exact = IsExact(selection.terminal);
+        visit.leaf = {.value = TerminalValue(selection.terminal),
+                      .exact = IsExact(selection.terminal)};
         metrics.terminal_visits.fetch_add(1);
         return DescendResult::kValuedLeaf;
       case SelectResult::kNodeProven:
-        visit.result = selection.value;
-        visit.result_exact = true;
+        visit.leaf = {.value = selection.value, .exact = true};
         metrics.proven_visits.fetch_add(1);
         return DescendResult::kValuedLeaf;
       case SelectResult::kEdgeSelected:
         break;
     }
-    if (FollowEdge(visit, selection.move, metrics) == ResumeAction::kBackup) {
+    if (FollowEdge(visit, selection.move, metrics)) {
       return DescendResult::kValuedLeaf;
     }
   }
@@ -157,8 +163,10 @@ VisitEngine::DescendResult PolicyEngine<P>::DescendVisit(Visit& visit,
 
 template <typename P>
 void PolicyEngine<P>::BackupVisit(const Visit& visit, Metrics& metrics) {
+  assert(visit.leaf.has_value());
   assert(visit.path.empty() || !visit.path.back().selected_move);
-  auto backup = P::MakeLeafBackup(visit.result, visit.result_exact);
+  RaiseHighWater(metrics.max_depth, visit.path.size());
+  auto backup = P::MakeLeafBackup(visit.leaf->value, visit.leaf->exact);
   for (auto it = visit.path.rbegin(); it != visit.path.rend(); ++it) {
     // Skip repetition leaves and leaves already counted at installation.
     if (!it->update_node) {
@@ -173,26 +181,24 @@ void PolicyEngine<P>::BackupVisit(const Visit& visit, Metrics& metrics) {
 }
 
 template <typename P>
-void PolicyEngine<P>::CancelVisit(const Visit& visit) {
-  for (const PathStep& step : visit.path) {
-    if (step.selected_move) graph_.ReleaseEdge(step.key, *step.selected_move);
+void PolicyEngine<P>::BackupLeaf(Visit& visit, const MaterializedLeaf& leaf,
+                                 Metrics& metrics) {
+  assert(!visit.leaf.has_value());
+  assert(!visit.path.empty() && !visit.path.back().selected_move);
+  visit.path.back().update_node = leaf.count_at_leaf;
+  visit.leaf = {.value = leaf.value, .exact = IsExact(leaf.terminal)};
+  if (leaf.terminal != TerminalKind::kNonTerminal) {
+    metrics.terminal_visits.fetch_add(1);
   }
+  BackupVisit(visit, metrics);
 }
 
 template <typename P>
-VisitEngine::ResumeAction PolicyEngine<P>::ResumeVisit(Visit& visit,
-                                                       Metrics& metrics) {
-  // At the origin there is no parent edge to reselect.
-  if (!IsBelowOrigin(visit)) return ResumeAction::kDescend;
-  const PathStep& parent = visit.path[visit.path.size() - 2];
-  // The leaf's owner has already backed up, so the parent edge holds its value.
-  const Move reselected =
-      graph_.ReselectAndReserveEdge(parent.key, *parent.selected_move, params_);
-  if (reselected == *parent.selected_move) return ResumeAction::kDescend;
-  metrics.visits_reselected.fetch_add(1);
-  visit.path.pop_back();
-  visit.history.Pop();
-  return FollowEdge(visit, reselected, metrics);
+void PolicyEngine<P>::CancelVisit(const Visit& visit) {
+  assert(!visit.leaf.has_value());
+  for (const PathStep& step : visit.path) {
+    if (step.selected_move) graph_.ReleaseEdge(step.key, *step.selected_move);
+  }
 }
 
 template <typename P>
@@ -242,9 +248,8 @@ RootStats PolicyEngine<P>::GetRootStats(NodeKey root) const {
 }
 
 template <typename P>
-size_t PolicyEngine<P>::EvictToStore(size_t max, NodeKey keep,
+size_t PolicyEngine<P>::EvictToStore(NodeStore& store, size_t max, NodeKey keep,
                                      Metrics& metrics) {
-  assert(store_);
   const size_t size = graph_.Size();
   if (size == 0 || max == 0) return 0;
   const double fraction =
@@ -264,7 +269,7 @@ size_t PolicyEngine<P>::EvictToStore(size_t max, NodeKey keep,
   for (const auto& [key, node] : candidates) {
     records.push_back({key, SerializeNode(node)});
   }
-  store_->StoreBatch(records);
+  store.StoreBatch(records);
   metrics.node_store_evict_batches.fetch_add(1);
 
   // Modified nodes stay in the graph; stale store records are harmless because
@@ -279,8 +284,7 @@ size_t PolicyEngine<P>::EvictToStore(size_t max, NodeKey keep,
 }
 
 template <typename P>
-VisitEngine::ResumeAction PolicyEngine<P>::FollowEdge(Visit& visit, Move move,
-                                                      Metrics& metrics) {
+bool PolicyEngine<P>::FollowEdge(Visit& visit, Move move, Metrics& metrics) {
   visit.path.back().selected_move = move;
   visit.history.Append(move);
   visit.current_key = MakeNodeKey(visit.history, history_key_length_);
@@ -292,13 +296,13 @@ VisitEngine::ResumeAction PolicyEngine<P>::FollowEdge(Visit& visit, Move move,
       search_plies >= pos.GetPliesSincePrevRepetition()) {
     visit.path.push_back({.key = visit.current_key});
     RaiseHighWater(metrics.max_selected_depth, visit.path.size());
-    visit.result = TerminalValue(TerminalKind::kRepetition);
-    visit.result_exact = false;
+    visit.leaf = {.value = TerminalValue(TerminalKind::kRepetition),
+                  .exact = false};
     metrics.terminal_visits.fetch_add(1);
     metrics.two_fold_visits.fetch_add(1);
-    return ResumeAction::kBackup;
+    return true;
   }
-  return ResumeAction::kDescend;
+  return false;
 }
 
 }  // namespace lczero::lc5

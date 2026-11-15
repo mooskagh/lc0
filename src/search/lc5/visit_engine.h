@@ -29,11 +29,8 @@
 
 #include <cstddef>
 #include <cstdint>
-#include <memory>
-#include <optional>
 #include <span>
 #include <string_view>
-#include <vector>
 
 #include "chess/callbacks.h"
 #include "neural/backend.h"
@@ -59,7 +56,7 @@ struct RootStats {
 
 // The search-algorithm side of a visit: everything that reads or writes node
 // and edge statistics, and owns the graph. SearchSession owns visits,
-// materializations, batching and threads, and calls only this. Implementations
+// materializations, batching, store threads, and evaluators. Implementations
 // must be thread-safe; each call locks at most one graph shard at a time.
 class VisitEngine {
  public:
@@ -71,51 +68,48 @@ class VisitEngine {
   // while no search runs.
   virtual void Configure(const OptionsDict& options,
                          const BackendAttributes& backend) = 0;
-  // Drops the whole graph and its store; called only while no search runs.
+  // Drops the whole graph; called only while no search runs.
   virtual void Clear() = 0;
 
-  // Selects and reserves edges down to a node to materialize
-  // (kUnmaterializedLeaf) or a leaf whose value is in visit.result
-  // (kValuedLeaf).
+  // Visit lifecycle:
+  // - DescendVisit steps down the graph until it reaches a valued leaf
+  //   (kValuedLeaf -> BackupVisit) or a missing node (kUnmaterializedLeaf ->
+  //   BackupLeaf, CancelVisit, or another DescendVisit once the node is in the
+  //   graph).
+  // - With `reselect_parent` set (a waiter waking after the owner backed up a
+  //   newly evaluated leaf), DescendVisit first re-runs selection at the parent
+  //   edge before descending.
   enum class DescendResult { kUnmaterializedLeaf, kValuedLeaf };
-  virtual DescendResult DescendVisit(Visit& visit, Metrics& metrics) = 0;
-  // Backs visit.result up visit.path.
+  virtual DescendResult DescendVisit(Visit& visit, Metrics& metrics,
+                                     bool reselect_parent = false) = 0;
+  // Backs up a visit that reached kValuedLeaf and releases its reservations.
   virtual void BackupVisit(const Visit& visit, Metrics& metrics) = 0;
+  // Backs up `leaf` for a visit paused at kUnmaterializedLeaf and releases its
+  // reservations.
+  virtual void BackupLeaf(Visit& visit, const MaterializedLeaf& leaf,
+                          Metrics& metrics) = 0;
   // Releases every edge reservation on visit.path without committing a visit.
+  // Only valid before the visit holds a leaf value.
   virtual void CancelVisit(const Visit& visit) = 0;
-  // A waiter's node finished materializing and its owner has backed up.
-  // Descends on (kDescend, maybe from another edge at the parent) or backs up
-  // visit.result (kBackup: a repetition).
-  enum class ResumeAction { kDescend, kBackup };
-  virtual ResumeAction ResumeVisit(Visit& visit, Metrics& metrics) = 0;
+
   // Fills the score, WDL and PV of `info`; the caller fills the rest.
   virtual void FillThinkingInfo(const VisitOrigin& root,
                                 ThinkingInfo& info) const = 0;
   virtual RootStats GetRootStats(NodeKey root) const = 0;
 
-  // Node lifecycle for the materialization machinery.
-  virtual bool ContainsNode(NodeKey key) const = 0;
-  // Materializes the node from `eval` and counts `eval.leaf` as its first
-  // visit; returns whether `eval` was installed.
-  virtual bool CompleteMaterialization(NodeKey key, const NodeEval& eval) = 0;
+  // Graph node lifecycle and cold-tier serialization.
   virtual size_t GetGraphSize() const = 0;
-
-  // The NodeStore, the graph's cold tier: nodes evicted from the graph, kept
-  // with their statistics. Set only while no search runs; Clear() clears it.
-  virtual void SetStore(std::unique_ptr<NodeStore> store) = 0;
-  virtual bool HasStore() const = 0;
-  // The stored records of `keys`, nullopt where there is none. Needs a store.
-  virtual std::vector<std::optional<std::vector<uint8_t>>> ReadFromStore(
-      std::span<const NodeKey> keys) = 0;
-  // Materializes the node from a stored record with its old statistics; returns
-  // whether the record was installed (false if it was rejected, in which case
-  // evaluate the node instead).
-  virtual bool RestoreFromRecord(NodeKey key,
-                                 std::span<const uint8_t> record) = 0;
-  // Moves up to `max` nodes from the graph to the store: fewest visits first,
-  // never `keep` or a node with a reserved edge; returns how many were evicted.
-  // Needs a store.
-  virtual size_t EvictToStore(size_t max, NodeKey keep, Metrics& metrics) = 0;
+  virtual bool ContainsNode(NodeKey key) const = 0;
+  // Installs a node from `eval` and counts `eval.leaf` as its first visit;
+  // returns false if the node was already in the graph.
+  virtual bool InsertNode(NodeKey key, const NodeEval& eval) = 0;
+  // Installs a node serialized by EvictToStore with its old statistics; returns
+  // false if rejected (already present), in which case evaluate it instead.
+  virtual bool RestoreNode(NodeKey key, std::span<const uint8_t> record) = 0;
+  // Moves up to `max` unreserved nodes (fewest visits first, never `keep`) from
+  // the graph to `store`; returns how many were evicted.
+  virtual size_t EvictToStore(NodeStore& store, size_t max, NodeKey keep,
+                              Metrics& metrics) = 0;
 };
 
 }  // namespace lczero::lc5

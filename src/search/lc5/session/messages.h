@@ -55,17 +55,16 @@ using MaterializationId = uint64_t;
 // waiting on node materialization.
 struct VisitWakeup {
   enum class Kind : uint8_t {
-    kDescend,   // Materialization finished; descend below the node.
-    kRestored,  // Node restored from the store; descend without ResumeVisit.
-    kBackup,    // Materialization finished; back up `value`.
-    kCancel,    // Materialization cancelled on stop; cancel the visit.
+    kReselectAndDescend,  // Sibling evaluated leaf; reselect at parent,
+                          // descend.
+    kRestored,            // Node restored from the store; descend below it.
+    kBackup,              // Materialization finished; back up `leaf`.
+    kCancel,  // Materialization cancelled on stop; cancel the visit.
   };
   VisitId id;     // The visit to continue.
   size_t worker;  // Owning visit worker (the only thread that may mutate it).
-  Kind kind = Kind::kDescend;
-  VisitValue value{};     // The leaf value, for kBackup.
-  bool exact = false;     // `value` is an exact terminal value, for kBackup.
-  bool terminal = false;  // The leaf is terminal; only counted in metrics.
+  Kind kind = Kind::kReselectAndDescend;
+  MaterializedLeaf leaf{};  // For kBackup.
 };
 
 // Request and result data for populating a single graph node, either from the

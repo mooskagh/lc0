@@ -63,19 +63,44 @@ struct VisitOrigin {
 enum class VisitState : uint8_t {
   kFree,
   kReadyDescend,
+  kReadyReselect,
   kWaitingMaterialization,
 };
 
+// Leaf value stored on a Visit once valued for backup.
+struct LeafValue {
+  VisitValue value{};
+  // `value` is exact: a terminal other than a repetition, or a proven node.
+  bool exact = false;
+};
+
+// Outcome supplied to BackupLeaf for a visit paused at kUnmaterializedLeaf.
+struct MaterializedLeaf {
+  VisitValue value{};
+  TerminalKind terminal = TerminalKind::kNonTerminal;
+  // False when InsertNode already counted `value` as the leaf's first visit
+  // (the materialization owner); true for additional visits (terminal waiters).
+  bool count_at_leaf = false;
+};
+
 struct Visit {
+  static Visit FromOrigin(const VisitOrigin& origin, VisitId id = {}) {
+    return Visit{.id = id,
+                 .state = VisitState::kReadyDescend,
+                 .origin = origin,
+                 .history = origin.history,
+                 .current_key = origin.key,
+                 .path = origin.backup_prefix,
+                 .leaf = std::nullopt};
+  }
+
   VisitId id;
   VisitState state = VisitState::kFree;
   VisitOrigin origin;
   PositionHistory history;
   NodeKey current_key;
   std::vector<PathStep> path;
-  VisitValue result;
-  // `result` is exact: a terminal other than a repetition, or a proven node.
-  bool result_exact = false;
+  std::optional<LeafValue> leaf{};
 };
 
 }  // namespace lczero::lc5

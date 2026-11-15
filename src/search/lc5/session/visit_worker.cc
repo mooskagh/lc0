@@ -147,47 +147,24 @@ void VisitWorker::DeliverWakeup(const VisitWakeup& wakeup) {
       .push_back(wakeup);
 }
 
-void VisitWorker::ResumeVisit(const VisitWakeup& wakeup) {
+void VisitWorker::HandleWakeup(const VisitWakeup& wakeup) {
   // Each suspended visit waits on one materialization and is woken once.
   Visit& visit = context_.visits.Get(wakeup.id);
   assert(visit.state == VisitState::kWaitingMaterialization);
-  // On stop, only visits that already have a leaf value to back up may finish.
-  if (wakeup.kind == VisitWakeup::Kind::kCancel ||
-      (IsStopping() && (wakeup.kind == VisitWakeup::Kind::kDescend ||
-                        wakeup.kind == VisitWakeup::Kind::kRestored))) {
+  // Even on stop, visits that already have a leaf value to back up may finish.
+  if (wakeup.kind == VisitWakeup::Kind::kBackup) {
+    context_.engine.BackupLeaf(visit, wakeup.leaf, context_.metrics);
+    FinishVisit(visit, true);
+    return;
+  }
+  if (wakeup.kind == VisitWakeup::Kind::kCancel || IsStopping()) {
     CancelVisit(visit);
     return;
   }
-  visit.path.back().selected_move.reset();
-  if (wakeup.terminal) context_.metrics.terminal_visits.fetch_add(1);
-  switch (wakeup.kind) {
-    case VisitWakeup::Kind::kBackup:
-      visit.result = wakeup.value;
-      visit.result_exact = wakeup.exact;
-      BackupVisit(visit);
-      return;
-    case VisitWakeup::Kind::kRestored:
-      // Node restored from store with its prior stats; descend below it.
-      visit.state = VisitState::kReadyDescend;
-      context_.metrics.visits_resumed.fetch_add(1);
-      break;
-    case VisitWakeup::Kind::kDescend:
-      // Waiter on a newly-evaluated nonterminal leaf: reselect at the parent
-      // and either back up a repetition or continue descending.
-      switch (context_.engine.ResumeVisit(visit, context_.metrics)) {
-        case VisitEngine::ResumeAction::kBackup:
-          BackupVisit(visit);  // Reselected into 2-fold.
-          return;
-        case VisitEngine::ResumeAction::kDescend:
-          visit.state = VisitState::kReadyDescend;
-          context_.metrics.visits_resumed.fetch_add(1);
-          break;
-      }
-      break;
-    case VisitWakeup::Kind::kCancel:
-      assert(false);
-      break;
-  }
+  visit.state = wakeup.kind == VisitWakeup::Kind::kReselectAndDescend
+                    ? VisitState::kReadyReselect
+                    : VisitState::kReadyDescend;
+  context_.metrics.visits_resumed.fetch_add(1);
   ready_visits_.push_back(wakeup.id);  // Queue for next AdvanceVisit pass.
 }
 
@@ -240,9 +217,9 @@ void VisitWorker::ProcessInbox() {
     // Mark not drained while processing swapped-out inbox items.
     if (drained_.exchange(false)) notify_controller_ = true;
   }
-  for (const auto& wakeup : wakeups) ResumeVisit(wakeup);
+  for (const auto& wakeup : wakeups) HandleWakeup(wakeup);
   for (auto& job : completions) FinishJob(std::move(job));
-  for (const auto& wakeup : local_wakeups_) ResumeVisit(wakeup);
+  for (const auto& wakeup : local_wakeups_) HandleWakeup(wakeup);
   local_wakeups_.clear();
 }
 
@@ -266,29 +243,24 @@ bool VisitWorker::HasReadyWork() const {
 void VisitWorker::AdvanceVisit(VisitId id) {
   // Only this worker releases its visits, and never one that is ready.
   Visit& visit = context_.visits.Get(id);
-  if (IsStopping()) {
-    CancelVisit(visit);
-    return;
-  }
-  assert(visit.state == VisitState::kReadyDescend);
+  assert(visit.state == VisitState::kReadyDescend ||
+         visit.state == VisitState::kReadyReselect);
   for (;;) {
     if (IsStopping()) {
       CancelVisit(visit);
       return;
     }
-    if (context_.engine.DescendVisit(visit, context_.metrics) ==
+    const bool reselect_parent = visit.state == VisitState::kReadyReselect;
+    visit.state = VisitState::kReadyDescend;
+    if (context_.engine.DescendVisit(visit, context_.metrics,
+                                     reselect_parent) ==
         VisitEngine::DescendResult::kValuedLeaf) {
-      BackupVisit(visit);
+      context_.engine.BackupVisit(visit, context_.metrics);
+      FinishVisit(visit, true);
       return;
     }
     if (SuspendVisit(visit)) return;
   }
-}
-
-void VisitWorker::BackupVisit(Visit& visit) {
-  context_.engine.BackupVisit(visit, context_.metrics);
-  RaiseHighWater(context_.metrics.max_depth, visit.path.size());
-  FinishVisit(visit, true);
 }
 
 void VisitWorker::CancelVisit(Visit& visit) {
@@ -331,10 +303,6 @@ bool VisitWorker::SuspendVisit(Visit& visit) {
     RaiseHighWater(context_.metrics.maximum_waiters_per_materialization,
                    joined->waiters);
   }
-  // The owner's leaf is counted at install (update_node = false skips it on
-  // backup); waiters keep update_node = true in case they back up a terminal
-  // leaf.
-  visit.path.back().update_node = !owner;
   visit.state = VisitState::kWaitingMaterialization;
   context_.metrics.visits_suspended.fetch_add(1);
   if (owner) {
@@ -342,7 +310,7 @@ bool VisitWorker::SuspendVisit(Visit& visit) {
     Materialization materialization{
         .id = joined->id, .key = visit.current_key, .history = visit.history};
     // A stored node may hold statistics, even if terminal: look it up first.
-    if (context_.engine.HasStore()) {
+    if (context_.store) {
       queued_loads_.push_back(std::move(materialization));
     } else {
       PrepareMaterialization(std::move(materialization));
@@ -375,7 +343,7 @@ void VisitWorker::CompleteMaterialization(MaterializationId materialization_id,
   const auto waiters =
       context_.materializations.Close(materialization_id, [&](NodeKey key) {
         is_root = key == context_.root.key;
-        accepted = context_.engine.CompleteMaterialization(key, eval);
+        accepted = context_.engine.InsertNode(key, eval);
         return true;
       });
   if (is_root && accepted) notify_controller_ = true;
@@ -388,16 +356,19 @@ void VisitWorker::CompleteMaterialization(MaterializationId materialization_id,
   } else {
     context_.metrics.publications_rejected.fetch_add(1);
   }
-  // The owner backs up the new leaf value; waiters descend below the node
-  // unless it is terminal, in which case they also back up. A rejected
+  // The owner backs up the new leaf value; waiters reselect and descend unless
+  // the leaf is terminal, in which case they also back up. A rejected
   // publication resumes descending only.
   const bool terminal = accepted && eval.terminal != TerminalKind::kNonTerminal;
   const auto wake = [&](VisitWakeup wakeup, bool owner) {
-    wakeup.kind = accepted && (owner || terminal) ? VisitWakeup::Kind::kBackup
-                                                  : VisitWakeup::Kind::kDescend;
-    wakeup.value = eval.leaf;
-    wakeup.terminal = terminal;
-    wakeup.exact = accepted && IsExact(eval.terminal);
+    if (accepted && (owner || terminal)) {
+      wakeup.kind = VisitWakeup::Kind::kBackup;
+      wakeup.leaf = {.value = eval.leaf,
+                     .terminal = eval.terminal,
+                     .count_at_leaf = !owner};
+    } else {
+      wakeup.kind = VisitWakeup::Kind::kReselectAndDescend;
+    }
     DeliverWakeup(wakeup);
   };
   // Wake the owner first so ProcessInbox backs it up before any waiter resumes.
@@ -411,7 +382,7 @@ bool VisitWorker::RestoreMaterialization(MaterializationId materialization_id,
   const auto waiters =
       context_.materializations.Close(materialization_id, [&](NodeKey key) {
         is_root = key == context_.root.key;
-        return context_.engine.RestoreFromRecord(key, record);
+        return context_.engine.RestoreNode(key, record);
       });
   if (!waiters) return false;
   if (is_root) notify_controller_ = true;
@@ -457,7 +428,7 @@ void VisitWorker::CancelQueuedMaterializations() {
 void VisitWorker::MaybeRequestEviction() {
   // Wakes the controller once the graph outgrows its limit, so eviction keeps
   // up with fast searches between its periodic checks.
-  if (context_.engine.HasStore() && context_.settings.graph_node_limit > 0 &&
+  if (context_.store && context_.settings.graph_node_limit > 0 &&
       context_.engine.GetGraphSize() > context_.settings.graph_node_limit &&
       context_.controller_signal.RequestEviction()) {
     notify_controller_ = true;
@@ -494,7 +465,7 @@ void VisitWorker::SendJobs() {
     if (job->kind == AsyncJob::Kind::kEval) {
       context_.evaluator.Push(std::move(job));
     } else {
-      assert(context_.engine.HasStore());
+      assert(context_.store);
       context_.store_jobs.Push(std::move(job));
     }
   }

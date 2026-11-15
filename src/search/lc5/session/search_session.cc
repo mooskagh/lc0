@@ -87,8 +87,9 @@ SearchSession::SearchSession(VisitEngine* engine, Backend* backend,
                              TimeManager::Config time_management,
                              VisitOrigin root, GoParams go_params,
                              steady_clock::time_point start_time,
-                             int64_t saved_ms)
+                             int64_t saved_ms, NodeStore* store)
     : engine_(engine),
+      store_(store),
       backend_(backend),
       responder_(responder),
       settings_(settings),
@@ -110,6 +111,7 @@ SearchSession::SearchSession(VisitEngine* engine, Backend* backend,
                   .inboxes = inboxes_,
                   .jobs_in_flight = jobs_in_flight_}) {
   const VisitWorker::Context context{.engine = *engine_,
+                                     .store = store_,
                                      .settings = settings_,
                                      .root = root_,
                                      .visits = visit_pool_,
@@ -136,7 +138,7 @@ void SearchSession::Start() {
   if (limiter_.node_limit() == 0 || time_manager_.ShouldStop(start_time_)) {
     Stop();
   }
-  if (engine_->HasStore()) {
+  if (store_) {
     for (int i = 0; i < settings_.eval_threads; ++i) {
       store_threads_.emplace_back(&SearchSession::RunStoreWorker, this);
     }
@@ -330,10 +332,11 @@ void SearchSession::RunStoreWorker() {
 }
 
 void SearchSession::RunLoadJob(AsyncJob& job) {
+  assert(store_);
   std::vector<NodeKey> keys;
   for (const auto& materialization : job.materializations)
     keys.push_back(materialization.key);
-  auto loaded = engine_->ReadFromStore(keys);
+  auto loaded = store_->LoadBatch(keys);
   assert(loaded.size() == job.materializations.size());
   for (size_t i = 0; i < loaded.size(); ++i) {
     auto& materialization = job.materializations[i];
@@ -367,7 +370,8 @@ void SearchSession::SendEvictionJob() {
 }
 
 void SearchSession::RunEvictionJob(const EvictionJob& job) {
-  if (engine_->EvictToStore(job.count, root_.key, metrics_) == 0) {
+  assert(store_);
+  if (engine_->EvictToStore(*store_, job.count, root_.key, metrics_) == 0) {
     evicting_.store(false);
   }
   // The controller may queue the next round, or finish draining.

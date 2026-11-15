@@ -495,15 +495,6 @@ TEST(Lc5PuctTest, PoliciesShareThePuctOptions) {
   EXPECT_EQ(MakeVisitEngine("puct-dag")->GetName(), "puct-dag");
 }
 
-Visit MakeVisit(const VisitOrigin& origin) {
-  Visit visit;
-  visit.origin = origin;
-  visit.history = origin.history;
-  visit.current_key = origin.key;
-  visit.path = origin.backup_prefix;
-  return visit;
-}
-
 TEST(Lc5PuctTest, PuctAveragesWhileDagReplacesEdgeValue) {
   // Edge A gets 3 visits at +0.8 (child -0.8), then a 4th visit bringing +0.2
   // (child -0.2). With N = 4, sqrt(N) = 2: A scores q + 0.5 * 2 / 5 = q + 0.2
@@ -517,19 +508,17 @@ TEST(Lc5PuctTest, PuctAveragesWhileDagReplacesEdgeValue) {
 
   const auto run = [&](std::string_view name) {
     auto engine = MakeConfiguredEngine(name);
-    EXPECT_TRUE(
-        engine->CompleteMaterialization(root.key, {.leaf = {.q = 0.8f},
-                                                   .moves = {move_a, move_b},
-                                                   .priors = {0.5f, 0.3f}}));
+    EXPECT_TRUE(engine->InsertNode(root.key, {.leaf = {.q = 0.8f},
+                                              .moves = {move_a, move_b},
+                                              .priors = {0.5f, 0.3f}}));
     for (const float child_q : {-0.8f, -0.8f, -0.8f, -0.2f}) {
-      Visit visit = MakeVisit(root);
+      Visit visit = Visit::FromOrigin(root);
       EXPECT_EQ(engine->DescendVisit(visit, metrics),
                 VisitEngine::DescendResult::kUnmaterializedLeaf);
       EXPECT_EQ(visit.path.front().selected_move, move_a);
-      visit.result = {.q = child_q};
-      engine->BackupVisit(visit, metrics);
+      engine->BackupLeaf(visit, {.value = {.q = child_q}}, metrics);
     }
-    Visit next = MakeVisit(root);
+    Visit next = Visit::FromOrigin(root);
     EXPECT_EQ(engine->DescendVisit(next, metrics),
               VisitEngine::DescendResult::kUnmaterializedLeaf);
     const Move selected = *next.path.front().selected_move;
@@ -554,20 +543,19 @@ TEST(Lc5PuctTest, DagForwardsSharedChildMeanToParent) {
 
   const auto run = [&](std::string_view name) {
     auto engine = MakeConfiguredEngine(name);
-    EXPECT_TRUE(engine->CompleteMaterialization(
+    EXPECT_TRUE(engine->InsertNode(
         root.key, {.leaf = {.q = 0.0f}, .moves = {move_a}, .priors = {1.0f}}));
     // Child starts at -0.8 (which is +0.8 for root) via its own evaluation,
     // representing knowledge learned without traversing root's edge.
-    EXPECT_TRUE(engine->CompleteMaterialization(
+    EXPECT_TRUE(engine->InsertNode(
         child.key, {.leaf = {.q = -0.8f}, .moves = {reply}, .priors = {1.0f}}));
     // A visit from root goes through child to an unmaterialized grandchild
     // whose leaf sample is 0.0.
-    Visit visit = MakeVisit(root);
+    Visit visit = Visit::FromOrigin(root);
     EXPECT_EQ(engine->DescendVisit(visit, metrics),
               VisitEngine::DescendResult::kUnmaterializedLeaf);
     EXPECT_EQ(visit.path.size(), 3u);
-    visit.result = {.q = 0.0f};
-    engine->BackupVisit(visit, metrics);
+    engine->BackupLeaf(visit, {.value = {.q = 0.0f}}, metrics);
     ThinkingInfo info;
     engine->FillThinkingInfo(root, info);
     return info.score.value_or(0);
@@ -591,14 +579,14 @@ TEST(Lc5PuctTest, BothPoliciesProveWinFromCheckmateChild) {
   for (const std::string_view name : {"puct", "puct-dag"}) {
     SCOPED_TRACE(name);
     auto engine = MakeConfiguredEngine(name, /*sticky_endgames=*/true);
-    EXPECT_TRUE(engine->CompleteMaterialization(
+    EXPECT_TRUE(engine->InsertNode(
         root.key, {.moves = {move_a, move_b}, .priors = {0.5f, 0.5f}}));
-    EXPECT_TRUE(engine->CompleteMaterialization(
+    EXPECT_TRUE(engine->InsertNode(
         child.key, {.terminal = TerminalKind::kCheckmate,
                     .leaf = TerminalValue(TerminalKind::kCheckmate),
                     .moves = {},
                     .priors = {}}));
-    Visit visit = MakeVisit(root);
+    Visit visit = Visit::FromOrigin(root);
     EXPECT_EQ(engine->DescendVisit(visit, metrics),
               VisitEngine::DescendResult::kValuedLeaf);
     engine->BackupVisit(visit, metrics);
@@ -608,6 +596,74 @@ TEST(Lc5PuctTest, BothPoliciesProveWinFromCheckmateChild) {
     ThinkingInfo info;
     engine->FillThinkingInfo(root, info);
     EXPECT_EQ(info.mate, 1);
+  }
+}
+
+TEST(Lc5PuctTest, ReselectParentKeepsGoodEdgeOrSwitchesIntoTwoFold) {
+  // 1. Nf3 Nf6 2. Ng1 reaches `parent` (ply 3), where `move_rep` (Ng8) repeats
+  // startpos and `move_alt` (Na6) reaches an unmaterialized leaf. Note that
+  // graph moves are encoded from the side-to-move's perspective.
+  const VisitOrigin root = StartOrigin();
+  const Move w_nf3 = Move::White({kFileG, kRank1}, {kFileF, kRank3});
+  const Move b_nf6 = Move::White({kFileG, kRank1}, {kFileF, kRank3});
+  const Move w_ng1 = Move::White({kFileF, kRank3}, {kFileG, kRank1});
+  const Move move_rep = Move::White({kFileF, kRank3}, {kFileG, kRank1});
+  const Move move_alt = Move::White({kFileB, kRank1}, {kFileA, kRank3});
+
+  for (const bool alt_bad_for_parent : {false, true}) {
+    SCOPED_TRACE(alt_bad_for_parent);
+    auto engine = MakeConfiguredEngine("puct");
+    Metrics metrics;
+    PositionHistory h = root.history;
+    EXPECT_TRUE(engine->InsertNode(MakeNodeKey(h, 7),
+                                   {.moves = {w_nf3}, .priors = {1.0f}}));
+    h.Append(w_nf3);
+    EXPECT_TRUE(engine->InsertNode(MakeNodeKey(h, 7),
+                                   {.moves = {b_nf6}, .priors = {1.0f}}));
+    h.Append(b_nf6);
+    EXPECT_TRUE(engine->InsertNode(MakeNodeKey(h, 7),
+                                   {.moves = {w_ng1}, .priors = {1.0f}}));
+    h.Append(w_ng1);
+    EXPECT_TRUE(engine->InsertNode(
+        MakeNodeKey(h, 7),
+        {.moves = {move_alt, move_rep}, .priors = {0.8f, 0.2f}}));
+    h.Append(move_alt);
+    const NodeKey alt_key = MakeNodeKey(h, 7);
+    const Move alt_reply = h.Last().GetBoard().GenerateLegalMoves()[0];
+
+    // Both owner and waiter pick move_alt (0.8, then 0.8 / 2 = 0.4 > 0.2).
+    Visit owner = Visit::FromOrigin(root);
+    Visit waiter = Visit::FromOrigin(root);
+    ASSERT_EQ(engine->DescendVisit(owner, metrics),
+              VisitEngine::DescendResult::kUnmaterializedLeaf);
+    ASSERT_EQ(engine->DescendVisit(waiter, metrics),
+              VisitEngine::DescendResult::kUnmaterializedLeaf);
+    ASSERT_EQ(waiter.current_key, alt_key);
+
+    // Owner installs alt_key and backs up its leaf value.
+    const float child_q = alt_bad_for_parent ? 0.9f : -0.9f;
+    ASSERT_TRUE(engine->InsertNode(
+        alt_key,
+        {.leaf = {.q = child_q}, .moves = {alt_reply}, .priors = {1.0f}}));
+    engine->BackupLeaf(owner, {.value = {.q = child_q}}, metrics);
+
+    // Waiter resumes with parent reselection.
+    const auto res =
+        engine->DescendVisit(waiter, metrics, /*reselect_parent=*/true);
+    if (alt_bad_for_parent) {
+      // Switches to move_rep, which immediately hits a 2-fold repetition draw.
+      EXPECT_EQ(res, VisitEngine::DescendResult::kValuedLeaf);
+      EXPECT_EQ(metrics.visits_reselected.load(), 1u);
+      EXPECT_EQ(metrics.two_fold_visits.load(), 1u);
+      engine->BackupVisit(waiter, metrics);
+    } else {
+      // Keeps move_alt and descends through alt_key to its unmaterialized
+      // child.
+      EXPECT_EQ(res, VisitEngine::DescendResult::kUnmaterializedLeaf);
+      EXPECT_EQ(metrics.visits_reselected.load(), 0u);
+      EXPECT_EQ(waiter.path.size(), 6u);
+      engine->CancelVisit(waiter);
+    }
   }
 }
 

@@ -60,7 +60,7 @@ class SearchSession {
                 TimeManager::Config time_management, VisitOrigin root,
                 GoParams go_params,
                 std::chrono::steady_clock::time_point start_time,
-                int64_t saved_ms = 0);
+                int64_t saved_ms = 0, NodeStore* store = nullptr);
   ~SearchSession();
 
   void Start();  // Spawns the threads and returns; later calls do nothing.
@@ -94,7 +94,7 @@ class SearchSession {
   ThinkingInfo BuildThinkingInfo(bool final) const;
   // Whether the graph has a node limit to keep, by evicting to the store.
   bool HasNodeLimit() const {
-    return engine_->HasStore() && settings_.graph_node_limit > 0;
+    return store_ != nullptr && settings_.graph_node_limit > 0;
   }
 
   // Load jobs. A visit worker sends them; a store thread runs them and
@@ -107,6 +107,7 @@ class SearchSession {
 
   // Configuration, fixed for the session (constructor only).
   VisitEngine* const engine_;
+  NodeStore* const store_;
   Backend* const backend_;
   UciResponder* const responder_;
   const Settings::Resolved settings_;
