@@ -27,6 +27,8 @@
 
 #pragma once
 
+#include <absl/types/span.h>
+
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
@@ -135,7 +137,7 @@ class VisitWorker {
   // Publishes a node restored from the store; returns false, with the
   // materialization still open, if the record was rejected.
   bool RestoreMaterialization(MaterializationId materialization_id,
-                              std::span<const uint8_t> record);
+                              absl::Span<const uint8_t> record);
   void CancelMaterialization(MaterializationId materialization_id);
   void CancelQueuedMaterializations();
   void MaybeRequestEviction();

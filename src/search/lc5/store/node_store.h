@@ -27,9 +27,10 @@
 
 #pragma once
 
+#include <absl/types/span.h>
+
 #include <cstdint>
 #include <optional>
-#include <span>
 #include <vector>
 
 #include "search/lc5/graph/key.h"
@@ -37,10 +38,10 @@
 namespace lczero::lc5 {
 
 // A node's search state, serialized by the VisitEngine. The store does not
-// look inside it.
+// look inside it, and `record` only needs to outlive StoreBatch.
 struct StoredNode {
   NodeKey key;
-  std::vector<uint8_t> record;
+  absl::Span<const uint8_t> record;
 };
 
 // The cold tier of the graph: node records that were evicted from the graph
@@ -52,11 +53,11 @@ class NodeStore {
   virtual ~NodeStore() = default;
   // One entry per key, nullopt if the store has no record for it.
   virtual std::vector<std::optional<std::vector<uint8_t>>> LoadBatch(
-      std::span<const NodeKey> keys) = 0;
+      absl::Span<const NodeKey> keys) = 0;
   // Stores or replaces the records; they are visible to LoadBatch once this
   // returns.
-  virtual void StoreBatch(std::span<const StoredNode> nodes) = 0;
-  virtual void EraseBatch(std::span<const NodeKey> keys) = 0;
+  virtual void StoreBatch(absl::Span<const StoredNode> nodes) = 0;
+  virtual void EraseBatch(absl::Span<const NodeKey> keys) = 0;
   virtual void Clear() = 0;
 };
 

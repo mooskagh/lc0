@@ -30,7 +30,7 @@
 namespace lczero::lc5 {
 
 std::vector<std::optional<std::vector<uint8_t>>> MemoryNodeStore::LoadBatch(
-    std::span<const NodeKey> keys) {
+    absl::Span<const NodeKey> keys) {
   std::vector<std::optional<std::vector<uint8_t>>> result;
   result.reserve(keys.size());
   for (const NodeKey key : keys) {
@@ -46,15 +46,17 @@ std::vector<std::optional<std::vector<uint8_t>>> MemoryNodeStore::LoadBatch(
   return result;
 }
 
-void MemoryNodeStore::StoreBatch(std::span<const StoredNode> nodes) {
+void MemoryNodeStore::StoreBatch(absl::Span<const StoredNode> nodes) {
   for (const auto& node : nodes) {
     auto& shard = shards_[ShardIndex(node.key)];
     absl::MutexLock lock(shard.mutex);
-    shard.records.insert_or_assign(node.key, node.record);
+    auto [it, inserted] = shard.records.try_emplace(
+        node.key, node.record.begin(), node.record.end());
+    if (!inserted) it->second.assign(node.record.begin(), node.record.end());
   }
 }
 
-void MemoryNodeStore::EraseBatch(std::span<const NodeKey> keys) {
+void MemoryNodeStore::EraseBatch(absl::Span<const NodeKey> keys) {
   for (const NodeKey key : keys) {
     auto& shard = shards_[ShardIndex(key)];
     absl::MutexLock lock(shard.mutex);

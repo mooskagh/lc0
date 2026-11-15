@@ -29,6 +29,7 @@
 
 #include <absl/container/flat_hash_map.h>
 #include <absl/synchronization/mutex.h>
+#include <absl/types/span.h>
 
 #include <array>
 
@@ -40,9 +41,9 @@ namespace lczero::lc5 {
 class MemoryNodeStore final : public NodeStore {
  public:
   std::vector<std::optional<std::vector<uint8_t>>> LoadBatch(
-      std::span<const NodeKey> keys) override;
-  void StoreBatch(std::span<const StoredNode> nodes) override;
-  void EraseBatch(std::span<const NodeKey> keys) override;
+      absl::Span<const NodeKey> keys) override;
+  void StoreBatch(absl::Span<const StoredNode> nodes) override;
+  void EraseBatch(absl::Span<const NodeKey> keys) override;
   void Clear() override;
   size_t Size() const;
 

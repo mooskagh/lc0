@@ -27,14 +27,14 @@
 
 #pragma once
 
+#include <absl/types/span.h>
+
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <limits>
-#include <span>
 #include <type_traits>
-#include <vector>
 
 #include "search/lc5/graph/node.h"
 
@@ -69,18 +69,23 @@ constexpr bool kTriviallySerializable =
 }  // namespace internal
 
 template <typename P>
-std::vector<uint8_t> SerializeNode(const Node<P>& node) {
+size_t SerializedNodeSize(const Node<P>& node) {
   static_assert(internal::kTriviallySerializable<P>);
   assert(node.edges.size() <= std::numeric_limits<uint8_t>::max());
   assert(node.tried.size() <= node.edges.size());
+  return sizeof(internal::SerializedNodeHeader) + sizeof(typename P::NodeStats) +
+         node.edges.size() * sizeof(LegalEdge) +
+         node.tried.size() * sizeof(typename P::EdgeStats);
+}
+
+template <typename P>
+void SerializeNode(const Node<P>& node, absl::Span<uint8_t> data) {
+  assert(data.size() == SerializedNodeSize(node));
   using NodeStats = typename P::NodeStats;
   using EdgeStats = typename P::EdgeStats;
   const internal::SerializedNodeHeader header{
       .terminal = node.terminal,
       .edges = static_cast<uint8_t>(node.edges.size())};
-  std::vector<uint8_t> data(sizeof(header) + sizeof(NodeStats) +
-                            node.edges.size() * sizeof(LegalEdge) +
-                            node.tried.size() * sizeof(EdgeStats));
   uint8_t* out = data.data();
   const auto write = [&out](const void* src, size_t size) {
     if (size > 0) std::memcpy(out, src, size);
@@ -90,12 +95,11 @@ std::vector<uint8_t> SerializeNode(const Node<P>& node) {
   write(&node.stats, sizeof(NodeStats));
   write(node.edges.data(), node.edges.size() * sizeof(LegalEdge));
   for (const auto& tried : node.tried) write(&tried.stats, sizeof(EdgeStats));
-  return data;
 }
 
 // The node from SerializeNode<P>, with no reservations.
 template <typename P>
-Node<P> DeserializeNode(std::span<const uint8_t> data) {
+Node<P> DeserializeNode(absl::Span<const uint8_t> data) {
   static_assert(internal::kTriviallySerializable<P>);
   using NodeStats = typename P::NodeStats;
   using EdgeStats = typename P::EdgeStats;

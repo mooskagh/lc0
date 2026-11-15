@@ -29,13 +29,13 @@
 
 #include <absl/container/flat_hash_set.h>
 #include <absl/synchronization/mutex.h>
+#include <absl/types/span.h>
 
 #include <algorithm>
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
-#include <span>
 #include <string_view>
 #include <utility>
 #include <vector>
@@ -81,7 +81,7 @@ class PolicyEngine final : public VisitEngine {
   bool InsertNode(NodeKey key, const NodeEval& eval) override {
     return graph_.InsertNode(key, eval);
   }
-  bool RestoreNode(NodeKey key, std::span<const uint8_t> record) override {
+  bool RestoreNode(NodeKey key, absl::Span<const uint8_t> record) override {
     return graph_.InsertNode(key, DeserializeNode<P>(record));
   }
   size_t EvictToStore(NodeStore& store, size_t max, NodeKey keep,
@@ -244,10 +244,21 @@ size_t PolicyEngine<P>::EvictToStore(NodeStore& store, size_t max, NodeKey keep,
   if (candidates.empty()) return 0;
 
   // Store before erasing so a concurrent miss always finds the record.
+  size_t total_bytes = 0;
+  for (const auto& [key, node] : candidates) {
+    total_bytes += SerializedNodeSize(node);
+  }
+  std::vector<uint8_t> buffer(total_bytes);
   std::vector<StoredNode> records;
   records.reserve(candidates.size());
+  size_t offset = 0;
   for (const auto& [key, node] : candidates) {
-    records.push_back({key, SerializeNode(node)});
+    const size_t record_size = SerializedNodeSize(node);
+    const absl::Span<uint8_t> record =
+        absl::MakeSpan(buffer).subspan(offset, record_size);
+    SerializeNode(node, record);
+    records.push_back({.key = key, .record = record});
+    offset += record_size;
   }
   store.StoreBatch(records);
   metrics.node_store_evict_batches.fetch_add(1);

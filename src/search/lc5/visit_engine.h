@@ -27,9 +27,10 @@
 
 #pragma once
 
+#include <absl/types/span.h>
+
 #include <cstddef>
 #include <cstdint>
-#include <span>
 #include <string_view>
 
 #include "chess/callbacks.h"
@@ -107,7 +108,7 @@ class VisitEngine {
   virtual bool InsertNode(NodeKey key, const NodeEval& eval) = 0;
   // Installs a node serialized by EvictToStore with its old statistics; returns
   // false if rejected (already present), in which case evaluate it instead.
-  virtual bool RestoreNode(NodeKey key, std::span<const uint8_t> record) = 0;
+  virtual bool RestoreNode(NodeKey key, absl::Span<const uint8_t> record) = 0;
   // Moves up to `max` unreserved nodes (fewest visits first, never `keep`) from
   // the graph to `store`; returns how many were evicted.
   virtual size_t EvictToStore(NodeStore& store, size_t max, NodeKey keep,

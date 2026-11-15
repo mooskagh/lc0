@@ -30,6 +30,8 @@
 #include <gtest/gtest.h>
 
 #include <cstddef>
+#include <cstdint>
+#include <vector>
 
 #include "search/lc5/policies/puct.h"
 
@@ -64,7 +66,26 @@ Node<TestPolicy> SampleNode() {
 TEST(Lc5NodeSerializationTest, RoundTripKeepsStatisticsAndEdges) {
   const auto node = SampleNode();
   ASSERT_EQ(node.tried.size(), 2u);
-  const auto deserialized = DeserializeNode<TestPolicy>(SerializeNode(node));
+
+  // A terminal node has no edges.
+  Node<TestPolicy> terminal_node{.terminal = TerminalKind::kCheckmate};
+  const VisitValue loss = TerminalValue(TerminalKind::kCheckmate);
+  terminal_node.stats.Add(loss);
+  TestPolicy::UpdateBounds(terminal_node, nullptr,
+                           GameResultBounds::Exact(loss.q, loss.m));
+
+  // Pack both nodes into one buffer and deserialize from their slices.
+  const size_t first_size = SerializedNodeSize(node);
+  const size_t second_size = SerializedNodeSize(terminal_node);
+  std::vector<uint8_t> buffer(first_size + second_size);
+  const absl::Span<uint8_t> first_span =
+      absl::MakeSpan(buffer).subspan(0, first_size);
+  const absl::Span<uint8_t> second_span =
+      absl::MakeSpan(buffer).subspan(first_size, second_size);
+  SerializeNode(node, first_span);
+  SerializeNode(terminal_node, second_span);
+
+  const auto deserialized = DeserializeNode<TestPolicy>(first_span);
   EXPECT_EQ(deserialized.version, 0u);
   EXPECT_EQ(deserialized.in_flight, 0u);
   EXPECT_EQ(deserialized.terminal, node.terminal);
@@ -88,14 +109,7 @@ TEST(Lc5NodeSerializationTest, RoundTripKeepsStatisticsAndEdges) {
   // The first backup was exact, so that edge is proven.
   EXPECT_TRUE(deserialized.tried[0].stats.bounds.Proven());
 
-  // A terminal node has no edges.
-  Node<TestPolicy> terminal_node{.terminal = TerminalKind::kCheckmate};
-  const VisitValue loss = TerminalValue(TerminalKind::kCheckmate);
-  terminal_node.stats.Add(loss);
-  TestPolicy::UpdateBounds(terminal_node, nullptr,
-                           GameResultBounds::Exact(loss.q, loss.m));
-  const auto terminal =
-      DeserializeNode<TestPolicy>(SerializeNode(terminal_node));
+  const auto terminal = DeserializeNode<TestPolicy>(second_span);
   EXPECT_EQ(terminal.terminal, TerminalKind::kCheckmate);
   EXPECT_TRUE(terminal.edges.empty());
   EXPECT_TRUE(terminal.tried.empty());

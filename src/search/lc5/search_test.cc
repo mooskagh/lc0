@@ -26,6 +26,7 @@
 */
 
 #include <absl/algorithm/container.h>
+#include <absl/types/span.h>
 #include <gtest/gtest.h>
 
 #include <algorithm>
@@ -357,7 +358,7 @@ class ControlledBackend final : public Backend {
 class RecordingStore final : public NodeStore {
  public:
   std::vector<std::optional<std::vector<uint8_t>>> LoadBatch(
-      std::span<const NodeKey> keys) override {
+      absl::Span<const NodeKey> keys) override {
     std::lock_guard lock(mutex_);
     std::vector<std::optional<std::vector<uint8_t>>> result;
     for (auto key : keys) {
@@ -367,14 +368,16 @@ class RecordingStore final : public NodeStore {
     }
     return result;
   }
-  void StoreBatch(std::span<const StoredNode> batch) override {
+  void StoreBatch(absl::Span<const StoredNode> batch) override {
     std::lock_guard lock(mutex_);
     for (const auto& node : batch) {
-      entries.insert_or_assign(node.key, node.record);
+      entries.insert_or_assign(
+          node.key,
+          std::vector<uint8_t>(node.record.begin(), node.record.end()));
       ++stored;
     }
   }
-  void EraseBatch(std::span<const NodeKey> keys) override {
+  void EraseBatch(absl::Span<const NodeKey> keys) override {
     std::lock_guard lock(mutex_);
     for (const auto key : keys) entries.erase(key);
   }
@@ -395,15 +398,15 @@ class BlockingStore final : public NodeStore {
   explicit BlockingStore(size_t blocked_load = 1, bool block_persistence = true)
       : blocked_load_(blocked_load), block_persistence_(block_persistence) {}
   std::vector<std::optional<std::vector<uint8_t>>> LoadBatch(
-      std::span<const NodeKey> keys) override {
+      absl::Span<const NodeKey> keys) override {
     if (load_calls_.fetch_add(1) + 1 == blocked_load_) load.ArriveAndWait();
     return recording.LoadBatch(keys);
   }
-  void StoreBatch(std::span<const StoredNode> nodes) override {
+  void StoreBatch(absl::Span<const StoredNode> nodes) override {
     if (block_persistence_) persist.ArriveAndWait();
     recording.StoreBatch(nodes);
   }
-  void EraseBatch(std::span<const NodeKey> keys) override {
+  void EraseBatch(absl::Span<const NodeKey> keys) override {
     recording.EraseBatch(keys);
   }
   void Clear() override { recording.Clear(); }

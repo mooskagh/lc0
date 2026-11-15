@@ -377,7 +377,7 @@ void VisitWorker::CompleteMaterialization(MaterializationId materialization_id,
 }
 
 bool VisitWorker::RestoreMaterialization(MaterializationId materialization_id,
-                                         std::span<const uint8_t> record) {
+                                         absl::Span<const uint8_t> record) {
   bool is_root = false;
   const auto waiters =
       context_.materializations.Close(materialization_id, [&](NodeKey key) {
