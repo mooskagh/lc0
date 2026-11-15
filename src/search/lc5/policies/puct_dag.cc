@@ -58,33 +58,34 @@ struct PuctDag : PuctPolicy<PuctDag> {
             stats.bounds.Parent()};
   }
 
-  // Folds `backup` into the node and, if given, the edge the visit took, and
-  // returns the node's current value and bounds. Through an edge, the node's
-  // mean swaps the edge's old contribution (n visits at its cached value) for
-  // the new one (n + 1 visits at the child's value); without one (a terminal or
-  // proven leaf), the value is a sample of the node itself.
-  static BackupValue BackupThroughNode(Node<PuctDag>& node,
-                                       TriedEdge<PuctDag>* edge,
+  static BackupValue BackupLeaf(Node<PuctDag>& node,
+                                const BackupValue& backup) {
+    BackupLeafNode(node, backup);
+    return MakeCurrentBackup(node);
+  }
+
+  // Folds `backup` into the node and the edge the visit took, and returns the
+  // node's current value and bounds. The node's mean swaps the edge's old
+  // contribution (n visits at its cached value) for the new one (n + 1 visits
+  // at the child's value).
+  static BackupValue BackupThroughEdge(Node<PuctDag>& node,
+                                       TriedEdge<PuctDag>& edge,
                                        const BackupValue& backup) {
     ValueStats& stats = node.stats;
+    ValueStats& edge_stats = edge.stats;
     const VisitValue& value = backup.value;
-    if (edge) {
-      ValueStats& edge_stats = edge->stats;
-      const float n = static_cast<float>(edge_stats.visits++);
-      const float total = static_cast<float>(++stats.visits);
-      stats.q += ((n + 1.0f) * value.q - n * edge_stats.q - stats.q) / total;
-      stats.d += ((n + 1.0f) * value.d - n * edge_stats.d - stats.d) / total;
-      stats.m += ((n + 1.0f) * value.m - n * edge_stats.m - stats.m) / total;
-      // Against float drift.
-      stats.q = std::clamp(stats.q, -1.0f, 1.0f);
-      stats.d = std::clamp(stats.d, 0.0f, 1.0f);
-      edge_stats.q = value.q;
-      edge_stats.d = value.d;
-      edge_stats.m = value.m;
-    } else {
-      stats.Add(value);
-    }
-    UpdateBounds(node, edge, backup.bounds);
+    const float n = static_cast<float>(edge_stats.visits++);
+    const float total = static_cast<float>(++stats.visits);
+    stats.q += ((n + 1.0f) * value.q - n * edge_stats.q - stats.q) / total;
+    stats.d += ((n + 1.0f) * value.d - n * edge_stats.d - stats.d) / total;
+    stats.m += ((n + 1.0f) * value.m - n * edge_stats.m - stats.m) / total;
+    // Against float drift.
+    stats.q = std::clamp(stats.q, -1.0f, 1.0f);
+    stats.d = std::clamp(stats.d, 0.0f, 1.0f);
+    edge_stats.q = value.q;
+    edge_stats.d = value.d;
+    edge_stats.m = value.m;
+    UpdateEdgeBounds(node, edge, backup.bounds);
     return MakeCurrentBackup(node);
   }
 };

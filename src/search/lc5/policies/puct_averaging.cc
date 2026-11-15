@@ -40,14 +40,20 @@ namespace {
 struct PuctAveraging : PuctPolicy<PuctAveraging> {
   static constexpr std::string_view kName = "puct";
 
-  // Folds `backup` into the node and, if given, the edge the visit took, and
-  // returns what the parent receives: the value and the node's own bounds.
-  static BackupValue BackupThroughNode(Node<PuctAveraging>& node,
-                                       TriedEdge<PuctAveraging>* edge,
+  static BackupValue BackupLeaf(Node<PuctAveraging>& node,
+                                const BackupValue& backup) {
+    BackupLeafNode(node, backup);
+    return {backup.value.Parent(), node.stats.bounds.Parent()};
+  }
+
+  // Folds `backup` into the node and the edge the visit took, and returns what
+  // the parent receives: the value and the node's own bounds.
+  static BackupValue BackupThroughEdge(Node<PuctAveraging>& node,
+                                       TriedEdge<PuctAveraging>& edge,
                                        const BackupValue& backup) {
     node.stats.Add(backup.value);
-    if (edge) edge->stats.Add(backup.value);
-    UpdateBounds(node, edge, backup.bounds);
+    edge.stats.Add(backup.value);
+    UpdateEdgeBounds(node, edge, backup.bounds);
     return {backup.value.Parent(), node.stats.bounds.Parent()};
   }
 };

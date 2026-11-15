@@ -47,7 +47,7 @@ namespace lczero::lc5 {
 namespace {
 
 struct TestPolicy : PuctPolicy<TestPolicy> {
-  using PuctPolicy::UpdateBounds;
+  using PuctPolicy::UpdateEdgeBounds;
 };
 
 using Node = lc5::Node<TestPolicy>;
@@ -265,7 +265,7 @@ TEST(Lc5PuctTest, TerminalLossProvesParentWin) {
 
   // A parent with an untried edge left is still proven by one win.
   Node parent = MakeBoundedNode(2, {GameResultBounds{}});
-  TestPolicy::UpdateBounds(parent, &parent.tried[0], from_child);
+  TestPolicy::UpdateEdgeBounds(parent, parent.tried[0], from_child);
   EXPECT_EQ(parent.tried[0].stats.bounds, WithPlies(kWin, 1));
   EXPECT_EQ(parent.stats.bounds, WithPlies(kWin, 1));
   EXPECT_EQ(parent.stats.bounds.Parent(), WithPlies(kLoss, 2));
@@ -277,7 +277,7 @@ TEST(Lc5PuctTest, NodeProvesBoundsFromItsEdges) {
     Node node = MakeBoundedNode(edges, bounds);
     const GameResultBounds last = node.tried.back().stats.bounds;
     node.tried.back().stats.bounds = {};
-    TestPolicy::UpdateBounds(node, &node.tried.back(), last);
+    TestPolicy::UpdateEdgeBounds(node, node.tried.back(), last);
     return node.stats.bounds;
   };
   // All edges lose: the node loses, by the longest one.
@@ -523,14 +523,16 @@ TEST(Lc5PuctTest, PuctAveragesWhileDagReplacesEdgeValue) {
       Visit visit = MakeVisit(root);
       EXPECT_EQ(engine->DescendVisit(visit, metrics, false),
                 VisitEngine::DescendResult::kUnmaterializedLeaf);
-      EXPECT_EQ(visit.path.front().selected_move, move_a);
+      EXPECT_EQ(visit.path.size(), 1u);
+      EXPECT_EQ(visit.path.front().move, move_a);
       engine->BackupLeaf(visit, {.q = child_q}, metrics,
                          TerminalKind::kNonTerminal, false);
     }
     Visit next = MakeVisit(root);
     EXPECT_EQ(engine->DescendVisit(next, metrics, false),
               VisitEngine::DescendResult::kUnmaterializedLeaf);
-    const Move selected = *next.path.front().selected_move;
+    EXPECT_EQ(next.path.size(), 1u);
+    const Move selected = next.path.front().move;
     engine->CancelVisit(next);
     ThinkingInfo info;
     engine->FillThinkingInfo(root, info);
@@ -563,7 +565,7 @@ TEST(Lc5PuctTest, DagForwardsSharedChildMeanToParent) {
     Visit visit = MakeVisit(root);
     EXPECT_EQ(engine->DescendVisit(visit, metrics, false),
               VisitEngine::DescendResult::kUnmaterializedLeaf);
-    EXPECT_EQ(visit.path.size(), 3u);
+    EXPECT_EQ(visit.path.size(), 2u);
     engine->BackupLeaf(visit, {.q = 0.0f}, metrics, TerminalKind::kNonTerminal,
                        false);
     ThinkingInfo info;
@@ -670,7 +672,7 @@ TEST(Lc5PuctTest, ReselectParentKeepsGoodEdgeOrSwitchesIntoTwoFold) {
       // child.
       EXPECT_EQ(res, VisitEngine::DescendResult::kUnmaterializedLeaf);
       EXPECT_EQ(metrics.visits_reselected.load(), 0u);
-      EXPECT_EQ(waiter.path.size(), 6u);
+      EXPECT_EQ(waiter.path.size(), 5u);
       engine->CancelVisit(waiter);
     }
   }

@@ -66,7 +66,7 @@ class PolicyEngine final : public VisitEngine {
 
   DescendResult DescendVisit(Visit& visit, Metrics& metrics,
                              bool reselect_parent) override;
-  void BackupLeaf(Visit& visit, const VisitValue& value, Metrics& metrics,
+  void BackupLeaf(const Visit& visit, const VisitValue& value, Metrics& metrics,
                   TerminalKind terminal, bool count_at_leaf) override;
   void CancelVisit(const Visit& visit) override;
   void FillThinkingInfo(const VisitOrigin& root,
@@ -90,15 +90,13 @@ class PolicyEngine final : public VisitEngine {
   static constexpr size_t kMaxPvLength = 256;
   static constexpr double kMinEvictFraction = 0.1;
 
-  static bool IsBelowOrigin(const Visit& visit) {
-    return visit.path.size() > 1;
-  }
+  static bool IsBelowOrigin(const Visit& visit) { return !visit.path.empty(); }
 
-  // Follows `move` from the current node; returns true if that reaches and
-  // backs up an in-search two-fold repetition, else false.
+  // Records `move` on the path, advances `visit` across it, and returns true if
+  // that reaches and backs up an in-search two-fold repetition.
   bool FollowEdge(Visit& visit, Move move, Metrics& metrics);
   void Backup(const Visit& visit, const VisitValue& value, bool exact,
-              Metrics& metrics);
+              bool update_leaf, Metrics& metrics);
 
   GameGraph<P> graph_;
   typename P::Params params_{};
@@ -115,13 +113,14 @@ VisitEngine::DescendResult PolicyEngine<P>::DescendVisit(Visit& visit,
                                                          bool reselect_parent) {
   // At the origin there is no parent edge to reselect.
   if (reselect_parent && IsBelowOrigin(visit)) {
-    const PathStep& parent = visit.path[visit.path.size() - 2];
+    const PathStep parent = visit.path.back();
     // The leaf's owner has already backed up, so the parent edge holds its
     // value.
-    const Move reselected = graph_.ReselectAndReserveEdge(
-        parent.key, *parent.selected_move, params_);
-    if (reselected != *parent.selected_move) {
+    const Move reselected =
+        graph_.ReselectAndReserveEdge(parent.key, parent.move, params_);
+    if (reselected != parent.move) {
       metrics.visits_reselected.fetch_add(1);
+      visit.current_key = parent.key;
       visit.path.pop_back();
       visit.history.Pop();
       if (FollowEdge(visit, reselected, metrics)) {
@@ -130,27 +129,23 @@ VisitEngine::DescendResult PolicyEngine<P>::DescendVisit(Visit& visit,
     }
   }
   for (;;) {
-    if (visit.path.empty() || visit.path.back().key != visit.current_key) {
-      visit.path.push_back({.key = visit.current_key});
-    }
-    PathStep& step = visit.path.back();
     metrics.selection_node_steps.fetch_add(1);
-    RaiseHighWater(metrics.max_selected_depth, visit.path.size());
+    RaiseHighWater(metrics.max_selected_depth, visit.path.size() + 1);
     // Keep selecting at the origin even when proven so its PV still deepens.
     const SelectResult selection = graph_.SelectAndReserveEdge(
         visit.current_key, params_, /*stop_at_proven=*/IsBelowOrigin(visit));
-    step.update_node = selection.status != SelectResult::kNodeMissing;
     switch (selection.status) {
       case SelectResult::kNodeMissing:
         return DescendResult::kUnmaterializedLeaf;
       case SelectResult::kNodeTerminal:
         metrics.terminal_visits.fetch_add(1);
         Backup(visit, TerminalValue(selection.terminal),
-               IsExact(selection.terminal), metrics);
+               IsExact(selection.terminal), /*update_leaf=*/true, metrics);
         return DescendResult::kCompleted;
       case SelectResult::kNodeProven:
         metrics.proven_visits.fetch_add(1);
-        Backup(visit, selection.value, /*exact=*/true, metrics);
+        Backup(visit, selection.value, /*exact=*/true, /*update_leaf=*/true,
+               metrics);
         return DescendResult::kCompleted;
       case SelectResult::kEdgeSelected:
         break;
@@ -162,21 +157,20 @@ VisitEngine::DescendResult PolicyEngine<P>::DescendVisit(Visit& visit,
 }
 
 template <typename P>
-void PolicyEngine<P>::BackupLeaf(Visit& visit, const VisitValue& value,
+void PolicyEngine<P>::BackupLeaf(const Visit& visit, const VisitValue& value,
                                  Metrics& metrics, TerminalKind terminal,
                                  bool count_at_leaf) {
-  assert(!visit.path.empty() && !visit.path.back().selected_move);
-  visit.path.back().update_node = count_at_leaf;
   if (terminal != TerminalKind::kNonTerminal) {
     metrics.terminal_visits.fetch_add(1);
   }
-  Backup(visit, value, IsExact(terminal), metrics);
+  Backup(visit, value, IsExact(terminal), /*update_leaf=*/count_at_leaf,
+         metrics);
 }
 
 template <typename P>
 void PolicyEngine<P>::CancelVisit(const Visit& visit) {
   for (const PathStep& step : visit.path) {
-    if (step.selected_move) graph_.ReleaseEdge(step.key, *step.selected_move);
+    graph_.ReleaseEdge(step.key, step.move);
   }
 }
 
@@ -275,7 +269,7 @@ size_t PolicyEngine<P>::EvictToStore(NodeStore& store, size_t max, NodeKey keep,
 
 template <typename P>
 bool PolicyEngine<P>::FollowEdge(Visit& visit, Move move, Metrics& metrics) {
-  visit.path.back().selected_move = move;
+  visit.path.push_back({.key = visit.current_key, .move = move});
   visit.history.Append(move);
   visit.current_key = MakeNodeKey(visit.history, history_key_length_);
   // Score an in-search two-fold repetition as a draw without touching its graph
@@ -284,12 +278,11 @@ bool PolicyEngine<P>::FollowEdge(Visit& visit, Move move, Metrics& metrics) {
   const int search_plies = static_cast<int>(visit.path.size());
   if (pos.GetRepetitions() == 1 && search_plies >= 4 &&
       search_plies >= pos.GetPliesSincePrevRepetition()) {
-    visit.path.push_back({.key = visit.current_key});
-    RaiseHighWater(metrics.max_selected_depth, visit.path.size());
+    RaiseHighWater(metrics.max_selected_depth, visit.path.size() + 1);
     metrics.terminal_visits.fetch_add(1);
     metrics.two_fold_visits.fetch_add(1);
     Backup(visit, TerminalValue(TerminalKind::kRepetition), /*exact=*/false,
-           metrics);
+           /*update_leaf=*/false, metrics);
     return true;
   }
   return false;
@@ -297,20 +290,20 @@ bool PolicyEngine<P>::FollowEdge(Visit& visit, Move move, Metrics& metrics) {
 
 template <typename P>
 void PolicyEngine<P>::Backup(const Visit& visit, const VisitValue& value,
-                             bool exact, Metrics& metrics) {
-  assert(visit.path.empty() || !visit.path.back().selected_move);
-  RaiseHighWater(metrics.max_depth, visit.path.size());
+                             bool exact, bool update_leaf, Metrics& metrics) {
+  RaiseHighWater(metrics.max_depth, visit.path.size() + 1);
   auto backup = P::MakeLeafBackup(value, exact);
-  for (auto it = visit.path.rbegin(); it != visit.path.rend(); ++it) {
-    // Skip repetition leaves and leaves already counted at installation.
-    if (!it->update_node) {
-      backup = P::MakeSkipBackup(backup);
-      continue;
-    }
-    const auto parent_backup =
-        graph_.BackupThroughNode(it->key, backup, it->selected_move);
+  if (update_leaf) {
+    const auto parent_backup = graph_.BackupLeaf(visit.current_key, backup);
     metrics.backup_node_steps.fetch_add(1);
     backup = parent_backup.value_or(P::MakeStaleBackup(backup));
+  } else {
+    // Skip repetition leaves and leaves already counted at installation.
+    backup = P::MakeSkipBackup(backup);
+  }
+  for (auto it = visit.path.rbegin(); it != visit.path.rend(); ++it) {
+    backup = graph_.BackupThroughEdge(it->key, it->move, backup);
+    metrics.backup_node_steps.fetch_add(1);
   }
 }
 

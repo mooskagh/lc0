@@ -39,7 +39,8 @@ namespace lczero::lc5 {
 namespace {
 
 struct TestPolicy : PuctPolicy<TestPolicy> {
-  using PuctPolicy::UpdateBounds;
+  using PuctPolicy::BackupLeafNode;
+  using PuctPolicy::UpdateEdgeBounds;
 };
 
 Move M(File from, File to) {
@@ -58,8 +59,8 @@ Node<TestPolicy> SampleNode() {
   node.stats.Add({.q = 0.5f, .d = 0.25f, .m = 6.0f});
   node.stats.Add({.q = -0.75f, .d = 0.25f, .m = 3.0f});
   node.tried[0].stats.Add({.q = -0.75f, .d = 0.25f, .m = 3.0f});
-  TestPolicy::UpdateBounds(node, &node.tried[0],
-                           GameResultBounds::Exact(-0.75f, 3.0f));
+  TestPolicy::UpdateEdgeBounds(node, node.tried[0],
+                               GameResultBounds::Exact(-0.75f, 3.0f));
   node.stats.Add({.q = -0.75f, .d = 0.25f, .m = 3.0f});
   node.tried[1].stats.Add({.q = -0.75f, .d = 0.25f, .m = 3.0f});
   return node;
@@ -72,9 +73,8 @@ TEST(Lc5NodeSerializationTest, RoundTripKeepsStatisticsAndEdges) {
   // A terminal node has no edges.
   Node<TestPolicy> terminal_node{.terminal = TerminalKind::kCheckmate};
   const VisitValue loss = TerminalValue(TerminalKind::kCheckmate);
-  terminal_node.stats.Add(loss);
-  TestPolicy::UpdateBounds(terminal_node, nullptr,
-                           GameResultBounds::Exact(loss.q, loss.m));
+  TestPolicy::BackupLeafNode(terminal_node,
+                             TestPolicy::MakeLeafBackup(loss, /*exact=*/true));
 
   // Pack both nodes into one buffer and deserialize from their slices.
   const size_t first_size = SerializedNodeSize(node);

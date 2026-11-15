@@ -827,7 +827,7 @@ TEST(Lc5SearchTest, StickyEndgamesPlaysMateAndStopsEarly) {
 }
 
 TEST(Lc5SearchTest, TwoFoldDrawBacksUpToRoot) {
-  // Path: 4 materialized nodes, then a skipped leaf with update_node = false.
+  // Path: 4 materialized nodes, then an unmaterialized leaf skipped on backup.
   constexpr size_t kNodes = 4;
   const VisitValue draw{.q = 0.0f, .d = 1.0f, .m = 0.0f};
   auto engine = MakeTestEngine();
@@ -850,8 +850,8 @@ TEST(Lc5SearchTest, TwoFoldDrawBacksUpToRoot) {
               .path = {}};
   ASSERT_EQ(engine->DescendVisit(visit, metrics, false),
             VisitEngine::DescendResult::kUnmaterializedLeaf);
-  ASSERT_EQ(visit.path.size(), kNodes + 1);
-  EXPECT_FALSE(visit.path.back().update_node);
+  ASSERT_EQ(visit.path.size(), kNodes);
+  EXPECT_EQ(visit.current_key, cur.key);
   engine->BackupLeaf(visit, draw, metrics, TerminalKind::kNonTerminal, false);
 
   for (size_t i = 0; i < kNodes; ++i) {

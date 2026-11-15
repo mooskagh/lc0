@@ -88,7 +88,7 @@ class VisitEngine {
   // reservations. `count_at_leaf` is false when InsertNode already counted
   // `value` as the leaf's first visit (the owner), and true for terminal
   // waiters.
-  virtual void BackupLeaf(Visit& visit, const VisitValue& value,
+  virtual void BackupLeaf(const Visit& visit, const VisitValue& value,
                           Metrics& metrics, TerminalKind terminal,
                           bool count_at_leaf) = 0;
   // Releases every edge reservation on visit.path without committing a visit.

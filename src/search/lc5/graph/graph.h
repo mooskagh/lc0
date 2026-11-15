@@ -112,10 +112,13 @@ class GameGraph {
   Move ReselectAndReserveEdge(NodeKey key, Move move,
                               const typename P::Params& params);
 
-  // Updates the node (and `move`'s edge with in_flight -= 1, if given); returns
-  // the backup value for the parent, or nullopt if the node is absent.
-  std::optional<BackupValue> BackupThroughNode(NodeKey key, BackupValue backup,
-                                               std::optional<Move> move);
+  // Updates a leaf node (no outgoing edge reservation); returns the backup
+  // value for the parent, or nullopt if the node is absent.
+  std::optional<BackupValue> BackupLeaf(NodeKey key, BackupValue backup);
+
+  // Releases `move` (in_flight -= 1), updates the node and `move`'s edge, and
+  // returns the backup value for the parent.
+  BackupValue BackupThroughEdge(NodeKey key, Move move, BackupValue backup);
 
   // Releases an edge reservation (in_flight -= 1) without committing a visit.
   void ReleaseEdge(NodeKey key, Move move);
@@ -281,23 +284,25 @@ Move GameGraph<P>::ReselectAndReserveEdge(NodeKey key, Move move,
 }
 
 template <typename P>
-std::optional<typename P::BackupValue> GameGraph<P>::BackupThroughNode(
-    NodeKey key, BackupValue backup, std::optional<Move> move) {
+std::optional<typename P::BackupValue> GameGraph<P>::BackupLeaf(
+    NodeKey key, BackupValue backup) {
   auto& shard = ShardFor(key);
   absl::MutexLock lock(shard.mutex);
   Node* node = FindOrNull(shard.nodes, key);
-  if (!node) {
-    assert(!move);
-    return std::nullopt;
-  }
-  Tried* edge = nullptr;
-  if (move) {
-    const size_t index = GetEdgeIndex(*node, *move);
-    ReleaseEdgeLocked(shard, *node, index);
-    edge = &node->tried[index];
-  }
+  if (!node) return std::nullopt;
   node->version = ++shard.version;
-  return P::BackupThroughNode(*node, edge, backup);
+  return P::BackupLeaf(*node, backup);
+}
+
+template <typename P>
+typename P::BackupValue GameGraph<P>::BackupThroughEdge(NodeKey key, Move move,
+                                                        BackupValue backup) {
+  auto& shard = ShardFor(key);
+  absl::MutexLock lock(shard.mutex);
+  Node& node = FindOrAssert(shard.nodes, key);
+  const size_t index = GetEdgeIndex(node, move);
+  ReleaseEdgeLocked(shard, node, index);
+  return P::BackupThroughEdge(node, node.tried[index], backup);
 }
 
 template <typename P>

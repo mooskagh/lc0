@@ -28,7 +28,6 @@
 #pragma once
 
 #include <cstdint>
-#include <optional>
 #include <vector>
 
 #include "chess/position.h"
@@ -45,9 +44,7 @@ struct VisitId {
 
 struct PathStep {
   NodeKey key;
-  std::optional<Move> selected_move{};  // The reserved outgoing edge, if any.
-  // Whether backup updates this node (false for repetition or installed leaf).
-  bool update_node = false;
+  Move move;  // Reserved outgoing edge from `key`.
 };
 
 // Where a visit starts selecting.
@@ -68,7 +65,7 @@ struct Visit {
   VisitState state = VisitState::kFree;
   PositionHistory history;
   NodeKey current_key;
-  std::vector<PathStep> path;
+  std::vector<PathStep> path;  // Reserved edges from the origin to current_key.
 };
 
 }  // namespace lczero::lc5

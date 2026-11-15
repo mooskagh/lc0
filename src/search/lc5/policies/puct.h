@@ -92,10 +92,10 @@ ThinkingInfo::WDL WdlFromValue(float q, float d);
 int CentipawnsFromQ(float q);
 
 // PUCT selection, move choice, bounds and reporting over ValueStats nodes and
-// edges. `Self` supplies kName and BackupThroughNode: how a backup updates the
-// node and the edge it came through, and what the parent receives. Nodes and
-// edges keep value means and bounds, and BackupValue holds a value and bounds
-// from the side to move at the node.
+// edges. `Self` supplies kName, BackupLeaf and BackupThroughEdge: how a backup
+// updates a leaf node or a node and the edge it came through, and what the
+// parent receives. Nodes and edges keep value means and bounds, and BackupValue
+// holds a value and bounds from the side to move at the node.
 template <typename Self>
 struct PuctPolicy {
   using Params = PuctParams;
@@ -155,18 +155,21 @@ struct PuctPolicy {
                                ThinkingInfo& info);
 
  protected:
-  // Sets the bounds after an update with `bounds` from the edge (or, without
-  // an edge, the node's own leaf): a terminal's bounds are its leaf's, and a
-  // non-terminal node's follow from its edges'.
-  static void UpdateBounds(Node<Self>& node, TriedEdge<Self>* edge,
-                           const GameResultBounds& bounds) {
-    if (node.edges.empty()) {
-      // A terminal's bounds are its own leaf's.
-      node.stats.bounds = bounds;
-    } else if (edge && edge->stats.bounds != bounds) {
-      // Bounds rarely change, so the node is recomputed only then. A
-      // node-only update (the leaf's own value) leaves them alone.
-      edge->stats.bounds = bounds;
+  // Adds a leaf visit directly to `node` (no outgoing edge). A terminal node
+  // takes the leaf's bounds; a non-terminal node keeps the bounds from its
+  // edges.
+  static void BackupLeafNode(Node<Self>& node, const BackupValue& backup) {
+    node.stats.Add(backup.value);
+    if (node.edges.empty()) node.stats.bounds = backup.bounds;
+  }
+
+  // Updates `edge`'s bounds and, if they changed, recomputes `node`'s bounds
+  // from its edges.
+  static void UpdateEdgeBounds(Node<Self>& node, TriedEdge<Self>& edge,
+                               const GameResultBounds& bounds) {
+    assert(!node.edges.empty());
+    if (edge.stats.bounds != bounds) {
+      edge.stats.bounds = bounds;
       node.stats.bounds = ComputeBoundsFromEdges(node);
     }
   }
