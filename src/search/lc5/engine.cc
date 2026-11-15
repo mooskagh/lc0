@@ -108,8 +108,7 @@ void Lc5Engine::StartSearch(const GoParams& params) {
   }
   VisitOrigin root{
       .key = MakeNodeKey(*root_history_, settings.history_key_length()),
-      .history = *root_history_,
-      .backup_prefix = {}};
+      .history = *root_history_};
   const auto start = clock_start_.value_or(std::chrono::steady_clock::now());
   clock_start_.reset();
   session_ = std::make_unique<SearchSession>(

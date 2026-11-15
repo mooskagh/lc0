@@ -154,9 +154,7 @@ struct PuctPolicy {
   static void FillThinkingInfo(const Node<Self>& node, const Params& params,
                                ThinkingInfo& info);
 
-  // The node's bounds from its edges' bounds, which are in the node's frame.
-  // An untried edge is unknown.
-  static GameResultBounds ComputeBoundsFromEdges(const Node<Self>& node);
+ protected:
   // Sets the bounds after an update with `bounds` from the edge (or, without
   // an edge, the node's own leaf): a terminal's bounds are its leaf's, and a
   // non-terminal node's follow from its edges'.
@@ -172,6 +170,11 @@ struct PuctPolicy {
       node.stats.bounds = ComputeBoundsFromEdges(node);
     }
   }
+
+ private:
+  // The node's bounds from its edges' bounds, which are in the node's frame.
+  // An untried edge is unknown.
+  static GameResultBounds ComputeBoundsFromEdges(const Node<Self>& node);
 };
 
 template <typename Self>

@@ -38,7 +38,9 @@
 namespace lczero::lc5 {
 namespace {
 
-struct TestPolicy : PuctPolicy<TestPolicy> {};
+struct TestPolicy : PuctPolicy<TestPolicy> {
+  using PuctPolicy::UpdateBounds;
+};
 
 Move M(File from, File to) {
   return Move::White(Square(from, kRank2), Square(to, kRank3));

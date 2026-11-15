@@ -73,14 +73,12 @@ struct SelectResult {
 // updates them and how an edge is selected.
 template <typename P>
 class GameGraph {
+  static constexpr size_t kShardCount = 1024;
+  static_assert(kShardCount > 1 && std::has_single_bit(kShardCount));
+
  public:
   using Node = lc5::Node<P>;
-  using Tried = TriedEdge<P>;
   using BackupValue = typename P::BackupValue;
-
-  static constexpr size_t kShardCount = 1024;
-  static constexpr size_t kEvictWindow = 4096;
-  static_assert(kShardCount > 1 && std::has_single_bit(kShardCount));
 
   // Position in a rolling eviction scan: the next shard to visit, and for each
   // shard the key where its last window stopped (a key from another shard means
@@ -107,7 +105,7 @@ class GameGraph {
   // cannot be selected from (missing, terminal, or proven if `stop_at_proven`).
   SelectResult SelectAndReserveEdge(NodeKey key,
                                     const typename P::Params& params,
-                                    bool stop_at_proven = false);
+                                    bool stop_at_proven);
 
   // Releases `move` (in_flight -= 1) and selects and reserves an edge
   // (in_flight += 1); returns the selected move.
@@ -132,6 +130,8 @@ class GameGraph {
   bool EraseNode(NodeKey key, uint32_t version);
 
  private:
+  static constexpr size_t kEvictWindow = 4096;
+  using Tried = TriedEdge<P>;
   using Map = absl::flat_hash_map<NodeKey, Node>;
 
   struct Shard {

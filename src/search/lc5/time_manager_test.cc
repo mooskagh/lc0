@@ -41,12 +41,13 @@ using std::chrono::milliseconds;
 using std::chrono::nanoseconds;
 
 constexpr TimeManager::Config kConfig{.move_overhead_ms = 200,
-                                      .alphazero_time_pct = 3.0f};
+                                      .alphazero_time_pct = 3.0f,
+                                      .smart_pruning_factor = 1.33f};
 const Clock::time_point kStart{std::chrono::seconds(10)};
 
 void ExpectDeadline(const GoParams& params, bool black_to_move,
                     int64_t budget_ms, TimeManager::Config config = kConfig) {
-  const TimeManager manager(config, params, black_to_move, kStart);
+  const TimeManager manager(config, params, black_to_move, kStart, 0);
   const auto deadline = kStart + milliseconds(budget_ms);
   EXPECT_EQ(manager.deadline(), deadline);
   EXPECT_FALSE(manager.ShouldStop(deadline - nanoseconds(1)));
@@ -58,7 +59,7 @@ void ExpectDeadline(const GoParams& params, bool black_to_move,
 }
 
 void ExpectNoDeadline(const GoParams& params, bool black_to_move) {
-  const TimeManager manager(kConfig, params, black_to_move, kStart);
+  const TimeManager manager(kConfig, params, black_to_move, kStart, 0);
   for (const auto now :
        {kStart - nanoseconds(1), kStart, kStart + std::chrono::hours(24)}) {
     EXPECT_FALSE(manager.ShouldStop(now));
@@ -74,11 +75,14 @@ TEST(Lc5TimeManagerTest, ComputesBudgetFromActiveClock) {
 
 TEST(Lc5TimeManagerTest, TimingConfigurationIsUsed) {
   constexpr TimeManager::Config config{.move_overhead_ms = 100,
-                                       .alphazero_time_pct = 25.0f};
+                                       .alphazero_time_pct = 25.0f,
+                                       .smart_pruning_factor = 1.33f};
   ExpectDeadline(GoParams{.wtime = 4100}, false, 1000, config);
   ExpectDeadline(GoParams{.wtime = 50}, false, 0, config);
   ExpectDeadline(GoParams{.wtime = 400}, false, 400,
-                 {.move_overhead_ms = 0, .alphazero_time_pct = 100.0f});
+                 {.move_overhead_ms = 0,
+                  .alphazero_time_pct = 100.0f,
+                  .smart_pruning_factor = 1.33f});
 }
 
 TEST(Lc5TimeManagerTest, IncludesOnlyActiveSideIncrement) {
@@ -112,7 +116,8 @@ TEST(Lc5TimeManagerTest, CapsBudgetAndPreservesOverhead) {
     ExpectDeadline(GoParams{.wtime = remaining, .winc = 80}, false, 0);
   }
   constexpr TimeManager::Config config{.move_overhead_ms = 200,
-                                       .alphazero_time_pct = 0.0f};
+                                       .alphazero_time_pct = 0.0f,
+                                       .smart_pruning_factor = 1.33f};
   ExpectDeadline(GoParams{.wtime = 1000}, false, 1, config);
   ExpectDeadline(GoParams{.wtime = 1000, .winc = 80}, false, 80, config);
 }
@@ -123,14 +128,16 @@ TEST(Lc5TimeManagerTest, PreservesPrecisionAndTruncation) {
                  1076);
   // 3.1f must be promoted directly to long double, not rounded to 3.1.
   ExpectDeadline(GoParams{.wtime = 1000200}, false, 30999,
-                 {.move_overhead_ms = 200, .alphazero_time_pct = 3.1f});
+                 {.move_overhead_ms = 200,
+                  .alphazero_time_pct = 3.1f,
+                  .smart_pruning_factor = 1.33f});
 }
 
 TEST(Lc5TimeManagerTest, IncrementMaintainsBudgetOverLongGame) {
   GoParams params{.wtime = 8000, .winc = 80};
   for (int move = 0; move < 200; ++move) {
     SCOPED_TRACE(move);
-    const TimeManager manager(kConfig, params, false, kStart);
+    const TimeManager manager(kConfig, params, false, kStart, 0);
     ASSERT_FALSE(manager.ShouldStop(kStart));
     ASSERT_TRUE(manager.deadline().has_value());
     const auto budget =
@@ -165,7 +172,9 @@ TEST(Lc5TimeManagerTest, ExplicitMovetimeMinusOverheadWinsOverClocks) {
                      black_to_move, budget);
       ExpectDeadline(GoParams{.movetime = movetime}, black_to_move,
                      std::max<int64_t>(0, movetime),
-                     {.move_overhead_ms = 0, .alphazero_time_pct = 3.0f});
+                     {.move_overhead_ms = 0,
+                      .alphazero_time_pct = 3.0f,
+                      .smart_pruning_factor = 1.33f});
     }
   }
 }
@@ -228,7 +237,8 @@ TEST(Lc5TimeManagerTest, NodeParametersDoNotAffectTimePolicy) {
 }
 
 TEST(Lc5TimeManagerTest, SuppliedStartTimeChargesPreparation) {
-  const TimeManager manager(kConfig, GoParams{.movetime = 700}, false, kStart);
+  const TimeManager manager(kConfig, GoParams{.movetime = 700}, false, kStart,
+                            0);
   EXPECT_FALSE(manager.ShouldStop(kStart + milliseconds(499)));
   EXPECT_EQ(manager.deadline(), kStart + milliseconds(500));
   EXPECT_TRUE(manager.ShouldStop(kStart + milliseconds(600)));
@@ -272,12 +282,13 @@ TEST(Lc5TimeManagerTest, AnyVisitsAffordableWithoutEstimate) {
        {GoParams{.wtime = 10200, .ponder = true},
         GoParams{.wtime = 10200, .infinite = true},
         GoParams{.wtime = 10200, .movetime = 700}, GoParams{}}) {
-    const TimeManager manager(kConfig, params, false, kStart);
+    const TimeManager manager(kConfig, params, false, kStart, 0);
     EXPECT_TRUE(manager.CanAffordVisits(1'000'000, 1000, now));
   }
   TimeManager::Config disabled = kConfig;
   disabled.smart_pruning_factor = 0.0f;
-  const TimeManager manager(disabled, GoParams{.wtime = 10200}, false, kStart);
+  const TimeManager manager(disabled, GoParams{.wtime = 10200}, false, kStart,
+                            0);
   EXPECT_TRUE(manager.CanAffordVisits(1'000'000, 1000, now));
 }
 
@@ -286,7 +297,7 @@ TEST(Lc5TimeManagerTest, AffordableVisitsFollowRateAndFactor) {
   config.smart_pruning_factor = 2.0f;
   // Budget 300 ms; at 100 ms, 1000 visits leave 2000 more, 1000 after the
   // factor.
-  const TimeManager manager(config, GoParams{.wtime = 10200}, false, kStart);
+  const TimeManager manager(config, GoParams{.wtime = 10200}, false, kStart, 0);
   const auto now = kStart + milliseconds(100);
   EXPECT_TRUE(manager.CanAffordVisits(1000, 1000, now));
   EXPECT_FALSE(manager.CanAffordVisits(1001, 1000, now));

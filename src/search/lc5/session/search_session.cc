@@ -286,7 +286,6 @@ void SearchSession::JoinThreads() {
   store_jobs_.Close();
   for (auto& thread : store_threads_) thread.join();
   evaluator_.Join();
-  finished_.store(true, std::memory_order_release);
 }
 
 ThinkingInfo SearchSession::BuildThinkingInfo(bool final) const {

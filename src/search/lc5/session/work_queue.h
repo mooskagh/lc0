@@ -109,7 +109,7 @@ class WorkQueue {
 
   absl::Mutex mutex_;
   std::deque<T> queue_ ABSL_GUARDED_BY(mutex_);
-  // Lock-free copy of queue_.size(), for metrics and tests only.
+  // Lock-free copy of queue_.size(), for metrics.
   std::atomic<size_t> size_{0};
   bool closed_ ABSL_GUARDED_BY(mutex_) = false;
 };

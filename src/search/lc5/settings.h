@@ -47,7 +47,7 @@ class Settings {
     float active_visits_ratio;  // Live visits <= 16 + this * root visits.
     // Graph nodes kept in RAM; above it, nodes move to the NodeStore. 0 means
     // unlimited.
-    size_t graph_node_limit = 0;
+    size_t graph_node_limit;
   };
 
   explicit Settings(const OptionsDict& options);

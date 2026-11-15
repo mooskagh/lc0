@@ -57,7 +57,6 @@ TEST(Lc5VisitLimiterTest, AdmissionClosesOnBudgetAndOnStop) {
   EXPECT_EQ(limiter.AdmitVisits(0, {}, 1).size(), 1u);
   const auto admitted = limiter.AdmitVisits(0, {}, 3);
   EXPECT_EQ(admitted.size(), 1u);
-  EXPECT_EQ(metrics.visits_admitted.load(), 2u);
   // The budget is spent, so the worker does not wait for capacity.
   for (const auto id : admitted) pool.Release(id);
   EXPECT_TRUE(limiter.TakeWorkersToWake().empty());

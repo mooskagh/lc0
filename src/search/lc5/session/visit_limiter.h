@@ -52,9 +52,6 @@ class VisitLimiter {
     uint64_t root_visits_at_start;
     float active_visits_ratio;
   };
-  // Live visits allowed while the tree is still empty; see GetActiveVisitLimit.
-  static constexpr size_t kMinActiveVisits = 16;
-
   VisitLimiter(const Config& config, VisitPool& visits, Metrics& metrics);
   uint64_t node_limit() const { return node_limit_.load(); }
   uint64_t root_visits_at_start() const { return config_.root_visits_at_start; }
@@ -67,10 +64,6 @@ class VisitLimiter {
   // Closes admission of new visits.
   void Stop();
 
-  // Returns the max number of in-flight visits allowed now. Grows with the
-  // tree size (as classic grows its collision limit), so small trees are not
-  // flooded.
-  size_t GetActiveVisitLimit() const;
   // Starts up to `count` visits at `origin`; if blocked by the in-flight limit,
   // marks `worker` as waiting for TakeWorkersToWake.
   std::vector<VisitId> AdmitVisits(size_t worker, const VisitOrigin& origin,
@@ -80,6 +73,13 @@ class VisitLimiter {
   std::vector<size_t> TakeWorkersToWake();
 
  private:
+  // Live visits allowed while the tree is still empty; see GetActiveVisitLimit.
+  static constexpr size_t kMinActiveVisits = 16;
+
+  // Returns the max number of in-flight visits allowed now. Grows with the
+  // tree size (as classic grows its collision limit), so small trees are not
+  // flooded.
+  size_t GetActiveVisitLimit() const;
   bool IsAdmissionClosedLocked() const ABSL_EXCLUSIVE_LOCKS_REQUIRED(mutex_);
 
   const Config config_;

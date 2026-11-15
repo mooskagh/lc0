@@ -61,7 +61,7 @@ class VisitWorker {
   // What a visit worker shares with the rest of the session.
   struct Context {
     VisitEngine& engine;
-    const NodeStore* store = nullptr;
+    const NodeStore* store;
     const Settings::Resolved& settings;
     const VisitOrigin& root;
     VisitPool& visits;
@@ -88,8 +88,6 @@ class VisitWorker {
   bool IsDrained();
 
  private:
-  friend class SearchSessionTestPeer;
-
   // In one pass of its loop, a worker advances at most this many visits and
   // admits at most this many new ones, then checks its inbox again.
   static constexpr size_t kVisitsPerPass = 32;

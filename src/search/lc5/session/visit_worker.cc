@@ -27,6 +27,7 @@
 
 #include "search/lc5/session/visit_worker.h"
 
+#include <absl/algorithm/container.h>
 #include <absl/synchronization/mutex.h>
 
 #include <algorithm>
@@ -72,7 +73,7 @@ void SortByPrior(NodeEval& eval) {
   for (size_t i = 0; i < eval.moves.size(); ++i) {
     edges.emplace_back(PackedPrior(eval.priors[i]), eval.moves[i]);
   }
-  std::ranges::sort(edges, [](const auto& a, const auto& b) {
+  absl::c_sort(edges, [](const auto& a, const auto& b) {
     if (a.first != b.first) return a.first > b.first;
     return a.second.raw_data() < b.second.raw_data();
   });

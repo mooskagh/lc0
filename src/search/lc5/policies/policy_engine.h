@@ -65,10 +65,9 @@ class PolicyEngine final : public VisitEngine {
   }
 
   DescendResult DescendVisit(Visit& visit, Metrics& metrics,
-                             bool reselect_parent = false) override;
+                             bool reselect_parent) override;
   void BackupLeaf(Visit& visit, const VisitValue& value, Metrics& metrics,
-                  TerminalKind terminal = TerminalKind::kNonTerminal,
-                  bool count_at_leaf = false) override;
+                  TerminalKind terminal, bool count_at_leaf) override;
   void CancelVisit(const Visit& visit) override;
   void FillThinkingInfo(const VisitOrigin& root,
                         ThinkingInfo& info) const override;
@@ -92,7 +91,7 @@ class PolicyEngine final : public VisitEngine {
   static constexpr double kMinEvictFraction = 0.1;
 
   static bool IsBelowOrigin(const Visit& visit) {
-    return visit.path.size() > visit.origin.backup_prefix.size() + 1;
+    return visit.path.size() > 1;
   }
 
   // Follows `move` from the current node; returns true if that reaches and

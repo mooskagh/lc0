@@ -55,16 +55,15 @@ class Lc5Engine final : public SearchBase {
   void NewGame() override;
 
  private:
-  friend class SearchSessionTestPeer;
   void AbortAndWait();
   // Drops the graph and the stored nodes.
   void ClearGraph();
 
   // The UCI options.
   const OptionsDict* options_;
-  // Kept for the whole game; recreated when Lc5Policy changes. The cold store
-  // is created by the first search with Lc5GraphNodeLimit set.
+  // Owns the graph, kept for the whole game; recreated when Lc5Policy changes.
   std::unique_ptr<VisitEngine> visit_engine_;
+  // Cold store for evicted nodes, created once Lc5GraphNodeLimit is set.
   std::unique_ptr<NodeStore> node_store_;
   // The current search, or the last one until the next go.
   std::unique_ptr<SearchSession> session_;

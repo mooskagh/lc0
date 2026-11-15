@@ -47,7 +47,6 @@ TEST(Lc5MaterializationTableTest, OwnerOpensAndWaitersJoin) {
   ASSERT_TRUE(waiter);
   EXPECT_FALSE(waiter->owner);
   EXPECT_EQ(waiter->id, owner->id);
-  EXPECT_EQ(waiter->waiters, 1u);
   const auto other = table.Join(NodeKey{2}, Wakeup(12, 0), can_open);
   ASSERT_TRUE(other);
   EXPECT_TRUE(other->owner);
@@ -59,9 +58,9 @@ TEST(Lc5MaterializationTableTest, OwnerOpensAndWaitersJoin) {
   });
   ASSERT_TRUE(waiters);
   EXPECT_EQ(waiters->key, NodeKey{1});
-  EXPECT_EQ(waiters->owner.id, VisitId{10});
+  EXPECT_EQ(waiters->owner.id.value, 10u);
   ASSERT_EQ(waiters->waiters.size(), 1u);
-  EXPECT_EQ(waiters->waiters[0].id, VisitId{11});
+  EXPECT_EQ(waiters->waiters[0].id.value, 11u);
   EXPECT_EQ(waiters->waiters[0].worker, 1u);
   EXPECT_FALSE(table.empty());
   // A closed node's next visit opens a new materialization.

@@ -56,28 +56,11 @@ void MemoryNodeStore::StoreBatch(absl::Span<const StoredNode> nodes) {
   }
 }
 
-void MemoryNodeStore::EraseBatch(absl::Span<const NodeKey> keys) {
-  for (const NodeKey key : keys) {
-    auto& shard = shards_[ShardIndex(key)];
-    absl::MutexLock lock(shard.mutex);
-    shard.records.erase(key);
-  }
-}
-
 void MemoryNodeStore::Clear() {
   for (auto& shard : shards_) {
     absl::MutexLock lock(shard.mutex);
     shard.records.clear();
   }
-}
-
-size_t MemoryNodeStore::Size() const {
-  size_t size = 0;
-  for (const auto& shard : shards_) {
-    absl::MutexLock lock(shard.mutex);
-    size += shard.records.size();
-  }
-  return size;
 }
 
 }  // namespace lczero::lc5

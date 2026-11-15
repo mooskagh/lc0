@@ -55,12 +55,6 @@ class VisitPool {
   // Returns nullopt when the pool is full.
   std::optional<VisitId> Allocate(const VisitOrigin& origin);
 
-  // Whether `id` is a live visit, not a released or reused one.
-  bool IsLive(VisitId id) const {
-    if (!id || id.slot() >= slots_.size()) return false;
-    const Slot& slot = slots_[id.slot()];
-    return slot.epoch == id.epoch() && slot.visit.state != VisitState::kFree;
-  }
   // The live visit `id`.
   Visit& Get(VisitId id) {
     assert(IsLive(id));
@@ -72,11 +66,13 @@ class VisitPool {
   // Live visits, including ones allocated but not yet initialized.
   size_t active() const { return active_.load(std::memory_order_relaxed); }
 
-  void SetEpochForTesting(uint32_t slot, uint32_t epoch) {
-    slots_[slot].epoch = epoch;
-  }
-
  private:
+  // Whether `id` is a live visit, not a released or reused one.
+  bool IsLive(VisitId id) const {
+    if (!id || id.slot() >= slots_.size()) return false;
+    const Slot& slot = slots_[id.slot()];
+    return slot.epoch == id.epoch() && slot.visit.state != VisitState::kFree;
+  }
   // Its own cache lines: neighbouring slots usually have different owners.
   struct alignas(64) Slot {
     uint32_t epoch = 0;

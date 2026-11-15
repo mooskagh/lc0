@@ -44,13 +44,13 @@ class TimeManager {
     float alphazero_time_pct;
     // Remaining visits are divided by this when deciding whether the best
     // root move can still be overtaken; 0 disables early stopping.
-    float smart_pruning_factor = 1.33f;
+    float smart_pruning_factor;
   };
   using Clock = std::chrono::steady_clock;
 
   // `saved_ms`: unused time from earlier moves, added to a clock budget.
   TimeManager(Config config, const GoParams& params, bool black_to_move,
-              Clock::time_point start_time, int64_t saved_ms = 0);
+              Clock::time_point start_time, int64_t saved_ms);
 
   // When the search must stop; nullopt if only an external stop ends it.
   const std::optional<Clock::time_point>& deadline() const { return deadline_; }

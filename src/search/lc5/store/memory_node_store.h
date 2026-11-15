@@ -43,9 +43,7 @@ class MemoryNodeStore final : public NodeStore {
   std::vector<std::optional<std::vector<uint8_t>>> LoadBatch(
       absl::Span<const NodeKey> keys) override;
   void StoreBatch(absl::Span<const StoredNode> nodes) override;
-  void EraseBatch(absl::Span<const NodeKey> keys) override;
   void Clear() override;
-  size_t Size() const;
 
  private:
   static constexpr size_t kShardCount = 64;

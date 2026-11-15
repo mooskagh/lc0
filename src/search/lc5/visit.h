@@ -27,7 +27,6 @@
 
 #pragma once
 
-#include <compare>
 #include <cstdint>
 #include <optional>
 #include <vector>
@@ -42,7 +41,6 @@ struct VisitId {
   uint32_t slot() const { return static_cast<uint32_t>(value); }
   uint32_t epoch() const { return static_cast<uint32_t>(value >> 32); }
   explicit operator bool() const { return value != 0; }
-  auto operator<=>(const VisitId&) const = default;
 };
 
 struct PathStep {
@@ -52,12 +50,10 @@ struct PathStep {
   bool update_node = false;
 };
 
-// Where a visit starts selecting. `backup_prefix` lists the steps above `key`
-// that its value is also backed up through.
+// Where a visit starts selecting.
 struct VisitOrigin {
   NodeKey key;
   PositionHistory history;
-  std::vector<PathStep> backup_prefix;
 };
 
 enum class VisitState : uint8_t {
@@ -68,18 +64,8 @@ enum class VisitState : uint8_t {
 };
 
 struct Visit {
-  static Visit FromOrigin(const VisitOrigin& origin, VisitId id = {}) {
-    return Visit{.id = id,
-                 .state = VisitState::kReadyDescend,
-                 .origin = origin,
-                 .history = origin.history,
-                 .current_key = origin.key,
-                 .path = origin.backup_prefix};
-  }
-
   VisitId id;
   VisitState state = VisitState::kFree;
-  VisitOrigin origin;
   PositionHistory history;
   NodeKey current_key;
   std::vector<PathStep> path;

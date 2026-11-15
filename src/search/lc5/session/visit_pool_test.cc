@@ -31,7 +31,6 @@
 
 #include <array>
 #include <atomic>
-#include <limits>
 #include <thread>
 #include <vector>
 
@@ -51,7 +50,7 @@ TEST(Lc5VisitPoolTest, ExhaustionAndOrderedReuse) {
     ids[i] = *id;
     EXPECT_EQ(id->slot(), i);
     EXPECT_EQ(id->epoch(), 1u);
-    EXPECT_TRUE(pool.IsLive(*id));
+    EXPECT_EQ(pool.Get(*id).id.value, id->value);
   }
   EXPECT_EQ(pool.capacity(), 4u);
   EXPECT_EQ(pool.active(), 4u);
@@ -69,39 +68,31 @@ TEST(Lc5VisitPoolTest, ExhaustionAndOrderedReuse) {
   EXPECT_FALSE(pool.Allocate({}));
   for (VisitId id : ids) pool.Release(id);
   EXPECT_EQ(pool.active(), 0u);
-  for (VisitId id : ids) EXPECT_FALSE(pool.IsLive(id));
 }
 
-TEST(Lc5VisitPoolTest, StaleAndForeignIdsAreNotLive) {
+TEST(Lc5VisitPoolTest, ReusedSlotAdvancesEpochWithoutDisturbingLivePeers) {
   VisitPool pool(2);
   auto old = pool.Allocate({});
   auto other = pool.Allocate({});
   ASSERT_TRUE(old);
   ASSERT_TRUE(other);
-  EXPECT_FALSE(pool.IsLive({}));
-  EXPECT_FALSE(pool.IsLive(VisitId{(uint64_t{1} << 32) | 2}));
   pool.Release(*old);
-  EXPECT_FALSE(pool.IsLive(*old));
-  EXPECT_TRUE(pool.IsLive(*other));
+  EXPECT_EQ(pool.Get(*other).id.value, other->value);
   EXPECT_EQ(pool.active(), 1u);
   auto current = pool.Allocate({});
   ASSERT_TRUE(current);
   EXPECT_EQ(current->slot(), old->slot());
   EXPECT_NE(current->epoch(), old->epoch());
-  EXPECT_FALSE(pool.IsLive(*old));
-  EXPECT_TRUE(pool.IsLive(*current));
-  EXPECT_EQ(pool.Get(*current).id, *current);
+  EXPECT_NE(current->value, old->value);
+  EXPECT_EQ(pool.Get(*current).id.value, current->value);
+  EXPECT_EQ(pool.Get(*other).id.value, other->value);
   pool.Release(*current);
   pool.Release(*other);
   EXPECT_EQ(pool.active(), 0u);
 }
 
 TEST(Lc5VisitPoolTest, InitializesAndResetsVisit) {
-  VisitOrigin origin{.key = NodeKey{42},
-                     .history = {},
-                     .backup_prefix = {{.key = NodeKey{7},
-                                        .selected_move = std::nullopt,
-                                        .update_node = true}}};
+  VisitOrigin origin{.key = NodeKey{42}, .history = {}};
   origin.history.Reset(ChessBoard::kStartposBoard, 0, 0);
   VisitPool pool(1);
   for (uint32_t epoch = 1; epoch <= 2; ++epoch) {
@@ -109,42 +100,22 @@ TEST(Lc5VisitPoolTest, InitializesAndResetsVisit) {
     ASSERT_TRUE(id);
     EXPECT_EQ(id->epoch(), epoch);
     auto& visit = pool.Get(*id);
-    EXPECT_EQ(visit.id, *id);
+    EXPECT_EQ(visit.id.value, id->value);
     EXPECT_EQ(visit.state, VisitState::kReadyDescend);
-    EXPECT_EQ(visit.origin.key, origin.key);
-    EXPECT_EQ(visit.origin.history.Last(), origin.history.Last());
-    ASSERT_EQ(visit.origin.backup_prefix.size(), 1u);
-    EXPECT_EQ(visit.origin.backup_prefix[0].key, NodeKey{7});
     EXPECT_EQ(visit.history.GetLength(), 1);
     EXPECT_EQ(visit.history.Last(), origin.history.Last());
     EXPECT_EQ(visit.current_key, origin.key);
-    ASSERT_EQ(visit.path.size(), 1u);
-    EXPECT_EQ(visit.path[0].key, NodeKey{7});
-    EXPECT_TRUE(visit.path[0].update_node);
-    EXPECT_FALSE(visit.path[0].selected_move);
+    EXPECT_TRUE(visit.path.empty());
+    visit.path.push_back({.key = NodeKey{7}, .update_node = true});
     pool.Release(*id);
     // The slot itself is reset, not only marked free.
     EXPECT_FALSE(visit.id);
     EXPECT_EQ(visit.state, VisitState::kFree);
-    EXPECT_EQ(visit.origin.history.GetLength(), 0);
-    EXPECT_TRUE(visit.origin.backup_prefix.empty());
     EXPECT_EQ(visit.history.GetLength(), 0);
+    EXPECT_EQ(visit.current_key, NodeKey{});
     EXPECT_TRUE(visit.path.empty());
     EXPECT_EQ(pool.active(), 0u);
   }
-}
-
-TEST(Lc5VisitPoolTest, EpochWrapSkipsZero) {
-  VisitPool pool(1);
-  auto id = pool.Allocate({});
-  ASSERT_TRUE(id);
-  pool.Release(*id);
-  pool.SetEpochForTesting(0, std::numeric_limits<uint32_t>::max());
-  auto wrapped = pool.Allocate({});
-  ASSERT_TRUE(wrapped);
-  EXPECT_EQ(wrapped->epoch(), 1u);
-  EXPECT_TRUE(static_cast<bool>(*wrapped));
-  pool.Release(*wrapped);
 }
 
 TEST(Lc5VisitPoolTest, ConcurrentAllocationAndRelease) {
@@ -158,7 +129,7 @@ TEST(Lc5VisitPoolTest, ConcurrentAllocationAndRelease) {
         while (!(id = pool.Allocate({}))) std::this_thread::yield();
         EXPECT_FALSE(owned[id->slot()].exchange(true));
         const Visit& visit = pool.Get(*id);
-        EXPECT_EQ(visit.id, *id);
+        EXPECT_EQ(visit.id.value, id->value);
         EXPECT_EQ(visit.state, VisitState::kReadyDescend);
         EXPECT_LE(pool.active(), pool.capacity());
         EXPECT_TRUE(owned[id->slot()].exchange(false));

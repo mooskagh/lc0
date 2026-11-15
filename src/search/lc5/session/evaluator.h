@@ -78,8 +78,6 @@ class Evaluator {
   size_t queue_size() const { return queued_jobs_.Size(); }
 
  private:
-  friend class SearchSessionTestPeer;
-
   struct Batch {
     std::unique_ptr<BackendComputation> computation;
     std::vector<std::unique_ptr<AsyncJob>> jobs{};  // Whose inputs it has.

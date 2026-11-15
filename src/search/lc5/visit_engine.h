@@ -83,15 +83,14 @@ class VisitEngine {
   //   edge before descending.
   enum class DescendResult { kUnmaterializedLeaf, kCompleted };
   virtual DescendResult DescendVisit(Visit& visit, Metrics& metrics,
-                                     bool reselect_parent = false) = 0;
+                                     bool reselect_parent) = 0;
   // Backs up `value` for a visit paused at kUnmaterializedLeaf and releases its
   // reservations. `count_at_leaf` is false when InsertNode already counted
   // `value` as the leaf's first visit (the owner), and true for terminal
   // waiters.
   virtual void BackupLeaf(Visit& visit, const VisitValue& value,
-                          Metrics& metrics,
-                          TerminalKind terminal = TerminalKind::kNonTerminal,
-                          bool count_at_leaf = false) = 0;
+                          Metrics& metrics, TerminalKind terminal,
+                          bool count_at_leaf) = 0;
   // Releases every edge reservation on visit.path without committing a visit.
   virtual void CancelVisit(const Visit& visit) = 0;
 

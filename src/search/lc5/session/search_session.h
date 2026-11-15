@@ -60,21 +60,17 @@ class SearchSession {
                 TimeManager::Config time_management, VisitOrigin root,
                 GoParams go_params,
                 std::chrono::steady_clock::time_point start_time,
-                int64_t saved_ms = 0, NodeStore* store = nullptr);
+                int64_t saved_ms, NodeStore* store);
   ~SearchSession();
 
   void Start();  // Spawns the threads and returns; later calls do nothing.
   void Stop();   // Non-blocking: output bestmove, then drain.
   void Abort();  // Non-blocking: drain with no bestmove, unless already sent.
   void Wait();   // Blocks until drained and all threads are joined.
-  bool IsFinished() const { return finished_.load(std::memory_order_acquire); }
-  const Metrics& metrics() const { return metrics_; }
   // Time to save for the next move (TimeManager::UnusedMs at stop).
   int64_t unused_time_ms() const { return unused_time_ms_.load(); }
 
  private:
-  friend class SearchSessionTestPeer;
-
   // Thread bodies; each runs until its thread exits. Start() spawns them.
   void RunControllerWorker();
   void RunStoreWorker();
@@ -122,7 +118,6 @@ class SearchSession {
   std::atomic<bool> started_{false};
   std::atomic<bool> stop_requested_{false};
   std::atomic<bool> aborted_{false};
-  std::atomic<bool> finished_{false};
   std::atomic<int64_t> unused_time_ms_{0};
   ControllerSignal controller_signal_;
   int last_depth_ = 0;

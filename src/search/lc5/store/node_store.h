@@ -57,7 +57,6 @@ class NodeStore {
   // Stores or replaces the records; they are visible to LoadBatch once this
   // returns.
   virtual void StoreBatch(absl::Span<const StoredNode> nodes) = 0;
-  virtual void EraseBatch(absl::Span<const NodeKey> keys) = 0;
   virtual void Clear() = 0;
 };
 

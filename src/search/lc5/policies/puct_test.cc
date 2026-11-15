@@ -46,7 +46,9 @@
 namespace lczero::lc5 {
 namespace {
 
-struct TestPolicy : PuctPolicy<TestPolicy> {};
+struct TestPolicy : PuctPolicy<TestPolicy> {
+  using PuctPolicy::UpdateBounds;
+};
 
 using Node = lc5::Node<TestPolicy>;
 using Tried = TriedEdge<TestPolicy>;
@@ -103,9 +105,15 @@ std::unique_ptr<VisitEngine> MakeConfiguredEngine(
 VisitOrigin StartOrigin() {
   PositionHistory history;
   history.Reset(Position::FromFen(ChessBoard::kStartposFen));
-  return {.key = MakeNodeKey(history, 7),
-          .history = std::move(history),
-          .backup_prefix = {}};
+  return {.key = MakeNodeKey(history, 7), .history = std::move(history)};
+}
+
+Visit MakeVisit(const VisitOrigin& origin) {
+  return {.id = {},
+          .state = VisitState::kReadyDescend,
+          .history = origin.history,
+          .current_key = origin.key,
+          .path = {}};
 }
 
 TEST(Lc5PuctTest, OptionDefaultsMatchParams) {
@@ -512,14 +520,15 @@ TEST(Lc5PuctTest, PuctAveragesWhileDagReplacesEdgeValue) {
                                               .moves = {move_a, move_b},
                                               .priors = {0.5f, 0.3f}}));
     for (const float child_q : {-0.8f, -0.8f, -0.8f, -0.2f}) {
-      Visit visit = Visit::FromOrigin(root);
-      EXPECT_EQ(engine->DescendVisit(visit, metrics),
+      Visit visit = MakeVisit(root);
+      EXPECT_EQ(engine->DescendVisit(visit, metrics, false),
                 VisitEngine::DescendResult::kUnmaterializedLeaf);
       EXPECT_EQ(visit.path.front().selected_move, move_a);
-      engine->BackupLeaf(visit, {.q = child_q}, metrics);
+      engine->BackupLeaf(visit, {.q = child_q}, metrics,
+                         TerminalKind::kNonTerminal, false);
     }
-    Visit next = Visit::FromOrigin(root);
-    EXPECT_EQ(engine->DescendVisit(next, metrics),
+    Visit next = MakeVisit(root);
+    EXPECT_EQ(engine->DescendVisit(next, metrics, false),
               VisitEngine::DescendResult::kUnmaterializedLeaf);
     const Move selected = *next.path.front().selected_move;
     engine->CancelVisit(next);
@@ -551,11 +560,12 @@ TEST(Lc5PuctTest, DagForwardsSharedChildMeanToParent) {
         child.key, {.leaf = {.q = -0.8f}, .moves = {reply}, .priors = {1.0f}}));
     // A visit from root goes through child to an unmaterialized grandchild
     // whose leaf sample is 0.0.
-    Visit visit = Visit::FromOrigin(root);
-    EXPECT_EQ(engine->DescendVisit(visit, metrics),
+    Visit visit = MakeVisit(root);
+    EXPECT_EQ(engine->DescendVisit(visit, metrics, false),
               VisitEngine::DescendResult::kUnmaterializedLeaf);
     EXPECT_EQ(visit.path.size(), 3u);
-    engine->BackupLeaf(visit, {.q = 0.0f}, metrics);
+    engine->BackupLeaf(visit, {.q = 0.0f}, metrics, TerminalKind::kNonTerminal,
+                       false);
     ThinkingInfo info;
     engine->FillThinkingInfo(root, info);
     return info.score.value_or(0);
@@ -586,8 +596,8 @@ TEST(Lc5PuctTest, BothPoliciesProveWinFromCheckmateChild) {
                     .leaf = TerminalValue(TerminalKind::kCheckmate),
                     .moves = {},
                     .priors = {}}));
-    Visit visit = Visit::FromOrigin(root);
-    EXPECT_EQ(engine->DescendVisit(visit, metrics),
+    Visit visit = MakeVisit(root);
+    EXPECT_EQ(engine->DescendVisit(visit, metrics, false),
               VisitEngine::DescendResult::kCompleted);
     const RootStats stats = engine->GetRootStats(root.key);
     EXPECT_TRUE(stats.decided);
@@ -631,11 +641,11 @@ TEST(Lc5PuctTest, ReselectParentKeepsGoodEdgeOrSwitchesIntoTwoFold) {
     const Move alt_reply = h.Last().GetBoard().GenerateLegalMoves()[0];
 
     // Both owner and waiter pick move_alt (0.8, then 0.8 / 2 = 0.4 > 0.2).
-    Visit owner = Visit::FromOrigin(root);
-    Visit waiter = Visit::FromOrigin(root);
-    ASSERT_EQ(engine->DescendVisit(owner, metrics),
+    Visit owner = MakeVisit(root);
+    Visit waiter = MakeVisit(root);
+    ASSERT_EQ(engine->DescendVisit(owner, metrics, false),
               VisitEngine::DescendResult::kUnmaterializedLeaf);
-    ASSERT_EQ(engine->DescendVisit(waiter, metrics),
+    ASSERT_EQ(engine->DescendVisit(waiter, metrics, false),
               VisitEngine::DescendResult::kUnmaterializedLeaf);
     ASSERT_EQ(waiter.current_key, alt_key);
 
@@ -644,7 +654,8 @@ TEST(Lc5PuctTest, ReselectParentKeepsGoodEdgeOrSwitchesIntoTwoFold) {
     ASSERT_TRUE(engine->InsertNode(
         alt_key,
         {.leaf = {.q = child_q}, .moves = {alt_reply}, .priors = {1.0f}}));
-    engine->BackupLeaf(owner, {.q = child_q}, metrics);
+    engine->BackupLeaf(owner, {.q = child_q}, metrics,
+                       TerminalKind::kNonTerminal, false);
 
     // Waiter resumes with parent reselection.
     const auto res =
