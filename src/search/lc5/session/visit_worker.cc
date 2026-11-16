@@ -42,7 +42,9 @@ namespace lczero::lc5 {
 namespace {
 
 // Returns a terminal evaluation, or a nonterminal one with the legal moves.
-NodeEval DetectTerminal(const PositionHistory& history) {
+// Draws by rule still have legal moves and are only short-circuited below the
+// root, so the root always has moves to search and play.
+NodeEval DetectTerminal(const PositionHistory& history, bool is_root) {
   NodeEval eval;
   const Position& position = history.Last();
   const ChessBoard& board = position.GetBoard();
@@ -50,11 +52,11 @@ NodeEval DetectTerminal(const PositionHistory& history) {
   if (legal.empty()) {
     eval.terminal = board.IsUnderCheck() ? TerminalKind::kCheckmate
                                          : TerminalKind::kStalemate;
-  } else if (!board.HasMatingMaterial()) {
+  } else if (!is_root && !board.HasMatingMaterial()) {
     eval.terminal = TerminalKind::kInsufficientMaterial;
-  } else if (position.GetRule50Ply() >= 100) {
+  } else if (!is_root && position.GetRule50Ply() >= 100) {
     eval.terminal = TerminalKind::kRule50;
-  } else if (position.GetRepetitions() >= 2) {
+  } else if (!is_root && position.GetRepetitions() >= 2) {
     eval.terminal = TerminalKind::kRepetition;
   } else {
     eval.moves.assign(legal.begin(), legal.end());
@@ -325,7 +327,8 @@ void VisitWorker::PrepareMaterialization(Materialization materialization) {
     CancelMaterialization(materialization.id);
     return;
   }
-  materialization.eval = DetectTerminal(materialization.history);
+  materialization.eval = DetectTerminal(
+      materialization.history, materialization.key == context_.root.key);
   if (materialization.eval.terminal != TerminalKind::kNonTerminal) {
     CompleteMaterialization(materialization.id,
                             std::move(materialization.eval));
@@ -383,7 +386,7 @@ bool VisitWorker::RestoreMaterialization(MaterializationId materialization_id,
   const auto waiters =
       context_.materializations.Close(materialization_id, [&](NodeKey key) {
         is_root = key == context_.root.key;
-        return context_.engine.RestoreNode(key, record);
+        return context_.engine.RestoreNode(key, record, is_root);
       });
   if (!waiters) return false;
   if (is_root) notify_controller_ = true;

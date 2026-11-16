@@ -952,6 +952,94 @@ TEST(Lc5SearchTest, TerminalOwnerAndWaitersNeverEvaluate) {
   }
 }
 
+TEST(Lc5SearchTest, DrawByRuleRootPlaysLegalMoveEvenAfterReuse) {
+  // Build parent -> move -> draw-by-rule root for each rule-draw kind.
+  std::vector<std::pair<VisitOrigin, Move>> cases;
+  // 1. Insufficient material: 63... a1=B into KB vs KBB (all dark bishops).
+  cases.emplace_back(
+      Origin("8/4b3/2k5/8/8/2B5/p1K5/8 b - - 1 63"),
+      Move::WhitePromotion({kFileA, kRank7}, {kFileA, kRank8}, kBishop));
+  // 2. 50-move rule: ply 99 -> 100 with mating material still on the board.
+  cases.emplace_back(Origin("4k3/8/8/8/8/8/4R3/4K3 w - - 99 50"),
+                     Move::White({kFileE, kRank1}, {kFileF, kRank1}));
+  // 3. Threefold repetition: 7 reversible king moves -> 8th reaches 3-fold.
+  {
+    VisitOrigin rep = Origin("4k3/8/8/8/8/8/4R3/4K3 w - - 0 1");
+    const Move to_f = Move::White({kFileE, kRank1}, {kFileF, kRank1});
+    const Move to_e = Move::White({kFileF, kRank1}, {kFileE, kRank1});
+    for (const Move m : {to_f, to_f, to_e, to_e, to_f, to_f, to_e}) {
+      rep.history.Append(m);
+    }
+    rep.key = MakeNodeKey(rep.history, 7);
+    cases.emplace_back(std::move(rep), to_e);
+  }
+
+  enum class Mode { kFresh, kGraphReuse, kStoreReuse };
+  for (size_t i = 0; i < cases.size(); ++i) {
+    const auto& [parent, move] = cases[i];
+    VisitOrigin root = parent;
+    root.history.Append(move);
+    root.key = MakeNodeKey(root.history, 7);
+    const auto legal = root.history.Last().GetBoard().GenerateLegalMoves();
+    ASSERT_FALSE(legal.empty());
+
+    for (const Mode mode :
+         {Mode::kFresh, Mode::kGraphReuse, Mode::kStoreReuse}) {
+      SCOPED_TRACE(i);
+      SCOPED_TRACE(static_cast<int>(mode));
+      auto engine = MakeTestEngine();
+      MemoryNodeStore store;
+      ControlledBackend backend;
+
+      if (mode != Mode::kFresh) {
+        // Materialize `root` as a non-root child first so it becomes an
+        // edge-less draw-by-rule terminal stub.
+        ASSERT_TRUE(engine->InsertNode(parent.key,
+                                       {.moves = {move}, .priors = {1.0f}}));
+        RecordingResponder warmup;
+        SearchSession parent_session(
+            engine.get(), &backend, &warmup, TestSettings(1, 4),
+            TestTimeManagement(), parent,
+            GoParams{.nodes = 1, .infinite = true},
+            std::chrono::steady_clock::now(), 0, nullptr);
+        parent_session.Start();
+        parent_session.Wait();
+        const RootStats stub = engine->GetRootStats(root.key);
+        ASSERT_TRUE(stub.materialized);
+        ASSERT_EQ(stub.edges, 0u);
+        if (mode == Mode::kStoreReuse) {
+          Metrics metrics;
+          ASSERT_GT(engine->EvictToStore(store, 10, NodeKey{~0ull}, metrics),
+                    0u);
+          ASSERT_FALSE(engine->ContainsNode(root.key));
+        }
+      }
+
+      RecordingResponder responder;
+      SearchSession session(
+          engine.get(), &backend, &responder, TestSettings(1, 4),
+          TestTimeManagement(), root,
+          GoParams{.nodes = mode == Mode::kGraphReuse ? 0 : 4},
+          std::chrono::steady_clock::now(), 0,
+          mode == Mode::kStoreReuse ? &store : nullptr);
+      session.Start();
+      session.Wait();
+
+      ASSERT_EQ(responder.bestmoves.size(), 1u);
+      Move played = responder.bestmoves[0].bestmove;
+      if (root.history.IsBlackToMove()) played.Flip();
+      EXPECT_TRUE(absl::c_linear_search(legal, played));
+      const RootStats stats = engine->GetRootStats(root.key);
+      ASSERT_TRUE(stats.materialized);
+      EXPECT_EQ(stats.edges, legal.size());
+      if (mode == Mode::kStoreReuse) {
+        EXPECT_EQ(CommentMetric(responder.thinking.back(), "store_hit"), 1u);
+      }
+      ExpectNoLeakedReservations(*engine);
+    }
+  }
+}
+
 TEST(Lc5SearchTest, ImmediateAndMixedResultsKeepJobStorageAlive) {
   for (const auto cache : {ControlledBackend::Cache::kAll,
                            ControlledBackend::Cache::kAlternating}) {

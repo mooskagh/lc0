@@ -102,12 +102,17 @@ class VisitEngine {
   // Graph node lifecycle and cold-tier serialization.
   virtual size_t GetGraphSize() const = 0;
   virtual bool ContainsNode(NodeKey key) const = 0;
+  // Drops a draw-by-rule terminal stub at `root`, if present, so a search at
+  // `root` expands its legal moves; called only while no search runs.
+  virtual void PrepareRoot(NodeKey root) = 0;
   // Installs a node from `eval` and counts `eval.leaf` as its first visit;
   // returns false if the node was already in the graph.
   virtual bool InsertNode(NodeKey key, const NodeEval& eval) = 0;
   // Installs a node serialized by EvictToStore with its old statistics; returns
-  // false if rejected (already present), in which case evaluate it instead.
-  virtual bool RestoreNode(NodeKey key, absl::Span<const uint8_t> record) = 0;
+  // false if rejected (already present, or a draw-by-rule stub when `is_root`),
+  // in which case evaluate it instead.
+  virtual bool RestoreNode(NodeKey key, absl::Span<const uint8_t> record,
+                           bool is_root) = 0;
   // Moves up to `max` unreserved nodes (fewest visits first, never `keep`) from
   // the graph to `store`; returns how many were evicted.
   virtual size_t EvictToStore(NodeStore& store, size_t max, NodeKey keep,

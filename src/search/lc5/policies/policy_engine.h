@@ -77,11 +77,15 @@ class PolicyEngine final : public VisitEngine {
   bool ContainsNode(NodeKey key) const override {
     return graph_.ContainsNode(key);
   }
+  void PrepareRoot(NodeKey root) override { graph_.EraseDrawByRuleNode(root); }
   bool InsertNode(NodeKey key, const NodeEval& eval) override {
     return graph_.InsertNode(key, eval);
   }
-  bool RestoreNode(NodeKey key, absl::Span<const uint8_t> record) override {
-    return graph_.InsertNode(key, DeserializeNode<P>(record));
+  bool RestoreNode(NodeKey key, absl::Span<const uint8_t> record,
+                   bool is_root) override {
+    Node<P> node = DeserializeNode<P>(record);
+    if (is_root && IsDrawByRule(node.terminal)) return false;
+    return graph_.InsertNode(key, std::move(node));
   }
   size_t EvictToStore(NodeStore& store, size_t max, NodeKey keep,
                       Metrics& metrics) override;

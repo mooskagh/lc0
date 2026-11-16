@@ -132,6 +132,10 @@ class GameGraph {
   // 0); returns true if erased.
   bool EraseNode(NodeKey key, uint32_t version);
 
+  // Erases the node if it is a draw-by-rule terminal stub with no reservations
+  // (in_flight == 0); returns true if erased.
+  bool EraseDrawByRuleNode(NodeKey key);
+
  private:
   static constexpr size_t kEvictWindow = 4096;
   using Tried = TriedEdge<P>;
@@ -369,6 +373,20 @@ bool GameGraph<P>::EraseNode(NodeKey key, uint32_t version) {
   absl::MutexLock lock(shard.mutex);
   const Node* node = FindOrNull(shard.nodes, key);
   if (!node || node->version != version || node->in_flight > 0) return false;
+  shard.nodes.erase(key);
+  size_.fetch_sub(1, std::memory_order_relaxed);
+  return true;
+}
+
+template <typename P>
+bool GameGraph<P>::EraseDrawByRuleNode(NodeKey key) {
+  auto& shard = ShardFor(key);
+  absl::MutexLock lock(shard.mutex);
+  const Node* node = FindOrNull(shard.nodes, key);
+  if (!node || !IsDrawByRule(node->terminal) || node->in_flight > 0) {
+    return false;
+  }
+  assert(node->edges.empty());
   shard.nodes.erase(key);
   size_.fetch_sub(1, std::memory_order_relaxed);
   return true;

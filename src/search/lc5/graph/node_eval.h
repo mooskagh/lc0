@@ -58,6 +58,14 @@ inline bool IsExact(TerminalKind terminal) {
          terminal != TerminalKind::kRepetition;
 }
 
+// Whether a terminal still has legal moves on the board, so at the search root
+// it must be expanded instead of short-circuited.
+inline bool IsDrawByRule(TerminalKind terminal) {
+  return terminal == TerminalKind::kRule50 ||
+         terminal == TerminalKind::kRepetition ||
+         terminal == TerminalKind::kInsufficientMaterial;
+}
+
 // Immutable result of evaluating a node: either a terminal kind, or legal moves
 // with priors and the network's leaf value.
 struct NodeEval {

@@ -63,7 +63,9 @@ uint64_t GetNodeLimit(const GoParams& go_params, const RootStats& root) {
 
 VisitLimiter::Config MakeLimiterConfig(const Settings::Resolved& settings,
                                        const GoParams& go_params,
-                                       const RootStats& root) {
+                                       VisitEngine& engine, NodeKey root_key) {
+  engine.PrepareRoot(root_key);
+  const RootStats root = engine.GetRootStats(root_key);
   return {.workers = static_cast<size_t>(settings.threads),
           .node_limit = GetNodeLimit(go_params, root),
           .root_visits_at_start = root.visits,
@@ -100,8 +102,7 @@ SearchSession::SearchSession(VisitEngine* engine, Backend* backend,
                     saved_ms),
       may_stop_early_(!go_params.infinite && !go_params.ponder),
       visit_pool_(settings_.max_active_visits),
-      limiter_(MakeLimiterConfig(settings_, go_params,
-                                 engine_->GetRootStats(root_.key)),
+      limiter_(MakeLimiterConfig(settings_, go_params, *engine_, root_.key),
                visit_pool_, metrics_),
       inboxes_(settings_.threads),
       evaluator_({.backend = *backend_,

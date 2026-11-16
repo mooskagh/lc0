@@ -593,6 +593,34 @@ TEST(Lc5GraphTest, EraseNodeRefusesAfterAnyChange) {
   EXPECT_EQ(graph.Size(), 0u);
 }
 
+TEST(Lc5GraphTest, EraseDrawByRuleNodeDropsOnlyRuleDrawStubs) {
+  Graph graph;
+  for (const auto [hash, kind] :
+       {std::pair{1u, TerminalKind::kNonTerminal},
+        std::pair{2u, TerminalKind::kCheckmate},
+        std::pair{3u, TerminalKind::kStalemate},
+        std::pair{4u, TerminalKind::kRule50},
+        std::pair{5u, TerminalKind::kRepetition},
+        std::pair{6u, TerminalKind::kInsufficientMaterial}}) {
+    const NodeEval eval =
+        kind == TerminalKind::kNonTerminal
+            ? NodeEval{.moves = {M(kFileA, kFileA)}, .priors = {1.0f}}
+            : NodeEval{.terminal = kind,
+                       .leaf = TerminalValue(kind),
+                       .moves = {},
+                       .priors = {}};
+    ASSERT_TRUE(graph.InsertNode(NodeKey{hash}, eval));
+  }
+  EXPECT_FALSE(graph.EraseDrawByRuleNode(NodeKey{99}));
+  EXPECT_FALSE(graph.EraseDrawByRuleNode(NodeKey{1}));
+  EXPECT_FALSE(graph.EraseDrawByRuleNode(NodeKey{2}));
+  EXPECT_FALSE(graph.EraseDrawByRuleNode(NodeKey{3}));
+  EXPECT_TRUE(graph.EraseDrawByRuleNode(NodeKey{4}));
+  EXPECT_TRUE(graph.EraseDrawByRuleNode(NodeKey{5}));
+  EXPECT_TRUE(graph.EraseDrawByRuleNode(NodeKey{6}));
+  EXPECT_EQ(graph.Size(), 3u);
+}
+
 TEST(Lc5GraphTest, FindEvictableNodesSkipReservedNodes) {
   Graph graph;
   const auto params = TestParams();
