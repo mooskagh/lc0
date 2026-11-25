@@ -157,7 +157,7 @@ void VisitWorker::HandleWakeup(const VisitWakeup& wakeup) {
   // Even on stop, visits that already have a leaf value to back up may finish.
   if (wakeup.kind == VisitWakeup::Kind::kBackup) {
     context_.algorithm.BackupVisit(visit, wakeup.value, context_.metrics,
-                                   wakeup.terminal, wakeup.count_at_leaf);
+                                   wakeup.terminal);
     FinishVisit(visit, true);
     return;
   }
@@ -360,16 +360,13 @@ void VisitWorker::CompleteMaterialization(MaterializationId materialization_id,
   } else {
     context_.metrics.publications_rejected.fetch_add(1);
   }
-  // The owner backs up the new leaf value; waiters reselect and descend unless
-  // the leaf is terminal, in which case they also back up. A rejected
-  // publication resumes descending only.
-  const bool terminal = accepted && eval.terminal != TerminalKind::kNonTerminal;
+  // The owner backs up the new leaf value; waiters reselect and descend. A
+  // rejected publication resumes descending for everyone.
   const auto wake = [&](VisitWakeup wakeup, bool owner) {
-    if (accepted && (owner || terminal)) {
+    if (accepted && owner) {
       wakeup.kind = VisitWakeup::Kind::kBackup;
       wakeup.value = eval.leaf;
       wakeup.terminal = eval.terminal;
-      wakeup.count_at_leaf = !owner;
     } else {
       wakeup.kind = VisitWakeup::Kind::kReselectAndDescend;
     }

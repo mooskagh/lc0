@@ -65,8 +65,7 @@ class PolicyAlgorithm final : public SearchAlgorithm {
   RunResult RunVisit(Visit& visit, Metrics& metrics,
                      bool reselect_at_parent) override;
   void BackupVisit(const Visit& visit, const VisitValue& value,
-                   Metrics& metrics, TerminalKind terminal,
-                   bool count_at_leaf) override;
+                   Metrics& metrics, TerminalKind terminal) override;
   void CancelVisit(const Visit& visit) override;
   void FillThinkingInfo(const VisitOrigin& root,
                         ThinkingInfo& info) const override;
@@ -161,13 +160,11 @@ SearchAlgorithm::RunResult PolicyAlgorithm<P>::RunVisit(
 template <typename P>
 void PolicyAlgorithm<P>::BackupVisit(const Visit& visit,
                                      const VisitValue& value, Metrics& metrics,
-                                     TerminalKind terminal,
-                                     bool count_at_leaf) {
+                                     TerminalKind terminal) {
   if (terminal != TerminalKind::kNonTerminal) {
     metrics.terminal_visits.fetch_add(1);
   }
-  Backup(visit, value, IsExact(terminal), /*update_leaf=*/count_at_leaf,
-         metrics);
+  Backup(visit, value, IsExact(terminal), /*update_leaf=*/false, metrics);
 }
 
 template <typename P>

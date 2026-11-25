@@ -852,7 +852,7 @@ TEST(Lc5SearchTest, TwoFoldDrawBacksUpToRoot) {
             SearchAlgorithm::RunResult::kNeedsMaterialization);
   ASSERT_EQ(visit.path.size(), kNodes);
   EXPECT_EQ(visit.current_key, cur.key);
-  engine->BackupVisit(visit, draw, metrics, TerminalKind::kNonTerminal, false);
+  engine->BackupVisit(visit, draw, metrics, TerminalKind::kNonTerminal);
 
   for (size_t i = 0; i < kNodes; ++i) {
     SCOPED_TRACE(i);

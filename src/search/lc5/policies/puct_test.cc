@@ -526,7 +526,7 @@ TEST(Lc5PuctTest, PuctAveragesWhileDagReplacesEdgeValue) {
       EXPECT_EQ(visit.path.size(), 1u);
       EXPECT_EQ(visit.path.front().move, move_a);
       engine->BackupVisit(visit, {.q = child_q}, metrics,
-                          TerminalKind::kNonTerminal, false);
+                          TerminalKind::kNonTerminal);
     }
     Visit next = MakeVisit(root);
     EXPECT_EQ(engine->RunVisit(next, metrics, false),
@@ -566,8 +566,8 @@ TEST(Lc5PuctTest, DagForwardsSharedChildMeanToParent) {
     EXPECT_EQ(engine->RunVisit(visit, metrics, false),
               SearchAlgorithm::RunResult::kNeedsMaterialization);
     EXPECT_EQ(visit.path.size(), 2u);
-    engine->BackupVisit(visit, {.q = 0.0f}, metrics, TerminalKind::kNonTerminal,
-                        false);
+    engine->BackupVisit(visit, {.q = 0.0f}, metrics,
+                        TerminalKind::kNonTerminal);
     ThinkingInfo info;
     engine->FillThinkingInfo(root, info);
     return info.score.value_or(0);
@@ -657,7 +657,7 @@ TEST(Lc5PuctTest, ReselectParentKeepsGoodEdgeOrSwitchesIntoTwoFold) {
         alt_key,
         {.leaf = {.q = child_q}, .moves = {alt_reply}, .priors = {1.0f}}));
     engine->BackupVisit(owner, {.q = child_q}, metrics,
-                        TerminalKind::kNonTerminal, false);
+                        TerminalKind::kNonTerminal);
 
     // Waiter resumes with parent reselection.
     const auto res =

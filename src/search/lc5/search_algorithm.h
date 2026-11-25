@@ -86,12 +86,11 @@ class SearchAlgorithm {
   virtual RunResult RunVisit(Visit& visit, Metrics& metrics,
                              bool reselect_at_parent) = 0;
   // Backs up `value` all the way from `visit.current_key` to the root for a
-  // visit paused at kNeedsMaterialization, releasing all edge reservations.
-  // `count_at_leaf` is false when InsertNode already counted `value` as the
-  // leaf's first visit (the owner), and true for terminal waiters.
+  // visit paused at kNeedsMaterialization whose leaf was just inserted by
+  // InsertNode (so `value` is already counted at the leaf), releasing all edge
+  // reservations.
   virtual void BackupVisit(const Visit& visit, const VisitValue& value,
-                           Metrics& metrics, TerminalKind terminal,
-                           bool count_at_leaf) = 0;
+                           Metrics& metrics, TerminalKind terminal) = 0;
   // Releases every edge reservation on visit.path without committing a visit.
   virtual void CancelVisit(const Visit& visit) = 0;
 

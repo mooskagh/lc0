@@ -64,7 +64,6 @@ struct VisitWakeup {
   size_t worker;  // Owning visit worker (the only thread that may mutate it).
   Kind kind = Kind::kReselectAndDescend;
   TerminalKind terminal = TerminalKind::kNonTerminal;  // For kBackup.
-  bool count_at_leaf = false;                          // For kBackup.
   VisitValue value{};                                  // For kBackup.
 };
 
