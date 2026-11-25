@@ -25,7 +25,7 @@
   Program grant you additional permission to convey the resulting work.
 */
 
-#include "search/lc5/session/evaluator.h"
+#include "search/lc5/session/eval_worker_pool.h"
 
 #include <absl/synchronization/mutex.h>
 
@@ -34,39 +34,39 @@
 
 namespace lczero::lc5 {
 
-Evaluator::Evaluator(const Context& context)
+EvalWorkerPool::EvalWorkerPool(const Context& context)
     : context_(context), producing_workers_(context.inboxes.size()) {}
 
-void Evaluator::Start() {
+void EvalWorkerPool::Start() {
   for (int i = 0; i < context_.settings.eval_threads; ++i) {
-    threads_.emplace_back(&Evaluator::RunBlocking, this);
+    threads_.emplace_back(&EvalWorkerPool::RunBlocking, this);
   }
 }
 
-void Evaluator::Join() {
+void EvalWorkerPool::Join() {
   queued_jobs_.Close();
   for (auto& thread : threads_) {
     if (thread.joinable()) thread.join();
   }
 }
 
-void Evaluator::Push(std::unique_ptr<AsyncJob> job) {
+void EvalWorkerPool::Push(std::unique_ptr<AsyncJob> job) {
   queued_jobs_.Push(std::move(job));
   RaiseHighWater(context_.metrics.ready_eval_high_water, queued_jobs_.Size());
 }
 
-void Evaluator::OnProducerActive() {
+void EvalWorkerPool::OnProducerActive() {
   // Only disables the starvation predicate, so it needs no handshake.
   producing_workers_.fetch_add(1);
 }
 
-void Evaluator::OnProducerBlocked() {
+void EvalWorkerPool::OnProducerBlocked() {
   if (producing_workers_.fetch_sub(1) == 1) {
     queued_jobs_.NotifyPredicateChanged();
   }
 }
 
-void Evaluator::RunBlocking() {
+void EvalWorkerPool::RunBlocking() {
   std::unique_ptr<AsyncJob> job;
   while (queued_jobs_.Pop(&job)) {
     if (IsStopping()) {
@@ -78,7 +78,8 @@ void Evaluator::RunBlocking() {
   }
 }
 
-Evaluator::Batch Evaluator::CollectBatch(std::unique_ptr<AsyncJob> job) {
+EvalWorkerPool::Batch EvalWorkerPool::CollectBatch(
+    std::unique_ptr<AsyncJob> job) {
   const size_t target = context_.settings.minibatch_size;
   const auto deadline =
       context_.settings.max_batch_delay_ms == 0
@@ -107,7 +108,8 @@ Evaluator::Batch Evaluator::CollectBatch(std::unique_ptr<AsyncJob> job) {
       if (!queued_jobs_.PopUntil(
               &job, deadline, [&] { return IsStopping() || IsStarved(); },
               fits)) {
-        batch.timed_out = std::chrono::steady_clock::now() >= deadline;
+        batch.collection_timed_out =
+            std::chrono::steady_clock::now() >= deadline;
         break;
       }
     }
@@ -119,7 +121,8 @@ Evaluator::Batch Evaluator::CollectBatch(std::unique_ptr<AsyncJob> job) {
   return batch;
 }
 
-void Evaluator::AddJobToBatch(BackendComputation& computation, AsyncJob& job) {
+void EvalWorkerPool::AddJobToBatch(BackendComputation& computation,
+                                   AsyncJob& job) {
   for (auto& materialization : job.materializations) {
     if (IsStopping()) break;
     auto& eval = materialization.eval;
@@ -139,12 +142,12 @@ void Evaluator::AddJobToBatch(BackendComputation& computation, AsyncJob& job) {
   }
 }
 
-void Evaluator::EvaluateBatch(Batch batch) {
+void EvalWorkerPool::EvaluateBatch(Batch batch) {
   const size_t used = batch.computation->UsedBatchSize();
   if (used > 0 && !IsStopping()) {
     if (used < static_cast<size_t>(context_.settings.minibatch_size)) {
-      (batch.timed_out ? context_.metrics.partial_timeout_flushes
-                       : context_.metrics.partial_starvation_flushes)
+      (batch.collection_timed_out ? context_.metrics.partial_timeout_flushes
+                                  : context_.metrics.partial_starvation_flushes)
           .fetch_add(1);
     }
     context_.metrics.evaluation_batches.fetch_add(1);
@@ -163,7 +166,7 @@ void Evaluator::EvaluateBatch(Batch batch) {
   for (auto& job : batch.jobs) ReturnJobToWorker(std::move(job));
 }
 
-bool Evaluator::IsStarved() const {
+bool EvalWorkerPool::IsStarved() const {
   // Executing, store or returned jobs can still unblock a producer. Only
   // predict starvation when every outstanding job is held by a collector and
   // no worker can send a job independently; the deadline bounds the
@@ -175,7 +178,7 @@ bool Evaluator::IsStarved() const {
          context_.jobs_in_flight.load() <= jobs_in_collection_.load();
 }
 
-void Evaluator::ReturnJobToWorker(std::unique_ptr<AsyncJob> job) {
+void EvalWorkerPool::ReturnJobToWorker(std::unique_ptr<AsyncJob> job) {
   context_.inboxes[job->worker].AddCompletion(std::move(job));
   context_.metrics.inbox_notifications.fetch_add(1);
 }

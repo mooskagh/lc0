@@ -49,7 +49,7 @@ namespace lczero::lc5 {
 // A batch below the minibatch size waits for more jobs until the oldest job's
 // deadline, or until it is starved: no worker can send a job without a
 // collected one coming back first.
-class Evaluator {
+class EvalWorkerPool {
  public:
   struct Context {
     Backend& backend;
@@ -61,7 +61,7 @@ class Evaluator {
     // All workers' AsyncJobs sent and not yet finished.
     const std::atomic<size_t>& jobs_in_flight;
   };
-  explicit Evaluator(const Context& context);
+  explicit EvalWorkerPool(const Context& context);
 
   // Lifecycle (called by SearchSession).
   void Start();
@@ -81,7 +81,8 @@ class Evaluator {
   struct Batch {
     std::unique_ptr<BackendComputation> computation;
     std::vector<std::unique_ptr<AsyncJob>> jobs{};  // Whose inputs it has.
-    bool timed_out = false;  // Flushed at the deadline; only counted.
+    bool collection_timed_out =
+        false;  // Flushed at the deadline; only counted.
   };
 
   // Thread loop and batching.

@@ -40,7 +40,7 @@
 
 #include "search/lc5/metrics.h"
 #include "search/lc5/search_algorithm.h"
-#include "search/lc5/session/evaluator.h"
+#include "search/lc5/session/eval_worker_pool.h"
 #include "search/lc5/session/materialization_table.h"
 #include "search/lc5/session/messages.h"
 #include "search/lc5/session/visit_limiter.h"
@@ -70,7 +70,7 @@ class VisitWorker {
     MaterializationTable& materializations;
     // Every worker's inbox, by worker index.
     std::span<WorkerInbox> inboxes;
-    Evaluator& evaluator;
+    EvalWorkerPool& eval_workers;
     WorkQueue<StoreJob>& store_jobs;
     // All workers' AsyncJobs sent and not yet finished.
     std::atomic<size_t>& jobs_in_flight;
@@ -169,9 +169,9 @@ class VisitWorker {
   size_t jobs_in_flight_ = 0;              // Sent and not yet finished.
   size_t materializations_in_flight_ = 0;  // Materializations in those jobs.
   // Whether this worker has local work that can send more eval jobs without
-  // first receiving an inbox completion. Mirrored to `evaluator_` (which starts
-  // with all workers counted as producing) so it knows when to flush a partial
-  // batch.
+  // first receiving an inbox completion. Mirrored to `context_.eval_workers`
+  // (which starts with all workers counted as producing) so it knows when to
+  // flush a partial batch.
   bool producing_ = true;
 
   // Per-pass notifications and shutdown/drain state.

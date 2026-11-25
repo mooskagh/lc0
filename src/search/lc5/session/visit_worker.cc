@@ -447,9 +447,9 @@ void VisitWorker::ReportProducingStatus(bool producing) {
   if (producing_ == producing) return;
   producing_ = producing;
   if (producing) {
-    context_.evaluator.OnProducerActive();
+    context_.eval_workers.OnProducerActive();
   } else {
-    context_.evaluator.OnProducerBlocked();
+    context_.eval_workers.OnProducerBlocked();
   }
 }
 
@@ -464,7 +464,7 @@ void VisitWorker::SendJobs() {
     RaiseHighWater(context_.metrics.io_jobs_high_water,
                    context_.jobs_in_flight.fetch_add(1) + 1);
     if (job->kind == AsyncJob::Kind::kEval) {
-      context_.evaluator.Push(std::move(job));
+      context_.eval_workers.Push(std::move(job));
     } else {
       assert(context_.store);
       context_.store_jobs.Push(std::move(job));

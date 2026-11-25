@@ -106,12 +106,12 @@ SearchSession::SearchSession(SearchAlgorithm* algorithm, Backend* backend,
       limiter_(MakeLimiterConfig(settings_, go_params, *algorithm_, root_.key),
                visit_pool_, metrics_),
       inboxes_(settings_.threads),
-      evaluator_({.backend = *backend_,
-                  .settings = settings_,
-                  .limiter = limiter_,
-                  .metrics = metrics_,
-                  .inboxes = inboxes_,
-                  .jobs_in_flight = jobs_in_flight_}) {
+      eval_workers_({.backend = *backend_,
+                     .settings = settings_,
+                     .limiter = limiter_,
+                     .metrics = metrics_,
+                     .inboxes = inboxes_,
+                     .jobs_in_flight = jobs_in_flight_}) {
   const VisitWorker::Context context{.algorithm = *algorithm_,
                                      .store = store_,
                                      .settings = settings_,
@@ -121,7 +121,7 @@ SearchSession::SearchSession(SearchAlgorithm* algorithm, Backend* backend,
                                      .limiter = limiter_,
                                      .materializations = materializations_,
                                      .inboxes = inboxes_,
-                                     .evaluator = evaluator_,
+                                     .eval_workers = eval_workers_,
                                      .store_jobs = store_jobs_,
                                      .jobs_in_flight = jobs_in_flight_,
                                      .controller_signal = controller_signal_};
@@ -145,7 +145,7 @@ void SearchSession::Start() {
       store_threads_.emplace_back(&SearchSession::RunStoreWorkerBlocking, this);
     }
   }
-  evaluator_.Start();
+  eval_workers_.Start();
   for (auto& worker : visit_workers_) worker->Start();
   controller_thread_ =
       std::thread(&SearchSession::RunControllerWorkerBlocking, this);
@@ -267,7 +267,7 @@ void SearchSession::RespondBestMove() {
   }
   // Synchronize the stop transition with sleepers only after the response.
   WakeAllVisitWorkers();
-  evaluator_.NotifyStop();
+  eval_workers_.NotifyStop();
 }
 
 bool SearchSession::IsFullyDrained() {
@@ -288,7 +288,7 @@ void SearchSession::JoinThreads() {
   for (auto& worker : visit_workers_) worker->Join();
   store_jobs_.Close();
   for (auto& thread : store_threads_) thread.join();
-  evaluator_.Join();
+  eval_workers_.Join();
 }
 
 ThinkingInfo SearchSession::BuildThinkingInfo(bool final) const {
@@ -305,8 +305,9 @@ ThinkingInfo SearchSession::BuildThinkingInfo(bool final) const {
   info.depth = static_cast<int>(metrics_.max_depth.load());
   info.seldepth = static_cast<int>(metrics_.max_selected_depth.load());
   algorithm_->FillThinkingInfo(root_, info);
-  info.comment = metrics_.Format(algorithm_->GetGraphSize(),
-                                 visit_pool_.active(), evaluator_.queue_size());
+  info.comment =
+      metrics_.Format(algorithm_->GetGraphSize(), visit_pool_.active(),
+                      eval_workers_.queue_size());
   if (final) info.comment += " final";
   return info;
 }

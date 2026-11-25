@@ -38,7 +38,7 @@
 #include "neural/backend.h"
 #include "search/lc5/metrics.h"
 #include "search/lc5/search_algorithm.h"
-#include "search/lc5/session/evaluator.h"
+#include "search/lc5/session/eval_worker_pool.h"
 #include "search/lc5/session/materialization_table.h"
 #include "search/lc5/session/messages.h"
 #include "search/lc5/session/visit_limiter.h"
@@ -140,7 +140,7 @@ class SearchSession {
   // Queues, workers and threads.
   std::vector<WorkerInbox> inboxes_;  // By visit worker index.
   WorkQueue<StoreJob> store_jobs_;
-  Evaluator evaluator_;
+  EvalWorkerPool eval_workers_;
   std::vector<std::unique_ptr<VisitWorker>> visit_workers_;
   std::vector<std::thread> store_threads_;
   std::thread controller_thread_;
