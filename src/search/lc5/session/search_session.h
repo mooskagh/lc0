@@ -37,6 +37,7 @@
 #include "chess/uciloop.h"
 #include "neural/backend.h"
 #include "search/lc5/metrics.h"
+#include "search/lc5/search_algorithm.h"
 #include "search/lc5/session/evaluator.h"
 #include "search/lc5/session/materialization_table.h"
 #include "search/lc5/session/messages.h"
@@ -47,7 +48,6 @@
 #include "search/lc5/settings.h"
 #include "search/lc5/store/node_store.h"
 #include "search/lc5/time_manager.h"
-#include "search/lc5/visit_engine.h"
 
 namespace lczero::lc5 {
 
@@ -55,8 +55,8 @@ namespace lczero::lc5 {
 // leaves for the store and the network, and reports through the responder.
 class SearchSession {
  public:
-  SearchSession(VisitEngine* engine, Backend* backend, UciResponder* responder,
-                Settings::Resolved settings,
+  SearchSession(SearchAlgorithm* algorithm, Backend* backend,
+                UciResponder* responder, Settings::Resolved settings,
                 TimeManager::Config time_management, VisitOrigin root,
                 GoParams go_params,
                 std::chrono::steady_clock::time_point start_time,
@@ -102,7 +102,7 @@ class SearchSession {
   void RunEvictionJob(const EvictionJob& job);
 
   // Configuration, fixed for the session (constructor only).
-  VisitEngine* const engine_;
+  SearchAlgorithm* const algorithm_;
   NodeStore* const store_;
   Backend* const backend_;
   UciResponder* const responder_;

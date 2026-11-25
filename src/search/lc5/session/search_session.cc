@@ -63,9 +63,10 @@ uint64_t GetNodeLimit(const GoParams& go_params, const RootStats& root) {
 
 VisitLimiter::Config MakeLimiterConfig(const Settings::Resolved& settings,
                                        const GoParams& go_params,
-                                       VisitEngine& engine, NodeKey root_key) {
-  engine.PrepareRoot(root_key);
-  const RootStats root = engine.GetRootStats(root_key);
+                                       SearchAlgorithm& algorithm,
+                                       NodeKey root_key) {
+  algorithm.PrepareRoot(root_key);
+  const RootStats root = algorithm.GetRootStats(root_key);
   return {.workers = static_cast<size_t>(settings.threads),
           .node_limit = GetNodeLimit(go_params, root),
           .root_visits_at_start = root.visits,
@@ -83,14 +84,14 @@ constexpr Move kInvalidMove =
 // The session: construction, stop, the controller and output.
 //////////////////////////////////////////////////////////////////////////////
 
-SearchSession::SearchSession(VisitEngine* engine, Backend* backend,
+SearchSession::SearchSession(SearchAlgorithm* algorithm, Backend* backend,
                              UciResponder* responder,
                              Settings::Resolved settings,
                              TimeManager::Config time_management,
                              VisitOrigin root, GoParams go_params,
                              steady_clock::time_point start_time,
                              int64_t saved_ms, NodeStore* store)
-    : engine_(engine),
+    : algorithm_(algorithm),
       store_(store),
       backend_(backend),
       responder_(responder),
@@ -102,7 +103,7 @@ SearchSession::SearchSession(VisitEngine* engine, Backend* backend,
                     saved_ms),
       may_stop_early_(!go_params.infinite && !go_params.ponder),
       visit_pool_(settings_.max_active_visits),
-      limiter_(MakeLimiterConfig(settings_, go_params, *engine_, root_.key),
+      limiter_(MakeLimiterConfig(settings_, go_params, *algorithm_, root_.key),
                visit_pool_, metrics_),
       inboxes_(settings_.threads),
       evaluator_({.backend = *backend_,
@@ -111,7 +112,7 @@ SearchSession::SearchSession(VisitEngine* engine, Backend* backend,
                   .metrics = metrics_,
                   .inboxes = inboxes_,
                   .jobs_in_flight = jobs_in_flight_}) {
-  const VisitWorker::Context context{.engine = *engine_,
+  const VisitWorker::Context context{.algorithm = *algorithm_,
                                      .store = store_,
                                      .settings = settings_,
                                      .root = root_,
@@ -151,7 +152,7 @@ void SearchSession::Start() {
 
 void SearchSession::Stop() {
   stop_requested_.store(true);
-  if (engine_->GetRootStats(root_.key).materialized) {
+  if (algorithm_->GetRootStats(root_.key).materialized) {
     limiter_.Stop();  // Close visit admission and set IsStopping().
   } else {
     limiter_.CapNodeLimit(1);  // Admit only the root visit before stopping.
@@ -204,7 +205,7 @@ void SearchSession::RunControllerWorker() {
 
 void SearchSession::MaybeOutputInfo(steady_clock::time_point now,
                                     steady_clock::time_point& next_info) {
-  const RootStats root = engine_->GetRootStats(root_.key);
+  const RootStats root = algorithm_->GetRootStats(root_.key);
   const int depth = static_cast<int>(metrics_.max_depth.load());
   const int seldepth = static_cast<int>(metrics_.max_selected_depth.load());
   const bool changed = root.materialized && (depth > 0 || seldepth > 0) &&
@@ -221,7 +222,7 @@ void SearchSession::MaybeOutputInfo(steady_clock::time_point now,
 }
 
 bool SearchSession::ShouldStop(steady_clock::time_point now) const {
-  const RootStats root = engine_->GetRootStats(root_.key);
+  const RootStats root = algorithm_->GetRootStats(root_.key);
   if (!root.materialized) return false;
   if (stop_requested_.load() || time_manager_.ShouldStop(now) ||
       metrics_.visits_completed.load() >= limiter_.node_limit()) {
@@ -302,9 +303,9 @@ ThinkingInfo SearchSession::BuildThinkingInfo(bool final) const {
   info.eps = ms > 0 ? static_cast<int>(evals * 1000 / ms) : 0;
   info.depth = static_cast<int>(metrics_.max_depth.load());
   info.seldepth = static_cast<int>(metrics_.max_selected_depth.load());
-  engine_->FillThinkingInfo(root_, info);
-  info.comment = metrics_.Format(engine_->GetGraphSize(), visit_pool_.active(),
-                                 evaluator_.queue_size());
+  algorithm_->FillThinkingInfo(root_, info);
+  info.comment = metrics_.Format(algorithm_->GetGraphSize(),
+                                 visit_pool_.active(), evaluator_.queue_size());
   if (final) info.comment += " final";
   return info;
 }
@@ -358,7 +359,7 @@ void SearchSession::SendEvictionJob() {
   const size_t limit = settings_.graph_node_limit;
   // Evict down to a low-water mark, in bounded batches so loads interleave.
   const size_t target = limit - limit / 10;
-  const size_t size = engine_->GetGraphSize();
+  const size_t size = algorithm_->GetGraphSize();
   if (size <= target || (size <= limit && !evicting_.load())) {
     evicting_.store(false);
     return;
@@ -371,7 +372,7 @@ void SearchSession::SendEvictionJob() {
 
 void SearchSession::RunEvictionJob(const EvictionJob& job) {
   assert(store_);
-  if (engine_->EvictToStore(*store_, job.count, root_.key, metrics_) == 0) {
+  if (algorithm_->EvictToStore(*store_, job.count, root_.key, metrics_) == 0) {
     evicting_.store(false);
   }
   // The controller may queue the next round, or finish draining.

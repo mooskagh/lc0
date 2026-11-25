@@ -42,15 +42,15 @@
 
 #include "search/lc5/graph/graph.h"
 #include "search/lc5/policies/node_serialization.h"
+#include "search/lc5/search_algorithm.h"
 #include "search/lc5/settings.h"
-#include "search/lc5/visit_engine.h"
 
 namespace lczero::lc5 {
 
-// VisitEngine backed by a GameGraph<P>, delegating node/edge statistics,
+// SearchAlgorithm backed by a GameGraph<P>, delegating node/edge statistics,
 // selection, and backup to policy P (see PuctPolicy in puct.h).
 template <typename P>
-class PolicyEngine final : public VisitEngine {
+class PolicyAlgorithm final : public SearchAlgorithm {
  public:
   std::string_view GetName() const override { return P::kName; }
   void Configure(const OptionsDict& options,
@@ -112,9 +112,8 @@ class PolicyEngine final : public VisitEngine {
 };
 
 template <typename P>
-VisitEngine::DescendResult PolicyEngine<P>::DescendVisit(Visit& visit,
-                                                         Metrics& metrics,
-                                                         bool reselect_parent) {
+SearchAlgorithm::DescendResult PolicyAlgorithm<P>::DescendVisit(
+    Visit& visit, Metrics& metrics, bool reselect_parent) {
   // At the origin there is no parent edge to reselect.
   if (reselect_parent && IsBelowOrigin(visit)) {
     const PathStep parent = visit.path.back();
@@ -161,9 +160,9 @@ VisitEngine::DescendResult PolicyEngine<P>::DescendVisit(Visit& visit,
 }
 
 template <typename P>
-void PolicyEngine<P>::BackupLeaf(const Visit& visit, const VisitValue& value,
-                                 Metrics& metrics, TerminalKind terminal,
-                                 bool count_at_leaf) {
+void PolicyAlgorithm<P>::BackupLeaf(const Visit& visit, const VisitValue& value,
+                                    Metrics& metrics, TerminalKind terminal,
+                                    bool count_at_leaf) {
   if (terminal != TerminalKind::kNonTerminal) {
     metrics.terminal_visits.fetch_add(1);
   }
@@ -172,15 +171,15 @@ void PolicyEngine<P>::BackupLeaf(const Visit& visit, const VisitValue& value,
 }
 
 template <typename P>
-void PolicyEngine<P>::CancelVisit(const Visit& visit) {
+void PolicyAlgorithm<P>::CancelVisit(const Visit& visit) {
   for (const PathStep& step : visit.path) {
     graph_.ReleaseEdge(step.key, step.move);
   }
 }
 
 template <typename P>
-void PolicyEngine<P>::FillThinkingInfo(const VisitOrigin& root,
-                                       ThinkingInfo& info) const {
+void PolicyAlgorithm<P>::FillThinkingInfo(const VisitOrigin& root,
+                                          ThinkingInfo& info) const {
   info.pv.clear();
   auto node = graph_.SnapshotNode(root.key);
   if (!node) return;
@@ -202,7 +201,7 @@ void PolicyEngine<P>::FillThinkingInfo(const VisitOrigin& root,
 }
 
 template <typename P>
-RootStats PolicyEngine<P>::GetRootStats(NodeKey root) const {
+RootStats PolicyAlgorithm<P>::GetRootStats(NodeKey root) const {
   const auto node = graph_.SnapshotNode(root);
   if (!node) return {};
   RootStats stats{
@@ -225,8 +224,8 @@ RootStats PolicyEngine<P>::GetRootStats(NodeKey root) const {
 }
 
 template <typename P>
-size_t PolicyEngine<P>::EvictToStore(NodeStore& store, size_t max, NodeKey keep,
-                                     Metrics& metrics) {
+size_t PolicyAlgorithm<P>::EvictToStore(NodeStore& store, size_t max,
+                                        NodeKey keep, Metrics& metrics) {
   const size_t size = graph_.Size();
   if (size == 0 || max == 0) return 0;
   const double fraction =
@@ -272,7 +271,7 @@ size_t PolicyEngine<P>::EvictToStore(NodeStore& store, size_t max, NodeKey keep,
 }
 
 template <typename P>
-bool PolicyEngine<P>::FollowEdge(Visit& visit, Move move, Metrics& metrics) {
+bool PolicyAlgorithm<P>::FollowEdge(Visit& visit, Move move, Metrics& metrics) {
   visit.path.push_back({.key = visit.current_key, .move = move});
   visit.history.Append(move);
   visit.current_key = MakeNodeKey(visit.history, history_key_length_);
@@ -293,8 +292,9 @@ bool PolicyEngine<P>::FollowEdge(Visit& visit, Move move, Metrics& metrics) {
 }
 
 template <typename P>
-void PolicyEngine<P>::Backup(const Visit& visit, const VisitValue& value,
-                             bool exact, bool update_leaf, Metrics& metrics) {
+void PolicyAlgorithm<P>::Backup(const Visit& visit, const VisitValue& value,
+                                bool exact, bool update_leaf,
+                                Metrics& metrics) {
   RaiseHighWater(metrics.max_depth, visit.path.size() + 1);
   auto backup = P::MakeLeafBackup(value, exact);
   if (update_leaf) {

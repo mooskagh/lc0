@@ -49,9 +49,9 @@
 #include "search/lc5/engine.h"
 #include "search/lc5/policies/puct.h"
 #include "search/lc5/policies/registry.h"
+#include "search/lc5/search_algorithm.h"
 #include "search/lc5/session/search_session.h"
 #include "search/lc5/store/memory_node_store.h"
-#include "search/lc5/visit_engine.h"
 
 namespace lczero::lc5 {
 namespace {
@@ -66,9 +66,9 @@ Settings::Resolved TestSettings(int threads = 1, int capacity = 4) {
           .graph_node_limit = 0};
 }
 
-std::unique_ptr<VisitEngine> MakeTestEngine(std::string_view policy = "puct",
-                                            bool sticky_endgames = false,
-                                            int history_key_length = 7) {
+std::unique_ptr<SearchAlgorithm> MakeTestEngine(
+    std::string_view policy = "puct", bool sticky_endgames = false,
+    int history_key_length = 7) {
   OptionsParser parser;
   Settings::Populate(&parser);
   PopulatePolicyOptions(&parser);
@@ -79,7 +79,7 @@ std::unique_ptr<VisitEngine> MakeTestEngine(std::string_view policy = "puct",
   parser.SetUciOption("FpuValue", "0");
   parser.SetUciOption("StickyEndgames", sticky_endgames ? "true" : "false");
   parser.SetUciOption("HistoryKeyLength", std::to_string(history_key_length));
-  auto engine = MakeVisitEngine(policy);
+  auto engine = MakeSearchAlgorithm(policy);
   engine->Configure(parser.GetOptionsDict(), {.has_mlh = true,
                                               .has_wdl = true,
                                               .runs_on_cpu = true,
@@ -104,7 +104,7 @@ VisitOrigin Origin(std::string_view fen = ChessBoard::kStartposFen) {
 // Pre-inserts `root` with `count` non-terminal legal moves at uniform prior.
 // With FPU = 0 and positive backend leaf Q (negative at root), root visits fan
 // out 1-to-1 across the returned child origins in exact edge order.
-std::vector<VisitOrigin> InsertUniformRootChildren(VisitEngine& engine,
+std::vector<VisitOrigin> InsertUniformRootChildren(SearchAlgorithm& engine,
                                                    const VisitOrigin& root,
                                                    size_t count) {
   auto legal = root.history.Last().GetBoard().GenerateLegalMoves();
@@ -424,7 +424,7 @@ class BlockingStore final : public NodeStore {
 // Evicts every node from `engine` (call last: clears the graph). Because
 // EvictToStore skips any node with `in_flight > 0`, evicting the full graph
 // proves every visit either backed up or cancelled its reservations cleanly.
-void ExpectNoLeakedReservations(VisitEngine& engine) {
+void ExpectNoLeakedReservations(SearchAlgorithm& engine) {
   const size_t size = engine.GetGraphSize();
   if (size == 0) return;
   RecordingStore sink;
@@ -849,7 +849,7 @@ TEST(Lc5SearchTest, TwoFoldDrawBacksUpToRoot) {
               .current_key = origins.front().key,
               .path = {}};
   ASSERT_EQ(engine->DescendVisit(visit, metrics, false),
-            VisitEngine::DescendResult::kUnmaterializedLeaf);
+            SearchAlgorithm::DescendResult::kUnmaterializedLeaf);
   ASSERT_EQ(visit.path.size(), kNodes);
   EXPECT_EQ(visit.current_key, cur.key);
   engine->BackupLeaf(visit, draw, metrics, TerminalKind::kNonTerminal, false);
@@ -922,11 +922,10 @@ TEST(Lc5SearchTest, TerminalOwnerAndWaitersNeverEvaluate) {
       ControlledBackend backend;
       RecordingResponder responder;
       const auto root = Origin(test.fen);
-      SearchSession session(engine.get(), &backend, &responder,
-                            TestSettings(1, 4), TestTimeManagement(), root,
-                            GoParams{.nodes = 4},
-                            std::chrono::steady_clock::now(), 0,
-                            with_store ? &store : nullptr);
+      SearchSession session(
+          engine.get(), &backend, &responder, TestSettings(1, 4),
+          TestTimeManagement(), root, GoParams{.nodes = 4},
+          std::chrono::steady_clock::now(), 0, with_store ? &store : nullptr);
       session.Start();
       session.Wait();
       ExpectIdleFinalOutput(responder, 4);
@@ -1184,7 +1183,8 @@ TEST(Lc5SearchTest, SavedGraphRestoresWithStatisticsInFreshGraph) {
   ExpectIdleFinalOutput(responder, 1);
   const auto& final = responder.thinking.back();
   EXPECT_GE(CommentMetric(final, "store_hit"), 1u);
-  EXPECT_EQ(CommentMetric(final, "restored"), CommentMetric(final, "store_hit"));
+  EXPECT_EQ(CommentMetric(final, "restored"),
+            CommentMetric(final, "store_hit"));
   const RootStats stats = engine->GetRootStats(root.key);
   ASSERT_TRUE(stats.materialized);
   EXPECT_EQ(stats.visits, saved.visits + 1);
@@ -1323,8 +1323,7 @@ TEST(Lc5SearchTest, MultiworkerMixedCacheResultsRespectBatchAndItemLimits) {
     int batch_size;
     int capacity;
   };
-  for (const auto& test :
-       {Case{1, 4, 40}, Case{2, 16, 64}, Case{4, 32, 128}}) {
+  for (const auto& test : {Case{1, 4, 40}, Case{2, 16, 64}, Case{4, 32, 128}}) {
     SCOPED_TRACE(test.evaluators);
     SCOPED_TRACE(test.batch_size);
     for (const int delay : {0, 10}) {

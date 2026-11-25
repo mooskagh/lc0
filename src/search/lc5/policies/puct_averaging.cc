@@ -28,7 +28,7 @@
 #include <string_view>
 
 #include "search/lc5/graph/graph.h"
-#include "search/lc5/policies/policy_engine.h"
+#include "search/lc5/policies/policy_algorithm.h"
 #include "search/lc5/policies/puct.h"
 #include "search/lc5/policies/registry.h"
 

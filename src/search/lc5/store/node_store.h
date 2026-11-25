@@ -37,7 +37,7 @@
 
 namespace lczero::lc5 {
 
-// A node's search state, serialized by the VisitEngine. The store does not
+// A node's search state, serialized by the SearchAlgorithm. The store does not
 // look inside it, and `record` only needs to outlive StoreBatch.
 struct StoredNode {
   NodeKey key;

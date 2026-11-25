@@ -32,14 +32,14 @@
 #include <string_view>
 #include <vector>
 
-#include "search/lc5/visit_engine.h"
+#include "search/lc5/search_algorithm.h"
 #include "utils/optionsdict.h"
 #include "utils/optionsparser.h"
 
 namespace lczero::lc5 {
 
 template <typename P>
-class PolicyEngine;
+class PolicyAlgorithm;
 
 // A singleton that keeps every registered lc5 policy. Policies register
 // themselves with REGISTER_LC5_POLICY; the one with the highest priority is
@@ -50,7 +50,7 @@ class PolicyRegistry {
     std::string_view name;
     int priority;
     void (*populate)(OptionsParser*);
-    std::unique_ptr<VisitEngine> (*make)();
+    std::unique_ptr<SearchAlgorithm> (*make)();
   };
 
   static PolicyRegistry* Get();
@@ -61,10 +61,11 @@ class PolicyRegistry {
   template <typename P>
   struct Register {
     explicit Register(int priority) {
-      PolicyRegistry::Get()->Add({P::kName, priority, &P::Params::Populate,
-                                  []() -> std::unique_ptr<VisitEngine> {
-                                    return std::make_unique<PolicyEngine<P>>();
-                                  }});
+      PolicyRegistry::Get()->Add(
+          {P::kName, priority, &P::Params::Populate,
+           []() -> std::unique_ptr<SearchAlgorithm> {
+             return std::make_unique<PolicyAlgorithm<P>>();
+           }});
     }
   };
 
@@ -75,7 +76,7 @@ class PolicyRegistry {
 };
 
 // Registers policy P (with P::kName and P::Params::Populate) as an Lc5Policy
-// choice. The registering file must include policy_engine.h.
+// choice. The registering file must include policy_algorithm.h.
 #define REGISTER_LC5_POLICY(P, priority)                             \
   namespace {                                                        \
   [[maybe_unused]] static ::lczero::lc5::PolicyRegistry::Register<P> \
@@ -86,7 +87,8 @@ class PolicyRegistry {
 void PopulatePolicyOptions(OptionsParser* options);
 // The policy chosen by the Lc5Policy option.
 std::string PolicyName(const OptionsDict& options);
-// A fresh engine with an empty graph for the named policy; throws if unknown.
-std::unique_ptr<VisitEngine> MakeVisitEngine(std::string_view name);
+// A fresh algorithm with an empty graph for the named policy; throws if
+// unknown.
+std::unique_ptr<SearchAlgorithm> MakeSearchAlgorithm(std::string_view name);
 
 }  // namespace lczero::lc5

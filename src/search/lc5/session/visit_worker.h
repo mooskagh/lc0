@@ -39,6 +39,7 @@
 #include <vector>
 
 #include "search/lc5/metrics.h"
+#include "search/lc5/search_algorithm.h"
 #include "search/lc5/session/evaluator.h"
 #include "search/lc5/session/materialization_table.h"
 #include "search/lc5/session/messages.h"
@@ -46,7 +47,6 @@
 #include "search/lc5/session/visit_pool.h"
 #include "search/lc5/session/work_queue.h"
 #include "search/lc5/settings.h"
-#include "search/lc5/visit_engine.h"
 
 namespace lczero::lc5 {
 
@@ -60,7 +60,7 @@ class VisitWorker {
  public:
   // What a visit worker shares with the rest of the session.
   struct Context {
-    VisitEngine& engine;
+    SearchAlgorithm& algorithm;
     const NodeStore* store;
     const Settings::Resolved& settings;
     const VisitOrigin& root;

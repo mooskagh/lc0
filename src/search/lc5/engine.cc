@@ -50,7 +50,7 @@ void Lc5Engine::AbortAndWait() {
 }
 
 void Lc5Engine::ClearGraph() {
-  if (visit_engine_) visit_engine_->Clear();
+  if (algorithm_) algorithm_->Clear();
   if (node_store_) node_store_->Clear();
 }
 
@@ -94,11 +94,11 @@ void Lc5Engine::StartSearch(const GoParams& params) {
 
   // A different policy keeps different statistics, so it starts a new graph.
   const std::string policy = PolicyName(*options_);
-  if (!visit_engine_ || visit_engine_->GetName() != policy) {
-    visit_engine_ = MakeVisitEngine(policy);
+  if (!algorithm_ || algorithm_->GetName() != policy) {
+    algorithm_ = MakeSearchAlgorithm(policy);
     node_store_.reset();
   }
-  visit_engine_->Configure(*options_, backend_->GetAttributes());
+  algorithm_->Configure(*options_, backend_->GetAttributes());
   const Settings settings(*options_);
   const Settings::Resolved resolved =
       settings.Resolve(backend_->GetAttributes());
@@ -112,7 +112,7 @@ void Lc5Engine::StartSearch(const GoParams& params) {
   const auto start = clock_start_.value_or(std::chrono::steady_clock::now());
   clock_start_.reset();
   session_ = std::make_unique<SearchSession>(
-      visit_engine_.get(), backend_, uci_responder_, resolved,
+      algorithm_.get(), backend_, uci_responder_, resolved,
       settings.time_management(), std::move(root), params, start,
       std::exchange(saved_time_ms_, 0), node_store_.get());
   session_->Start();

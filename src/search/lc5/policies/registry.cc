@@ -75,7 +75,7 @@ std::string PolicyName(const OptionsDict& options) {
   return options.Get<std::string>(kPolicy);
 }
 
-std::unique_ptr<VisitEngine> MakeVisitEngine(std::string_view name) {
+std::unique_ptr<SearchAlgorithm> MakeSearchAlgorithm(std::string_view name) {
   const auto& policies = PolicyRegistry::Get()->entries();
   const auto it = absl::c_find_if(
       policies, [name](const auto& policy) { return policy.name == name; });

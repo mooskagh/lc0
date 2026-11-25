@@ -33,8 +33,8 @@
 
 #include "chess/gamestate.h"
 #include "search/lc5/policies/registry.h"
+#include "search/lc5/search_algorithm.h"
 #include "search/lc5/session/search_session.h"
-#include "search/lc5/visit_engine.h"
 #include "search/search.h"
 
 namespace lczero::lc5 {
@@ -62,7 +62,7 @@ class Lc5Engine final : public SearchBase {
   // The UCI options.
   const OptionsDict* options_;
   // Owns the graph, kept for the whole game; recreated when Lc5Policy changes.
-  std::unique_ptr<VisitEngine> visit_engine_;
+  std::unique_ptr<SearchAlgorithm> algorithm_;
   // Cold store for evicted nodes, created once Lc5GraphNodeLimit is set.
   std::unique_ptr<NodeStore> node_store_;
   // The current search, or the last one until the next go.

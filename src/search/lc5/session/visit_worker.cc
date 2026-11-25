@@ -156,8 +156,8 @@ void VisitWorker::HandleWakeup(const VisitWakeup& wakeup) {
   assert(visit.state == VisitState::kWaitingMaterialization);
   // Even on stop, visits that already have a leaf value to back up may finish.
   if (wakeup.kind == VisitWakeup::Kind::kBackup) {
-    context_.engine.BackupLeaf(visit, wakeup.value, context_.metrics,
-                               wakeup.terminal, wakeup.count_at_leaf);
+    context_.algorithm.BackupLeaf(visit, wakeup.value, context_.metrics,
+                                  wakeup.terminal, wakeup.count_at_leaf);
     FinishVisit(visit, true);
     return;
   }
@@ -256,9 +256,9 @@ void VisitWorker::AdvanceVisit(VisitId id) {
     }
     const bool reselect_parent = visit.state == VisitState::kReadyReselect;
     visit.state = VisitState::kReadyDescend;
-    if (context_.engine.DescendVisit(visit, context_.metrics,
-                                     reselect_parent) ==
-        VisitEngine::DescendResult::kCompleted) {
+    if (context_.algorithm.DescendVisit(visit, context_.metrics,
+                                        reselect_parent) ==
+        SearchAlgorithm::DescendResult::kCompleted) {
       FinishVisit(visit, true);
       return;
     }
@@ -267,7 +267,7 @@ void VisitWorker::AdvanceVisit(VisitId id) {
 }
 
 void VisitWorker::CancelVisit(Visit& visit) {
-  context_.engine.CancelVisit(visit);
+  context_.algorithm.CancelVisit(visit);
   FinishVisit(visit, false);
 }
 
@@ -296,7 +296,7 @@ void VisitWorker::FinishVisit(Visit& visit, bool completed) {
 bool VisitWorker::SuspendVisit(Visit& visit) {
   const auto joined = context_.materializations.Join(
       visit.current_key, {.id = visit.id, .worker = worker_id_},
-      [&] { return !context_.engine.ContainsNode(visit.current_key); });
+      [&] { return !context_.algorithm.ContainsNode(visit.current_key); });
   if (!joined) return false;
   const bool owner = joined->owner;
   if (owner) {
@@ -347,7 +347,7 @@ void VisitWorker::CompleteMaterialization(MaterializationId materialization_id,
   const auto waiters =
       context_.materializations.Close(materialization_id, [&](NodeKey key) {
         is_root = key == context_.root.key;
-        accepted = context_.engine.InsertNode(key, eval);
+        accepted = context_.algorithm.InsertNode(key, eval);
         return true;
       });
   if (is_root && accepted) notify_controller_ = true;
@@ -355,7 +355,7 @@ void VisitWorker::CompleteMaterialization(MaterializationId materialization_id,
   if (accepted) {
     context_.metrics.graph_nodes_created.fetch_add(1);
     RaiseHighWater(context_.metrics.graph_size_high_water,
-                   context_.engine.GetGraphSize());
+                   context_.algorithm.GetGraphSize());
     MaybeRequestEviction();
   } else {
     context_.metrics.publications_rejected.fetch_add(1);
@@ -386,14 +386,14 @@ bool VisitWorker::RestoreMaterialization(MaterializationId materialization_id,
   const auto waiters =
       context_.materializations.Close(materialization_id, [&](NodeKey key) {
         is_root = key == context_.root.key;
-        return context_.engine.RestoreNode(key, record, is_root);
+        return context_.algorithm.RestoreNode(key, record, is_root);
       });
   if (!waiters) return false;
   if (is_root) notify_controller_ = true;
   assert(waiters->owner.worker == worker_id_);
   context_.metrics.nodes_restored.fetch_add(1);
   RaiseHighWater(context_.metrics.graph_size_high_water,
-                 context_.engine.GetGraphSize());
+                 context_.algorithm.GetGraphSize());
   MaybeRequestEviction();
   // The node has its statistics back and nothing new to back up, so the owner
   // and the waiters all select below it.
@@ -433,7 +433,7 @@ void VisitWorker::MaybeRequestEviction() {
   // Wakes the controller once the graph outgrows its limit, so eviction keeps
   // up with fast searches between its periodic checks.
   if (context_.store && context_.settings.graph_node_limit > 0 &&
-      context_.engine.GetGraphSize() > context_.settings.graph_node_limit &&
+      context_.algorithm.GetGraphSize() > context_.settings.graph_node_limit &&
       context_.controller_signal.RequestEviction()) {
     notify_controller_ = true;
   }

@@ -40,7 +40,7 @@
 
 namespace lczero::lc5 {
 
-// Serialization of a materialized Node<P> for PolicyEngine's NodeStore: its
+// Serialization of a materialized Node<P> for PolicyAlgorithm's NodeStore: its
 // terminal kind, the policy's node statistics, its legal edges and the
 // statistics of its tried edges. Reservations (in_flight) and the version
 // belong to the live graph and are not stored.
@@ -73,8 +73,8 @@ size_t SerializedNodeSize(const Node<P>& node) {
   static_assert(internal::kTriviallySerializable<P>);
   assert(node.edges.size() <= std::numeric_limits<uint8_t>::max());
   assert(node.tried.size() <= node.edges.size());
-  return sizeof(internal::SerializedNodeHeader) + sizeof(typename P::NodeStats) +
-         node.edges.size() * sizeof(LegalEdge) +
+  return sizeof(internal::SerializedNodeHeader) +
+         sizeof(typename P::NodeStats) + node.edges.size() * sizeof(LegalEdge) +
          node.tried.size() * sizeof(typename P::EdgeStats);
 }
 

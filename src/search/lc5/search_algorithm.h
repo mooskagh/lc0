@@ -60,9 +60,9 @@ struct RootStats {
 // and edge statistics, and owns the graph. SearchSession owns visits,
 // materializations, batching, store threads, and evaluators. Implementations
 // must be thread-safe; each call locks at most one graph shard at a time.
-class VisitEngine {
+class SearchAlgorithm {
  public:
-  virtual ~VisitEngine() = default;
+  virtual ~SearchAlgorithm() = default;
 
   // The policy name, as in the Lc5Policy option.
   virtual std::string_view GetName() const = 0;
