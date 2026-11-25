@@ -62,10 +62,11 @@ class PolicyAlgorithm final : public SearchAlgorithm {
     evict_cursor_ = {};
   }
 
-  DescendResult DescendVisit(Visit& visit, Metrics& metrics,
-                             bool reselect_parent) override;
-  void BackupLeaf(const Visit& visit, const VisitValue& value, Metrics& metrics,
-                  TerminalKind terminal, bool count_at_leaf) override;
+  RunResult RunVisit(Visit& visit, Metrics& metrics,
+                     bool reselect_at_parent) override;
+  void BackupVisit(const Visit& visit, const VisitValue& value,
+                   Metrics& metrics, TerminalKind terminal,
+                   bool count_at_leaf) override;
   void CancelVisit(const Visit& visit) override;
   void FillThinkingInfo(const VisitOrigin& root,
                         ThinkingInfo& info) const override;
@@ -110,10 +111,10 @@ class PolicyAlgorithm final : public SearchAlgorithm {
 };
 
 template <typename P>
-SearchAlgorithm::DescendResult PolicyAlgorithm<P>::DescendVisit(
-    Visit& visit, Metrics& metrics, bool reselect_parent) {
+SearchAlgorithm::RunResult PolicyAlgorithm<P>::RunVisit(
+    Visit& visit, Metrics& metrics, bool reselect_at_parent) {
   // At the origin there is no parent edge to reselect.
-  if (reselect_parent && IsBelowOrigin(visit)) {
+  if (reselect_at_parent && IsBelowOrigin(visit)) {
     const PathStep parent = visit.path.back();
     // The leaf's owner has already backed up, so the parent edge holds its
     // value.
@@ -125,7 +126,7 @@ SearchAlgorithm::DescendResult PolicyAlgorithm<P>::DescendVisit(
       visit.path.pop_back();
       visit.history.Pop();
       if (FollowEdge(visit, reselected, metrics)) {
-        return DescendResult::kCompleted;
+        return RunResult::kCompleted;
       }
     }
   }
@@ -137,30 +138,31 @@ SearchAlgorithm::DescendResult PolicyAlgorithm<P>::DescendVisit(
         visit.current_key, params_, /*stop_at_proven=*/IsBelowOrigin(visit));
     switch (selection.status) {
       case SelectResult::kNodeMissing:
-        return DescendResult::kUnmaterializedLeaf;
+        return RunResult::kNeedsMaterialization;
       case SelectResult::kNodeTerminal:
         metrics.terminal_visits.fetch_add(1);
         Backup(visit, TerminalValue(selection.terminal),
                IsExact(selection.terminal), /*update_leaf=*/true, metrics);
-        return DescendResult::kCompleted;
+        return RunResult::kCompleted;
       case SelectResult::kNodeProven:
         metrics.proven_visits.fetch_add(1);
         Backup(visit, selection.value, /*exact=*/true, /*update_leaf=*/true,
                metrics);
-        return DescendResult::kCompleted;
+        return RunResult::kCompleted;
       case SelectResult::kEdgeSelected:
         break;
     }
     if (FollowEdge(visit, selection.move, metrics)) {
-      return DescendResult::kCompleted;
+      return RunResult::kCompleted;
     }
   }
 }
 
 template <typename P>
-void PolicyAlgorithm<P>::BackupLeaf(const Visit& visit, const VisitValue& value,
-                                    Metrics& metrics, TerminalKind terminal,
-                                    bool count_at_leaf) {
+void PolicyAlgorithm<P>::BackupVisit(const Visit& visit,
+                                     const VisitValue& value, Metrics& metrics,
+                                     TerminalKind terminal,
+                                     bool count_at_leaf) {
   if (terminal != TerminalKind::kNonTerminal) {
     metrics.terminal_visits.fetch_add(1);
   }

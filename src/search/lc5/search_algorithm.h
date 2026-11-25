@@ -70,24 +70,28 @@ class SearchAlgorithm {
   // Drops the whole graph; called only while no search runs.
   virtual void Clear() = 0;
 
-  // Visit lifecycle:
-  // - DescendVisit steps down the graph until it backs up an in-graph or
-  //   repetition leaf (kCompleted, releasing all reservations) or pauses at a
-  //   missing node (kUnmaterializedLeaf -> BackupLeaf, CancelVisit, or another
-  //   DescendVisit once the node is in the graph).
-  // - With `reselect_parent` set (a waiter waking after the owner backed up a
-  //   newly evaluated leaf), DescendVisit first re-runs selection at the parent
-  //   edge before descending.
-  enum class DescendResult { kUnmaterializedLeaf, kCompleted };
-  virtual DescendResult DescendVisit(Visit& visit, Metrics& metrics,
-                                     bool reselect_parent) = 0;
-  // Backs up `value` for a visit paused at kUnmaterializedLeaf and releases its
-  // reservations. `count_at_leaf` is false when InsertNode already counted
-  // `value` as the leaf's first visit (the owner), and true for terminal
-  // waiters.
-  virtual void BackupLeaf(const Visit& visit, const VisitValue& value,
-                          Metrics& metrics, TerminalKind terminal,
-                          bool count_at_leaf) = 0;
+  // Runs `visit` all the way through the graph (reserving one outgoing edge
+  // per node) until it either finishes completely or hits a missing node:
+  // - kCompleted: the visit is completely finished — it hit an in-graph
+  //   terminal, proven node, or repetition, backed up all the way to the root,
+  //   and released all edge reservations.
+  // - kNeedsMaterialization: paused at `visit.current_key` because that node
+  //   is not in the graph yet. Edge reservations are still held and no backup
+  //   has happened; the caller must materialize the node and then finish the
+  //   visit via BackupVisit, another RunVisit, or CancelVisit.
+  //
+  // If `reselect_at_parent` is true (and `visit` is below the root), re-runs
+  // move selection at the parent node before descending.
+  enum class RunResult { kCompleted, kNeedsMaterialization };
+  virtual RunResult RunVisit(Visit& visit, Metrics& metrics,
+                             bool reselect_at_parent) = 0;
+  // Backs up `value` all the way from `visit.current_key` to the root for a
+  // visit paused at kNeedsMaterialization, releasing all edge reservations.
+  // `count_at_leaf` is false when InsertNode already counted `value` as the
+  // leaf's first visit (the owner), and true for terminal waiters.
+  virtual void BackupVisit(const Visit& visit, const VisitValue& value,
+                           Metrics& metrics, TerminalKind terminal,
+                           bool count_at_leaf) = 0;
   // Releases every edge reservation on visit.path without committing a visit.
   virtual void CancelVisit(const Visit& visit) = 0;
 

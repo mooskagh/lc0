@@ -521,16 +521,16 @@ TEST(Lc5PuctTest, PuctAveragesWhileDagReplacesEdgeValue) {
                                               .priors = {0.5f, 0.3f}}));
     for (const float child_q : {-0.8f, -0.8f, -0.8f, -0.2f}) {
       Visit visit = MakeVisit(root);
-      EXPECT_EQ(engine->DescendVisit(visit, metrics, false),
-                SearchAlgorithm::DescendResult::kUnmaterializedLeaf);
+      EXPECT_EQ(engine->RunVisit(visit, metrics, false),
+                SearchAlgorithm::RunResult::kNeedsMaterialization);
       EXPECT_EQ(visit.path.size(), 1u);
       EXPECT_EQ(visit.path.front().move, move_a);
-      engine->BackupLeaf(visit, {.q = child_q}, metrics,
-                         TerminalKind::kNonTerminal, false);
+      engine->BackupVisit(visit, {.q = child_q}, metrics,
+                          TerminalKind::kNonTerminal, false);
     }
     Visit next = MakeVisit(root);
-    EXPECT_EQ(engine->DescendVisit(next, metrics, false),
-              SearchAlgorithm::DescendResult::kUnmaterializedLeaf);
+    EXPECT_EQ(engine->RunVisit(next, metrics, false),
+              SearchAlgorithm::RunResult::kNeedsMaterialization);
     EXPECT_EQ(next.path.size(), 1u);
     const Move selected = next.path.front().move;
     engine->CancelVisit(next);
@@ -563,11 +563,11 @@ TEST(Lc5PuctTest, DagForwardsSharedChildMeanToParent) {
     // A visit from root goes through child to an unmaterialized grandchild
     // whose leaf sample is 0.0.
     Visit visit = MakeVisit(root);
-    EXPECT_EQ(engine->DescendVisit(visit, metrics, false),
-              SearchAlgorithm::DescendResult::kUnmaterializedLeaf);
+    EXPECT_EQ(engine->RunVisit(visit, metrics, false),
+              SearchAlgorithm::RunResult::kNeedsMaterialization);
     EXPECT_EQ(visit.path.size(), 2u);
-    engine->BackupLeaf(visit, {.q = 0.0f}, metrics, TerminalKind::kNonTerminal,
-                       false);
+    engine->BackupVisit(visit, {.q = 0.0f}, metrics, TerminalKind::kNonTerminal,
+                        false);
     ThinkingInfo info;
     engine->FillThinkingInfo(root, info);
     return info.score.value_or(0);
@@ -599,8 +599,8 @@ TEST(Lc5PuctTest, BothPoliciesProveWinFromCheckmateChild) {
                     .moves = {},
                     .priors = {}}));
     Visit visit = MakeVisit(root);
-    EXPECT_EQ(engine->DescendVisit(visit, metrics, false),
-              SearchAlgorithm::DescendResult::kCompleted);
+    EXPECT_EQ(engine->RunVisit(visit, metrics, false),
+              SearchAlgorithm::RunResult::kCompleted);
     const RootStats stats = engine->GetRootStats(root.key);
     EXPECT_TRUE(stats.decided);
     EXPECT_EQ(stats.best_move, move_a);
@@ -645,10 +645,10 @@ TEST(Lc5PuctTest, ReselectParentKeepsGoodEdgeOrSwitchesIntoTwoFold) {
     // Both owner and waiter pick move_alt (0.8, then 0.8 / 2 = 0.4 > 0.2).
     Visit owner = MakeVisit(root);
     Visit waiter = MakeVisit(root);
-    ASSERT_EQ(engine->DescendVisit(owner, metrics, false),
-              SearchAlgorithm::DescendResult::kUnmaterializedLeaf);
-    ASSERT_EQ(engine->DescendVisit(waiter, metrics, false),
-              SearchAlgorithm::DescendResult::kUnmaterializedLeaf);
+    ASSERT_EQ(engine->RunVisit(owner, metrics, false),
+              SearchAlgorithm::RunResult::kNeedsMaterialization);
+    ASSERT_EQ(engine->RunVisit(waiter, metrics, false),
+              SearchAlgorithm::RunResult::kNeedsMaterialization);
     ASSERT_EQ(waiter.current_key, alt_key);
 
     // Owner installs alt_key and backs up its leaf value.
@@ -656,21 +656,21 @@ TEST(Lc5PuctTest, ReselectParentKeepsGoodEdgeOrSwitchesIntoTwoFold) {
     ASSERT_TRUE(engine->InsertNode(
         alt_key,
         {.leaf = {.q = child_q}, .moves = {alt_reply}, .priors = {1.0f}}));
-    engine->BackupLeaf(owner, {.q = child_q}, metrics,
-                       TerminalKind::kNonTerminal, false);
+    engine->BackupVisit(owner, {.q = child_q}, metrics,
+                        TerminalKind::kNonTerminal, false);
 
     // Waiter resumes with parent reselection.
     const auto res =
-        engine->DescendVisit(waiter, metrics, /*reselect_parent=*/true);
+        engine->RunVisit(waiter, metrics, /*reselect_at_parent=*/true);
     if (alt_bad_for_parent) {
       // Switches to move_rep, which immediately hits a 2-fold repetition draw.
-      EXPECT_EQ(res, SearchAlgorithm::DescendResult::kCompleted);
+      EXPECT_EQ(res, SearchAlgorithm::RunResult::kCompleted);
       EXPECT_EQ(metrics.visits_reselected.load(), 1u);
       EXPECT_EQ(metrics.two_fold_visits.load(), 1u);
     } else {
       // Keeps move_alt and descends through alt_key to its unmaterialized
       // child.
-      EXPECT_EQ(res, SearchAlgorithm::DescendResult::kUnmaterializedLeaf);
+      EXPECT_EQ(res, SearchAlgorithm::RunResult::kNeedsMaterialization);
       EXPECT_EQ(metrics.visits_reselected.load(), 0u);
       EXPECT_EQ(waiter.path.size(), 5u);
       engine->CancelVisit(waiter);

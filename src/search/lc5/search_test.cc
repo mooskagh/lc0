@@ -848,11 +848,11 @@ TEST(Lc5SearchTest, TwoFoldDrawBacksUpToRoot) {
               .history = origins.front().history,
               .current_key = origins.front().key,
               .path = {}};
-  ASSERT_EQ(engine->DescendVisit(visit, metrics, false),
-            SearchAlgorithm::DescendResult::kUnmaterializedLeaf);
+  ASSERT_EQ(engine->RunVisit(visit, metrics, false),
+            SearchAlgorithm::RunResult::kNeedsMaterialization);
   ASSERT_EQ(visit.path.size(), kNodes);
   EXPECT_EQ(visit.current_key, cur.key);
-  engine->BackupLeaf(visit, draw, metrics, TerminalKind::kNonTerminal, false);
+  engine->BackupVisit(visit, draw, metrics, TerminalKind::kNonTerminal, false);
 
   for (size_t i = 0; i < kNodes; ++i) {
     SCOPED_TRACE(i);

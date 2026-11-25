@@ -156,8 +156,8 @@ void VisitWorker::HandleWakeup(const VisitWakeup& wakeup) {
   assert(visit.state == VisitState::kWaitingMaterialization);
   // Even on stop, visits that already have a leaf value to back up may finish.
   if (wakeup.kind == VisitWakeup::Kind::kBackup) {
-    context_.algorithm.BackupLeaf(visit, wakeup.value, context_.metrics,
-                                  wakeup.terminal, wakeup.count_at_leaf);
+    context_.algorithm.BackupVisit(visit, wakeup.value, context_.metrics,
+                                   wakeup.terminal, wakeup.count_at_leaf);
     FinishVisit(visit, true);
     return;
   }
@@ -254,11 +254,11 @@ void VisitWorker::AdvanceVisit(VisitId id) {
       CancelVisit(visit);
       return;
     }
-    const bool reselect_parent = visit.state == VisitState::kReadyReselect;
+    const bool reselect_at_parent = visit.state == VisitState::kReadyReselect;
     visit.state = VisitState::kReadyDescend;
-    if (context_.algorithm.DescendVisit(visit, context_.metrics,
-                                        reselect_parent) ==
-        SearchAlgorithm::DescendResult::kCompleted) {
+    if (context_.algorithm.RunVisit(visit, context_.metrics,
+                                    reselect_at_parent) ==
+        SearchAlgorithm::RunResult::kCompleted) {
       FinishVisit(visit, true);
       return;
     }
