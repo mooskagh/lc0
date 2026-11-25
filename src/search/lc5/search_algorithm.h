@@ -103,8 +103,9 @@ class SearchAlgorithm {
   // Graph node lifecycle and cold-tier serialization.
   virtual size_t GetGraphSize() const = 0;
   virtual bool ContainsNode(NodeKey key) const = 0;
-  // Drops a draw-by-rule terminal stub at `root`, if present, so a search at
-  // `root` expands its legal moves; called only while no search runs.
+  // If `root` is already in the graph as an unexpanded draw-by-rule node (from
+  // an earlier search where it was below the root), drops it so this search
+  // expands its legal moves; called only while no search runs.
   virtual void PrepareRoot(NodeKey root) = 0;
   // Installs a node from `eval` and counts `eval.leaf` as its first visit;
   // returns false if the node was already in the graph.
