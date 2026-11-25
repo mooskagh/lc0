@@ -39,7 +39,6 @@ struct VisitId {
   uint64_t value = 0;
   uint32_t slot() const { return static_cast<uint32_t>(value); }
   uint32_t epoch() const { return static_cast<uint32_t>(value >> 32); }
-  explicit operator bool() const { return value != 0; }
 };
 
 struct PathStep {

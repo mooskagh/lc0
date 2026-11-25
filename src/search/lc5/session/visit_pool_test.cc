@@ -109,7 +109,7 @@ TEST(Lc5VisitPoolTest, InitializesAndResetsVisit) {
     visit.path.push_back({.key = NodeKey{7}, .move = Move{}});
     pool.Release(*id);
     // The slot itself is reset, not only marked free.
-    EXPECT_FALSE(visit.id);
+    EXPECT_EQ(visit.id.value, 0u);
     EXPECT_EQ(visit.state, VisitState::kFree);
     EXPECT_EQ(visit.history.GetLength(), 0);
     EXPECT_EQ(visit.current_key, NodeKey{});

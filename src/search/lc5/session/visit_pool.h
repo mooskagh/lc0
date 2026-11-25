@@ -69,7 +69,7 @@ class VisitPool {
  private:
   // Whether `id` is a live visit, not a released or reused one.
   bool IsLive(VisitId id) const {
-    if (!id || id.slot() >= slots_.size()) return false;
+    if (id.slot() >= slots_.size()) return false;
     const Slot& slot = slots_[id.slot()];
     return slot.epoch == id.epoch() && slot.visit.state != VisitState::kFree;
   }
