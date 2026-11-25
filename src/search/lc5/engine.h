@@ -30,6 +30,7 @@
 #include <chrono>
 #include <memory>
 #include <optional>
+#include <string>
 
 #include "chess/gamestate.h"
 #include "search/lc5/policies/registry.h"
@@ -63,6 +64,7 @@ class Lc5Engine final : public SearchBase {
   const OptionsDict* options_;
   // Owns the graph, kept for the whole game; recreated when Lc5Policy changes.
   std::unique_ptr<SearchAlgorithm> algorithm_;
+  std::string algorithm_policy_;
   // Cold store for evicted nodes, created once Lc5GraphNodeLimit is set.
   std::unique_ptr<NodeStore> node_store_;
   // The current search, or the last one until the next go.

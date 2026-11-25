@@ -31,7 +31,6 @@
 
 #include <cstddef>
 #include <cstdint>
-#include <string_view>
 
 #include "chess/callbacks.h"
 #include "neural/backend.h"
@@ -64,8 +63,6 @@ class SearchAlgorithm {
  public:
   virtual ~SearchAlgorithm() = default;
 
-  // The policy name, as in the Lc5Policy option.
-  virtual std::string_view GetName() const = 0;
   // Reads the policy's options and what the backend provides; called only
   // while no search runs.
   virtual void Configure(const OptionsDict& options,

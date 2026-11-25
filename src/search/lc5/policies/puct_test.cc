@@ -499,8 +499,8 @@ TEST(Lc5PuctTest, PoliciesShareThePuctOptions) {
   parser.SetUciOption("CPuct", "3");
   EXPECT_EQ(PolicyName(parser.GetOptionsDict()), "puct-dag");
   EXPECT_EQ(PuctParams::FromOptions(parser.GetOptionsDict(), kMlh).cpuct, 3.0f);
-  EXPECT_EQ(MakeSearchAlgorithm("puct")->GetName(), "puct");
-  EXPECT_EQ(MakeSearchAlgorithm("puct-dag")->GetName(), "puct-dag");
+  EXPECT_NE(MakeSearchAlgorithm("puct"), nullptr);
+  EXPECT_NE(MakeSearchAlgorithm("puct-dag"), nullptr);
 }
 
 TEST(Lc5PuctTest, PuctAveragesWhileDagReplacesEdgeValue) {

@@ -94,8 +94,9 @@ void Lc5Engine::StartSearch(const GoParams& params) {
 
   // A different policy keeps different statistics, so it starts a new graph.
   const std::string policy = PolicyName(*options_);
-  if (!algorithm_ || algorithm_->GetName() != policy) {
+  if (!algorithm_ || algorithm_policy_ != policy) {
     algorithm_ = MakeSearchAlgorithm(policy);
+    algorithm_policy_ = policy;
     node_store_.reset();
   }
   algorithm_->Configure(*options_, backend_->GetAttributes());

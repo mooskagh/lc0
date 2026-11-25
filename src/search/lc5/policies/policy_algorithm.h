@@ -36,7 +36,6 @@
 #include <cstddef>
 #include <cstdint>
 #include <optional>
-#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -52,7 +51,6 @@ namespace lczero::lc5 {
 template <typename P>
 class PolicyAlgorithm final : public SearchAlgorithm {
  public:
-  std::string_view GetName() const override { return P::kName; }
   void Configure(const OptionsDict& options,
                  const BackendAttributes& backend) override {
     params_ = P::Params::FromOptions(options, backend);
