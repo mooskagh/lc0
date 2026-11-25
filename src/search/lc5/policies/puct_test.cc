@@ -601,7 +601,7 @@ TEST(Lc5PuctTest, BothPoliciesProveWinFromCheckmateChild) {
     Visit visit = MakeVisit(root);
     EXPECT_EQ(engine->RunVisit(visit, metrics, false),
               SearchAlgorithm::RunResult::kCompleted);
-    const RootStats stats = engine->GetRootStats(root.key);
+    const NodeSummary stats = engine->GetNodeSummary(root.key);
     EXPECT_TRUE(stats.decided);
     EXPECT_EQ(stats.best_move, move_a);
     ThinkingInfo info;

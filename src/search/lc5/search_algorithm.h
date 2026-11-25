@@ -43,15 +43,16 @@
 
 namespace lczero::lc5 {
 
-// Root numbers the controller needs for limits, info output and early stopping.
-struct RootStats {
+// Summary of a node's search state (used for limits, info output, and early
+// stopping).
+struct NodeSummary {
   bool materialized = false;
-  uint64_t visits = 0;  // Node visits; 0 if the root is absent.
+  uint64_t visits = 0;  // Node visits; 0 if the node is absent.
   size_t edges = 0;
   uint64_t best_edge_visits = 0;
   uint64_t second_edge_visits = 0;
   Move best_move{};
-  // The root's result is proven, so the search can stop.
+  // The node's result is proven (and StickyEndgames is enabled).
   bool decided = false;
 };
 
@@ -97,7 +98,7 @@ class SearchAlgorithm {
   // Fills the score, WDL and PV of `info`; the caller fills the rest.
   virtual void FillThinkingInfo(const VisitOrigin& root,
                                 ThinkingInfo& info) const = 0;
-  virtual RootStats GetRootStats(NodeKey root) const = 0;
+  virtual NodeSummary GetNodeSummary(NodeKey key) const = 0;
 
   // Graph node lifecycle and cold-tier serialization.
   virtual size_t GetGraphSize() const = 0;

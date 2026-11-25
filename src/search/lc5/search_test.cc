@@ -553,7 +553,7 @@ TEST(Lc5SearchTest, ExplicitMovetimeAndInfiniteOverrideExhaustedClock) {
       session.Wait();
       ExpectIdleFinalOutput(responder, 1);
       ExpectLegalBestmove(responder, root);
-      EXPECT_EQ(engine->GetRootStats(root.key).visits, 1u);
+      EXPECT_EQ(engine->GetNodeSummary(root.key).visits, 1u);
       ExpectNoLeakedReservations(*engine);
     }
   }
@@ -587,7 +587,7 @@ TEST(Lc5SearchTest, PonderIgnoresZeroNodeAndTimeLimits) {
   ASSERT_TRUE(computing) << "Ponder must admit work despite zero limits";
   ASSERT_TRUE(continued) << "Ponder must continue after the first evaluation";
   EXPECT_GE(backend.inputs.load(), 2u);
-  ExpectFinalOutput(responder, engine->GetRootStats(root.key).visits);
+  ExpectFinalOutput(responder, engine->GetNodeSummary(root.key).visits);
   ExpectLegalBestmove(responder, root);
   ExpectNoLeakedReservations(*engine);
 }
@@ -614,7 +614,7 @@ TEST(Lc5SearchTest, ExactNodeBudgetWithMoreWorkersThanCapacity) {
               legal.end());
     // Each completed visit counts once at the root, including the one that
     // materialized it.
-    const RootStats stats = engine->GetRootStats(root.key);
+    const NodeSummary stats = engine->GetNodeSummary(root.key);
     ASSERT_TRUE(stats.materialized);
     EXPECT_EQ(stats.visits, expected);
     ExpectNoLeakedReservations(*engine);
@@ -676,7 +676,7 @@ TEST(Lc5SearchTest, OwnerBacksUpLeafWhileWaitersResumeSelection) {
   // 4 suspensions at the root (1 owner + 3 waiters), then 3 at distinct
   // children after the waiters resume.
   EXPECT_EQ(CommentMetric(responder.thinking.back(), "suspended"), 7u);
-  const RootStats stats = engine->GetRootStats(root.key);
+  const NodeSummary stats = engine->GetNodeSummary(root.key);
   ASSERT_TRUE(stats.materialized);
   EXPECT_EQ(stats.visits, 4u);
   // Only the owner backs up at the root leaf; each waiter traverses an edge to
@@ -701,7 +701,7 @@ TEST(Lc5SearchTest, WaitersDrainAndCountOnce) {
     session.Start();
     session.Wait();
     ExpectIdleFinalOutput(responder, kNodes);
-    const RootStats stats = engine->GetRootStats(root.key);
+    const NodeSummary stats = engine->GetNodeSummary(root.key);
     ASSERT_TRUE(stats.materialized);
     EXPECT_EQ(stats.visits, static_cast<uint64_t>(kNodes));
     ExpectNoLeakedReservations(*engine);
@@ -739,7 +739,7 @@ TEST(Lc5SearchTest, WaiterReselectsAfterOwnerBackup) {
       EXPECT_EQ(CommentMetric(final, "suspended"), 3u);
       EXPECT_EQ(CommentMetric(final, "reselected"),
                 child_bad_for_root ? 1u : 0u);
-      const RootStats stats = engine->GetRootStats(root.key);
+      const NodeSummary stats = engine->GetNodeSummary(root.key);
       ASSERT_TRUE(stats.materialized);
       EXPECT_EQ(stats.visits, 3u);
       EXPECT_EQ(stats.best_edge_visits, child_bad_for_root ? 1u : 2u);
@@ -780,11 +780,11 @@ TEST(Lc5SearchTest, PuctDagDrainsOverTranspositions) {
     session.Wait();
     ExpectIdleFinalOutput(responder, kNodes);
     ExpectLegalBestmove(responder, root);
-    const RootStats stats = engine->GetRootStats(root.key);
+    const NodeSummary stats = engine->GetNodeSummary(root.key);
     ASSERT_TRUE(stats.materialized);
     EXPECT_EQ(stats.visits, static_cast<uint64_t>(kNodes));
-    const RootStats parent_stats = engine->GetRootStats(parent_key);
-    const RootStats shared_stats = engine->GetRootStats(shared_key);
+    const NodeSummary parent_stats = engine->GetNodeSummary(parent_key);
+    const NodeSummary shared_stats = engine->GetNodeSummary(shared_key);
     ASSERT_TRUE(parent_stats.materialized);
     ASSERT_TRUE(shared_stats.materialized);
     // In a tree a child has at most 1 + parent.best_edge_visits visits; here
@@ -856,7 +856,7 @@ TEST(Lc5SearchTest, TwoFoldDrawBacksUpToRoot) {
 
   for (size_t i = 0; i < kNodes; ++i) {
     SCOPED_TRACE(i);
-    const RootStats stats = engine->GetRootStats(origins[i].key);
+    const NodeSummary stats = engine->GetNodeSummary(origins[i].key);
     ASSERT_TRUE(stats.materialized);
     EXPECT_EQ(stats.visits, 2u);
     EXPECT_EQ(stats.best_edge_visits, 1u);
@@ -889,7 +889,7 @@ TEST(Lc5SearchTest, TwoFoldDrawsFromRealCyclesDrain) {
     session.Wait();
     ExpectIdleFinalOutput(responder, kNodes);
     EXPECT_GT(CommentMetric(responder.thinking.back(), "twofold"), 0u);
-    const RootStats stats = engine->GetRootStats(root.key);
+    const NodeSummary stats = engine->GetNodeSummary(root.key);
     ASSERT_TRUE(stats.materialized);
     EXPECT_EQ(stats.visits, static_cast<uint64_t>(kNodes));
     ExpectNoLeakedReservations(*engine);
@@ -935,7 +935,7 @@ TEST(Lc5SearchTest, TerminalOwnerAndWaitersNeverEvaluate) {
       EXPECT_EQ(backend.computes.load(), 0u);
       const auto& final = responder.thinking.back();
       EXPECT_EQ(CommentMetric(final, "suspended"), with_store ? 4u : 1u);
-      const RootStats stats = engine->GetRootStats(root.key);
+      const NodeSummary stats = engine->GetNodeSummary(root.key);
       ASSERT_TRUE(stats.materialized);
       EXPECT_EQ(stats.edges, 0u);
       EXPECT_EQ(stats.visits, 4u);
@@ -1003,7 +1003,7 @@ TEST(Lc5SearchTest, DrawByRuleRootPlaysLegalMoveEvenAfterReuse) {
             std::chrono::steady_clock::now(), 0, nullptr);
         parent_session.Start();
         parent_session.Wait();
-        const RootStats stub = engine->GetRootStats(root.key);
+        const NodeSummary stub = engine->GetNodeSummary(root.key);
         ASSERT_TRUE(stub.materialized);
         ASSERT_EQ(stub.edges, 0u);
         if (mode == Mode::kStoreReuse) {
@@ -1028,7 +1028,7 @@ TEST(Lc5SearchTest, DrawByRuleRootPlaysLegalMoveEvenAfterReuse) {
       Move played = responder.bestmoves[0].bestmove;
       if (root.history.IsBlackToMove()) played.Flip();
       EXPECT_TRUE(absl::c_linear_search(legal, played));
-      const RootStats stats = engine->GetRootStats(root.key);
+      const NodeSummary stats = engine->GetNodeSummary(root.key);
       ASSERT_TRUE(stats.materialized);
       EXPECT_EQ(stats.edges, legal.size());
       if (mode == Mode::kStoreReuse) {
@@ -1062,7 +1062,7 @@ TEST(Lc5SearchTest, ImmediateAndMixedResultsKeepJobStorageAlive) {
     EXPECT_EQ(CommentMetric(final, "cache"), all ? 4u : 2u);
     EXPECT_EQ(CommentMetric(final, "eps_evals"), all ? 0u : 2u);
     for (const auto& origin : origins) {
-      const RootStats stats = engine->GetRootStats(origin.key);
+      const NodeSummary stats = engine->GetNodeSummary(origin.key);
       ASSERT_TRUE(stats.materialized);
       EXPECT_EQ(stats.visits, 1u);
       EXPECT_EQ(stats.edges,
@@ -1122,7 +1122,7 @@ TEST(Lc5SearchTest, BlockedBackendStopAndAbortDrainReservations) {
     // Evaluations are not stored; only evicted nodes are.
     EXPECT_EQ(store.stored, 0u);
     // The setup install plus the owner's late backup.
-    const RootStats root_stats = engine->GetRootStats(root.key);
+    const NodeSummary root_stats = engine->GetNodeSummary(root.key);
     EXPECT_EQ(root_stats.visits, 2u);
     EXPECT_EQ(root_stats.best_edge_visits, 1u);
     if (abort) {
@@ -1158,7 +1158,7 @@ TEST(Lc5SearchTest, SavedGraphRestoresWithStatisticsInFreshGraph) {
     ExpectIdleFinalOutput(responder, 3);
     EXPECT_EQ(saved_store.stored, 0u);
   }
-  const RootStats saved = saved_engine->GetRootStats(root.key);
+  const NodeSummary saved = saved_engine->GetNodeSummary(root.key);
   ASSERT_EQ(saved.visits, 3u);
   const size_t saved_size = saved_engine->GetGraphSize();
   Metrics evict_metrics;
@@ -1185,7 +1185,7 @@ TEST(Lc5SearchTest, SavedGraphRestoresWithStatisticsInFreshGraph) {
   EXPECT_GE(CommentMetric(final, "store_hit"), 1u);
   EXPECT_EQ(CommentMetric(final, "restored"),
             CommentMetric(final, "store_hit"));
-  const RootStats stats = engine->GetRootStats(root.key);
+  const NodeSummary stats = engine->GetNodeSummary(root.key);
   ASSERT_TRUE(stats.materialized);
   EXPECT_EQ(stats.visits, saved.visits + 1);
   EXPECT_EQ(stats.edges, saved.edges);
@@ -1270,7 +1270,7 @@ TEST(Lc5SearchTest, CollectionFlushesWhileAnotherWorkerIsBlockedInStore) {
     EXPECT_EQ(CommentMetric(responder.thinking.back(), "eps_evals"), 1u);
     // The computed evaluation backs up (+1 at root); the other store miss is
     // cancelled.
-    EXPECT_EQ(engine->GetRootStats(root.key).visits, 2u);
+    EXPECT_EQ(engine->GetNodeSummary(root.key).visits, 2u);
     EXPECT_EQ(store.recording.loads, 2u);
     EXPECT_EQ(store.recording.stored, 0u);
     EXPECT_EQ(backend.computes.load(), 1u);
@@ -1362,7 +1362,7 @@ TEST(Lc5SearchTest, MultiworkerMixedCacheResultsRespectBatchAndItemLimits) {
                 static_cast<uint64_t>(test.capacity / 2));
       EXPECT_EQ(CommentMetric(final, "eps_evals"),
                 static_cast<uint64_t>(test.capacity / 2));
-      EXPECT_EQ(engine->GetRootStats(root.key).visits,
+      EXPECT_EQ(engine->GetNodeSummary(root.key).visits,
                 1u + static_cast<uint64_t>(test.capacity));
       EXPECT_EQ(engine->GetGraphSize(), 1u + test.capacity);
       const size_t job_size = (test.batch_size + 3) / 4;
@@ -1377,7 +1377,7 @@ TEST(Lc5SearchTest, MultiworkerMixedCacheResultsRespectBatchAndItemLimits) {
       }
       EXPECT_EQ(evaluated, static_cast<size_t>(test.capacity / 2));
       for (const auto& origin : origins) {
-        const RootStats stats = engine->GetRootStats(origin.key);
+        const NodeSummary stats = engine->GetNodeSummary(origin.key);
         ASSERT_TRUE(stats.materialized);
         EXPECT_EQ(stats.visits, 1u);
         EXPECT_EQ(stats.edges,
@@ -1456,14 +1456,14 @@ TEST(Lc5SearchTest, BlockedStoreLoadsDrainAfterStopOrAbort) {
       EXPECT_EQ(store.recording.entries.contains(child.key), hit);
       EXPECT_EQ(engine->ContainsNode(child.key), hit);
       if (hit) {
-        EXPECT_EQ(engine->GetRootStats(child.key).visits, 1u);
+        EXPECT_EQ(engine->GetNodeSummary(child.key).visits, 1u);
         ThinkingInfo info;
         engine->FillThinkingInfo(child, info);
         ASSERT_TRUE(info.score.has_value());
         EXPECT_EQ(*info.score, CentipawnsFromQ(0.75f));
       }
       // Only the setup install.
-      const RootStats root_stats = engine->GetRootStats(root.key);
+      const NodeSummary root_stats = engine->GetNodeSummary(root.key);
       EXPECT_EQ(root_stats.visits, 1u);
       EXPECT_EQ(root_stats.best_edge_visits, 0u);
       if (abort) {
@@ -1527,7 +1527,7 @@ TEST(Lc5SearchTest, QueuedBacklogCannotComputeAgainAfterStop) {
     EXPECT_EQ(backend.inputs.load(), 4u * evaluators);
     EXPECT_EQ(engine->GetGraphSize(), 1u + 4u * evaluators);
     // Authorized batches back up their visits; the queued backlog cancels.
-    EXPECT_EQ(engine->GetRootStats(root.key).visits, 1u + 4u * evaluators);
+    EXPECT_EQ(engine->GetNodeSummary(root.key).visits, 1u + 4u * evaluators);
     ExpectLegalBestmove(responder, root);
     ExpectNoLeakedReservations(*engine);
   }
@@ -1557,7 +1557,7 @@ TEST(Lc5SearchTest, AuthorizedEvaluationsBackUpToRootAfterStop) {
   EXPECT_EQ(backend.computes.load(), 1u);
   EXPECT_EQ(backend.inputs.load(), 4u);
   // Each computed materialization's owner backs up through the root after stop.
-  const RootStats stats = engine->GetRootStats(root.key);
+  const NodeSummary stats = engine->GetNodeSummary(root.key);
   ASSERT_TRUE(stats.materialized);
   EXPECT_EQ(stats.visits, 5u);
   EXPECT_GE(stats.best_edge_visits, 1u);
@@ -1592,11 +1592,11 @@ TEST(Lc5SearchTest, StopDuringAddInputKeepsOnlyImmediateResults) {
   EXPECT_EQ(backend.inputs.load(), 2u);
   EXPECT_EQ(backend.computes.load(), 0u);
   EXPECT_EQ(engine->GetGraphSize(), 2u);
-  const RootStats hit = engine->GetRootStats(origins[0].key);
+  const NodeSummary hit = engine->GetNodeSummary(origins[0].key);
   ASSERT_TRUE(hit.materialized);
   EXPECT_EQ(hit.visits, 1u);
   // Setup install plus the 1 immediate cache hit backed up; the other 3 cancel.
-  EXPECT_EQ(engine->GetRootStats(root.key).visits, 2u);
+  EXPECT_EQ(engine->GetNodeSummary(root.key).visits, 2u);
   ThinkingInfo info;
   engine->FillThinkingInfo(origins[0], info);
   ASSERT_TRUE(info.score.has_value());
@@ -1771,7 +1771,7 @@ TEST(Lc5SearchTest, EvictionKeepsGraphSmallAndLosesNoVisits) {
     EXPECT_EQ(CommentMetric(final, "restored"),
               CommentMetric(final, "store_hit"));
     // Every completed visit reached the root, which is never evicted.
-    const RootStats stats = engine->GetRootStats(root.key);
+    const NodeSummary stats = engine->GetNodeSummary(root.key);
     ASSERT_TRUE(stats.materialized);
     EXPECT_EQ(stats.visits, 3000u);
     EXPECT_GT(stats.best_edge_visits, 0u);
@@ -1794,7 +1794,7 @@ TEST(Lc5SearchTest, SingleNodeSearchPlaysTopPriorMove) {
   session.Start();
   session.Wait();
   ExpectIdleFinalOutput(responder, 1);
-  const RootStats stats = engine->GetRootStats(root.key);
+  const NodeSummary stats = engine->GetNodeSummary(root.key);
   ASSERT_TRUE(stats.materialized);
   ASSERT_GT(stats.edges, 0u);
   EXPECT_EQ(stats.best_edge_visits, 0u);
@@ -1822,7 +1822,7 @@ TEST(Lc5SearchTest, FreshRootStoppedBeforeStartStillEvaluatesRootOnce) {
   EXPECT_EQ(backend.inputs.load(), 1u);
   EXPECT_EQ(backend.computes.load(), 1u);
   EXPECT_EQ(engine->GetGraphSize(), 1u);
-  const RootStats stats = engine->GetRootStats(root.key);
+  const NodeSummary stats = engine->GetNodeSummary(root.key);
   ASSERT_TRUE(stats.materialized);
   ASSERT_GT(stats.edges, 0u);
   EXPECT_EQ(responder.bestmoves[0].bestmove, stats.best_move);

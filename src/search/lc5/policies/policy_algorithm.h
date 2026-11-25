@@ -69,7 +69,7 @@ class PolicyAlgorithm final : public SearchAlgorithm {
   void CancelVisit(const Visit& visit) override;
   void FillThinkingInfo(const VisitOrigin& root,
                         ThinkingInfo& info) const override;
-  RootStats GetRootStats(NodeKey root) const override;
+  NodeSummary GetNodeSummary(NodeKey key) const override;
 
   size_t GetGraphSize() const override { return graph_.Size(); }
   bool ContainsNode(NodeKey key) const override {
@@ -198,10 +198,10 @@ void PolicyAlgorithm<P>::FillThinkingInfo(const VisitOrigin& root,
 }
 
 template <typename P>
-RootStats PolicyAlgorithm<P>::GetRootStats(NodeKey root) const {
-  const auto node = graph_.SnapshotNode(root);
+NodeSummary PolicyAlgorithm<P>::GetNodeSummary(NodeKey key) const {
+  const auto node = graph_.SnapshotNode(key);
   if (!node) return {};
-  RootStats stats{
+  NodeSummary summary{
       .materialized = true,
       .visits = node->stats.visits,
       .edges = node->edges.size(),
@@ -211,13 +211,14 @@ RootStats PolicyAlgorithm<P>::GetRootStats(NodeKey root) const {
   };
   for (const auto& tried : node->tried) {
     const uint64_t visits = tried.stats.visits;
-    if (visits > stats.best_edge_visits) {
-      stats.second_edge_visits = std::exchange(stats.best_edge_visits, visits);
+    if (visits > summary.best_edge_visits) {
+      summary.second_edge_visits =
+          std::exchange(summary.best_edge_visits, visits);
     } else {
-      stats.second_edge_visits = std::max(stats.second_edge_visits, visits);
+      summary.second_edge_visits = std::max(summary.second_edge_visits, visits);
     }
   }
-  return stats;
+  return summary;
 }
 
 template <typename P>

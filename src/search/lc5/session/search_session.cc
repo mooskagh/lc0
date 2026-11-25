@@ -52,7 +52,7 @@ constexpr size_t kMaxEvictionBatch = 16'384;
 // Visits a search may complete: `go nodes`, if given and not pondering, but
 // never so many that the root's visit count would overflow, and at least one if
 // the root is not yet materialized.
-uint64_t GetNodeLimit(const GoParams& go_params, const RootStats& root) {
+uint64_t GetNodeLimit(const GoParams& go_params, const NodeSummary& root) {
   uint64_t limit = kMaxRootVisits - std::min(root.visits, kMaxRootVisits);
   if (!go_params.ponder && go_params.nodes && *go_params.nodes >= 0) {
     limit = std::min(limit, static_cast<uint64_t>(*go_params.nodes));
@@ -66,7 +66,7 @@ VisitLimiter::Config MakeLimiterConfig(const Settings::Resolved& settings,
                                        SearchAlgorithm& algorithm,
                                        NodeKey root_key) {
   algorithm.PrepareRoot(root_key);
-  const RootStats root = algorithm.GetRootStats(root_key);
+  const NodeSummary root = algorithm.GetNodeSummary(root_key);
   return {.workers = static_cast<size_t>(settings.threads),
           .node_limit = GetNodeLimit(go_params, root),
           .root_visits_at_start = root.visits,
@@ -152,7 +152,7 @@ void SearchSession::Start() {
 
 void SearchSession::Stop() {
   stop_requested_.store(true);
-  if (algorithm_->GetRootStats(root_.key).materialized) {
+  if (algorithm_->GetNodeSummary(root_.key).materialized) {
     limiter_.Stop();  // Close visit admission and set IsStopping().
   } else {
     limiter_.CapNodeLimit(1);  // Admit only the root visit before stopping.
@@ -205,7 +205,7 @@ void SearchSession::RunControllerWorker() {
 
 void SearchSession::MaybeOutputInfo(steady_clock::time_point now,
                                     steady_clock::time_point& next_info) {
-  const RootStats root = algorithm_->GetRootStats(root_.key);
+  const NodeSummary root = algorithm_->GetNodeSummary(root_.key);
   const int depth = static_cast<int>(metrics_.max_depth.load());
   const int seldepth = static_cast<int>(metrics_.max_selected_depth.load());
   const bool changed = root.materialized && (depth > 0 || seldepth > 0) &&
@@ -222,7 +222,7 @@ void SearchSession::MaybeOutputInfo(steady_clock::time_point now,
 }
 
 bool SearchSession::ShouldStop(steady_clock::time_point now) const {
-  const RootStats root = algorithm_->GetRootStats(root_.key);
+  const NodeSummary root = algorithm_->GetNodeSummary(root_.key);
   if (!root.materialized) return false;
   if (stop_requested_.load() || time_manager_.ShouldStop(now) ||
       metrics_.visits_completed.load() >= limiter_.node_limit()) {
