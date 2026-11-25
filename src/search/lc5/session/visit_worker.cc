@@ -172,7 +172,7 @@ void VisitWorker::HandleWakeup(const VisitWakeup& wakeup) {
   ready_visits_.push_back(wakeup.id);  // Queue for next AdvanceVisit pass.
 }
 
-void VisitWorker::Run() {
+void VisitWorker::RunBlocking() {
   for (;;) {
     ProcessInbox();  // Ingest finished store/eval jobs and visit wakeups.
     const bool stopping = IsStopping();

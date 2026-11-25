@@ -85,7 +85,7 @@ class Evaluator {
   };
 
   // Thread loop and batching.
-  void Run();
+  void RunBlocking();
   // Takes `first` and more queued jobs while they fit the minibatch.
   Batch CollectBatch(std::unique_ptr<AsyncJob> first);
   void AddJobToBatch(BackendComputation& computation, AsyncJob& job);

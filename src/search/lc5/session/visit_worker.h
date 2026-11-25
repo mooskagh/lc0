@@ -79,7 +79,7 @@ class VisitWorker {
 
   VisitWorker(size_t worker_id, const Context& context);
 
-  void Start() { thread_ = std::thread(&VisitWorker::Run, this); }
+  void Start() { thread_ = std::thread(&VisitWorker::RunBlocking, this); }
   void Join() {
     if (thread_.joinable()) thread_.join();
   }
@@ -102,7 +102,7 @@ class VisitWorker {
   bool IsStopping() const { return context_.limiter.IsStopping(); }
 
   // The thread body: runs until the inbox gets shut down.
-  void Run();
+  void RunBlocking();
   void ProcessInbox();
   void FlushNotifications();
   bool HasReadyWork() const;

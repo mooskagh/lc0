@@ -142,12 +142,13 @@ void SearchSession::Start() {
   }
   if (store_) {
     for (int i = 0; i < settings_.eval_threads; ++i) {
-      store_threads_.emplace_back(&SearchSession::RunStoreWorker, this);
+      store_threads_.emplace_back(&SearchSession::RunStoreWorkerBlocking, this);
     }
   }
   evaluator_.Start();
   for (auto& worker : visit_workers_) worker->Start();
-  controller_thread_ = std::thread(&SearchSession::RunControllerWorker, this);
+  controller_thread_ =
+      std::thread(&SearchSession::RunControllerWorkerBlocking, this);
 }
 
 void SearchSession::Stop() {
@@ -174,7 +175,7 @@ void SearchSession::WakeAllVisitWorkers() {
   for (auto& inbox : inboxes_) inbox.Wake();
 }
 
-void SearchSession::RunControllerWorker() {
+void SearchSession::RunControllerWorkerBlocking() {
   auto next_info = steady_clock::now() + kInfoInterval;
   bool responded = false;
   for (;;) {
@@ -319,7 +320,7 @@ void SearchSession::ReturnJobToWorker(std::unique_ptr<AsyncJob> job) {
   metrics_.inbox_notifications.fetch_add(1);
 }
 
-void SearchSession::RunStoreWorker() {
+void SearchSession::RunStoreWorkerBlocking() {
   StoreJob job;
   while (store_jobs_.Pop(&job)) {
     if (const auto* eviction = std::get_if<EvictionJob>(&job)) {

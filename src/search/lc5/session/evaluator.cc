@@ -39,7 +39,7 @@ Evaluator::Evaluator(const Context& context)
 
 void Evaluator::Start() {
   for (int i = 0; i < context_.settings.eval_threads; ++i) {
-    threads_.emplace_back(&Evaluator::Run, this);
+    threads_.emplace_back(&Evaluator::RunBlocking, this);
   }
 }
 
@@ -66,7 +66,7 @@ void Evaluator::OnProducerBlocked() {
   }
 }
 
-void Evaluator::Run() {
+void Evaluator::RunBlocking() {
   std::unique_ptr<AsyncJob> job;
   while (queued_jobs_.Pop(&job)) {
     if (IsStopping()) {

@@ -72,8 +72,8 @@ class SearchSession {
 
  private:
   // Thread bodies; each runs until its thread exits. Start() spawns them.
-  void RunControllerWorker();
-  void RunStoreWorker();
+  void RunControllerWorkerBlocking();
+  void RunStoreWorkerBlocking();
 
   // Search: stop, output and shutdown.
   bool IsStopping() const { return limiter_.IsStopping(); }
