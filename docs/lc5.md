@@ -127,7 +127,7 @@ minibatch each). An evaluator packs jobs into one backend call until the
 batch target (`MinibatchSize`) is reached. It also sends a partial batch
 early when:
 
-- `MaxBatchDelayMs` (default 2 ms) has passed since the first job arrived,
+- `MaxBatchDelayMs` (default 20 ms) has passed since the first job arrived,
 - no worker can produce more work, so waiting longer is pointless, or
 - every position was a cache hit, so no GPU work is needed.
 
@@ -260,7 +260,7 @@ Things that look odd but are deliberate:
 | `MaxActiveVisits` | auto | Hard cap on live visits (at most 65535). |
 | `ActiveVisitsRatio` | 0.25 | Live visits ≤ 16 + ratio × root visits; 0 disables. |
 | `HistoryKeyLength` | 7 | Earlier positions included in node keys. |
-| `MaxBatchDelayMs` | 2 | Max wait before sending a partial batch; 0 disables. |
+| `MaxBatchDelayMs` | 20 | Max wait before sending a partial batch; 0 disables. |
 | `MoveOverheadMs` | 200 | As classic. |
 | `AlphaZeroTimePct` | 3 | Share of the clock spent per move. |
 | `SmartPruningFactor` | 1.33 | Early stop aggressiveness; 0 disables. |
